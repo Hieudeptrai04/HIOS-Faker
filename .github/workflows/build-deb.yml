@@ -1,5 +1,5 @@
-# Build .deb on Ubuntu + Theos (Windows cannot run make package)
-# After build: tab Actions -> this workflow -> Artifacts -> download ZIP, extract to packages/
+# Build .deb on Ubuntu with manual Theos + iOS SDK install
+# (beerpiss/theos-action@v1 is broken: downloads non-xz file and tar fails)
 
 name: Build DEB
 
@@ -16,29 +16,82 @@ permissions:
 jobs:
   deb:
     runs-on: ubuntu-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      SDK_URL: https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: beerpiss/theos-action@v1
-        with:
-          cache: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            perl fakeroot build-essential cmake curl xz-utils \
+            libplist-dev libssl-dev zlib1g-dev git dpkg-dev
+
+      - name: Install ldid (from ProcursusTeam)
+        run: |
+          set -e
+          cd /tmp
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git
+          cd ldid
+          make -j"$(nproc)"
+          sudo install -m 0755 ldid /usr/local/bin/ldid
+          ldid -V || ldid -v || true
+
+      - name: Clone Theos
+        run: |
+          set -e
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          ls -la "$THEOS/bin/"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Download iOS SDK 16.5
+        run: |
+          set -e
+          mkdir -p "$THEOS/sdks"
+          curl -fSL "$SDK_URL" -o /tmp/sdk.tar.xz
+          echo "Downloaded size: $(stat -c%s /tmp/sdk.tar.xz) bytes"
+          file /tmp/sdk.tar.xz
+          tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+          rm -f /tmp/sdk.tar.xz
+          ls -la "$THEOS/sdks/"
 
       - name: Build rootless package
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+          THEOS_DEVICE_ARCH: arm64
         run: |
           set -e
           cd "${GITHUB_WORKSPACE}/tweak"
-          export THEOS_PACKAGE_SCHEME=rootless
-          make package FINALPACKAGE=1
+          rm -rf packages/ .theos/ obj/ || true
+          make package FINALPACKAGE=1 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
+          echo "=== Build done ==="
+          find . -name "*.deb" -type f -exec ls -lh {} \;
+
+      - name: Upload make output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: make-output-deb
+          path: make_output.txt
+          retention-days: 7
 
       - name: Copy .deb to packages/
         run: |
+          set -e
           mkdir -p "${GITHUB_WORKSPACE}/packages"
           shopt -s nullglob
+          copied=0
           for f in "${GITHUB_WORKSPACE}/tweak/packages"/*.deb; do
             cp -v "$f" "${GITHUB_WORKSPACE}/packages/"
+            copied=1
           done
+          if [ "$copied" -eq 0 ]; then
+            echo "ERROR: no .deb produced"
+            exit 1
+          fi
           ls -la "${GITHUB_WORKSPACE}/packages/"
 
       - name: Upload artifact
@@ -46,3 +99,4 @@ jobs:
         with:
           name: ChangeInfoIos-deb
           path: packages/*.deb
+          retention-days: 30
