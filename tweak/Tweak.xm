@@ -53,8 +53,8 @@
 // ============================================================
 static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
 static NSDictionary *spoofConfig = nil;
-static BOOL configLoaded = NO;
-static id getConfig(NSString *key);
+BOOL configLoaded = NO;
+id getConfig(NSString *key);
 
 static BOOL isCurrentBundleTargeted(void) {
     id targets = getConfig(@"targetBundles");
@@ -71,7 +71,7 @@ static BOOL isCurrentBundleTargeted(void) {
     return NO;
 }
 
-static void reloadConfigFromDisk(void) {
+void reloadConfigFromDisk(void) {
     @autoreleasepool {
         NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
         if (config) {
@@ -98,26 +98,26 @@ static void onPrefsDarwinNotify(CFNotificationCenterRef center, void *observer, 
     NSLog(@"[ChangeInfoIos] Prefs reloaded (%lu keys)", (unsigned long)(spoofConfig ? spoofConfig.count : 0));
 }
 
-static id getConfig(NSString *key) {
+id getConfig(NSString *key) {
     if (!configLoaded) reloadConfigFromDisk();
     return spoofConfig[key];
 }
 
-static NSString *getConfigStr(NSString *key) {
+NSString *getConfigStr(NSString *key) {
     id val = getConfig(key);
     if ([val isKindOfClass:[NSString class]]) return val;
     if (val) return [NSString stringWithFormat:@"%@", val];
     return nil;
 }
 
-static BOOL getConfigBool(NSString *key) {
+BOOL getConfigBool(NSString *key) {
     id val = getConfig(key);
     if ([val respondsToSelector:@selector(boolValue)]) return [val boolValue];
     return NO;
 }
 
 /* Plist booleans fake_<name> — thiếu key = bật (tương thích cũ). Tên ngắn: uiddevice, hardware, sysctl, ... */
-static BOOL fakeLayer(NSString *shortName) {
+BOOL fakeLayer(NSString *shortName) {
     if (!isCurrentBundleTargeted()) return NO;
     NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
     id v = getConfig(full);
@@ -125,7 +125,7 @@ static BOOL fakeLayer(NSString *shortName) {
     return [v boolValue];
 }
 
-static BOOL jbHideActive(void) {
+BOOL jbHideActive(void) {
     if (!fakeLayer(@"jbhide")) return NO;
     id h = getConfig(@"hideJailbreak");
     if (h == nil) return YES;

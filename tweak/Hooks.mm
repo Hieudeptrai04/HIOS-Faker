@@ -17,14 +17,19 @@
 #include <spawn.h>
 #include <substrate.h>
 
-// Config accessors (declared in Tweak.xm)
-extern NSString *getConfigStr(NSString *key);
-extern BOOL getConfigBool(NSString *key);
-extern id getConfig(NSString *key);
-extern BOOL fakeLayer(NSString *shortName);
-extern BOOL jbHideActive(void);
-extern void reloadConfigFromDisk(void);
-extern BOOL configLoaded;
+// Config accessors (defined in Tweak.xm as plain C-linkage symbols).
+// Must be extern "C" because this is Objective-C++ (.mm) and Tweak.xm
+// is Objective-C (.m-equivalent) — without this the linker looks for
+// C++-mangled names (_Z12getConfigStrP8NSString etc.) that don't exist.
+extern "C" {
+    NSString *getConfigStr(NSString *key);
+    BOOL getConfigBool(NSString *key);
+    id getConfig(NSString *key);
+    BOOL fakeLayer(NSString *shortName);
+    BOOL jbHideActive(void);
+    void reloadConfigFromDisk(void);
+    extern BOOL configLoaded;
+}
 
 // ============================================================
 // sysctlbyname hook
@@ -438,7 +443,7 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 // ============================================================
 // Init all C-level hooks
 // ============================================================
-void initCLvlHooks(void) {
+extern "C" void initCLvlHooks(void) {
     // sysctlbyname
     void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
     if (!sysctl_handle) sysctl_handle = RTLD_DEFAULT;
