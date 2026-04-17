@@ -26,27 +26,6 @@ extern BOOL jbHideActive(void);
 extern void reloadConfigFromDisk(void);
 extern BOOL configLoaded;
 
-// Forward declarations for hook trampolines (extern = declaration only)
-extern int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
-extern int (*orig_uname)(struct utsname *name);
-extern int (*orig_stat)(const char *path, struct stat *buf);
-extern int (*orig_lstat)(const char *path, struct stat *buf);
-extern int (*orig_access)(const char *path, int mode);
-extern FILE *(*orig_fopen)(const char *path, const char *mode);
-extern void *(*orig_dlopen)(const char *path, int mode);
-extern int (*orig_gethostname)(char *name, size_t namelen);
-extern uint64_t (*orig_mach_absolute_time)(void);
-extern CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
-extern int (*orig_dladdr)(const void *addr, Dl_info *info);
-extern uint32_t (*orig__dyld_image_count)(void);
-extern const char *(*orig__dyld_get_image_name)(uint32_t image_index);
-extern pid_t (*orig_fork)(void);
-extern char *(*orig_getenv)(const char *name);
-#if __has_include(<Security/Security.h>)
-typedef OSStatus (*SecItemCopyMatching_t)(CFDictionaryRef query, CFTypeRef *result);
-extern SecItemCopyMatching_t orig_SecItemCopyMatching;
-#endif
-
 // ============================================================
 // sysctlbyname hook
 // ============================================================
