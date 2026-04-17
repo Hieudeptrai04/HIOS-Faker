@@ -1,6 +1,6 @@
-# Build native iOS tweak .deb trên macOS (không cần WebClip!)
-# Mỗi lần push code vào branch tweak/ hoặc手动 chạy workflow
-# Kết quả: download .deb từ Actions tab
+# Build native iOS tweak .deb on macOS (no WebClip needed!)
+# Every push to tweak/ branch or manual dispatch triggers build
+# Result: download .deb from Actions tab
 
 name: Build iOS Tweak (Native)
 

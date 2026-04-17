@@ -1,5 +1,5 @@
-# Build .deb trên Ubuntu + Theos (Windows không chạy được make package).
-# Sau khi chạy xong: tab Actions → workflow này → Artifacts → tải ZIP, giải nén vào thư mục packages/
+# Build .deb on Ubuntu + Theos (Windows cannot run make package)
+# After build: tab Actions -> this workflow -> Artifacts -> download ZIP, extract to packages/
 
 name: Build DEB
 
