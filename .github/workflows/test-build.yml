@@ -30,20 +30,15 @@ jobs:
         run: |
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 > build.log 2>&1
-          EXIT=$?
-          echo "Build exit code: $EXIT" >> build.log
-          cat build.log
-          exit $EXIT
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
       - name: Check result
         run: |
           echo "=== Debs ==="
           find . -name "*.deb" -type f
-          echo "=== Build log ==="
-          cat tweak/build.log 2>/dev/null || echo "No log"
-      - name: Upload artifact
+          ls -la tweak/packages/ 2>/dev/null || echo "No packages"
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-result
-          path: tweak/build.log
+          name: build-deb
+          path: tweak/packages/*.deb
