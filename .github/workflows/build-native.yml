@@ -120,6 +120,19 @@ jobs:
           echo ""
           echo "=== Building tweak (verbose) ==="
           echo "Build start time: $(date)"
+          echo "=== Verifying Theos setup ==="
+          ls -la "$THEOS/"
+          ls -la "$THEOS/bin/"
+          ls -la "$THEOS/makefiles/"
+          echo "=== Verifying SDK ==="
+          ls -la "$THEOS/sdks/"
+          echo "=== Verifying tweak files ==="
+          ls -la *.xm *.mm *.plist 2>/dev/null || echo "No tweak files"
+          echo "=== Verifying .theos symlinks ==="
+          ls -la .theos 2>/dev/null || echo ".theos dir does not exist"
+          echo "=== Running make setup (if needed) ==="
+          make THEOS="$THEOS" setup 2>&1 || true
+          echo "=== Running make package ==="
           make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 > "${GITHUB_WORKSPACE}/build.log" 2>&1
           BUILD_STATUS=$?
           echo "Build end time: $(date), exit code: $BUILD_STATUS"
@@ -129,12 +142,12 @@ jobs:
           head -200 "${GITHUB_WORKSPACE}/build.log"
           echo "=== Last 50 lines of build.log ==="
           tail -50 "${GITHUB_WORKSPACE}/build.log"
-          echo "=== Base64 of full build.log ==="
-          base64 "${GITHUB_WORKSPACE}/build.log" | tr -d '\n'
-          echo ""
-          echo "=== END base64 ==="
           if [ "$BUILD_STATUS" -ne 0 ]; then
             echo "=== Build FAILED with exit code $BUILD_STATUS ==="
+            echo "=== Base64 of full build.log ==="
+            base64 "${GITHUB_WORKSPACE}/build.log" | tr -d '\n'
+            echo ""
+            echo "=== END base64 ==="
           fi
 
           echo "=== Checking for .deb files ==="
