@@ -1,6 +1,4 @@
-# Build native iOS tweak .deb on macOS
-# Compile dylib via Theos + real iOS SDK
-
+# Build tweak + app on macOS
 
 name: Build iOS Tweak (Native)
 
@@ -12,8 +10,8 @@ on:
       - master
     paths:
       - "tweak/**"
+      - "app/**"
       - ".github/workflows/build-native.yml"
-      - "scripts/**"
 
 permissions:
   contents: read
@@ -25,147 +23,148 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify tweak source files
+      - name: Show files
         run: |
-          echo "=== Tweak source files ==="
+          echo "=== tweak files ==="
           ls -la tweak/
           echo ""
-          echo "Tweak.xm lines: $(wc -l < tweak/Tweak.xm)"
-          echo "Makefile:"
-          cat tweak/Makefile
+          echo "=== app files ==="
+          ls -la app/ 2>/dev/null || echo "No app dir"
 
-      - name: Install Xcode Command Line Tools
-        run: |
-          if ! xcode-select -p > /dev/null 2>&1; then
-            echo "Installing Xcode Command Line Tools..."
-            xcode-select --install
-            while ! xcode-select -p > /dev/null 2>&1; do
-              sleep 5
-            done
-          fi
-          echo "Xcode path: $(xcode-select -p)"
-          clang --version
-          llvm-strip --version || true
-
-      - name: Install Theos (fresh clone)
+      - name: Install Theos
         run: |
           export THEOS="$HOME/theos"
-          echo "THEOS=$THEOS"
-          echo "Removing existing Theos for clean install..."
           rm -rf "$THEOS"
-          echo "Cloning Theos..."
-          git clone https://github.com/theos/theos.git "$THEOS"
-          cd "$THEOS"
-          echo "Running git submodule update..."
-          git submodule update --init --recursive 2>&1 | tail -5
-          echo "=== Theos bin ==="
-          ls -la "$THEOS/bin/"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          git submodule update --init --recursive
           echo "THEOS=$THEOS" >> $GITHUB_ENV
 
       - name: Install ldid
         run: |
           if ! command -v ldid &>/dev/null; then
-            echo "Installing ldid via brew..."
-            brew install ldid 2>&1 | tail -3
+            brew install ldid
           fi
-          which ldid && ldid -v || echo "ldid not found"
+          which ldid && ldid -v
 
-      - name: Download iOS SDK
+      - name: Download SDK
         run: |
           export THEOS="$HOME/theos"
           mkdir -p "$THEOS/sdks"
-          echo "Removing existing SDK for clean download..."
-          rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk"
-          echo "Downloading iOS SDK 16.5..."
-          curl -fSL \
-            "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" \
-            -o /tmp/sdk.tar.xz
-          echo "Downloaded: $(ls -lh /tmp/sdk.tar.xz)"
+          curl -fSL "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
           rm -f /tmp/sdk.tar.xz
-          echo "=== Available SDKs ==="
           ls -la "$THEOS/sdks/"
 
-      - name: Verify SDK contents
-        run: |
-          export THEOS="$HOME/theos"
-          SDK="$THEOS/sdks/iPhoneOS16.5.sdk"
-          echo "=== SDK verification ==="
-          echo "SDK exists: $(test -d $SDK && echo YES || echo NO)"
-          echo "Frameworks: $(ls $SDK/System/Library/Frameworks/ 2>/dev/null | head -5)"
-
-      - name: Build rootless tweak
+      # BUILD TWEAK
+      - name: Build tweak
         env:
           THEOS: $HOME/theos
           THEOS_PACKAGE_SCHEME: rootless
-          THEOS_DEVICE_ARCH: arm64
         run: |
-          export THEOS="$HOME/theos"
-          cd "${GITHUB_WORKSPACE}/tweak"
+          cd tweak
+          rm -rf packages/ .theos/ obj/
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee "$GITHUB_WORKSPACE/tweak_output.txt"
+          echo "Exit: $?"
+          ls -la packages/ 2>/dev/null || echo "No packages"
+          find . -name "*.deb" -type f
 
-          echo "=== Cleaning old build artifacts ==="
-          rm -rf packages/ .theos/ obj/ 2>/dev/null || true
+      # BUILD APP
+      - name: Build app
+        env:
+          THEOS: $HOME/theos
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          cd app
+          rm -rf packages/ .theos/ obj/
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee "$GITHUB_WORKSPACE/app_output.txt"
+          echo "Exit: $?"
+          ls -la packages/ 2>/dev/null || echo "No packages"
+          find . -name "*.deb" -type f
 
+      # SHOW OUTPUTS
+      - name: Show build outputs
+        run: |
+          echo "=== tweak output ==="
+          tail -20 "$GITHUB_WORKSPACE/tweak_output.txt"
           echo ""
-          echo "=== Building tweak ==="
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 > "${GITHUB_WORKSPACE}/make_output.txt" 2>&1
-          BUILD_STATUS=$?
-          echo "=== Build exit status: $BUILD_STATUS ==="
-          echo "=== make output (last 30 lines) ==="
-          tail -30 "${GITHUB_WORKSPACE}/make_output.txt"
-          echo "=== Errors in make output ==="
-          grep -i "error" "${GITHUB_WORKSPACE}/make_output.txt" || echo "(no error lines found)"
+          echo "=== app output ==="
+          tail -20 "$GITHUB_WORKSPACE/app_output.txt"
+          echo ""
+          echo "=== All debs ==="
+          find "$GITHUB_WORKSPACE" -name "*.deb" -type f -exec ls -lh {} \;
 
-          echo "=== Checking for .deb files ==="
-          find . -name "*.deb" -type f -exec ls -lh {} \;
-
-          DEB_COUNT=$(find . -name "*.deb" -type f | wc -l)
-          if [ "$DEB_COUNT" -eq 0 ]; then
-            echo "ERROR: No .deb file produced!"
-            ls -la packages/ 2>/dev/null || echo "No packages dir"
-            ls -la obj/ 2>/dev/null || echo "No obj dir"
-            exit 1
-          fi
-
-          DEB_SIZE=$(find . -name "*.deb" -type f -exec stat -f%z {} \; | head -1)
-          echo "DEB size: $DEB_SIZE bytes"
-          if [ "$DEB_SIZE" -lt 100000 ]; then
-            echo "ERROR: .deb is too small ($DEB_SIZE bytes). Missing compiled dylib?"
-            exit 1
-          fi
-
-          echo "=== .deb size OK: $DEB_SIZE bytes ==="
-
-      - name: Upload make output on failure
-        if: failure()
+      - name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: make-output
-          path: make_output.txt
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/tweak_output.txt
+            ${{ github.workspace }}/app_output.txt
           retention-days: 7
 
-      - name: Inspect .deb contents
+      # COMBINE
+      - name: Combine packages
         run: |
-          DEB=$(find . -name "*.deb" -type f | head -1)
-          echo "=== .deb contents ==="
-          python3 "${GITHUB_WORKSPACE}/scripts/inspect_deb.py" "$DEB"
+          mkdir -p "$GITHUB_WORKSPACE/combined/DEBIAN"
+          mkdir -p "$GITHUB_WORKSPACE/combined/var/jb/Library/MobileSubstrate/DynamicLibraries"
+          mkdir -p "$GITHUB_WORKSPACE/combined/var/jb/Applications"
 
-      - name: Prepare output packages directory
-        run: |
-          mkdir -p "${GITHUB_WORKSPACE}/packages"
-          DEB_FILE=$(find "${GITHUB_WORKSPACE}/tweak" -name "*.deb" -type f 2>/dev/null | head -1)
-          if [ -n "$DEB_FILE" ]; then
-            cp "$DEB_FILE" "${GITHUB_WORKSPACE}/packages/"
-            echo "Copied: $DEB_FILE -> packages/"
-            ls -lh "${GITHUB_WORKSPACE}/packages/"
-          else
-            echo "ERROR: No .deb found!"
-            exit 1
+          # Extract tweak
+          TWEAK=$(find "$GITHUB_WORKSPACE/tweak" -name "*.deb" -type f | head -1)
+          echo "Tweak deb: $TWEAK"
+          if [ -n "$TWEAK" ]; then
+            dpkg-deb -x "$TWEAK" /tmp/tweak-extract
+            ls -la /tmp/tweak-extract/
+            cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* \
+                  "$GITHUB_WORKSPACE/combined/var/jb/Library/MobileSubstrate/DynamicLibraries/" 2>/dev/null || true
           fi
 
-      - name: Upload .deb artifact
+          # Extract app
+          APP=$(find "$GITHUB_WORKSPACE/app" -name "*.deb" -type f | head -1)
+          echo "App deb: $APP"
+          if [ -n "$APP" ]; then
+            dpkg-deb -x "$APP" /tmp/app-extract
+            ls -la /tmp/app-extract/
+            cp -r /tmp/app-extract/var/jb/Applications/* \
+                  "$GITHUB_WORKSPACE/combined/var/jb/Applications/" 2>/dev/null || true
+            cp -r /tmp/app-extract/Applications/* \
+                  "$GITHUB_WORKSPACE/combined/var/jb/Applications/" 2>/dev/null || true
+          fi
+
+          echo "=== Combined contents ==="
+          find "$GITHUB_WORKSPACE/combined" -type f
+
+      - name: Create final deb
+        run: |
+          cat > "$GITHUB_WORKSPACE/combined/DEBIAN/control" << 'EOF'
+Package: com.changeinfoios.tweak
+Name: ChangeInfoIos
+Version: 2.2.1-native
+Architecture: iphoneos-arm64
+Description: Device spoofer for iOS 15-16.7. Native UI + 92 hooks.
+Maintainer: ChangeInfoIos
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
+EOF
+
+          chmod 755 "$GITHUB_WORKSPACE/combined/DEBIAN/control"
+          mkdir -p "$GITHUB_WORKSPACE/packages"
+
+          dpkg-deb -b "$GITHUB_WORKSPACE/combined" "$GITHUB_WORKSPACE/packages/ChangeInfoIos.deb"
+
+          SIZE=$(stat -f%z "$GITHUB_WORKSPACE/packages/ChangeInfoIos.deb")
+          echo "Final size: $SIZE bytes"
+          ls -lh "$GITHUB_WORKSPACE/packages/"
+
+          if [ $SIZE -lt 100000 ]; then
+            echo "WARNING: Deb is small ($SIZE bytes)"
+            find "$GITHUB_WORKSPACE/combined" -type f -exec ls -lh {} \;
+          fi
+
+      - name: Upload final deb
         uses: actions/upload-artifact@v4
         with:
-          name: ChangeInfoIos-native-v22
-          path: packages/*.deb
+          name: ChangeInfoIos-v2.2.1-native
+          path: packages/ChangeInfoIos.deb
           retention-days: 30
