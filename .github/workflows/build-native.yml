@@ -1,7 +1,5 @@
 # Build native iOS tweak .deb on macOS
 # Compile dylib via Theos + real iOS SDK
-# Every push to tweak/ branch or manual dispatch triggers build
-# Result: download .deb from Actions tab
 
 
 name: Build iOS Tweak (Native)
@@ -114,41 +112,13 @@ jobs:
           make clean THEOS="$THEOS" 2>&1 || true
           rm -rf packages/ .theos/ obj/ 2>/dev/null || true
 
-          echo "=== Current Makefile ==="
-          cat Makefile
-
           echo ""
-          echo "=== Building tweak (verbose) ==="
-          echo "Build start time: $(date)"
-          echo "=== Verifying Theos setup ==="
-          ls -la "$THEOS/"
-          ls -la "$THEOS/bin/"
-          ls -la "$THEOS/makefiles/"
-          echo "=== Verifying SDK ==="
-          ls -la "$THEOS/sdks/"
-          echo "=== Verifying tweak files ==="
-          ls -la *.xm *.mm *.plist 2>/dev/null || echo "No tweak files"
-          echo "=== Verifying .theos symlinks ==="
-          ls -la .theos 2>/dev/null || echo ".theos dir does not exist"
-          echo "=== Running make setup (if needed) ==="
-          make THEOS="$THEOS" setup 2>&1 || true
-          echo "=== Running make package ==="
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 > "${GITHUB_WORKSPACE}/build.log" 2>&1
+          echo "=== Building tweak ==="
+          make setup THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1
           BUILD_STATUS=$?
-          echo "Build end time: $(date), exit code: $BUILD_STATUS"
-          echo "Log file bytes: $(wc -c < "${GITHUB_WORKSPACE}/build.log")"
-          echo "Log file lines: $(wc -l < "${GITHUB_WORKSPACE}/build.log")"
-          echo "=== First 200 lines of build.log ==="
-          head -200 "${GITHUB_WORKSPACE}/build.log"
-          echo "=== Last 50 lines of build.log ==="
-          tail -50 "${GITHUB_WORKSPACE}/build.log"
-          if [ "$BUILD_STATUS" -ne 0 ]; then
-            echo "=== Build FAILED with exit code $BUILD_STATUS ==="
-            echo "=== Base64 of full build.log ==="
-            base64 "${GITHUB_WORKSPACE}/build.log" | tr -d '\n'
-            echo ""
-            echo "=== END base64 ==="
-          fi
+          echo ""
+          echo "=== Build exit status: $BUILD_STATUS ==="
 
           echo "=== Checking for .deb files ==="
           find . -name "*.deb" -type f -exec ls -lh {} \;
@@ -169,14 +139,6 @@ jobs:
           fi
 
           echo "=== .deb size OK: $DEB_SIZE bytes ==="
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-failure
-          path: build.log
-          retention-days: 7
 
       - name: Inspect .deb contents
         run: |
