@@ -120,13 +120,16 @@ jobs:
           echo ""
           echo "=== Building tweak (verbose) ==="
           set -o pipefail
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 2>&1 | tee /tmp/build.log
-          BUILD_STATUS=$?
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+          BUILD_STATUS=${PIPESTATUS[0]}
           echo ""
           echo "=== Build exit status: $BUILD_STATUS ==="
           if [ "$BUILD_STATUS" -ne 0 ]; then
-            echo "=== Build failed. Last 100 lines of log ==="
-            tail -100 /tmp/build.log
+            echo "=== Build FAILED with exit code $BUILD_STATUS ==="
+            echo "=== Last 100 lines of log ==="
+            tail -100 "${GITHUB_WORKSPACE}/build.log"
+            echo "=== Error lines ==="
+            grep -i "error" "${GITHUB_WORKSPACE}/build.log" || echo "(no 'error' keyword found in log)"
           fi
 
           echo "=== Checking for .deb files ==="
@@ -148,6 +151,14 @@ jobs:
           fi
 
           echo "=== .deb size OK: $DEB_SIZE bytes ==="
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-failure
+          path: build.log
+          retention-days: 7
 
       - name: Inspect .deb contents
         run: |
