@@ -15,6 +15,7 @@
 #import <mach-o/dyld.h>
 #include <sys/time.h>
 #include <spawn.h>
+#include <substrate.h>
 
 // Config accessors (declared in Tweak.xm)
 extern NSString *getConfigStr(NSString *key);
@@ -320,7 +321,7 @@ static uint32_t hooked__dyld_image_count(void) {
 
     uint32_t hidden = 0;
     for (uint32_t i = 0; i < count; i++) {
-        const char *name = _dyld_get_image_names()[i];
+        const char *name = orig__dyld_get_image_name(i);
         if (name) {
             NSString *nameStr = [NSString stringWithUTF8String:name];
             if ([nameStr containsString:@"Substrate"] ||
