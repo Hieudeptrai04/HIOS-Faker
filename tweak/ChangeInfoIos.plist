@@ -2,7 +2,8 @@
   Filter = {
     Mode = Any;
     Bundles = (
-      "com.apple.UIKit"
+      "com.vng.zalo",
+      "ph.telegra.Telegraph"
     );
     Classes = (
       "UIDevice",

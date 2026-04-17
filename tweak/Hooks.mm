@@ -32,6 +32,31 @@ extern "C" {
 }
 
 // ============================================================
+// Process name guard - never hook in system critical processes
+// ============================================================
+static const char *cached_progname = NULL;
+
+static const char *get_progname(void) {
+    if (cached_progname) return cached_progname;
+    cached_progname = getprogname();
+    return cached_progname ? cached_progname : "";
+}
+
+static BOOL is_critical_process(void) {
+    const char *name = get_progname();
+    static const char *critical[] = {
+        "Sileo", "apt", "apt-get", "dpkg", "apt-index",
+        "SpringBoard", "installd", "lsd", "assertiond",
+        "dasd", "mobile_installation_d", "UserEventAgent",
+        "mediaserverd", "configd", "notifyd", "launchd"
+    };
+    for (size_t i = 0; i < sizeof(critical)/sizeof(critical[0]); i++) {
+        if (strcmp(name, critical[i]) == 0) return YES;
+    }
+    return NO;
+}
+
+// ============================================================
 // sysctlbyname hook
 // ============================================================
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) = NULL;
@@ -232,6 +257,7 @@ static FILE *hooked_fopen(const char *path, const char *mode) {
 static void *(*orig_dlopen)(const char *path, int mode) = NULL;
 
 static void *hooked_dlopen(const char *path, int mode) {
+    if (is_critical_process()) return orig_dlopen(path, mode);
     if (jbHideActive() && path) {
         NSString *pathStr = [NSString stringWithUTF8String:path];
         NSArray *blockedLibs = @[@"SubstrateLoader", @"SubstrateInserter", @"CydiaSubstrate",
@@ -368,6 +394,7 @@ static uint32_t hooked__dyld_image_count(void) {
 static pid_t (*orig_fork)(void) = NULL;
 
 static pid_t hooked_fork(void) {
+    if (is_critical_process()) return orig_fork();
     if (jbHideActive()) {
         errno = ENOSYS;
         return -1;
@@ -381,6 +408,7 @@ static pid_t hooked_fork(void) {
 static char *(*orig_getenv)(const char *name) = NULL;
 
 static char *hooked_getenv(const char *name) {
+    if (is_critical_process()) return orig_getenv(name);
     if (jbHideActive() && name) {
         if (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
             strcmp(name, "MobileSubstratePath") == 0 ||

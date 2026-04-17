@@ -139,19 +139,19 @@ BOOL getConfigBool(NSString *key) {
     return NO;
 }
 
-/* Plist booleans fake_<name> — thiếu key = bật (tương thích cũ). Tên ngắn: uiddevice, hardware, sysctl, ... */
+/* Plist booleans fake_<name> — missing key = OFF (opt-in). Short names: uiddevice, hardware, sysctl, ... */
 BOOL fakeLayer(NSString *shortName) {
     if (!isCurrentBundleTargeted()) return NO;
     NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
     id v = getConfig(full);
-    if (v == nil) return YES;
+    if (v == nil) return NO;
     return [v boolValue];
 }
 
 BOOL jbHideActive(void) {
     if (!fakeLayer(@"jbhide")) return NO;
     id h = getConfig(@"hideJailbreak");
-    if (h == nil) return YES;
+    if (h == nil) return NO;
     return [h boolValue];
 }
 
