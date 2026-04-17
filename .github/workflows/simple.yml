@@ -1,0 +1,14 @@
+name: Simple Build
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: echo "test"
