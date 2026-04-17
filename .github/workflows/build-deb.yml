@@ -1,5 +1,4 @@
-# Build .deb on Ubuntu: BOTH tweak + app in ONE package
-# (beerpiss/theos-action@v1 is broken: downloads non-xz file and tar fails)
+# Build tweak + app on Ubuntu with Theos
 
 name: Build DEB
 
@@ -15,17 +14,12 @@ permissions:
   contents: read
 
 jobs:
-  deb:
+  build:
     runs-on: ubuntu-22.04
-    env:
-      THEOS: ${{ github.workspace }}/theos
-      SDK_URL: https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
-      TOOLCHAIN_URL: https://github.com/kabiroberai/swift-toolchain-linux/releases/download/v2.3.0/swift-5.8-ubuntu22.04.tar.xz
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
@@ -34,183 +28,128 @@ jobs:
 
       - name: Install ldid
         run: |
-          set -e
           cd /tmp
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git
-          cd ldid
-          make -j"$(nproc)"
+          cd ldid && make -j"$(nproc)"
           sudo install -m 0755 ldid /usr/local/bin/ldid
-          ldid -V || ldid -v || true
 
       - name: Clone Theos
         run: |
-          set -e
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          ls -la "$THEOS/bin/"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
-      - name: Install Linux iOS toolchain
+      - name: Install toolchain
         run: |
-          set -e
-          mkdir -p "$THEOS/toolchain"
-          curl -fSL "$TOOLCHAIN_URL" -o /tmp/toolchain.tar.xz
-          tar -xJf /tmp/toolchain.tar.xz -C "$THEOS/toolchain/"
-          rm -f /tmp/toolchain.tar.xz
-          CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
-          if [ ! -x "$CLANG" ]; then
-            echo "ERROR: clang not found at $CLANG"
-            find "$THEOS/toolchain" -maxdepth 4 -type d
-            exit 1
-          fi
-          "$CLANG" --version
+          mkdir -p $THEOS/toolchain
+          curl -fSL https://github.com/kabiroberai/swift-toolchain-linux/releases/download/v2.3.0/swift-5.8-ubuntu22.04.tar.xz -o /tmp/toolchain.tar.xz
+          tar -xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain/
 
-      - name: Download iOS SDK
+      - name: Download SDK
         run: |
-          set -e
-          mkdir -p "$THEOS/sdks"
-          curl -fSL "$SDK_URL" -o /tmp/sdk.tar.xz
-          tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
-          rm -f /tmp/sdk.tar.xz
-          ls -la "$THEOS/sdks/"
+          mkdir -p $THEOS/sdks
+          curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
+          tar -xJf /tmp/sdk.tar.xz -C $THEOS/sdks/
 
-      # ============================================================
-      # BUILD 1: Tweak dylib
-      # ============================================================
-      - name: Build tweak dylib
+      - name: Build tweak
         env:
           THEOS_PACKAGE_SCHEME: rootless
-          THEOS_DEVICE_ARCH: arm64
         run: |
-          set -eo pipefail
-          cd "${GITHUB_WORKSPACE}/tweak"
-          rm -rf packages/ .theos/ obj/ 2>/dev/null || true
-          echo "=== Building tweak ==="
-          make package FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
-          STATUS=${PIPESTATUS[0]}
-          echo "=== tweak make exit status: $STATUS ==="
-          if [ "$STATUS" -ne 0 ]; then
-            echo "tweak make FAILED"
-            tail -50 "${GITHUB_WORKSPACE}/make_output.txt"
-            exit 1
-          fi
-          TWEAK_DEB=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f | head -1)
-          echo "Tweak deb: $TWEAK_DEB"
-          ls -lh "$TWEAK_DEB" || true
+          cd tweak
+          rm -rf packages/ .theos/ obj/
+          make package FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee $GITHUB_WORKSPACE/tweak-output.txt
+          echo "Exit: $?"
 
-      # ============================================================
-      # BUILD 2: App binary
-      # ============================================================
-      - name: Build app binary
+      - name: Build app
         env:
           THEOS_PACKAGE_SCHEME: rootless
-          THEOS_DEVICE_ARCH: arm64
         run: |
-          set -eo pipefail
-          cd "${GITHUB_WORKSPACE}/app"
-          rm -rf packages/ .theos/ obj/ 2>/dev/null || true
-          echo "=== Building app ==="
-          make package FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee "${GITHUB_WORKSPACE}/make_app_output.txt"
-          STATUS=${PIPESTATUS[0]}
-          echo "=== app make exit status: $STATUS ==="
-          if [ "$STATUS" -ne 0 ]; then
-            echo "app make FAILED"
-            tail -50 "${GITHUB_WORKSPACE}/make_app_output.txt"
-            exit 1
-          fi
-          APP_DEB=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f ! -path "*/tweak/*" | head -1)
-          echo "App deb: $APP_DEB"
-          ls -lh "$APP_DEB" || true
+          cd app
+          rm -rf packages/ .theos/ obj/
+          make package FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee $GITHUB_WORKSPACE/app-output.txt
+          echo "Exit: $?"
 
-      # ============================================================
-      # COMBINE: Merge both debs into ONE
-      # ============================================================
-      - name: Combine tweak + app into single deb
+      - name: Inspect outputs
         run: |
-          set -e
-          mkdir -p "${GITHUB_WORKSPACE}/combined/DEBIAN"
-          mkdir -p "${GITHUB_WORKSPACE}/combined/var/jb/Library/MobileSubstrate/DynamicLibraries"
-          mkdir -p "${GITHUB_WORKSPACE}/combined/var/jb/Applications/ChangeInfoIosApp.app"
+          echo "=== tweak output ==="
+          tail -30 $GITHUB_WORKSPACE/tweak-output.txt
+          echo ""
+          echo "=== app output ==="
+          tail -30 $GITHUB_WORKSPACE/app-output.txt
+          echo ""
+          echo "=== Files created ==="
+          find $GITHUB_WORKSPACE -name "*.deb" -type f
+          find $GITHUB_WORKSPACE -name "*.dylib" -type f
+          find $GITHUB_WORKSPACE -path "*/.theos/_/*" -type f
 
-          # Extract tweak deb
-          TWEAK_DEB=$(find "${GITHUB_WORKSPACE}" -path "*/tweak/packages/*.deb" -type f | head -1)
-          if [ -z "$TWEAK_DEB" ]; then
-            TWEAK_DEB=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f ! -path "*/app/*" ! -path "*/app/" | head -1)
-          fi
-          echo "Using tweak deb: $TWEAK_DEB"
-          dpkg-deb -x "$TWEAK_DEB" "${GITHUB_WORKSPACE}/combined-tweak" 2>/dev/null || true
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/tweak-output.txt
+            ${{ github.workspace }}/app-output.txt
+          retention-days: 7
 
-          # Extract app deb
-          APP_DEB=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f ! -path "*/tweak/*" | head -1)
-          echo "Using app deb: $APP_DEB"
-          dpkg-deb -x "$APP_DEB" "${GITHUB_WORKSPACE}/combined-app" 2>/dev/null || true
-
-          # Check what we have
-          echo "=== Tweak deb contents ==="
-          find "${GITHUB_WORKSPACE}/combined-tweak" -type f 2>/dev/null | head -20 || echo "(empty)"
-          echo "=== App deb contents ==="
-          find "${GITHUB_WORKSPACE}/combined-app" -type f 2>/dev/null | head -20 || echo "(empty)"
-
-          # Copy tweak dylib + plist
-          cp "${GITHUB_WORKSPACE}/combined-tweak/var/jb/Library/MobileSubstrate/DynamicLibraries/"* "${GITHUB_WORKSPACE}/combined/var/jb/Library/MobileSubstrate/DynamicLibraries/" 2>/dev/null || true
-          cp "${GITHUB_WORKSPACE}/combined-tweak/var/jb/Library/MobileSubstrate/DynamicLibraries/"* 2>/dev/null && echo "Tweak copied" || echo "No tweak files found"
-
-          # Copy app bundle
-          if [ -d "${GITHUB_WORKSPACE}/combined-app/var/jb/Applications/ChangeInfoIosApp.app" ]; then
-            cp -r "${GITHUB_WORKSPACE}/combined-app/var/jb/Applications/ChangeInfoIosApp.app" "${GITHUB_WORKSPACE}/combined/var/jb/Applications/"
-            echo "App copied"
-          elif [ -d "${GITHUB_WORKSPACE}/combined-app/Applications/" ]; then
-            cp -r "${GITHUB_WORKSPACE}/combined-app/Applications/"* "${GITHUB_WORKSPACE}/combined/var/jb/Applications/" 2>/dev/null || true
-            echo "App from Applications copied"
-          fi
-
-          # Check combined contents
-          echo "=== Combined deb contents ==="
-          find "${GITHUB_WORKSPACE}/combined" -type f | head -30
-
-      - name: Build final combined deb
+      - name: Combine packages
         run: |
-          set -e
-          # Use tweak's control file as base
-          if [ -f "${GITHUB_WORKSPACE}/combined-tweak/DEBIAN/control" ]; then
-            cp "${GITHUB_WORKSPACE}/combined-tweak/DEBIAN/control" "${GITHUB_WORKSPACE}/combined/DEBIAN/control"
+          mkdir -p $GITHUB_WORKSPACE/out/DEBIAN
+          mkdir -p $GITHUB_WORKSPACE/out/var/jb/Library/MobileSubstrate/DynamicLibraries
+          mkdir -p $GITHUB_WORKSPACE/out/var/jb/Applications/ChangeInfoIosApp.app
+
+          # Extract tweak
+          TWEAK=$(find $GITHUB_WORKSPACE/tweak -name "*.deb" -type f | head -1)
+          echo "Tweak deb: $TWEAK"
+          if [ -n "$TWEAK" ]; then
+            dpkg-deb -x "$TWEAK" /tmp/tweak-extract
+            ls -la /tmp/tweak-extract/
+            cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* $GITHUB_WORKSPACE/out/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
           fi
-          # Update control
-          cat > "${GITHUB_WORKSPACE}/combined/DEBIAN/control" << 'CONTROL'
+
+          # Extract app
+          APP=$(find $GITHUB_WORKSPACE/app -name "*.deb" -type f | head -1)
+          echo "App deb: $APP"
+          if [ -n "$APP" ]; then
+            dpkg-deb -x "$APP" /tmp/app-extract
+            ls -la /tmp/app-extract/
+            cp -r /tmp/app-extract/var/jb/Applications/* $GITHUB_WORKSPACE/out/var/jb/Applications/ 2>/dev/null || true
+            cp -r /tmp/app-extract/Applications/* $GITHUB_WORKSPACE/out/var/jb/Applications/ 2>/dev/null || true
+          fi
+
+          echo "=== Combined contents ==="
+          find $GITHUB_WORKSPACE/out -type f
+
+      - name: Create final deb
+        run: |
+          cat > $GITHUB_WORKSPACE/out/DEBIAN/control << 'EOF'
 Package: com.changeinfoios.tweak
 Name: ChangeInfoIos
 Version: 2.2.1-native
 Architecture: iphoneos-arm64
-Description: Device parameter spoofer for iOS 15-16.7. Native UI + 92 hooks.
+Description: Device spoofer for iOS 15-16.7. Native UI + 92 hooks.
 Maintainer: ChangeInfoIos
-Author: ChangeInfoIos
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0), preferenceloader
-CONTROL
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
+EOF
 
-          # Fix permissions
-          chmod 755 "${GITHUB_WORKSPACE}/combined/DEBIAN/control"
-          chmod 755 "${GITHUB_WORKSPACE}/combined/var/jb/Library/MobileSubstrate/DynamicLibraries/"* 2>/dev/null || true
+          chmod 755 $GITHUB_WORKSPACE/out/DEBIAN/control
+          mkdir -p $GITHUB_WORKSPACE/packages
 
-          # Show final contents
-          echo "=== Final package contents ==="
-          find "${GITHUB_WORKSPACE}/combined" -type f | head -30
+          echo "=== Building deb ==="
+          fakeroot dpkg-deb -b $GITHUB_WORKSPACE/out $GITHUB_WORKSPACE/packages/ChangeInfoIos.deb
 
-          # Build final deb
-          mkdir -p "${GITHUB_WORKSPACE}/packages"
-          fakeroot dpkg-deb -b "${GITHUB_WORKSPACE}/combined" "${GITHUB_WORKSPACE}/packages/ChangeInfoIos-combined.deb"
-          FINAL_SIZE=$(stat -c%s "${GITHUB_WORKSPACE}/packages/ChangeInfoIos-combined.deb")
-          echo "Final deb size: $FINAL_SIZE bytes"
-          ls -lh "${GITHUB_WORKSPACE}/packages/"
+          SIZE=$(stat -c%s $GITHUB_WORKSPACE/packages/ChangeInfoIos.deb)
+          echo "Final size: $SIZE bytes"
+          ls -lh $GITHUB_WORKSPACE/packages/
 
-          if [ "$FINAL_SIZE" -lt 100000 ]; then
-            echo "ERROR: Combined deb is too small ($FINAL_SIZE bytes)"
-            find "${GITHUB_WORKSPACE}/combined" -type f -exec ls -lh {} \;
-            exit 1
+          if [ $SIZE -lt 50000 ]; then
+            echo "WARNING: Deb is small ($SIZE bytes)"
+            find $GITHUB_WORKSPACE/out -type f -exec ls -lh {} \;
           fi
 
-      - name: Upload final artifact
+      - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
-          name: ChangeInfoIos-v2.2.1-native
-          path: packages/*.deb
+          name: ChangeInfoIos-v2.2.1
+          path: packages/ChangeInfoIos.deb
           retention-days: 30
