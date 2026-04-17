@@ -114,8 +114,7 @@ jobs:
 
           echo ""
           echo "=== Building tweak ==="
-          make setup THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
           BUILD_STATUS=$?
           echo ""
           echo "=== Build exit status: $BUILD_STATUS ==="
