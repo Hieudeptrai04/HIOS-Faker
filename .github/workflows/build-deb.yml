@@ -15,10 +15,13 @@ permissions:
 
 jobs:
   deb:
-    runs-on: ubuntu-latest
+    # Pin to 22.04: swift-toolchain-linux ships ubuntu22.04 binaries.
+    # ubuntu-latest has been migrating to 24.04 which breaks libc compat.
+    runs-on: ubuntu-22.04
     env:
       THEOS: ${{ github.workspace }}/theos
       SDK_URL: https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+      TOOLCHAIN_URL: https://github.com/kabiroberai/swift-toolchain-linux/releases/download/v2.3.0/swift-5.8-ubuntu22.04.tar.xz
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,6 +49,28 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
           ls -la "$THEOS/bin/"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Install Linux iOS toolchain (clang cross-compiler)
+        run: |
+          set -e
+          mkdir -p "$THEOS/toolchain"
+          echo "Downloading $TOOLCHAIN_URL"
+          curl -fSL "$TOOLCHAIN_URL" -o /tmp/toolchain.tar.xz
+          echo "Downloaded: $(stat -c%s /tmp/toolchain.tar.xz) bytes"
+          file /tmp/toolchain.tar.xz
+          tar -xJf /tmp/toolchain.tar.xz -C "$THEOS/toolchain/"
+          rm -f /tmp/toolchain.tar.xz
+          echo "=== toolchain layout ==="
+          ls -la "$THEOS/toolchain/" || true
+          ls -la "$THEOS/toolchain/linux/iphone/bin/" 2>/dev/null | head -20 || true
+          CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
+          if [ ! -x "$CLANG" ]; then
+            echo "ERROR: expected clang not found at $CLANG"
+            echo "=== full toolchain tree ==="
+            find "$THEOS/toolchain" -maxdepth 4 -type d
+            exit 1
+          fi
+          "$CLANG" --version
 
       - name: Download iOS SDK 16.5
         run: |
