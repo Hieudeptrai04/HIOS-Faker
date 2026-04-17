@@ -99,7 +99,12 @@ jobs:
           cd "${GITHUB_WORKSPACE}/tweak"
           rm -rf packages/ .theos/ obj/ || true
           echo "=== make package start ==="
-          make package FINALPACKAGE=1 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
+          # Override ARCHS to arm64 only. The swift-toolchain-linux clang
+          # does not emit the stable arm64e ABI Apple ld expects, so an
+          # arm64e slice built here would link with a warning and likely
+          # crash when loaded. Dopamine rootless loads the arm64 slice on
+          # arm64e devices, so arm64-only is fine for the Linux CI path.
+          make package FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
           MAKE_STATUS=${PIPESTATUS[0]}
           echo "=== make exit status: $MAKE_STATUS ==="
           if [ "$MAKE_STATUS" -ne 0 ]; then
