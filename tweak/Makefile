@@ -14,6 +14,6 @@ TWEAK_NAME = ChangeInfoIos
 ChangeInfoIos_FILES = Tweak.xm Hooks.mm
 ChangeInfoIos_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 ChangeInfoIos_FRAMEWORKS = UIKit Foundation
-# main.m is in the app/ directory - not compiled by tweak.mk
+# MobileGestalt intentionally not linked — MGCopyAnswer is resolved at
 
 include $(THEOS_MAKE_PATH)/tweak.mk
