@@ -1,0 +1,36 @@
+name: Build iOS Tweak
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
+
+      - name: Setup ldid
+        run: |
+          curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5.8-1/ldid -o $HOME/ldid
+          chmod +x $HOME/ldid
+          mv $HOME/ldid /usr/local/bin/ldid
+
+      - name: Build
+        env:
+          THEOS: $HOME/theos
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          cd tweak
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 2>&1 | tail -20
+          find . -name "*.deb" -type f
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tweak-deb
+          path: tweak/**/*.deb
+          retention-days: 7
