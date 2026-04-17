@@ -47,17 +47,14 @@ jobs:
           clang --version
           llvm-strip --version || true
 
-      - name: Install Theos
+      - name: Install Theos (fresh clone)
         run: |
           export THEOS="$HOME/theos"
           echo "THEOS=$THEOS"
-          if [ ! -d "$THEOS" ]; then
-            echo "Cloning Theos..."
-            git clone https://github.com/theos/theos.git "$THEOS"
-          else
-            echo "Theos already exists, updating..."
-            cd "$THEOS" && git pull
-          fi
+          echo "Removing existing Theos for clean install..."
+          rm -rf "$THEOS"
+          echo "Cloning Theos..."
+          git clone https://github.com/theos/theos.git "$THEOS"
           cd "$THEOS"
           echo "Running git submodule update..."
           git submodule update --init --recursive 2>&1 | tail -5
@@ -77,17 +74,15 @@ jobs:
         run: |
           export THEOS="$HOME/theos"
           mkdir -p "$THEOS/sdks"
-          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
-            echo "Downloading iOS SDK 16.5..."
-            curl -fSL \
-              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" \
-              -o /tmp/sdk.tar.xz
-            echo "Downloaded: $(ls -lh /tmp/sdk.tar.xz)"
-            tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
-            rm -f /tmp/sdk.tar.xz
-          else
-            echo "SDK already exists, skipping download"
-          fi
+          echo "Removing existing SDK for clean download..."
+          rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk"
+          echo "Downloading iOS SDK 16.5..."
+          curl -fSL \
+            "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" \
+            -o /tmp/sdk.tar.xz
+          echo "Downloaded: $(ls -lh /tmp/sdk.tar.xz)"
+          tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+          rm -f /tmp/sdk.tar.xz
           echo "=== Available SDKs ==="
           ls -la "$THEOS/sdks/"
 
@@ -109,12 +104,11 @@ jobs:
           cd "${GITHUB_WORKSPACE}/tweak"
 
           echo "=== Cleaning old build artifacts ==="
-          make clean THEOS="$THEOS" 2>&1 || true
           rm -rf packages/ .theos/ obj/ 2>/dev/null || true
 
           echo ""
           echo "=== Building tweak ==="
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 2>&1
           BUILD_STATUS=$?
           echo ""
           echo "=== Build exit status: $BUILD_STATUS ==="
