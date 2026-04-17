@@ -1,22 +1,74 @@
-# Dependencies
-node_modules/
-
-# Build output
-packages/
+# Build outputs
+packages/*.deb
 *.deb
+*.dylib
+*.so
+
+# Temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Archives
+*.tar.xz
+*.tar.gz
+*.tar.lzma
+*.zip
+
+# macOS
+.DS_Store
+
+# Log files
+log.txt
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 
 # IDE
 .vscode/
 .idea/
 
-# OS
-.DS_Store
-Thumbs.db
+# Build scripts (Windows/PowerShell)
+*.ps1
+*.bat
+*.sh
 
-# Logs
-*.log
-npm-debug.log*
+# Downloads
+*.exe
+*.msi
 
-# Temporary
-*.tmp
-*.temp
+# Deb packages
+debian-binary
+control.tar.xz
+data.tar.xz
+
+# Toolchain
+toolchain/
+
+# Image files (large)
+icon.png
+logo HIOS Faker.jpg
+image.png
+
+# Test files
+check_*.py
+run_*.py
+extract_*.py
+copy_*.py
+gen-sdk*.py
+fix-*.ps1
+dl-*.ps1
+download-*.ps1
+setup-*.sh
+setup-*.txt
+compile_native.py
+build-wsl.sh
+ios-toolchain.sh
+copy-toolchain.sh
+extract-tinfo.sh
+ubuntu-*.sources
+ubuntu-*.txt

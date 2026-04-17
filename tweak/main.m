@@ -24,22 +24,22 @@ static inline void ci_run_cmd(const char *cmd) {
 @property (strong, nonatomic) WKWebView *webView;
 @end
 
-// Private interfaces (LSApplicationWorkspace / LSApplicationProxy)
-// Declared locally so compiler does not require private headers.
-@interface LSApplicationProxy : NSObject
-- (NSString *)localizedName;
-- (NSString *)applicationIdentifier;
-- (NSString *)bundleIdentifier;
-- (NSString *)bundleURL;
-- (NSURL *)bundleURL_typed;
-- (NSString *)resourcesDirectoryURL;
-@end
-
+// Stub: LSApplicationWorkspace (SpringBoard private API)
 @interface LSApplicationWorkspace : NSObject
 + (instancetype)defaultWorkspace;
 - (NSArray *)allInstalledApplications;
 - (NSArray *)installedApplications;
 - (NSArray *)allApplications;
+@end
+
+@interface LSApplicationProxy : NSObject
+- (NSString *)localizedName;
+- (NSString *)applicationIdentifier;
+- (NSString *)bundleIdentifier;
+- (id)bundleURL;
+- (NSURL *)bundleURL_typed;
+- (id)resourcesDirectoryURL;
+- (id)performSelector:(SEL)aSelector;
 @end
 
 /* Ensure private framework is loaded so LSApplicationWorkspace is available. */
@@ -86,9 +86,8 @@ static id CISanitizePlistValue(id obj) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
 
-- (NSArray<LSApplicationProxy *> *)rawApplicationsFromWorkspace:(LSApplicationWorkspace *)workspace {
-    if (!workspace) return @[];
-
+- (NSArray *)rawApplicationsFromWorkspace:(LSApplicationWorkspace *)workspace {
+    if (!workspace) return (NSArray *)@[];
     if ([workspace respondsToSelector:@selector(allInstalledApplications)]) {
         NSArray *all = [workspace allInstalledApplications];
         if ([all isKindOfClass:[NSArray class]] && all.count > 0) return all;
@@ -101,7 +100,7 @@ static id CISanitizePlistValue(id obj) {
         NSArray *apps = [workspace allApplications];
         if ([apps isKindOfClass:[NSArray class]] && apps.count > 0) return apps;
     }
-    return @[];
+    return (NSArray *)@[];
 }
 
 - (NSString *)bundleIdForApplicationProxy:(LSApplicationProxy *)app {
@@ -210,8 +209,8 @@ static id CISanitizePlistValue(id obj) {
 }
 
 /* Fallback for iOS builds where LSApplicationWorkspace is restricted. */
-- (NSArray<NSDictionary *> *)scanApplicationsFromFilesystem {
-    NSArray<NSString *> *roots = @[
+- (NSArray *)scanApplicationsFromFilesystem {
+    NSArray *roots = @[
         @"/var/containers/Bundle/Application",
         @"/private/var/containers/Bundle/Application",
         @"/Applications",
@@ -249,7 +248,7 @@ static id CISanitizePlistValue(id obj) {
             [rows addObject:row];
         }
     }
-    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+    rows = [rows sortedArrayUsingComparator:^(NSDictionary *a, NSDictionary *b) {
         return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
     }];
     return rows;
@@ -261,7 +260,7 @@ static id CISanitizePlistValue(id obj) {
    registered bundle-id → bundle-path mapping on the device.
    Works on ALL jailbreaks (rootful + rootless).
    ──────────────────────────────────────────────────────────────────────── */
-- (NSArray<NSDictionary *> *)scanApplicationsFromLaunchServicesMap {
+- (NSArray *)scanApplicationsFromLaunchServicesMap {
     NSArray *candidates = @[
         @"/var/installd/Library/MobileInstallation/LastLaunchServicesMap.plist",
         @"/private/var/installd/Library/MobileInstallation/LastLaunchServicesMap.plist",
@@ -339,7 +338,7 @@ static id CISanitizePlistValue(id obj) {
             [rows addObject:row];
         }
     }
-    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+    rows = [rows sortedArrayUsingComparator:^(NSDictionary *a, NSDictionary *b) {
         return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
     }];
     NSLog(@"[ChangeInfoIos] LaunchServicesMap produced %lu user apps", (unsigned long)rows.count);
@@ -347,7 +346,7 @@ static id CISanitizePlistValue(id obj) {
 }
 
 /* Scan data containers for bundle IDs via metadata plists. */
-- (NSArray<NSDictionary *> *)scanApplicationsFromDataContainers {
+- (NSArray *)scanApplicationsFromDataContainers {
     NSArray *roots = @[
         @"/var/mobile/Containers/Data/Application",
         @"/private/var/mobile/Containers/Data/Application",
@@ -385,7 +384,7 @@ static id CISanitizePlistValue(id obj) {
      3. Filesystem scan (/var/containers/Bundle/Application)
      4. Data container metadata (bundle IDs only)
    ──────────────────────────────────────────────────────────────────────── */
-- (NSArray<NSDictionary *> *)buildInstalledAppList {
+- (NSArray *)buildInstalledAppList {
     /* ── Try 1: LSApplicationWorkspace ── */
     Class wsClass = objc_getClass("LSApplicationWorkspace");
     if (!wsClass) {
@@ -395,7 +394,7 @@ static id CISanitizePlistValue(id obj) {
     if (wsClass) {
         LSApplicationWorkspace *workspace = ((id (*)(id, SEL))objc_msgSend)(wsClass, @selector(defaultWorkspace));
         if (workspace) {
-            NSArray<LSApplicationProxy *> *apps = [self rawApplicationsFromWorkspace:workspace];
+            NSArray *apps = [self rawApplicationsFromWorkspace:workspace];
             NSLog(@"[ChangeInfoIos] LSApplicationWorkspace returned %lu raw apps", (unsigned long)apps.count);
             if (apps.count > 0) {
                 NSMutableOrderedSet *seen = [NSMutableOrderedSet orderedSet];
@@ -414,7 +413,7 @@ static id CISanitizePlistValue(id obj) {
                     [rows addObject:row];
                 }
                 if (rows.count > 0) {
-                    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                    rows = [rows sortedArrayUsingComparator:^(NSDictionary *a, NSDictionary *b) {
                         return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
                     }];
                     NSLog(@"[ChangeInfoIos] ✓ Using LSApplicationWorkspace: %lu apps", (unsigned long)rows.count);
@@ -565,7 +564,10 @@ static id CISanitizePlistValue(id obj) {
     self.view.backgroundColor = [UIColor colorWithRed:0.04 green:0.055 blue:0.09 alpha:1.0];
 
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
-    [config.userContentController addScriptMessageHandler:self name:@"changeinfo"];
+    [config userContentController]; // init the userContentController
+    id ucc = [[WKUserContentController new] init];
+    [ucc addScriptMessageHandler:self name:@"changeinfo"];
+    config.userContentController = ucc;
 
     self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -575,7 +577,7 @@ static id CISanitizePlistValue(id obj) {
     [self.view addSubview:self.webView];
 
     // Robust HTML loader: bundle first, then fallback paths on filesystem.
-    NSArray<NSString *> *candidates = @[
+    NSArray *candidates = @[
         [[NSBundle mainBundle] pathForResource:@"mobile-app-standalone" ofType:@"html"] ?: @"",
         @"/var/jb/Applications/ChangeInfoIos.app/mobile-app-standalone.html",
         @"/Applications/ChangeInfoIos.app/mobile-app-standalone.html",
@@ -695,6 +697,6 @@ static id CISanitizePlistValue(id obj) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, NSStringFromClass([CIAppDelegate class]));
+        return UIApplicationMain(argc, argv, nil, @"CIAppDelegate");
     }
 }
