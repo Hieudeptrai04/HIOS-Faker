@@ -1,4 +1,4 @@
-name: Build iOS Tweak (Native)
+name: Build iOS Tweak (macOS)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build:
@@ -39,10 +40,7 @@ jobs:
         run: |
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 > tweak_output.txt
-          echo "Exit: $?"
-          ls -la packages/
-          find . -name "*.deb" -type f
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
 
       - name: Build app
         env:
@@ -51,17 +49,15 @@ jobs:
         run: |
           cd app
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 > app_output.txt
-          echo "Exit: $?"
-          ls -la packages/
-          find . -name "*.deb" -type f
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
 
       - name: Show outputs
         run: |
-          echo "=== tweak ==="
-          tail -20 tweak_output.txt
-          echo "=== app ==="
-          tail -20 app_output.txt
+          echo "=== Tweak ==="
+          ls -la tweak/packages/
+          echo ""
+          echo "=== App ==="
+          ls -la app/packages/
           find . -name "*.deb" -type f -exec ls -lh {} \;
 
       - name: Combine packages
@@ -71,26 +67,23 @@ jobs:
           mkdir -p combined/var/jb/Applications
 
           TWEAK=$(find . -path "*/tweak/packages/*.deb" -type f | head -1)
-          echo "Tweak: $TWEAK"
           if [ -n "$TWEAK" ]; then
             dpkg-deb -x "$TWEAK" /tmp/tweak-extract
             cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
           fi
 
           APP=$(find . -name "*.deb" -type f ! -path "*/tweak/*" | head -1)
-          echo "App: $APP"
           if [ -n "$APP" ]; then
             dpkg-deb -x "$APP" /tmp/app-extract
             cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-            cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
           fi
 
-          echo "Combined:"
+          echo "Combined files:"
           find combined -type f
 
       - name: Create final deb
         run: |
-          cat > combined/DEBIAN/control << 'CONTROL'
+          cat > combined/DEBIAN/control << 'EOF'
 Package: com.changeinfoios.tweak
 Name: ChangeInfoIos
 Version: 2.2.1-native
@@ -99,21 +92,12 @@ Description: Device spoofer for iOS 15-16.7
 Maintainer: ChangeInfoIos
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
-CONTROL
+EOF
 
           chmod 755 combined/DEBIAN/control
           mkdir -p packages
           dpkg-deb -b combined packages/ChangeInfoIos.deb
           ls -lh packages/
-          SIZE=$(stat -f%z packages/ChangeInfoIos.deb)
-          echo "Size: $SIZE bytes"
-
-      - name: Upload logs on fail
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: tweak_output.txt,app_output.txt
 
       - name: Upload deb
         uses: actions/upload-artifact@v4

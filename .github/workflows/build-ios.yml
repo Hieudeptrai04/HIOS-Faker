@@ -1,6 +1,8 @@
 name: Build iOS Tweak (Ubuntu)
 
-on: [push, workflow_dispatch]
+on:
+  workflow_dispatch:
+
 
 jobs:
   build:
