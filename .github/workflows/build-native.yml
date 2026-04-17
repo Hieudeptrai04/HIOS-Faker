@@ -136,6 +136,14 @@ jobs:
 
           echo "=== .deb size OK: $DEB_SIZE bytes ==="
 
+      - name: Upload make output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: make-output
+          path: make_output.txt
+          retention-days: 7
+
       - name: Inspect .deb contents
         run: |
           DEB=$(find . -name "*.deb" -type f | head -1)
