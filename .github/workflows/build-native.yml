@@ -119,17 +119,16 @@ jobs:
 
           echo ""
           echo "=== Building tweak (verbose) ==="
-          set -o pipefail
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
-          BUILD_STATUS=${PIPESTATUS[0]}
-          echo ""
-          echo "=== Build exit status: $BUILD_STATUS ==="
+          echo "=== Output will be in ${GITHUB_WORKSPACE}/build.log ==="
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 V=1 > "${GITHUB_WORKSPACE}/build.log" 2>&1
+          BUILD_STATUS=$?
+          echo "Build make exited with: $BUILD_STATUS"
+          echo "Log file size: $(wc -c < "${GITHUB_WORKSPACE}/build.log") bytes"
+          tail -50 "${GITHUB_WORKSPACE}/build.log"
           if [ "$BUILD_STATUS" -ne 0 ]; then
             echo "=== Build FAILED with exit code $BUILD_STATUS ==="
-            echo "=== Last 100 lines of log ==="
-            tail -100 "${GITHUB_WORKSPACE}/build.log"
-            echo "=== Error lines ==="
-            grep -i "error" "${GITHUB_WORKSPACE}/build.log" || echo "(no 'error' keyword found in log)"
+            echo "=== Error lines from log ==="
+            grep -i "error" "${GITHUB_WORKSPACE}/build.log" || echo "(no 'error' keyword found)"
           fi
 
           echo "=== Checking for .deb files ==="
