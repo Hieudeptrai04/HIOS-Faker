@@ -11,8 +11,8 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ChangeInfoIos
-ChangeInfoIos_FILES = Tweak.xm
-ChangeInfoIos_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+ChangeInfoIos_FILES = Tweak.xm Hooks.mm
+ChangeInfoIos_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 ChangeInfoIos_FRAMEWORKS = UIKit Foundation CoreTelephony CoreLocation SystemConfiguration Security AdSupport WebKit IOKit CoreMotion Metal AppTrackingTransparency MobileCoreServices
 ChangeInfoIos_PRIVATE_FRAMEWORKS = MobileGestalt
 ChangeInfoIos_LDFLAGS = -lsubstrate
