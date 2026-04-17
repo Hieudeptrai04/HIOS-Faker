@@ -311,6 +311,27 @@ static int hooked_dladdr(const void *addr, Dl_info *info) {
 }
 
 // ============================================================
+// _dyld_get_image_name hook
+// ============================================================
+static const char *(*orig__dyld_get_image_name)(uint32_t image_index) = NULL;
+
+static const char *hooked__dyld_get_image_name(uint32_t image_index) {
+    const char *name = orig__dyld_get_image_name(image_index);
+    if (!jbHideActive() || !name) return name;
+
+    NSString *nameStr = [NSString stringWithUTF8String:name];
+    if ([nameStr containsString:@"ChangeInfoIos"] ||
+        [nameStr containsString:@"Substrate"] ||
+        [nameStr containsString:@"TweakInject"] ||
+        [nameStr containsString:@"ElleKit"] ||
+        [nameStr containsString:@"libhooker"] ||
+        [nameStr containsString:@"substitute"]) {
+        return "/System/Library/Frameworks/UIKit.framework/UIKit";
+    }
+    return name;
+}
+
+// ============================================================
 // _dyld_image_count hook
 // ============================================================
 static uint32_t (*orig__dyld_image_count)(void) = NULL;
@@ -334,27 +355,6 @@ static uint32_t hooked__dyld_image_count(void) {
         }
     }
     return count - hidden;
-}
-
-// ============================================================
-// _dyld_get_image_name hook
-// ============================================================
-static const char *(*orig__dyld_get_image_name)(uint32_t image_index) = NULL;
-
-static const char *hooked__dyld_get_image_name(uint32_t image_index) {
-    const char *name = orig__dyld_get_image_name(image_index);
-    if (!jbHideActive() || !name) return name;
-
-    NSString *nameStr = [NSString stringWithUTF8String:name];
-    if ([nameStr containsString:@"ChangeInfoIos"] ||
-        [nameStr containsString:@"Substrate"] ||
-        [nameStr containsString:@"TweakInject"] ||
-        [nameStr containsString:@"ElleKit"] ||
-        [nameStr containsString:@"libhooker"] ||
-        [nameStr containsString:@"substitute"]) {
-        return "/System/Library/Frameworks/UIKit.framework/UIKit";
-    }
-    return name;
 }
 
 // ============================================================
