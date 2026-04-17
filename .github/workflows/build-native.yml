@@ -108,10 +108,13 @@ jobs:
 
           echo ""
           echo "=== Building tweak ==="
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 2>&1
-          BUILD_STATUS=$?
-          echo ""
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
+          BUILD_STATUS=${PIPESTATUS[0]}
           echo "=== Build exit status: $BUILD_STATUS ==="
+          echo "=== make output (last 20 lines) ==="
+          tail -20 "${GITHUB_WORKSPACE}/make_output.txt"
+          echo "=== Errors in make output ==="
+          grep -i "error" "${GITHUB_WORKSPACE}/make_output.txt" || echo "(no error lines found)"
 
           echo "=== Checking for .deb files ==="
           find . -name "*.deb" -type f -exec ls -lh {} \;
