@@ -58,40 +58,61 @@ jobs:
           rm -f /tmp/sdk.tar.xz
           ls -la "$THEOS/sdks/"
 
+      - name: Inspect Theos vendor libs
+        run: |
+          echo "=== vendor/lib contents ==="
+          ls -la "$THEOS/vendor/lib/" || true
+          echo "=== vendor/include/substrate ==="
+          ls "$THEOS/vendor/include/" 2>/dev/null | grep -i substrate || true
+
       - name: Build rootless package
         env:
           THEOS_PACKAGE_SCHEME: rootless
           THEOS_DEVICE_ARCH: arm64
         run: |
-          set -e
+          set -eo pipefail
           cd "${GITHUB_WORKSPACE}/tweak"
           rm -rf packages/ .theos/ obj/ || true
+          echo "=== make package start ==="
           make package FINALPACKAGE=1 2>&1 | tee "${GITHUB_WORKSPACE}/make_output.txt"
-          echo "=== Build done ==="
-          find . -name "*.deb" -type f -exec ls -lh {} \;
+          MAKE_STATUS=${PIPESTATUS[0]}
+          echo "=== make exit status: $MAKE_STATUS ==="
+          if [ "$MAKE_STATUS" -ne 0 ]; then
+            echo "make package failed"
+            exit "$MAKE_STATUS"
+          fi
+          echo "=== Scanning for .deb anywhere in workspace ==="
+          find "${GITHUB_WORKSPACE}" -name "*.deb" -type f -exec ls -lh {} \; || true
+          echo "=== tweak/packages contents ==="
+          ls -la packages/ 2>/dev/null || echo "(no packages dir)"
+          echo "=== tweak/.theos contents ==="
+          ls -la .theos/ 2>/dev/null || echo "(no .theos dir)"
 
-      - name: Upload make output on failure
-        if: failure()
+      - name: Upload make output (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: make-output-deb
           path: make_output.txt
           retention-days: 7
+          if-no-files-found: ignore
 
       - name: Copy .deb to packages/
         run: |
           set -e
           mkdir -p "${GITHUB_WORKSPACE}/packages"
-          shopt -s nullglob
-          copied=0
-          for f in "${GITHUB_WORKSPACE}/tweak/packages"/*.deb; do
-            cp -v "$f" "${GITHUB_WORKSPACE}/packages/"
-            copied=1
-          done
-          if [ "$copied" -eq 0 ]; then
-            echo "ERROR: no .deb produced"
+          # Scan the whole workspace — rootless / arm64e / FINALPACKAGE may
+          # place the .deb under tweak/packages, .theos/_/, or elsewhere.
+          mapfile -t DEBS < <(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f)
+          if [ "${#DEBS[@]}" -eq 0 ]; then
+            echo "ERROR: no .deb produced anywhere in workspace"
+            echo "Full make_output.txt tail:"
+            tail -80 "${GITHUB_WORKSPACE}/make_output.txt" || true
             exit 1
           fi
+          for f in "${DEBS[@]}"; do
+            cp -v "$f" "${GITHUB_WORKSPACE}/packages/"
+          done
           ls -la "${GITHUB_WORKSPACE}/packages/"
 
       - name: Upload artifact
