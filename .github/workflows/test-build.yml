@@ -23,6 +23,7 @@ jobs:
           mkdir -p $HOME/theos/sdks
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks/
+          echo "SDK OK" && ls -la $HOME/theos/sdks/
       - name: Build tweak
         env:
           THEOS: $HOME/theos
@@ -30,12 +31,15 @@ jobs:
         run: |
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee build.log
+          echo "MAKE EXIT: $?"
       - name: Check result
+        if: always()
         run: |
-          echo "=== Debs ==="
+          echo "=== Build log ==="
+          cat tweak/build.log 2>/dev/null || echo "No log"
+          echo "=== Packages ==="
           find . -name "*.deb" -type f
-          ls -la tweak/packages/ 2>/dev/null || echo "No packages"
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
