@@ -49,12 +49,35 @@
 @end
 
 // ============================================================
+// SHARED C LINKAGE FOR Tweak.xm <-> Hooks.mm
+// ============================================================
+// When any .mm sibling is in the same Theos target, Tweak.xm is
+// preprocessed and compiled as Objective-C++. Without extern "C" on
+// the cross-file symbols, C++ mangling breaks link (Tweak.xm defines
+// _Z9fakeLayer..., Hooks.mm expects _fakeLayer, and vice versa for
+// initCLvlHooks). Forward-declaring in extern "C" forces the matching
+// definitions below to inherit C linkage.
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern BOOL configLoaded;
+id           getConfig(NSString *key);
+NSString    *getConfigStr(NSString *key);
+BOOL         getConfigBool(NSString *key);
+BOOL         fakeLayer(NSString *shortName);
+BOOL         jbHideActive(void);
+void         reloadConfigFromDisk(void);
+void         initCLvlHooks(void); // defined in Hooks.mm
+#ifdef __cplusplus
+}
+#endif
+
+// ============================================================
 // CONFIG LOADING
 // ============================================================
 static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
 static NSDictionary *spoofConfig = nil;
 BOOL configLoaded = NO;
-id getConfig(NSString *key);
 
 static BOOL isCurrentBundleTargeted(void) {
     id targets = getConfig(@"targetBundles");
@@ -1055,8 +1078,8 @@ static CLLocation *buildFakeLocation(void) {
 
 // ============================================================
 // C-LEVEL HOOKS - Implemented in Hooks.mm via MSHookFunction
+// (initCLvlHooks forward-declared with extern "C" at top of file)
 // ============================================================
-extern void initCLvlHooks(void);
 
 // ============================================================
 // CONSTRUCTOR - Initialize on load
