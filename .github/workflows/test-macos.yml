@@ -1,0 +1,24 @@
+name: Test macOS Build
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "Theos cloned"
+      - name: Install ldid
+        run: brew install ldid
+      - name: Show env
+        run: |
+          echo "THEOS=$THEOS"
+          echo "HOME=$HOME"
+      - name: Build
+        run: echo "test"
