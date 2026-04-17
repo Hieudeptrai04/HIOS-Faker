@@ -1,0 +1,30 @@
+{
+  Filter = {
+    Mode = Any;
+    Bundles = (
+      "com.apple.UIKit"
+    );
+    Classes = (
+      "UIDevice",
+      "UIScreen",
+      "CLLocationManager",
+      "ASIdentifierManager",
+      "WKWebView",
+      "NSProcessInfo",
+      "NSLocale",
+      "NSTimeZone",
+      "NSBundle",
+      "NSFileManager",
+      "UIApplication",
+      "UIPasteboard",
+      "NSUserDefaults",
+      "CMMotionManager",
+      "CLGeocoder",
+      "CTCarrier",
+      "CTTelephonyNetworkInfo",
+      "CTSubscriber",
+      "NSMutableURLRequest",
+      "ATTrackingManager"
+    );
+  };
+}

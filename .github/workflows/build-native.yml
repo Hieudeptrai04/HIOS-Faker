@@ -1,0 +1,109 @@
+# Build native iOS tweak .deb trên macOS (không cần WebClip!)
+# Mỗi lần push code vào branch tweak/ hoặc手动 chạy workflow
+# Kết quả: download .deb từ Actions tab
+
+name: Build iOS Tweak (Native)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "tweak/**"
+      - ".github/workflows/build-native.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Xcode Command Line Tools
+        run: |
+          if ! xcode-select -p > /dev/null 2>&1; then
+            echo "Installing Xcode Command Line Tools..."
+            xcode-select --install
+            # Wait for installation to complete
+            while ! xcode-select -p > /dev/null 2>&1; do
+              sleep 5
+            done
+          fi
+          xcode-select -p
+          clang --version
+
+      - name: Install Theos
+        run: |
+          export THEOS="$HOME/theos"
+          if [ ! -d "$THEOS" ]; then
+            git clone --depth=1 https://github.com/theos/theos.git "$THEOS"
+          fi
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          ls "$THEOS"
+
+      - name: Install ldid
+        run: |
+          if ! command -v ldid &> /dev/null; then
+            brew install ldid || {
+              # If brew fails, download prebuilt binary
+              curl -L "https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5.8-1/ldid" -o /usr/local/bin/ldid
+              chmod +x /usr/local/bin/ldid
+            }
+          fi
+          ldid -V
+
+      - name: Build rootless tweak
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+          PACKAGE_VERSION: 2.2.0
+        run: |
+          export THEOS="$HOME/theos"
+          cd "${GITHUB_WORKSPACE}/tweak"
+          
+          # Update version in Makefile
+          sed -i '' "s/PACKAGE_VERSION = .*/PACKAGE_VERSION = ${PACKAGE_VERSION}/" Makefile || true
+          
+          # Build with Theos
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          
+          echo "=== Build output ==="
+          ls -la packages/ 2>/dev/null || ls -la *.deb 2>/dev/null || find . -name "*.deb" 2>/dev/null
+
+      - name: Collect .deb files
+        id: collect
+        run: |
+          export THEOS="$HOME/theos"
+          mkdir -p "${GITHUB_WORKSPACE}/packages"
+          
+          # Find all .deb files
+          DEB_FILE=$(find "${GITHUB_WORKSPACE}" -name "*.deb" -type f 2>/dev/null | head -1)
+          if [ -n "$DEB_FILE" ]; then
+            cp "$DEB_FILE" "${GITHUB_WORKSPACE}/packages/"
+            echo "deb_file=$DEB_FILE" >> $GITHUB_OUTPUT
+            echo "Found: $DEB_FILE"
+            ls -la "${GITHUB_WORKSPACE}/packages/"
+          else
+            echo "No .deb found!"
+            exit 1
+          fi
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChangeInfoIos-native-v22
+          path: packages/*.deb
+          retention-days: 30
+
+      - name: Create Release (optional)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: packages/*.deb
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

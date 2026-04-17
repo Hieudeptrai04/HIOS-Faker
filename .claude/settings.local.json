@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node build-deb.js)",
+      "Bash(wc -l /c/Users/hn130/Desktop/ChangeInfoIos/lib/*.js /c/Users/hn130/Desktop/ChangeInfoIos/public/app.js /c/Users/hn130/Desktop/ChangeInfoIos/server.js)",
+      "Bash(node -e ' *)",
+      "Bash(node -c \"c:/Users/hn130/Desktop/ChangeInfoIos/public/app.js\")",
+      "Bash(node -e \"try { require\\('fs'\\).readFileSync\\('c:/Users/hn130/Desktop/ChangeInfoIos/public/app.js', 'utf8'\\); const vm = require\\('vm'\\); vm.createScript\\(require\\('fs'\\).readFileSync\\('c:/Users/hn130/Desktop/ChangeInfoIos/public/app.js', 'utf8'\\)\\); console.log\\('Syntax OK'\\); } catch\\(e\\) { console.log\\('Error:', e.message\\); }\")"
+    ]
+  }
+}

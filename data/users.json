@@ -1,0 +1,24 @@
+[
+  {
+    "id": "610a207677f22f97",
+    "username": "admin",
+    "password": "c01a144e6f5099a3dd6b171b3c40964e1536c9314b98773ffc8a8d64483f6d0d",
+    "role": "admin",
+    "maxDevices": 999,
+    "expiresAt": null,
+    "createdAt": "2026-04-13T11:31:19.398Z",
+    "active": true,
+    "note": "Default admin account"
+  },
+  {
+    "id": "0f9c20416092c286",
+    "username": "hieu123",
+    "password": "50ccc1352f8efd48120fc5c8c4569443b3ae6a4a2ca7ddff007fbe5cac743000",
+    "role": "user",
+    "maxDevices": 10000,
+    "expiresAt": null,
+    "createdAt": "2026-04-13T15:00:35.565Z",
+    "active": true,
+    "note": ""
+  }
+]

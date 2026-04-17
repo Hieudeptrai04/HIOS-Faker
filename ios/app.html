@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>HIOS Faker</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div id="toast" class="toast"></div>
+<div id="ciBusy" class="ci-busy" aria-hidden="true">
+  <div class="ci-busy-spin"></div>
+  <div id="ciBusyTitle" class="ci-busy-title"></div>
+  <div id="ciBusyStep" class="ci-busy-step"></div>
+</div>
+
+<div id="loginScreen">
+  <div class="lcard">
+    <div class="lhdr">
+      <div class="logo-box"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4l6 2.67V11c0 3.9-2.64 7.54-6 8.77C8.64 18.54 6 14.9 6 11V7.67L12 5z"/></svg></div>
+      <div class="lt">HIOS Faker</div>
+      <div class="ls">Device identity suite &middot; v2.2.0</div>
+    </div>
+    <label class="fl">Username</label>
+    <input type="text" class="fi" id="username" placeholder="Account" autocapitalize="none" autocorrect="off">
+    <label class="fl">Password</label>
+    <input type="password" class="fi" id="password" placeholder="Password">
+    <button type="button" class="lbtn" id="loginBtn">Sign in</button>
+    <div id="loginStatus" class="lstat"></div>
+  </div>
+</div>
+
+<div id="mainApp">
+  <div class="safe-top">
+      <div class="hdr">
+      <div class="hdr-left">
+        <button type="button" id="hdrBackBtn" class="hdr-back" aria-label="Back to main">
+          <svg viewBox="0 0 24 24"><path d="M15.4 5.4L8.8 12l6.6 6.6-1.4 1.4L6 12l8-8z"/></svg>
+        </button>
+        <div class="hdr-logo"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4l6 2.67V11c0 3.9-2.64 7.54-6 8.77C8.64 18.54 6 14.9 6 11V7.67L12 5z"/></svg></div>
+        <div>
+          <div class="hdr-name">HIOS Faker</div>
+          <div class="hdr-ver">Version: 2.2.0</div>
+        </div>
+      </div>
+      <button type="button" class="hdr-acc" aria-label="Accounts">
+        <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="safe-bottom">
+
+    <div id="p0" class="page active" data-ui="page-main">
+      <div id="ciModeBanner" class="ci-mode-banner main-hidden main-only"></div>
+      <div class="info-card main-only">
+        <div class="info-row">
+          <div class="info-col">
+            <div class="info-col-title">Device Info</div>
+            <div class="info-line"><span class="info-lbl">Model: </span><span class="info-val" id="iModel">iPhone</span></div>
+            <div class="info-line"><span class="info-lbl">Version: </span><span class="info-val" id="iVer">&mdash;</span></div>
+            <div class="info-line"><span class="info-lbl">IDFA: </span><span class="info-val" id="iIDFA">&mdash;</span></div>
+            <div class="info-line"><span class="info-lbl">Status: </span><span class="info-val"><span class="status-dot off" id="iStatDot"></span><span id="iStat" class="status-wait">Idle</span></span></div>
+          </div>
+          <div class="info-col">
+            <div class="info-col-title">Ip Info</div>
+            <div class="info-line"><span class="info-lbl">Proxy: </span><span class="info-val" id="iProxy">null</span></div>
+            <div class="info-line"><span class="info-lbl">IP: </span><span class="info-val" id="iIP">&mdash;</span></div>
+            <div class="info-line"><span class="info-lbl">Country: </span><span class="info-val" id="iCountry">&mdash;</span></div>
+            <div class="info-line"><span class="info-lbl">Timezone: </span><span class="info-val" id="iTZ">&mdash;</span></div>
+          </div>
+        </div>
+        <div class="info-foot main-hidden"><a href="https://ios.shadowtech.vip/" target="_blank">Contact us: https://ios.shadowtech.vip/</a></div>
+      </div>
+      <div class="act-row main-only">
+        <button type="button" class="btn btn-blue" id="btnResetData" data-ui="action-main-reset-data">Reset Data</button>
+        <div class="mid-btn-stack">
+          <button type="button" class="mid-btn" id="btnSettings" aria-label="Settings" data-ui="action-enter-settings-mode"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.2"/><path d="M12 4.2v2.1M12 17.7v2.1M4.2 12h2.1M17.7 12h2.1M6.5 6.5l1.5 1.5M16 16l1.5 1.5M17.5 6.5L16 8M8 16l-1.5 1.5"/></svg></button>
+        </div>
+        <button type="button" class="btn btn-blue" id="btnBackupReset" data-ui="action-main-backup-reset">Backup &amp; Reset</button>
+      </div>
+      <div class="tgl-list main-only">
+        <div class="tgl-item"><span class="tgl-text">Enable Proxy</span><label class="sw"><input type="checkbox" data-opt="main_enableProxy"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Enable Shadow Services</span><label class="sw"><input type="checkbox" data-opt="main_shadowSvc"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Enable Trial Services</span><label class="sw"><input type="checkbox" data-opt="main_trialSvc"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Enable Web Services</span><label class="sw"><input type="checkbox" data-opt="main_webSvc" checked><span class="sl"></span></label></div>
+      </div>
+      <div class="sel-block select-only">
+        <div class="sel-row sel-row-pad"><label>Device</label><select id="deviceModel"></select></div>
+        <div class="sel-row"><label>iOS</label><select id="iosVersion"></select></div>
+        <div class="sel-row sel-row-pad"><label>Carrier</label><select id="carrierRegion"><option value="vietnam">Vietnam</option><option value="international">International</option></select></div>
+      </div>
+      <div class="sel-section select-only">
+        <div class="sel-sec-hdr">
+          <div class="sel-sec-title">iPhone Models <span class="sel-count" id="selDevCount">0</span></div>
+          <button type="button" class="sel-all-btn" id="btnSelAllDevs">All</button>
+        </div>
+        <div class="sel-grid" id="selDevGrid"></div>
+      </div>
+      <div class="sel-section select-only">
+        <div class="sel-sec-hdr">
+          <div class="sel-sec-title">iOS Versions <span class="sel-count" id="selIOSCount">0</span></div>
+          <button type="button" class="sel-all-btn" id="btnSelAllIOS">All</button>
+        </div>
+        <div class="sel-grid" id="selIOSGrid"></div>
+      </div>
+    </div>
+
+    <div id="p1" class="page" data-ui="page-rrs">
+      <div class="rrs-panel" id="rrsPanel">
+        <div class="rrs-grid">
+          <button type="button" id="rrsBtnLoad" class="rrs-btn">Load RRS</button>
+          <button type="button" id="rrsBtnDelete" class="rrs-btn red">Delete</button>
+          <button type="button" id="rrsBtnSelectAll" class="rrs-btn">Select All</button>
+          <button type="button" id="rrsBtnFilter" class="rrs-btn">Filter</button>
+        </div>
+        <div class="rrs-row rrs-extra">
+          <div class="rrs-lbl">Start From</div>
+          <input id="rrsStartFrom" class="rrs-input" type="text" value="0">
+        </div>
+        <div class="rrs-row rrs-extra">
+          <button type="button" id="rrsBtnEdit" class="rrs-btn">Edit</button>
+          <textarea id="rrsEditor" class="rrs-area"></textarea>
+        </div>
+      </div>
+      <div class="app-search-wrap">
+        <input type="search" class="app-search" id="appListSearch" placeholder="Tìm app theo tên hoặc bundle ID&hellip;" autocomplete="off" autocorrect="off">
+        <div class="app-count" id="appListCount"></div>
+      </div>
+      <div id="appListMount" class="rrs-list" data-ui="list-rrs-apps">
+        <div class="empty-box">Đang tải danh sách app&hellip;</div>
+      </div>
+    </div>
+
+    <div id="p2" class="page" data-ui="page-backup-app">
+      <div class="rrs-panel">
+        <div class="rrs-grid">
+          <button type="button" id="btnBackupApps" class="rrs-btn red">Backup</button>
+          <button type="button" id="btnSelectAllBackup" class="rrs-btn">Select All</button>
+          <button type="button" id="btnClearBackup" class="rrs-btn">Clear</button>
+        </div>
+      </div>
+      <div class="app-search-wrap">
+        <input type="search" class="app-search" id="backupAppListSearch" placeholder="Tìm app theo tên hoặc bundle ID&hellip;" autocomplete="off" autocorrect="off">
+        <div class="app-count" id="backupAppListCount"></div>
+      </div>
+      <div class="tgl-list backup-list" id="backupListMount" data-ui="list-backup-apps">
+        <div class="empty-box">Đang tải danh sách app&hellip;</div>
+      </div>
+    </div>
+
+    <div id="p3" class="page" data-ui="page-setup">
+      <div class="sec">Cài đặt Wipe</div>
+      <div class="tgl-list tgl-card">
+        <div class="tgl-item"><span class="tgl-text">Clear All Apps</span><label class="sw"><input type="checkbox" data-opt="set_clearAllApps"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Clear Safari Data</span><label class="sw"><input type="checkbox" data-opt="set_clearSafari"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Backup Safari Data</span><label class="sw"><input type="checkbox" data-opt="set_backupSafari"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Auto Allow Permissions</span><label class="sw"><input type="checkbox" data-opt="set_autoAllow"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Wipe After Deploy</span><label class="sw"><input type="checkbox" data-opt="set_wipeAfterDeploy"><span class="sl"></span></label></div>
+      </div>
+      <div class="sec">Cài đặt Reset</div>
+      <div class="tgl-list tgl-card">
+        <div class="tgl-item"><span class="tgl-text">Apply Spoof on Reset</span><label class="sw"><input type="checkbox" data-opt="set_applySpoofOnReset" checked><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Proxy on Reset</span><label class="sw"><input type="checkbox" data-opt="set_proxyOnReset"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Close After Reset</span><label class="sw"><input type="checkbox" data-opt="set_closeAfter"><span class="sl"></span></label></div>
+        <div class="tgl-item"><span class="tgl-text">Loop Proxy</span><label class="sw"><input type="checkbox" data-opt="set_loopProxy"><span class="sl"></span></label></div>
+      </div>
+      <div class="sec">Thông tin</div>
+      <div class="field-block" style="text-align:center;padding:20px;">
+        <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px;">HIOS Faker</div>
+        <div style="font-size:13px;color:var(--text2);">Version 2.2.0</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:8px;">Device Spoofing Suite</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px;">Contact: https://ios.shadowtech.vip/</div>
+      </div>
+    </div>
+
+    <div id="p4" class="page" data-ui="page-settings">
+      <div class="sec">Fake Layers</div>
+      <div class="fl-list-wrap">
+        <div class="tgl-list" id="fakeLayersList" data-ui="list-settings-fake-layers"></div>
+      </div>
+      <div class="sec">Profiles</div>
+      <div style="display:flex;gap:8px;margin:8px 0;">
+        <input type="text" class="app-search" id="profileName" placeholder="Profile name&hellip;" style="flex:1;">
+        <button type="button" id="btnSaveProfile" class="rrs-btn" style="flex:none;padding:10px 16px;">Save</button>
+      </div>
+      <div id="profileList" style="border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.07);"></div>
+      <div class="sec">Network</div>
+      <div class="field-block">
+        <div style="font-size:13px;color:#d4e1d6;margin-bottom:6px;">Tracking URL</div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" class="app-search" id="trackingUrl" placeholder="http://ip-api.com/json" style="flex:1;font-size:12px;">
+          <button type="button" id="btnSaveTrackingUrl" class="rrs-btn" style="flex:none;padding:8px 12px;font-size:12px;">Save</button>
+        </div>
+      </div>
+      <div class="sec">Data</div>
+      <div style="display:flex;gap:10px;margin:8px 0 20px;">
+        <button type="button" id="btnResetAll" class="rrs-btn red" style="flex:1;">Reset All Data</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="tab-bar">
+    <button type="button" class="tab on" data-tab="0">
+      <span class="tab-ic"><svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg></span>
+      <span class="tab-lbl">Main</span>
+    </button>
+    <button type="button" class="tab" data-tab="1">
+      <span class="tab-ic"><svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></span>
+      <span class="tab-lbl">RRS</span>
+    </button>
+    <button type="button" class="tab tab-appleid" data-tab="2">
+      <span class="tab-ic"><svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg></span>
+      <span class="tab-lbl">Apple ID</span>
+    </button>
+    <button type="button" class="tab" data-tab="3">
+      <span class="tab-ic"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></span>
+      <span class="tab-lbl">Thiết lập</span>
+    </button>
+    <button type="button" class="tab" data-tab="4">
+      <span class="tab-ic"><svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg></span>
+      <span class="tab-lbl">Settings</span>
+    </button>
+  </div>
+</div>
+
+<script src="js/config-data.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/profile.js"></script>
+<script src="js/device.js"></script>
+<script src="js/apps.js"></script>
+<script src="js/server.js"></script>
+<script src="js/init.js"></script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+# Build .deb trên Ubuntu + Theos (Windows không chạy được make package).
+# Sau khi chạy xong: tab Actions → workflow này → Artifacts → tải ZIP, giải nén vào thư mục packages/
+
+name: Build DEB
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tweak/**"
+      - ".github/workflows/build-deb.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: beerpiss/theos-action@v1
+        with:
+          cache: true
+
+      - name: Build rootless package
+        run: |
+          set -e
+          cd "${GITHUB_WORKSPACE}/tweak"
+          export THEOS_PACKAGE_SCHEME=rootless
+          make package FINALPACKAGE=1
+
+      - name: Copy .deb to packages/
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/packages"
+          shopt -s nullglob
+          for f in "${GITHUB_WORKSPACE}/tweak/packages"/*.deb; do
+            cp -v "$f" "${GITHUB_WORKSPACE}/packages/"
+          done
+          ls -la "${GITHUB_WORKSPACE}/packages/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChangeInfoIos-deb
+          path: packages/*.deb

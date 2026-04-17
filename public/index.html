@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChangeInfoIos - Device Spoofer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- === LOGIN SCREEN === -->
+  <div class="login-screen" id="login-screen">
+    <div class="login-bg"></div>
+    <div class="login-card">
+      <div class="login-logo">
+        <div class="login-logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="5" y="2" rx="2" width="14" height="20"/>
+            <line x1="12" y1="18" x2="12" y2="18.01" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <h1>ChangeInfo<span class="accent">iOS</span></h1>
+        <p>Device Spoofer v2.0</p>
+      </div>
+      <div class="login-form">
+        <div class="form-group">
+          <label>👤 Tài khoản</label>
+          <input type="text" id="login-user" placeholder="Username" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>🔒 Mật khẩu</label>
+          <input type="password" id="login-pass" placeholder="Password" autocomplete="current-password">
+        </div>
+        <div id="login-error" class="login-error"></div>
+        <button class="btn btn-primary btn-glow btn-block btn-lg" id="btn-login" onclick="doLogin()">
+          Đăng Nhập
+        </button>
+      </div>
+      <div class="login-footer">
+        <p>Liên hệ admin để nhận tài khoản</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- === APP (hidden until login) === -->
+  <div class="app-container" id="app-container" style="display:none">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="5" y="2" rx="2" width="14" height="20"/>
+              <line x1="12" y1="18" x2="12" y2="18.01" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="logo-text">
+            <span class="logo-title">ChangeInfo<span class="accent">iOS</span></span>
+            <span class="logo-sub" id="user-display">User</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="connect" id="nav-connect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l2 2 4-4"/></svg>
+          <span>Kết Nối</span>
+          <div class="nav-status" id="conn-indicator"></div>
+        </button>
+        <button class="nav-item" data-tab="device" id="nav-device">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" rx="2" width="14" height="20"/><line x1="12" y1="18" x2="12" y2="18.01" stroke-width="3" stroke-linecap="round"/></svg>
+          <span>Device Info</span>
+        </button>
+        <button class="nav-item" data-tab="random" id="nav-random">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="14" y="2" width="8" height="8" rx="1"/><rect x="2" y="14" width="8" height="8" rx="1"/><rect x="14" y="14" width="8" height="8" rx="1"/></svg>
+          <span>Random</span>
+        </button>
+        <button class="nav-item" data-tab="profiles" id="nav-profiles">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+          <span>Profiles</span>
+        </button>
+        <button class="nav-item" data-tab="clear" id="nav-clear">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
+          <span>Clear Data</span>
+        </button>
+        <button class="nav-item" data-tab="logs" id="nav-logs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          <span>Logs</span>
+        </button>
+
+        <!-- Admin only -->
+        <div class="nav-divider" id="admin-divider" style="display:none"></div>
+        <button class="nav-item" data-tab="admin" id="nav-admin" style="display:none">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a5 5 0 015 5v1H7V7a5 5 0 015-5z"/><rect x="3" y="10" width="18" height="12" rx="2"/><circle cx="12" cy="16" r="1"/></svg>
+          <span>Admin</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="device-status" id="device-status">
+          <div class="status-dot offline" id="status-dot"></div>
+          <span id="status-text">Chưa kết nối</span>
+        </div>
+        <button class="btn btn-outline btn-xs" onclick="doLogout()" style="margin-top:8px;width:100%">🚪 Đăng xuất</button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content" id="main-content">
+      <!-- TAB: CONNECT -->
+      <section class="tab-panel active" id="tab-connect">
+        <div class="page-header">
+          <h1>🔌 Kết Nối Thiết Bị</h1>
+          <p>Kết nối tới iPhone jailbreak qua SSH</p>
+        </div>
+        <div class="cards-grid">
+          <div class="card connect-card">
+            <div class="card-header"><h3>📡 SSH Connection</h3></div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Host</label>
+                <input type="text" id="ssh-host" value="localhost" placeholder="localhost hoặc IP">
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Port</label>
+                  <input type="number" id="ssh-port" value="2222">
+                </div>
+                <div class="form-group">
+                  <label>Username</label>
+                  <input type="text" id="ssh-user" value="root">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="ssh-pass" value="alpine">
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary btn-glow" id="btn-connect" onclick="connectSSH()">➡️ Kết Nối</button>
+                <button class="btn btn-danger" id="btn-disconnect" onclick="disconnectSSH()" style="display:none">✖ Ngắt</button>
+              </div>
+            </div>
+          </div>
+          <div class="card" id="device-info-card" style="display:none">
+            <div class="card-header"><h3>📱 Thiết Bị</h3></div>
+            <div class="card-body" id="device-info-content"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3>⚙️ Auto Clear Khi Deploy</h3></div>
+            <div class="card-body">
+              <p class="text-muted" style="margin-bottom:12px;font-size:13px">Tự động xóa data các app này khi nhấn Deploy:</p>
+              <div class="auto-clear-checks" id="auto-clear-checks">
+                <label class="checkbox-item"><input type="checkbox" value="com.vng.zalo" checked onchange="updateAutoClearApps()"><span>💬 Zalo</span></label>
+                <label class="checkbox-item"><input type="checkbox" value="com.zhiliaoapp.musically" onchange="updateAutoClearApps()"><span>🎵 TikTok</span></label>
+                <label class="checkbox-item"><input type="checkbox" value="com.facebook.Facebook" onchange="updateAutoClearApps()"><span>📘 Facebook</span></label>
+                <label class="checkbox-item"><input type="checkbox" value="ph.telegra.Telegraph" onchange="updateAutoClearApps()"><span>✈️ Telegram</span></label>
+                <label class="checkbox-item"><input type="checkbox" value="com.burbn.instagram" onchange="updateAutoClearApps()"><span>📷 Instagram</span></label>
+                <label class="checkbox-item"><input type="checkbox" value="com.twitter.twitter" onchange="updateAutoClearApps()"><span>🐦 Twitter/X</span></label>
+              </div>
+              <div class="form-group" style="margin-top:12px">
+                <label>Bundle ID Tùy Chỉnh</label>
+                <div style="display:flex;gap:8px">
+                  <input type="text" id="custom-clear-bundle" placeholder="com.example.app">
+                  <button class="btn btn-outline btn-sm" onclick="addCustomClearApp()">+ Thêm</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: DEVICE INFO -->
+      <section class="tab-panel" id="tab-device">
+        <div class="page-header">
+          <div class="page-header-left">
+            <h1>📱 Device Info</h1>
+            <p>Xem và chỉnh sửa thông số - <strong>Auto clear data khi deploy</strong></p>
+          </div>
+          <div class="page-header-right">
+            <button class="btn btn-accent btn-sm" onclick="deployConfigOnly()">📤 Push Config</button>
+            <button class="btn btn-primary btn-sm" onclick="deployFull()">🚀 Clear + Deploy + Respring</button>
+          </div>
+        </div>
+        <div class="params-container" id="params-container">
+          <div class="empty-state">
+            <div class="empty-icon">📱</div>
+            <h3>Chưa có profile</h3>
+            <p>Vào tab Random để tạo bộ thông số</p>
+            <button class="btn btn-primary" onclick="switchTab('random')">🎲 Tạo Random</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: RANDOM - ★ SELECTIVE RANDOM ★ -->
+      <section class="tab-panel" id="tab-random">
+        <div class="page-header">
+          <h1>🎲 Random Generator</h1>
+          <p>Tick chọn mục cần random — chỉ random những mục được chọn</p>
+        </div>
+        <div class="cards-grid">
+          <!-- Options Column -->
+          <div class="card">
+            <div class="card-header"><h3>⚙️ Cấu Hình Random</h3></div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Model thiết bị</label>
+                <select id="gen-device"><option value="">🎲 Random</option></select>
+              </div>
+              <div class="form-group">
+                <label>Phiên bản iOS</label>
+                <select id="gen-ios"><option value="">🎲 Random</option></select>
+              </div>
+              <div class="form-group">
+                <label>Nhà mạng</label>
+                <select id="gen-carrier">
+                  <option value="vietnam">🇻🇳 Việt Nam</option>
+                  <option value="international">🌍 Quốc tế</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Tên thiết bị</label>
+                <input type="text" id="gen-name" placeholder="Để trống = random">
+              </div>
+              <div class="btn-row" style="margin-top:16px">
+                <button class="btn btn-primary btn-glow btn-lg btn-block" onclick="generateSelective()">
+                  🎲 Random Các Mục Đã Chọn
+                </button>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-accent btn-block" onclick="generateAndDeploy()">
+                  🚀 Random + Clear + Deploy + Respring
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ★ SELECTIVE CHECKBOXES ★ -->
+          <div class="card" style="grid-column: span 1">
+            <div class="card-header">
+              <h3>☑️ Chọn Mục Random</h3>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-outline btn-xs" onclick="selectAllRandom()">✅ Chọn hết</button>
+                <button class="btn btn-outline btn-xs" onclick="deselectAllRandom()">⬜ Bỏ hết</button>
+              </div>
+            </div>
+            <div class="card-body" id="random-checkboxes">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: PROFILES -->
+      <section class="tab-panel" id="tab-profiles">
+        <div class="page-header">
+          <div class="page-header-left">
+            <h1>💾 Profiles</h1>
+            <p>Quản lý các bộ thông số đã lưu</p>
+          </div>
+          <div class="page-header-right">
+            <button class="btn btn-primary btn-sm" onclick="saveCurrentProfile()">💾 Lưu</button>
+            <label class="btn btn-accent btn-sm" for="import-file">📥 Import</label>
+            <input type="file" id="import-file" accept=".json" style="display:none" onchange="importProfile(event)">
+          </div>
+        </div>
+        <div class="profiles-list" id="profiles-list">
+          <div class="empty-state"><div class="empty-icon">💾</div><h3>Chưa có profile</h3></div>
+        </div>
+      </section>
+
+      <!-- TAB: CLEAR DATA -->
+      <section class="tab-panel" id="tab-clear">
+        <div class="page-header">
+          <div class="page-header-left">
+            <h1>🧹 Deep Wipe App Data</h1>
+            <p>Chọn app trên thiết bị để xóa sạch data — như máy mới</p>
+          </div>
+          <div class="page-header-right">
+            <button class="btn btn-outline btn-sm" onclick="loadInstalledApps()">🔄 Quét lại</button>
+          </div>
+        </div>
+        <div class="cards-grid">
+          <div class="card">
+            <div class="card-header"><h3>🎯 Quick Wipe</h3></div>
+            <div class="card-body">
+              <div class="quick-clear-grid">
+                <button class="btn btn-danger btn-block" onclick="clearApp('com.vng.zalo')">💬 Zalo</button>
+                <button class="btn btn-warning btn-block" onclick="clearApp('com.zhiliaoapp.musically')">🎵 TikTok</button>
+                <button class="btn btn-warning btn-block" onclick="clearApp('com.facebook.Facebook')">📘 Facebook</button>
+                <button class="btn btn-warning btn-block" onclick="clearApp('ph.telegra.Telegraph')">✈️ Telegram</button>
+                <button class="btn btn-warning btn-block" onclick="clearApp('com.burbn.instagram')">📷 Instagram</button>
+                <button class="btn btn-warning btn-block" onclick="clearApp('com.google.chrome.ios')">🌐 Chrome</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3>🔍 Wipe Theo Bundle ID</h3></div>
+            <div class="card-body">
+              <div class="form-group">
+                <label>Bundle ID</label>
+                <input type="text" id="clear-bundle-id" placeholder="com.vng.zalo">
+              </div>
+              <button class="btn btn-danger" onclick="clearApp(document.getElementById('clear-bundle-id').value)">🧹 Wipe</button>
+            </div>
+          </div>
+          <div class="card card-full-width">
+            <div class="card-header">
+              <h3>📋 App Trên Thiết Bị</h3>
+              <button class="btn btn-outline btn-xs" onclick="loadInstalledApps()">🔄 Quét</button>
+            </div>
+            <div class="card-body">
+              <div class="apps-list" id="apps-list"><p class="text-muted">Kết nối thiết bị để xem danh sách app</p></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: LOGS -->
+      <section class="tab-panel" id="tab-logs">
+        <div class="page-header">
+          <div class="page-header-left"><h1>📋 Logs</h1></div>
+          <div class="page-header-right">
+            <button class="btn btn-outline btn-sm" onclick="refreshLogs()">🔄</button>
+            <button class="btn btn-danger btn-sm" onclick="clearLogs()">🧹</button>
+          </div>
+        </div>
+        <div class="logs-container" id="logs-container"></div>
+      </section>
+
+      <!-- TAB: ADMIN (admin only) -->
+      <section class="tab-panel" id="tab-admin">
+        <div class="page-header">
+          <div class="page-header-left">
+            <h1>🔐 Quản Lý Tài Khoản</h1>
+            <p>Tạo và quản lý tài khoản người dùng</p>
+          </div>
+          <div class="page-header-right">
+            <button class="btn btn-primary btn-sm" onclick="openCreateUser()">➕ Tạo Tài Khoản</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>👥 Danh Sách Tài Khoản</h3></div>
+          <div class="card-body">
+            <table class="admin-table" id="admin-users-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Max Devices</th>
+                  <th>Hết hạn</th>
+                  <th>Trạng thái</th>
+                  <th>Ghi chú</th>
+                  <th>Hành động</th>
+                </tr>
+              </thead>
+              <tbody id="admin-users-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- MODAL -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">Modal</h3>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

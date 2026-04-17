@@ -1,0 +1,18 @@
+{
+  "name": "changeinfoios",
+  "version": "1.0.0",
+  "description": "ChangeInfoIos - Tool thay đổi thông số iPhone cho Jailbreak Rootless",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build-deb": "node build-deb.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.34.5",
+    "ssh2": "^1.15.0",
+    "uuid": "^9.0.0"
+  }
+}
