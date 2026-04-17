@@ -1,0 +1,14 @@
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Keep binary files binary
+*.png binary
+*.jpg binary
+*.deb binary
+*.dylib binary
+*.so binary
+*.tar.gz binary
+*.tar.xz binary
+*.zip binary
