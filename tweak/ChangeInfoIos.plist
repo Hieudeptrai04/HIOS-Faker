@@ -3,7 +3,8 @@
     Mode = Any;
     Bundles = (
       "com.vng.zalo",
-      "ph.telegra.Telegraph"
+      "ph.telegra.Telegraph",
+      "com.changeinfoios.app"
     );
     Classes = (
       "UIDevice",
