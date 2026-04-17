@@ -5,25 +5,28 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Clone Theos
-        run: git clone --recursive https://github.com/theos/theos.git $HOME/theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          ls -la $HOME/theos/
       - name: Download SDK
         run: |
           mkdir -p $HOME/theos/sdks
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks/
           ls -la $HOME/theos/sdks/
-      - name: Show tweak files
+      - name: Show tweak
         run: |
-          echo "=== Tweak dir ==="
           ls -la tweak/
-          echo ""
-          echo "=== Makefile ==="
           cat tweak/Makefile
       - name: Build tweak
         env:
@@ -33,6 +36,13 @@ jobs:
           cd tweak
           rm -rf packages/ .theos/ obj/
           make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
-      - name: Check result
+      - name: Check debs
         run: |
-          find . -name "*.deb" -type f -exec ls -lh {} \;
+          find . -name "*.deb" -type f
+          ls -la tweak/packages/ 2>/dev/null || echo "No packages"
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: tweak/packages/*.deb
