@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -99,12 +99,3 @@ jobs:
           name: ChangeInfoIos-native-v22
           path: packages/*.deb
           retention-days: 30
-
-      - name: Create Release (optional)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: packages/*.deb
-          draft: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
