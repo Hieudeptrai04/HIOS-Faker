@@ -421,14 +421,88 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     return YES;
 }
 
+// Random model + iOS presets (inline to avoid forward-decl issues)
+static NSArray *ci_randomPresets(void) {
+    static NSArray *presets = nil;
+    if (!presets) {
+        presets = @[
+            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 7 Plus",    @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 8",          @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 8 Plus",    @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone X",          @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone XR",         @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2", @"828",  @"1792", @"2"],
+            @[@"iPhone XS",         @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone XS Max",     @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3", @"1242", @"2688", @"3"],
+            @[@"iPhone SE (2)",     @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 11",         @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2", @"828",  @"1792", @"2"],
+            @[@"iPhone 11 Pro",    @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone 11 Pro Max", @"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3", @"1242", @"2688", @"3"],
+            @[@"iPhone 12 mini",   @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3", @"1080", @"2340", @"3"],
+            @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 12 Pro",    @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone 13 mini",   @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3"],
+            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 13 Pro",    @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone SE (3)",    @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 14 Plus",   @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone 14 Pro",    @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 15 Pro",    @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 16 Plus",   @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 16 Pro",    @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3"],
+            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3"],
+        ];
+    }
+    return presets;
+}
+
+static NSArray *ci_randomIOSPresets(void) {
+    static NSArray *iosList = nil;
+    if (!iosList) {
+        iosList = @[
+            @[@"iOS 15.0",      @"15.0", @"19A346"],
+            @[@"iOS 15.1",      @"15.1", @"19B74"],
+            @[@"iOS 15.2",      @"15.2", @"19C56"],
+            @[@"iOS 15.3",      @"15.3", @"19D50"],
+            @[@"iOS 15.4",      @"15.4", @"19E241"],
+            @[@"iOS 15.5",      @"15.5", @"19F77"],
+            @[@"iOS 15.6",      @"15.6", @"19G71"],
+            @[@"iOS 15.7",      @"15.7", @"19H12"],
+            @[@"iOS 16.0",      @"16.0", @"20A362"],
+            @[@"iOS 16.1",      @"16.1", @"20B82"],
+            @[@"iOS 16.2",      @"16.2", @"20C65"],
+            @[@"iOS 16.3",      @"16.3", @"20D47"],
+            @[@"iOS 16.4",      @"16.4", @"20E247"],
+            @[@"iOS 16.5",      @"16.5", @"20F66"],
+            @[@"iOS 16.6.1",   @"16.6.1", @"20G81"],
+        ];
+    }
+    return iosList;
+}
+
 // Regenerate every rotating identity + geo profile on each Reset.
 // Also picks a random model + iOS version so every reset = fresh device.
 static NSUInteger ci_randomizeIdentities(void) {
     CIConfigManager *cm = [CIConfigManager shared];
 
     // === Random model (all fake layers auto-on) ===
-    NSArray *presets = [CIFakeSettingsViewController devicePresets];
-    NSArray *iosList = [CIFakeSettingsViewController iosPresets];
+    NSArray *presets = ci_randomPresets();
+    NSArray *iosList = ci_randomIOSPresets();
     NSArray *preset = presets[arc4random_uniform((uint32_t)presets.count)];
     NSArray *iosPreset = iosList[arc4random_uniform((uint32_t)iosList.count)];
 
@@ -437,7 +511,6 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:preset[1] forKey:@"ProductType"];
     [cm setObject:preset[2] forKey:@"hw_machine"];
     [cm setObject:preset[2] forKey:@"uname_machine"];
-    [cm setObject:preset[1] forKey:@"deviceModel"];
     [cm setObject:@"iPhone" forKey:@"localizedModel"];
     [cm setObject:preset[3] forKey:@"screenWidth"];
     [cm setObject:preset[4] forKey:@"screenHeight"];
@@ -456,11 +529,6 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@(YES) forKey:@"fake_sysosversion"];
 
     // Apply screen/hardware defaults from preset
-    Class mgk = objc_getClass("MGKeyVals");
-    if (mgk) {
-        [cm setObject:preset[1] forKey:@"HardwareModel"];
-        [cm setObject:preset[1] forKey:@"HWModelStr"];
-    }
     [cm setObject:preset[1] forKey:@"HardwareModel"];
     [cm setObject:preset[1] forKey:@"HWModelStr"];
     [cm setObject:preset[2] forKey:@"hw_model"];
