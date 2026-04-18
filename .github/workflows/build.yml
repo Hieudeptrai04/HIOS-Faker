@@ -62,13 +62,29 @@ jobs:
           test -n "$(ls packages/*.deb 2>/dev/null)"
 
       - name: Build app
+        id: build-app
         run: |
-          set -euo pipefail
+          set -o pipefail
           cd app
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS=arm64
-          ls -lh packages/
-          test -n "$(ls packages/*.deb 2>/dev/null)"
+          ls -la
+          cat Makefile
+          echo "--- main.m first 5 lines ---"
+          head -5 main.m
+          echo "--- running make ---"
+          make package FINALPACKAGE=1 ARCHS=arm64 messages=yes 2>&1 | tee ../app_build.log
+          status=${PIPESTATUS[0]}
+          echo "make exit: $status"
+          ls -la packages/ || true
+          exit $status
+
+      - name: Upload app build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build-log
+          path: app_build.log
+          if-no-files-found: warn
 
       - name: Combine into single deb
         run: |
