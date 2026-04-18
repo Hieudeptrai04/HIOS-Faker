@@ -422,9 +422,62 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
 }
 
 // Regenerate every rotating identity + geo profile on each Reset.
-// Does NOT touch user-chosen model/iOS (those come from Picker).
+// Also picks a random model + iOS version so every reset = fresh device.
 static NSUInteger ci_randomizeIdentities(void) {
     CIConfigManager *cm = [CIConfigManager shared];
+
+    // === Random model (all fake layers auto-on) ===
+    NSArray *presets = [CIFakeSettingsViewController devicePresets];
+    NSArray *iosList = [CIFakeSettingsViewController iosPresets];
+    NSArray *preset = presets[arc4random_uniform((uint32_t)presets.count)];
+    NSArray *iosPreset = iosList[arc4random_uniform((uint32_t)iosList.count)];
+
+    // Apply model preset
+    [cm setObject:@"iPhone" forKey:@"deviceModel"];
+    [cm setObject:preset[1] forKey:@"ProductType"];
+    [cm setObject:preset[2] forKey:@"hw_machine"];
+    [cm setObject:preset[2] forKey:@"uname_machine"];
+    [cm setObject:preset[1] forKey:@"deviceModel"];
+    [cm setObject:@"iPhone" forKey:@"localizedModel"];
+    [cm setObject:preset[3] forKey:@"screenWidth"];
+    [cm setObject:preset[4] forKey:@"screenHeight"];
+    [cm setObject:preset[5] forKey:@"screenScale"];
+    [cm setObject:preset[6] forKey:@"nativeScreenWidth"];
+    [cm setObject:preset[7] forKey:@"nativeScreenHeight"];
+    [cm setObject:preset[8] forKey:@"nativeScale"];
+    [cm setObject:preset[0] forKey:@"__presetModelName"];
+    [cm setObject:@(YES) forKey:@"fake_uiddevice"];
+    [cm setObject:@(YES) forKey:@"fake_screen"];
+
+    // Apply iOS preset
+    [cm setObject:iosPreset[1] forKey:@"systemVersion"];
+    [cm setObject:iosPreset[2] forKey:@"BuildVersion"];
+    [cm setObject:iosPreset[0] forKey:@"__presetIOSName"];
+    [cm setObject:@(YES) forKey:@"fake_sysosversion"];
+
+    // Apply screen/hardware defaults from preset
+    Class mgk = objc_getClass("MGKeyVals");
+    if (mgk) {
+        [cm setObject:preset[1] forKey:@"HardwareModel"];
+        [cm setObject:preset[1] forKey:@"HWModelStr"];
+    }
+    [cm setObject:preset[1] forKey:@"HardwareModel"];
+    [cm setObject:preset[1] forKey:@"HWModelStr"];
+    [cm setObject:preset[2] forKey:@"hw_model"];
+
+    // Ensure all fake layers on
+    NSArray *allFakeLayers = @[
+        @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",
+        @"fake_processinfo", @"fake_location", @"fake_datetime", @"fake_locale",
+        @"fake_locale2", @"fake_network", @"fake_hardware", @"fake_sensor",
+        @"fake_ads", @"fake_wifi", @"fake_tracking_pasteboard", @"fake_trackingdefaults",
+        @"fake_uiddevice2", @"fake_sysctl", @"fake_battery", @"fake_browser",
+        @"fake_metal", @"fake_webrtc", @"fake_timing", @"fake_keychain",
+        @"fake_jbhide", @"fake_uptime",
+    ];
+    for (NSString *k in allFakeLayers) {
+        [cm setObject:@(YES) forKey:k];
+    }
 
     // Hardware IDs
     NSDictionary *ids = @{
