@@ -163,7 +163,7 @@ static int ci_run(const char *cmd) {
         return [a[NSFileSize] unsignedLongLongValue];
     }
     NSDirectoryEnumerator *e = [fm enumeratorAtPath:path];
-    for (NSString *sub in e) {
+    for (NSString *sub in e) { (void)sub;
         NSDictionary *a = [e fileAttributes];
         if ([a[NSFileType] isEqualToString:NSFileTypeRegular])
             total += [a[NSFileSize] unsignedLongLongValue];
@@ -193,7 +193,8 @@ static int ci_run(const char *cmd) {
 
 + (NSArray<CIAppInfo *> *)allApps {
     NSMutableArray *result = [NSMutableArray array];
-    LSApplicationWorkspace *ws = [LSApplicationWorkspace defaultWorkspace];
+    Class LSAWCls = NSClassFromString(@"LSApplicationWorkspace");
+    LSApplicationWorkspace *ws = [LSAWCls performSelector:@selector(defaultWorkspace)];
     NSArray *apps = [ws allInstalledApplications];
     for (LSApplicationProxy *proxy in apps) {
         @autoreleasepool {
