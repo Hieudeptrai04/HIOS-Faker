@@ -1,32 +1,25 @@
 {
   Filter = {
-    Mode = Any;
     Bundles = (
+      "com.changeinfoios.app",
       "com.vng.zalo",
       "ph.telegra.Telegraph",
-      "com.changeinfoios.app"
-    );
-    Classes = (
-      "UIDevice",
-      "UIScreen",
-      "CLLocationManager",
-      "ASIdentifierManager",
-      "WKWebView",
-      "NSProcessInfo",
-      "NSLocale",
-      "NSTimeZone",
-      "NSBundle",
-      "NSFileManager",
-      "UIApplication",
-      "UIPasteboard",
-      "NSUserDefaults",
-      "CMMotionManager",
-      "CLGeocoder",
-      "CTCarrier",
-      "CTTelephonyNetworkInfo",
-      "CTSubscriber",
-      "NSMutableURLRequest",
-      "ATTrackingManager"
+      "net.whatsapp.WhatsApp",
+      "com.facebook.Facebook",
+      "com.burbn.instagram",
+      "com.zhiliaoapp.musically",
+      "com.google.ios.youtube",
+      "com.atebits.Tweetie2",
+      "com.toyopagroup.picaboo",
+      "com.hammerandchisel.discord",
+      "com.tinyspeck.chatlyio",
+      "com.microsoft.Office.Outlook",
+      "com.finalwire.aida64",
+      "com.finalwire.aida64-ios",
+      "com.lookup.mobile",
+      "com.blacksmith.lirum",
+      "com.umang.devicedesign",
+      "com.apple.mobilesafari"
     );
   };
 }

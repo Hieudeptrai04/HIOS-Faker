@@ -1275,6 +1275,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+- (UIAlertController *)showHUDWithTitle:(NSString *)title {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+        message:@"\n\n\n" preferredStyle:UIAlertControllerStyleAlert];
+    UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+    spin.translatesAutoresizingMaskIntoConstraints = NO;
+    spin.color = [CITheme orange];
+    [spin startAnimating];
+    [a.view addSubview:spin];
+    [NSLayoutConstraint activateConstraints:@[
+        [spin.centerXAnchor constraintEqualToAnchor:a.view.centerXAnchor],
+        [spin.bottomAnchor constraintEqualToAnchor:a.view.bottomAnchor constant:-24],
+    ]];
+    [self presentViewController:a animated:YES completion:nil];
+    return a;
+}
+
 - (void)saveAndReset {
     [self performRRSBackup:YES];
 }
@@ -1286,30 +1303,44 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (resetBids.count == 0) {
         [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
     }
-    if (backup) {
-        NSArray<NSString *> *rrsBids = [[CIConfigManager shared] rrsBundles];
-        if (rrsBids.count == 0) {
-            [self alert:@"Chưa chọn app lưu RRS" msg:@"Vào mục 2 để chọn app cần lưu retention."]; return;
-        }
-        [self createRRSForBundles:rrsBids note:_noteField.text];
+    NSArray<NSString *> *rrsBids = backup ? [[CIConfigManager shared] rrsBundles] : nil;
+    if (backup && rrsBids.count == 0) {
+        [self alert:@"Chưa chọn app lưu RRS" msg:@"Vào mục 2 để chọn app cần lưu retention."]; return;
     }
 
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
-    NSMutableArray *names = [NSMutableArray array]; NSMutableArray *paths = [NSMutableArray array];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
     for (CIAppInfo *a in all) {
-        if ([resetBids containsObject:a.bundleID] && a.containerPath.length) {
-            [names addObject:a.name]; [paths addObject:a.containerPath];
-        }
+        if ([resetBids containsObject:a.bundleID] && a.containerPath.length) [paths addObject:a.containerPath];
     }
-    if (paths.count == 0) { [self alert:@"Không tìm thấy container" msg:@"Không đọc được data container của app đã chọn."]; return; }
+    if (paths.count == 0) {
+        [self alert:@"Không tìm thấy container" msg:@"Không đọc được data container của app đã chọn."]; return;
+    }
 
-    int failed = 0;
-    for (NSString *p in paths) {
-        NSString *cmd = [NSString stringWithFormat:@"rm -rf %@/Documents/* %@/Library/Caches/* %@/Library/Preferences/* %@/tmp/* 2>/dev/null", p, p, p, p];
-        if (ci_run([cmd UTF8String]) != 0) failed++;
-    }
-    [[CIConfigManager shared] notifyReload];
-    [self alert:@"Hoàn tất" msg:[NSString stringWithFormat:@"Đã reset %lu/%lu app.%@", (unsigned long)(paths.count-failed), (unsigned long)paths.count, failed ? @"\n(Lỗi có thể do quyền)" : @""]];
+    NSString *note = _noteField.text ?: @"";
+    NSString *title = backup ? @"Đang lưu RRS + Reset..." : @"Đang Reset Data...";
+    UIAlertController *hud = [self showHUDWithTitle:title];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        if (backup) [self createRRSForBundles:rrsBids note:note];
+
+        int failed = 0;
+        for (NSString *p in paths) {
+            NSString *cmd = [NSString stringWithFormat:@"rm -rf %@/Documents/* %@/Library/Caches/* %@/Library/Preferences/* %@/tmp/* 2>/dev/null", p, p, p, p];
+            if (ci_run([cmd UTF8String]) != 0) failed++;
+        }
+        [[CIConfigManager shared] notifyReload];
+
+        NSUInteger total = paths.count;
+        int done = (int)(total - failed);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud dismissViewControllerAnimated:YES completion:^{
+                [self alert:@"Hoàn tất"
+                    msg:[NSString stringWithFormat:@"Đã reset %d/%lu app.%@", done, (unsigned long)total,
+                        failed ? @"\n(Một số lỗi — cần root helper để xoá container app khác)" : @""]];
+            }];
+        });
+    });
 }
 
 - (void)createRRSForBundles:(NSArray<NSString *> *)bids note:(NSString *)note {
@@ -1341,9 +1372,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (items.count == 0) { [self alert:@"Không có RRS" msg:@"Chưa có snapshot nào để restore."]; return; }
     CIRRSEntry *e = items.firstObject;
     NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
-    NSString *cmd = [NSString stringWithFormat:@"tar -xzf %@ -C /", tar];
-    int rc = ci_run([cmd UTF8String]);
-    [self alert:(rc == 0 ? @"Đã restore" : @"Restore fail") msg:[NSString stringWithFormat:@"rc=%d", rc]];
+    UIAlertController *hud = [self showHUDWithTitle:@"Đang Restore RRS..."];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *cmd = [NSString stringWithFormat:@"tar -xzf %@ -C /", tar];
+        int rc = ci_run([cmd UTF8String]);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud dismissViewControllerAnimated:YES completion:^{
+                [self alert:(rc == 0 ? @"Đã restore" : @"Restore fail") msg:[NSString stringWithFormat:@"rc=%d", rc]];
+            }];
+        });
+    });
 }
 
 - (void)alert:(NSString *)t msg:(NSString *)m {
