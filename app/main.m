@@ -2131,7 +2131,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
 
     NSString *note = _noteField.text ?: @"";
-    NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Đang Change dữ liệu...";
+    NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Bắt đầu change dữ liệu...";
     UIView *hud = [self showHUDWithTitle:title];
 
     NSDate *start = [NSDate date];
@@ -2155,27 +2155,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // 0) Wipe data FIRST (config still has old fake info)
-        //    Then apply new fake config after wipe so next launch gets fresh data.
+        // 0) Apply fake config FIRST so plist has new fake info before any wipe.
+        //    Tweak reads plist on next launch — config must be ready before respring.
 
-        // 1) Kill running instances so file handles release before wipe.
-        for (CIAppInfo *a in fullTargets) {
-            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"Đóng app: %@...", a.name ?: a.bundleID]];
-            NSString *exec = nil;
-            if (a.bundlePath.length) {
-                NSBundle *b = [NSBundle bundleWithPath:a.bundlePath];
-                exec = [[b executablePath] lastPathComponent];
-                if (!exec.length) exec = [b objectForInfoDictionaryKey:@"CFBundleExecutable"];
-            }
-            if (exec.length) {
-                NSString *safe = [exec stringByReplacingOccurrencesOfString:@"'" withString:@""];
-                NSString *cmd = [NSString stringWithFormat:@"killall -9 '%@' 2>/dev/null", safe];
-                ci_run([cmd UTF8String]);
-            }
-        }
-        [NSThread sleepForTimeInterval:0.8];
+        // 1) Apply new fake identities to plist (all fake layers auto-on)
+        [self updateHUDTitle:hud title:@"Tạo thông tin giả mới..."];
+        ci_randomizeIdentities();
 
-        // 2) Wipe each target's container subdirs directly.
+        // 2) Wipe each target's sandbox data (apps read plist after respring).
         NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
                           @"Library/Cookies", @"Library/WebKit",
                           @"Library/Application Support", @"tmp"];
@@ -2197,25 +2184,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             wiped++;
         }
 
-        // 3) Wipe AIDA64-specific caches (sandbox independent)
-        [self updateHUDTitle:hud title:@"Xóa cache AIDA64..."];
-        NSArray *aidaPaths = @[
+        // 3) Clean detection caches (sandbox-independent paths)
+        [self updateHUDTitle:hud title:@"Xóa cache phát hiện..."];
+        NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
             @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",
             @"/var/mobile/Library/Preferences/com.finalwire.aida64.plist",
             @"/var/mobile/Library/Preferences/com.finalwire.aida64-ios.plist",
         ];
-        for (NSString *p in aidaPaths) {
+        for (NSString *p in detectPaths) {
             NSString *cmd = [NSString stringWithFormat:@"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null", p, p, p];
             ci_run([cmd UTF8String]);
         }
 
-        // 4) Apply new fake config LAST (after wipe, before respring)
-        [self updateHUDTitle:hud title:@"Áp dụng thông tin giả mới..."];
-        ci_randomizeIdentities();
+        // 4) Save RRS backup (if requested) after wipe, before respring
         if (backup) [self createRRSForBundles:rrsBids note:note];
 
-        // 5) Safety net: bump wipe_counter so tweak also wipes next launch
+        // 5) Set wipe counters so tweak wipes app on next launch too
         CIConfigManager *cm = [CIConfigManager shared];
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
         for (NSString *bid in allBids) {
@@ -2224,11 +2209,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         }
         [cm save];
 
-        // 6) Respring to reload everything
-        [self updateHUDTitle:hud title:@"Đang respring..."];
+        // 6) Respring to reload fake config + clean app state
+        [self updateHUDTitle:hud title:@"Đang làm mới SpringBoard..."];
         ci_run("uicache --reset 2>/dev/null; killall SpringBoard 2>/dev/null");
 
-        // 7) Enforce a minimum 10-15s HUD so the work feels real.
+        // 7) Brief pause so HUD stays visible long enough to read
         NSTimeInterval elapsed = -[start timeIntervalSinceNow];
         if (elapsed < kMinHUD) [NSThread sleepForTimeInterval:(kMinHUD - elapsed)];
 
