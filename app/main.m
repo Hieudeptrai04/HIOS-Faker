@@ -267,40 +267,6 @@ static void ci_run_cmd(const char *cmd) {
 @end
 
 // ============================================================
-// TAB BAR CONTROLLER
-// ============================================================
-@interface CITabBarController : UITabBarController
-@end
-
-@implementation CITabBarController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-
-    self.tabBar.barTintColor = [CITheme backgroundColor];
-    self.tabBar.backgroundColor = [CITheme backgroundColor];
-    self.tabBar.tintColor = [CITheme accentColor];
-    self.tabBar.unselectedItemTintColor = [CITheme textSecondary];
-
-    if (@available(iOS 15.0, *)) {
-        UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
-        [app configureWithOpaqueBackground];
-        app.backgroundColor = [CITheme backgroundColor];
-        self.tabBar.standardAppearance = app;
-        self.tabBar.scrollEdgeAppearance = app;
-    }
-
-    [self setViewControllers:@[
-        [[CIMainViewController alloc] init],
-        [[CIRRSViewController alloc] init],
-        [[CIAppsViewController alloc] init],
-        [[CISetupViewController alloc] init],
-        [[CISettingsViewController alloc] init],
-    ] animated:NO];
-}
-@end
-
-// ============================================================
 // BASE CELL
 // ============================================================
 @interface CISwitchCell : UITableViewCell
@@ -1212,6 +1178,40 @@ static void ci_run_cmd(const char *cmd) {
     }
 }
 
+@end
+
+// ============================================================
+// TAB BAR CONTROLLER
+// ============================================================
+@interface CITabBarController : UITabBarController
+@end
+
+@implementation CITabBarController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.tabBar.barTintColor = [CITheme backgroundColor];
+    self.tabBar.backgroundColor = [CITheme backgroundColor];
+    self.tabBar.tintColor = [CITheme accentColor];
+    self.tabBar.unselectedItemTintColor = [CITheme textSecondary];
+
+    if (@available(iOS 15.0, *)) {
+        UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
+        [app configureWithOpaqueBackground];
+        app.backgroundColor = [CITheme backgroundColor];
+        self.tabBar.standardAppearance = app;
+        self.tabBar.scrollEdgeAppearance = app;
+    }
+
+    [self setViewControllers:@[
+        [[CIMainViewController alloc] init],
+        [[CIRRSViewController alloc] init],
+        [[CIAppsViewController alloc] init],
+        [[CISetupViewController alloc] init],
+        [[CISettingsViewController alloc] init],
+    ] animated:NO];
+}
 @end
 
 // ============================================================
