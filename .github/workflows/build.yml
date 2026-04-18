@@ -1,10 +1,14 @@
-name: Build iOS Tweak (macOS)
+name: Build ChangeInfoIos
 
 on:
   workflow_dispatch:
   push:
     branches:
       - master
+    paths:
+      - "tweak/**"
+      - "app/**"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: read
@@ -13,56 +17,120 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
+    env:
+      THEOS: /Users/runner/theos
+      THEOS_PACKAGE_SCHEME: rootless
+      SDK_VERSION: "16.5"
+      SDK_RELEASE: "master-146e41f"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Theos
+      - name: Cache Theos + SDK
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/theos
+          key: theos-v4-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
+
+      - name: Install Theos + SDK
+        if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
-          THEOS_DIR="/Users/runner/theos"
-          git clone --recursive https://github.com/theos/theos.git "$THEOS_DIR"
-          mkdir -p "$THEOS_DIR/sdks"
-          curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
-          tar -xf /tmp/sdk.tar.xz -C "$THEOS_DIR/sdks/"
-          echo "THEOS=/Users/runner/theos" >> $GITHUB_ENV
-          echo "Setup complete: THEOS=/Users/runner/theos"
+          set -euo pipefail
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/sdks"
+          curl -fSL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS${SDK_VERSION}.sdk.tar.xz" -o /tmp/sdk.tar.xz
+          tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+          test -f "$THEOS/makefiles/common.mk"
+          test -d "$THEOS/sdks/iPhoneOS${SDK_VERSION}.sdk"
+
+      - name: Verify Theos
+        run: |
+          set -euo pipefail
+          ls "$THEOS/makefiles/common.mk"
+          ls "$THEOS/sdks/"
 
       - name: Build tweak
         run: |
-          echo "THEOS=$THEOS"
-          ls -la $THEOS/makefiles/common.mk
+          set -euo pipefail
           cd tweak
-          rm -rf packages/ .theos/ obj/
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
-          echo "TWEAK_EXIT: $?"
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS=arm64
+          ls -lh packages/
+          test -n "$(ls packages/*.deb 2>/dev/null)"
 
       - name: Build app
         run: |
-          echo "THEOS=$THEOS"
+          set -euo pipefail
           cd app
-          rm -rf packages/ .theos/ obj/
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
-          echo "APP_EXIT: $?"
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS=arm64
+          ls -lh packages/
+          test -n "$(ls packages/*.deb 2>/dev/null)"
 
-      - name: Check result
+      - name: Combine into single deb
+        run: |
+          set -euo pipefail
+
+          TWEAK_DEB=$(ls tweak/packages/*.deb | head -1)
+          APP_DEB=$(ls app/packages/*.deb | head -1)
+          echo "Tweak: $TWEAK_DEB ($(stat -f%z "$TWEAK_DEB") bytes)"
+          echo "App:   $APP_DEB ($(stat -f%z "$APP_DEB") bytes)"
+
+          rm -rf combined /tmp/tweak-extract /tmp/app-extract
+          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract
+
+          dpkg-deb -x "$TWEAK_DEB" /tmp/tweak-extract
+          dpkg-deb -x "$APP_DEB"   /tmp/app-extract
+
+          # merge file trees (tweak dylib + app bundle share /var/jb root)
+          cp -R /tmp/tweak-extract/. combined/
+          cp -R /tmp/app-extract/.   combined/
+
+          VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
+          cat > combined/DEBIAN/control <<EOF
+          Package: com.changeinfoios.bundle
+          Name: ChangeInfoIos
+          Version: ${VERSION}
+          Architecture: iphoneos-arm64
+          Description: Device spoofer for iOS 15-16.7 (tweak + native UI app).
+          Maintainer: ChangeInfoIos
+          Author: ChangeInfoIos
+          Section: Tweaks
+          Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          EOF
+
+          mkdir -p out
+          dpkg-deb -Zxz -b combined "out/ChangeInfoIos_${VERSION}_iphoneos-arm64.deb"
+          ls -lh out/
+
+      - name: Show sizes
         if: always()
         run: |
-          echo "=== Tweak packages ==="
-          find . -path "*/tweak/packages/*.deb" -type f
-          echo "=== App packages ==="
-          find . -path "*/app/packages/*.deb" -type f
+          echo "=== All .deb files ==="
+          find . -name "*.deb" -type f -exec ls -lh {} \; 2>/dev/null || true
 
-      - name: Upload tweak
+      - name: Upload combined deb
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChangeInfoIos-combined
+          path: out/*.deb
+          retention-days: 14
+
+      - name: Upload tweak deb
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tweak-deb
+          name: tweak-only
           path: tweak/packages/*.deb
-          retention-days: 1
+          retention-days: 7
+          if-no-files-found: warn
 
-      - name: Upload app
+      - name: Upload app deb
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-deb
+          name: app-only
           path: app/packages/*.deb
-          retention-days: 1
+          retention-days: 7
+          if-no-files-found: warn
