@@ -144,8 +144,10 @@ static NSString *CIRRSDir(void) {
     // 2) Best-effort mirror to shared path so tweak can read it (may fail on stock sandbox)
     NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    [data writeToFile:kSharedPrefPath atomically:YES];
+    BOOL ok = [data writeToFile:kSharedPrefPath atomically:YES];
     chmod([kSharedPrefPath fileSystemRepresentation], 0644);
+    NSLog(@"[ChangeInfoIos] Config saved: local=%@ shared=%@ ok=%d keys=%lu",
+          CILocalConfigPath(), kSharedPrefPath, ok, (unsigned long)_cfg.count);
     [self notifyReload];
 }
 
@@ -2090,11 +2092,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
-    UIView *card = hud.subviews.firstObject;
-    UILabel *l = [card viewWithTag:0xC1DCE];
-    if (l && [l isKindOfClass:[UILabel class]]) {
-        l.text = title;
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *card = hud.subviews.firstObject;
+        UILabel *l = [card viewWithTag:0xC1DCE];
+        if (l && [l isKindOfClass:[UILabel class]]) {
+            l.text = title;
+        }
+    });
 }
 
 - (void)dismissHUD:(UIView *)hud completion:(void(^)(void))completion {
@@ -2135,7 +2139,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UIView *hud = [self showHUDWithTitle:title];
 
     NSDate *start = [NSDate date];
-    const NSTimeInterval kMinHUD = 12.0;
+    const NSTimeInterval kMinHUD = 8.0;
 
     // Build full target list: user-selected apps + AIDA64 + Lirum + DeviceDesign
     NSArray *aidaBids = @[
@@ -2159,7 +2163,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         //    Tweak reads plist on next launch — config must be ready before respring.
 
         // 1) Apply new fake identities to plist (all fake layers auto-on)
-        [self updateHUDTitle:hud title:@"Tạo thông tin giả mới..."];
+        [self updateHUDTitle:hud title:@"[1/5] Tạo thông tin giả mới..."];
         ci_randomizeIdentities();
 
         // 2) Wipe each target's sandbox data (apps read plist after respring).
@@ -2168,9 +2172,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                           @"Library/Application Support", @"tmp"];
         NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        NSUInteger totalApps = fullTargets.count;
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
-            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"Xóa data: %@...", a.name ?: a.bundleID]];
+            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"[2/5] Xóa %lu/%lu: %@...", (unsigned long)wiped+1, (unsigned long)totalApps, a.name ?: a.bundleID]];
             for (NSString *sub in subs) {
                 NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
                 NSString *cmd = [NSString stringWithFormat:
@@ -2185,7 +2190,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         }
 
         // 3) Clean detection caches (sandbox-independent paths)
-        [self updateHUDTitle:hud title:@"Xóa cache phát hiện..."];
+        [self updateHUDTitle:hud title:@"[3/5] Xóa cache phát hiện..."];
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
             @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",
@@ -2209,9 +2214,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         }
         [cm save];
 
-        // 6) Respring to reload fake config + clean app state
-        [self updateHUDTitle:hud title:@"Đang làm mới SpringBoard..."];
-        ci_run("uicache --reset 2>/dev/null; killall SpringBoard 2>/dev/null");
+        // 6) Respring - reload tweak with new fake config
+        // Use SIGHUP (not SIGKILL) for graceful restart, then wait for SpringBoard to restart
+        [self updateHUDTitle:hud title:@"[5/5] Đang làm mới SpringBoard..."];
+        ci_run("killall -HUP SpringBoard 2>/dev/null; sleep 5; uicache -a 2>/dev/null; sleep 2");
 
         // 7) Brief pause so HUD stays visible long enough to read
         NSTimeInterval elapsed = -[start timeIntervalSinceNow];
