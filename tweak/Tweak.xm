@@ -250,6 +250,14 @@ BOOL jbHideActive(void) {
     return %orig;
 }
 
+- (BOOL)isMultitaskingSupported {
+    return YES;
+}
+
+- (UIUserInterfaceIdiom)userInterfaceIdiom {
+    return UIUserInterfaceIdiomPhone;
+}
+
 %end
 
 // ============================================================
@@ -1102,18 +1110,6 @@ static CLLocation *buildFakeLocation(void) {
         patched[@"DTXcodeBuild"] = fakeBuild;
     }
     return patched;
-}
-
-%end
-
-%hook UIDevice
-
-- (BOOL)isMultitaskingSupported {
-    return YES;
-}
-
-- (UIUserInterfaceIdiom)userInterfaceIdiom {
-    return UIUserInterfaceIdiomPhone;
 }
 
 %end
