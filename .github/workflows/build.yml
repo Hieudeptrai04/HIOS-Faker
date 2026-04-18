@@ -25,8 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ldid
-        run: brew install ldid
+      - name: Install ldid + dpkg
+        run: brew install ldid dpkg
 
       - name: Cache Theos + SDK
         id: cache-theos
