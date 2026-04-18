@@ -159,7 +159,7 @@ static void onPrefsDarwinNotify(CFNotificationCenterRef center, void *observer, 
 
 id getConfig(NSString *key) {
     if (!configLoaded) reloadConfigFromDisk();
-    return spoofConfig[key];
+    return spoofConfig ? spoofConfig[key] : nil;
 }
 
 NSString *getConfigStr(NSString *key) {
@@ -171,17 +171,20 @@ NSString *getConfigStr(NSString *key) {
 
 BOOL getConfigBool(NSString *key) {
     id val = getConfig(key);
-    if ([val respondsToSelector:@selector(boolValue)]) return [val boolValue];
-    return NO;
+    if (val == nil) {
+        // fake_* layers default to ON if key starts with "fake_"
+        if ([key hasPrefix:@"fake_"]) return YES;
+        return NO;
+    }
+    return [val respondsToSelector:@selector(boolValue)] ? [val boolValue] : NO;
 }
 
-/* Plist booleans fake_<name> — missing key = OFF (opt-in). Short names: uiddevice, hardware, sysctl, ... */
+/* Plist booleans fake_<name> — missing key defaults to ON.
+   Short names: uiddevice, hardware, sysctl, ... */
 BOOL fakeLayer(NSString *shortName) {
     if (!isCurrentBundleTargeted()) return NO;
     NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
-    id v = getConfig(full);
-    if (v == nil) return NO;
-    return [v boolValue];
+    return getConfigBool(full);
 }
 
 BOOL jbHideActive(void) {

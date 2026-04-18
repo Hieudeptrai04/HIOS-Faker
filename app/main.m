@@ -528,10 +528,31 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:iosPreset[0] forKey:@"__presetIOSName"];
     [cm setObject:@(YES) forKey:@"fake_sysosversion"];
 
-    // Apply screen/hardware defaults from preset
-    [cm setObject:preset[1] forKey:@"HardwareModel"];
-    [cm setObject:preset[1] forKey:@"HWModelStr"];
-    [cm setObject:preset[2] forKey:@"hw_model"];
+    // Additional keys for deep spoofing (AIDA64 reads these)
+    [cm setObject:ci_randSerial() forKey:@"IOPlatformSerialNumber"];
+    [cm setObject:ci_randHex(40) forKey:@"IOPlatformUUID"];
+    [cm setObject:[NSString stringWithFormat:@"iBoot-%d.%d.%d", arc4random_uniform(100)+7000, arc4random_uniform(99)+1, arc4random_uniform(9)+1] forKey:@"FirmwareVersion"];
+    [cm setObject:[NSString stringWithFormat:@"%d.%d.%d", arc4random_uniform(9)+1, arc4random_uniform(99)+10, arc4random_uniform(9)] forKey:@"BasebandVersion"];
+    [cm setObject:@"16GB" forKey:@"ModelNumber"];
+    [cm setObject:@"VN" forKey:@"RegionCode"];
+    [cm setObject:@"VN/A" forKey:@"RegionInfo"];
+    [cm setObject:preset[1] forKey:@"BoardId"];
+    [cm setObject:[NSString stringWithFormat:@"0x81%02X", arc4random_uniform(256)] forKey:@"ChipID"];
+    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(400)+64) * 1073741824] forKey:@"TotalDiskCapacity"];
+    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(200)+10) * 1073741824] forKey:@"TotalSystemAvailable"];
+    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(100)+5) * 1073741824] forKey:@"DiskUsage"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceName"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceNameMG"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"UserAssignedDeviceName"];
+    [cm setObject:preset[0] forKey:@"MarketingName"];
+    [cm setObject:preset[1] forKey:@"DeviceColor"];
+    [cm setObject:preset[1] forKey:@"DeviceEnclosureColor"];
+    [cm setObject:@"kCTSIMSupportSIMStatusReady" forKey:@"SIMTrayStatus"];
+    [cm setObject:@(NO) forKey:@"AirplaneMode"];
+    [cm setObject:@(arc4random_uniform(80)+20) forKey:@"BatteryCurrentCapacity"];
+    [cm setObject:@(NO) forKey:@"BatteryIsCharging"];
+    [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
+    [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
 
     // Ensure all fake layers on
     NSArray *allFakeLayers = @[
