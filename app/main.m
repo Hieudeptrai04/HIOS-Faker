@@ -2138,9 +2138,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Bắt đầu change dữ liệu...";
     UIView *hud = [self showHUDWithTitle:title];
 
-    NSDate *start = [NSDate date];
-    const NSTimeInterval kMinHUD = 8.0;
-
     // Build full target list: user-selected apps + AIDA64 + Lirum + DeviceDesign
     NSArray *aidaBids = @[
         @"com.finalwire.aida64",
@@ -2159,14 +2156,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // 0) Apply fake config FIRST so plist has new fake info before any wipe.
-        //    Tweak reads plist on next launch — config must be ready before respring.
+        // Step-by-step with visible progress. Each step takes ~1-2s minimum
+        // so the user can read what's happening on screen.
 
-        // 1) Apply new fake identities to plist (all fake layers auto-on)
-        [self updateHUDTitle:hud title:@"[1/5] Tạo thông tin giả mới..."];
+        // Step 1: Generate new fake identities and persist to plist
+        [self updateHUDTitle:hud title:@"[1/4] Tạo thông tin giả mới..."];
+        [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
+        NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
 
-        // 2) Wipe each target's sandbox data (apps read plist after respring).
+        // Step 2: Wipe target app sandboxes
         NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
                           @"Library/Cookies", @"Library/WebKit",
                           @"Library/Application Support", @"tmp"];
@@ -2175,7 +2174,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         NSUInteger totalApps = fullTargets.count;
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
-            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"[2/5] Xóa %lu/%lu: %@...", (unsigned long)wiped+1, (unsigned long)totalApps, a.name ?: a.bundleID]];
+            NSString *stepTitle = [NSString stringWithFormat:@"[2/4] Xóa %lu/%lu: %@...",
+                (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
+            [self updateHUDTitle:hud title:stepTitle];
+            [NSThread sleepForTimeInterval:1.5];
             for (NSString *sub in subs) {
                 NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
                 NSString *cmd = [NSString stringWithFormat:
@@ -2188,9 +2190,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
             wiped++;
         }
+        NSLog(@"[ChangeInfoIos] Step 2 done: wiped %lu apps", (unsigned long)wiped);
 
-        // 3) Clean detection caches (sandbox-independent paths)
-        [self updateHUDTitle:hud title:@"[3/5] Xóa cache phát hiện..."];
+        // Step 3: Clean detection caches + save counters
+        [self updateHUDTitle:hud title:@"[3/4] Xóa cache phát hiện..."];
+        [NSThread sleepForTimeInterval:1.5];
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
             @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",
@@ -2198,36 +2202,44 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             @"/var/mobile/Library/Preferences/com.finalwire.aida64-ios.plist",
         ];
         for (NSString *p in detectPaths) {
-            NSString *cmd = [NSString stringWithFormat:@"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null", p, p, p];
+            NSString *cmd = [NSString stringWithFormat:
+                @"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null",
+                p, p, p];
             ci_run([cmd UTF8String]);
         }
-
-        // 4) Save RRS backup (if requested) after wipe, before respring
         if (backup) [self createRRSForBundles:rrsBids note:note];
-
-        // 5) Set wipe counters so tweak wipes app on next launch too
         CIConfigManager *cm = [CIConfigManager shared];
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
         for (NSString *bid in allBids) {
-            NSString *k = [@"wipe_counter_" stringByAppendingString:bid];
-            [cm setObject:@(counter) forKey:k];
+            [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
         }
         [cm save];
+        NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded");
 
-        // 6) Respring - reload tweak with new fake config
-        // Use SIGHUP (not SIGKILL) for graceful restart, then wait for SpringBoard to restart
-        [self updateHUDTitle:hud title:@"[5/5] Đang làm mới SpringBoard..."];
-        ci_run("killall -HUP SpringBoard 2>/dev/null; sleep 5; uicache -a 2>/dev/null; sleep 2");
+        // Step 4: Respring to reload tweak with new fake config
+        [self updateHUDTitle:hud title:@"[4/4] Đang restart SpringBoard..."];
+        [NSThread sleepForTimeInterval:1.5];
+        // First: kill SpringBoard hard (forces clean restart with fresh tweak load)
+        ci_run("killall -9 SpringBoard 2>/dev/null");
+        [NSThread sleepForTimeInterval:4.0];
+        // Then: refresh app cache
+        ci_run("uicache -a 2>/dev/null");
+        [NSThread sleepForTimeInterval:2.0];
+        NSLog(@"[ChangeInfoIos] Step 4 done: respring executed");
 
-        // 7) Brief pause so HUD stays visible long enough to read
-        NSTimeInterval elapsed = -[start timeIntervalSinceNow];
-        if (elapsed < kMinHUD) [NSThread sleepForTimeInterval:(kMinHUD - elapsed)];
+        // Show completion summary with fake info
+        NSString *model = [cm stringForKey:@"__presetModelName"] ?: @"—";
+        NSString *ios   = [cm stringForKey:@"__presetIOSName"] ?: @"—";
+        NSString *serial = [cm stringForKey:@"SerialNumber"] ?: @"—";
 
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
             NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
             [self alert:t msg:[NSString stringWithFormat:
-                @"Đã xoá dữ liệu %lu app:\n\n%@\n\nĐã respring để áp dụng.", (unsigned long)wiped, listMsg]];
+                @"Đã xoá dữ liệu %lu app:\n%@\n\n"
+                @"Model mới: %@\niOS mới: %@\nSerial: %@\n\n"
+                @"Đã restart SpringBoard.", (unsigned long)wiped, listMsg, model, ios,
+                [serial length] > 12 ? [serial substringToIndex:12] : serial]];
         }];
     });
 }

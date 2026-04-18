@@ -172,7 +172,6 @@ NSString *getConfigStr(NSString *key) {
 BOOL getConfigBool(NSString *key) {
     id val = getConfig(key);
     if (val == nil) {
-        // fake_* layers default to ON if key starts with "fake_"
         if ([key hasPrefix:@"fake_"]) return YES;
         return NO;
     }
