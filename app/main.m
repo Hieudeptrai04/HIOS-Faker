@@ -1,5 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <sys/stat.h>
+#import <sys/wait.h>
+#import <spawn.h>
+#import <notify.h>
+
+@class CIMainViewController, CIRRSViewController, CIAppsViewController,
+       CISetupViewController, CISettingsViewController;
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -61,14 +68,14 @@ static NSMutableDictionary *_config;
         if (data) {
             [data writeToFile:kPrefPath atomically:YES];
             chmod([kPrefPath fileSystemRepresentation], 0644);
-            [[NSFileManager defaultManager] setAttributes:@{NSOwnerAccountName: @"mobile"}
+            [[NSFileManager defaultManager] setAttributes:@{NSFileOwnerAccountName: @"mobile"}
                                             ofItemAtPath:kPrefPath error:nil];
         }
     }
 }
 
 - (void)postReload {
-    system("notify_post com.changeinfoios/ReloadPrefs");
+    notify_post("com.changeinfoios/ReloadPrefs");
 }
 
 - (NSMutableDictionary *)config {
