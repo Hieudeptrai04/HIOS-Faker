@@ -51,7 +51,7 @@ Output: `tweak/packages/*.deb` và `app/packages/*.deb`.
 
 ---
 
-## 4. Bump version — ĐỔI ĐỒNG THỜI 4 FILE
+## 4. Bump version — ĐỔI ĐỒNG THỜI 5 FILE
 
 Mỗi lần release mới, phải sửa **cả 4** chỗ này cho đồng bộ, nếu không CI sẽ gộp version lệch:
 
@@ -99,7 +99,49 @@ File đó đã bị xoá từ commit trước. Không hồi sinh nó.
 
 ---
 
-## 6. Tính năng đã cài (v2.3.0)
+## 6. Bug đã fix (2026-04-19)
+
+### Symptom
+Khi bấm "Change", thông báo "Change thành công" hiện lên nhưng app đọc `[UIDevice currentDevice].model` vẫn trả `"iPhone"` thay vì model được chọn (VD `"iPhone 15 Pro Max"`). Tất cả ứng dụng test đều không thấy thay đổi thông số.
+
+### Root cause
+Trong `app/main.m`, function `ci_randomizeizeIdentities()` (dòng ~502) — được gọi mỗi khi bấm Change — đặt key `deviceModel = @"iPhone"` quá chung chung. Hook `UIDevice.model` trong `Tweak.xm` đọc key này:
+
+```objc
+- (NSString *)model {
+    if (!fakeLayer(@"uiddevice")) return %orig;
+    NSString *val = getConfigStr(@"deviceModel");
+    return val ?: %orig;   // "iPhone" != nil → trả "iPhone"
+}
+```
+
+Vì `"iPhone"` không phải `nil`, hook trả `"iPhone"` thay vì gọi `%orig` (model thật hoặc model fake đầy đủ).
+
+Ngoài ra, 2 key khác cũng thiếu:
+- `systemName` — UIDevice.systemName hook đọc nhưng không set → trả giá trị thật `"iOS"`
+- `deviceName` — UIDevice.name hook đọc key `"deviceName"` nhưng code chỉ set `"DeviceName"`, `"DeviceNameMG"`, `"UserAssignedDeviceName"` → nil → trả tên thiết bị thật
+
+### Fix (commit `ee7d565`)
+```objc:app/main.m
+// TRƯỚC:
+[cm setObject:@"iPhone" forKey:@"deviceModel"];  // quá chung → hook trả "iPhone"
+
+// SAU:
+[cm setObject:preset[0] forKey:@"deviceModel"];   // "iPhone 15 Pro Max"
+[cm setObject:@"iPhone" forKey:@"systemName"];    // thêm: UIDevice.systemName hook
+[cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"deviceName"];  // thêm: UIDevice.name hook
+```
+
+`preset[0]` là tên đầy đủ từ database (VD `"iPhone 15 Pro Max"`, `"iPhone 16 Pro"`, ...).
+
+### Đã commit
+- Commit: `ee7d565` — "fix: set proper deviceModel in ci_randomizeIdentities instead of generic iPhone"
+- Branch: `master`
+- GitHub Actions: tự trigger build, artifact `ChangeInfoIos-combined`
+
+---
+
+## 7. Tính năng đã cài (v2.3.0)
 
 ### App (`app/main.m`)
 - **Tên hiển thị:** "HIOS Faker" (title + bundle display name)
@@ -124,7 +166,7 @@ File đó đã bị xoá từ commit trước. Không hồi sinh nó.
 
 ---
 
-## 7. Config keys quan trọng
+## 8. Config keys quan trọng
 
 Tất cả lưu trong `/var/mobile/Library/Preferences/com.changeinfoios.plist` (tweak đọc) + `<app-sandbox>/…/config.plist` (app ghi) + Darwin notification `com.changeinfoios/ReloadPrefs` để live reload.
 
@@ -142,7 +184,7 @@ Tất cả lưu trong `/var/mobile/Library/Preferences/com.changeinfoios.plist` 
 
 ---
 
-## 8. Checklist trước khi push
+## 9. Checklist trước khi push
 
 - [ ] Đã bump version ở **4 file** (§4)?
 - [ ] `app/main.m` compile-check: còn `#import <math.h>`?
