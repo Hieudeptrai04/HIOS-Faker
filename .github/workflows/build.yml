@@ -38,7 +38,9 @@ jobs:
         run: |
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
+          echo "TWEAK BUILD EXIT: $?"
+          ls -la packages/ 2>/dev/null || echo "No packages dir"
 
       - name: Build app
         env:
@@ -47,7 +49,18 @@ jobs:
         run: |
           cd app
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
+          echo "APP BUILD EXIT: $?"
+          ls -la packages/ 2>/dev/null || echo "No packages dir"
+
+      - name: Show outputs
+        if: always()
+        run: |
+          echo "=== Tweak packages ==="
+          ls -la tweak/packages/ 2>/dev/null || echo "No tweak packages"
+          echo "=== App packages ==="
+          ls -la app/packages/ 2>/dev/null || echo "No app packages"
+          find . -name "*.deb" -type f 2>/dev/null || echo "No debs found"
 
       - name: Combine packages
         run: |
@@ -55,15 +68,25 @@ jobs:
           mkdir -p combined/var/jb/Library/MobileSubstrate/DynamicLibraries
           mkdir -p combined/var/jb/Applications
 
-          dpkg-deb -x tweak/packages/*.deb /tmp/tweak-extract
-          dpkg-deb -x app/packages/*.deb /tmp/app-extract
+          TWEAK_DEB=$(find . -path "*/tweak/packages/*.deb" -type f 2>/dev/null | head -1)
+          APP_DEB=$(find . -name "*.deb" -type f ! -path "*/tweak/*" 2>/dev/null | head -1)
+          
+          echo "Found tweak deb: $TWEAK_DEB"
+          echo "Found app deb: $APP_DEB"
 
-          cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
-          cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-          cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
+          if [ -n "$TWEAK_DEB" ]; then
+            dpkg-deb -x "$TWEAK_DEB" /tmp/tweak-extract
+            cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
+          fi
+
+          if [ -n "$APP_DEB" ]; then
+            dpkg-deb -x "$APP_DEB" /tmp/app-extract
+            cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
+            cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
+          fi
 
           echo "=== Combined files ==="
-          find combined -type f
+          find combined -type f || echo "No combined files"
 
       - name: Create final deb
         run: |
@@ -84,7 +107,9 @@ EOF
           ls -lh packages/
 
       - name: Upload deb
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ChangeInfoIos-v2.2.1
           path: packages/ChangeInfoIos.deb
+          retention-days: 1
