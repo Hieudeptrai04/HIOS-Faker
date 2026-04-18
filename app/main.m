@@ -509,11 +509,14 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSArray *iosPreset = iosList[arc4random_uniform((uint32_t)iosList.count)];
 
     // Apply model preset
-    [cm setObject:@"iPhone" forKey:@"deviceModel"];
+    // deviceModel = full consumer name ("iPhone 15 Pro Max") so UIDevice.model hook
+    // returns something meaningful instead of generic "iPhone"
+    [cm setObject:preset[0] forKey:@"deviceModel"];
     [cm setObject:preset[1] forKey:@"ProductType"];
     [cm setObject:preset[2] forKey:@"hw_machine"];
     [cm setObject:preset[2] forKey:@"uname_machine"];
     [cm setObject:@"iPhone" forKey:@"localizedModel"];
+    [cm setObject:@"iPhone" forKey:@"systemName"];
     [cm setObject:preset[3] forKey:@"screenWidth"];
     [cm setObject:preset[4] forKey:@"screenHeight"];
     [cm setObject:preset[5] forKey:@"screenScale"];
@@ -546,6 +549,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceName"];
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceNameMG"];
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"UserAssignedDeviceName"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"deviceName"];
     [cm setObject:preset[0] forKey:@"MarketingName"];
     [cm setObject:preset[1] forKey:@"DeviceColor"];
     [cm setObject:preset[1] forKey:@"DeviceEnclosureColor"];
