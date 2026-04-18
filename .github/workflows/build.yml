@@ -5,10 +5,6 @@ on:
   push:
     branches:
       - master
-    paths:
-      - "tweak/**"
-      - "app/**"
-      - ".github/workflows/build.yml"
 
 permissions:
   contents: read
@@ -30,6 +26,7 @@ jobs:
           mkdir -p $HOME/theos/sdks
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks/
+          echo "SDK OK"
 
       - name: Build tweak
         env:
@@ -38,78 +35,39 @@ jobs:
         run: |
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
-          echo "TWEAK BUILD EXIT: $?"
-          ls -la packages/ 2>/dev/null || echo "No packages dir"
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee tweak_build.log
+          echo "TWEAK_EXIT: $?"
 
       - name: Build app
         env:
           THEOS: $HOME/theos
           THEOS_PACKAGE_SCHEME: rootless
         run: |
-          cd app
+          cd ../app
           rm -rf packages/ .theos/ obj/
-          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
-          echo "APP BUILD EXIT: $?"
-          ls -la packages/ 2>/dev/null || echo "No packages dir"
+          make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee app_build.log
+          echo "APP_EXIT: $?"
 
-      - name: Show outputs
+      - name: Check result
         if: always()
         run: |
-          echo "=== Tweak packages ==="
-          ls -la tweak/packages/ 2>/dev/null || echo "No tweak packages"
-          echo "=== App packages ==="
-          ls -la app/packages/ 2>/dev/null || echo "No app packages"
-          find . -name "*.deb" -type f 2>/dev/null || echo "No debs found"
+          echo "=== Tweak build log ==="
+          cat tweak/tweak_build.log 2>/dev/null || echo "No tweak log"
+          echo "=== App build log ==="
+          cat app/app_build.log 2>/dev/null || echo "No app log"
+          echo "=== All debs ==="
+          find . -name "*.deb" -type f
 
-      - name: Combine packages
-        run: |
-          mkdir -p combined/DEBIAN
-          mkdir -p combined/var/jb/Library/MobileSubstrate/DynamicLibraries
-          mkdir -p combined/var/jb/Applications
-
-          TWEAK_DEB=$(find . -path "*/tweak/packages/*.deb" -type f 2>/dev/null | head -1)
-          APP_DEB=$(find . -name "*.deb" -type f ! -path "*/tweak/*" 2>/dev/null | head -1)
-          
-          echo "Found tweak deb: $TWEAK_DEB"
-          echo "Found app deb: $APP_DEB"
-
-          if [ -n "$TWEAK_DEB" ]; then
-            dpkg-deb -x "$TWEAK_DEB" /tmp/tweak-extract
-            cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
-          fi
-
-          if [ -n "$APP_DEB" ]; then
-            dpkg-deb -x "$APP_DEB" /tmp/app-extract
-            cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-            cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-          fi
-
-          echo "=== Combined files ==="
-          find combined -type f || echo "No combined files"
-
-      - name: Create final deb
-        run: |
-          cat > combined/DEBIAN/control << 'EOF'
-Package: com.changeinfoios.tweak
-Name: ChangeInfoIos
-Version: 2.2.1
-Architecture: iphoneos-arm64
-Description: Device spoofer for iOS 15-16.7
-Maintainer: ChangeInfoIos
-Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
-EOF
-
-          chmod 755 combined/DEBIAN/control
-          mkdir -p packages
-          dpkg-deb -b combined packages/ChangeInfoIos.deb
-          ls -lh packages/
-
-      - name: Upload deb
+      - name: Upload tweak
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ChangeInfoIos-v2.2.1
-          path: packages/ChangeInfoIos.deb
-          retention-days: 1
+          name: tweak-deb
+          path: tweak/packages/*.deb
+
+      - name: Upload app
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-deb
+          path: app/packages/*.deb
