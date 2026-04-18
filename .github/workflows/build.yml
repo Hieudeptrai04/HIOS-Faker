@@ -10,33 +10,25 @@ permissions:
   contents: read
   actions: write
 
-env:
-  THEOS: ${{ github.workspace }}/theos
-  THEOS_PACKAGE_SCHEME: rootless
-
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone Theos
+      - name: Setup Theos
         run: |
+          THEOS="$HOME/theos"
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          echo "Cloned Theos to $THEOS"
-
-      - name: Download SDK
-        run: |
           mkdir -p "$THEOS/sdks"
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
-          echo "SDK installed"
-          ls "$THEOS/sdks/"
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "Setup complete: THEOS=$THEOS"
 
       - name: Build tweak
         run: |
-          echo "THEOS=$THEOS"
-          ls "$THEOS/makefiles/" | head -5
+          echo "Using THEOS=$THEOS"
           cd tweak
           rm -rf packages/ .theos/ obj/
           make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
@@ -44,7 +36,7 @@ jobs:
 
       - name: Build app
         run: |
-          echo "THEOS=$THEOS"
+          echo "Using THEOS=$THEOS"
           cd app
           rm -rf packages/ .theos/ obj/
           make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
