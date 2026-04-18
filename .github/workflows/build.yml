@@ -47,32 +47,18 @@ jobs:
           rm -rf packages/ .theos/ obj/
           make package THEOS=$THEOS THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64
 
-      - name: Show outputs
-        run: |
-          echo "=== Tweak packages ==="
-          ls -la tweak/packages/
-          echo "=== App packages ==="
-          ls -la app/packages/
-          find . -name "*.deb" -type f
-
       - name: Combine packages
         run: |
           mkdir -p combined/DEBIAN
           mkdir -p combined/var/jb/Library/MobileSubstrate/DynamicLibraries
           mkdir -p combined/var/jb/Applications
 
-          TWEAK=$(find . -path "*/tweak/packages/*.deb" -type f | head -1)
-          if [ -n "$TWEAK" ]; then
-            dpkg-deb -x "$TWEAK" /tmp/tweak-extract
-            cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
-          fi
+          dpkg-deb -x tweak/packages/*.deb /tmp/tweak-extract
+          dpkg-deb -x app/packages/*.deb /tmp/app-extract
 
-          APP=$(find . -name "*.deb" -type f ! -path "*/tweak/*" | head -1)
-          if [ -n "$APP" ]; then
-            dpkg-deb -x "$APP" /tmp/app-extract
-            cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-            cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
-          fi
+          cp -r /tmp/tweak-extract/var/jb/Library/MobileSubstrate/DynamicLibraries/* combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ 2>/dev/null || true
+          cp -r /tmp/app-extract/var/jb/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
+          cp -r /tmp/app-extract/Applications/* combined/var/jb/Applications/ 2>/dev/null || true
 
           echo "=== Combined files ==="
           find combined -type f
