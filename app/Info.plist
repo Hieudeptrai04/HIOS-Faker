@@ -7,13 +7,13 @@
 	<key>CFBundleDisplayName</key>
 	<string>HIOS Faker</string>
 	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
+	<string>ChangeInfoIosApp</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.changeinfoios.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>ChangeInfoIosApp</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
