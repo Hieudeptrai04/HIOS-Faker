@@ -18,17 +18,18 @@ jobs:
 
       - name: Setup Theos
         run: |
-          THEOS="$HOME/theos"
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          mkdir -p "$THEOS/sdks"
+          THEOS_DIR="/Users/runner/theos"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS_DIR"
+          mkdir -p "$THEOS_DIR/sdks"
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
-          tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
-          echo "Setup complete: THEOS=$THEOS"
+          tar -xf /tmp/sdk.tar.xz -C "$THEOS_DIR/sdks/"
+          echo "THEOS=/Users/runner/theos" >> $GITHUB_ENV
+          echo "Setup complete: THEOS=/Users/runner/theos"
 
       - name: Build tweak
         run: |
-          echo "Using THEOS=$THEOS"
+          echo "THEOS=$THEOS"
+          ls -la $THEOS/makefiles/common.mk
           cd tweak
           rm -rf packages/ .theos/ obj/
           make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
@@ -36,7 +37,7 @@ jobs:
 
       - name: Build app
         run: |
-          echo "Using THEOS=$THEOS"
+          echo "THEOS=$THEOS"
           cd app
           rm -rf packages/ .theos/ obj/
           make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
