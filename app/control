@@ -1,6 +1,6 @@
 Package: com.changeinfoios.app
 Name: ChangeInfoIos App
-Version: 2.2.1-native
+Version: 2.3.0
 Architecture: iphoneos-arm64
 Description: Native UI app for ChangeInfoIos tweak. Configure device spoofing settings.
 Maintainer: ChangeInfoIos

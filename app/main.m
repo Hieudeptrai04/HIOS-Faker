@@ -7,6 +7,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 #import <sys/utsname.h>
+#import <math.h>
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -91,6 +92,34 @@ static NSString *CIRRSDir(void) {
         _cfg = [[NSMutableDictionary dictionaryWithContentsOfFile:kSharedPrefPath] mutableCopy];
     }
     if (!_cfg) _cfg = [NSMutableDictionary dictionary];
+    [self seedDefaultsIfNeeded];
+}
+
+// Default-ON for all fake layers. User can still turn individual layers off
+// in settings — seedDefaults only fills values that are absent from config.
+- (void)seedDefaultsIfNeeded {
+    NSArray *allFakeLayers = @[
+        @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",
+        @"fake_processinfo", @"fake_location", @"fake_datetime", @"fake_locale",
+        @"fake_locale2", @"fake_network", @"fake_hardware", @"fake_sensor",
+        @"fake_ads", @"fake_wifi", @"fake_tracking_pasteboard", @"fake_trackingdefaults",
+        @"fake_uiddevice2", @"fake_sysctl", @"fake_battery", @"fake_browser",
+        @"fake_metal", @"fake_webrtc", @"fake_timing", @"fake_keychain",
+        @"fake_jbhide", @"fake_uptime",
+    ];
+    BOOL seeded = NO;
+    for (NSString *k in allFakeLayers) {
+        if (_cfg[k] == nil) { _cfg[k] = @(YES); seeded = YES; }
+    }
+    if (_cfg[@"hideJailbreak"]   == nil) { _cfg[@"hideJailbreak"]   = @(YES); seeded = YES; }
+    if (_cfg[@"web_canvasNoise"] == nil) { _cfg[@"web_canvasNoise"] = @(YES); seeded = YES; }
+    if (_cfg[@"keychainReset"]   == nil) { _cfg[@"keychainReset"]   = @(YES); seeded = YES; }
+    if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
+    if (seeded) {
+        NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
+                        format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+        if (data) [data writeToFile:CILocalConfigPath() atomically:YES];
+    }
 }
 
 - (NSMutableDictionary *)config { return _cfg; }
@@ -143,6 +172,334 @@ static NSString *CIRRSDir(void) {
 // ============================================================
 // SHELL RUNNER (best-effort; needs root for container operations)
 // ============================================================
+// ============================================================
+// RANDOM HARDWARE IDENTIFIER GENERATORS
+// Each call yields a fresh value — used on every Reset Data.
+// GPS / locale / carrier are intentionally NOT randomized.
+// ============================================================
+static NSString *ci_randHex(NSUInteger n) {
+    static const char *H = "0123456789ABCDEF";
+    char *buf = (char *)malloc(n + 1); if (!buf) return @"";
+    for (NSUInteger i = 0; i < n; i++) buf[i] = H[arc4random_uniform(16)];
+    buf[n] = 0;
+    NSString *s = [NSString stringWithUTF8String:buf];
+    free(buf); return s;
+}
+static NSString *ci_randHexLower(NSUInteger n) {
+    return [ci_randHex(n) lowercaseString];
+}
+static NSString *ci_randAlnum(NSUInteger n) {
+    static const char *A = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789"; // no I,O
+    char *buf = (char *)malloc(n + 1); if (!buf) return @"";
+    for (NSUInteger i = 0; i < n; i++) buf[i] = A[arc4random_uniform(34)];
+    buf[n] = 0;
+    NSString *s = [NSString stringWithUTF8String:buf];
+    free(buf); return s;
+}
+static NSString *ci_randDigits(NSUInteger n) {
+    char *buf = (char *)malloc(n + 1); if (!buf) return @"";
+    for (NSUInteger i = 0; i < n; i++) buf[i] = '0' + arc4random_uniform(10);
+    buf[n] = 0;
+    NSString *s = [NSString stringWithUTF8String:buf];
+    free(buf); return s;
+}
+// Luhn-valid IMEI (15 digits): 14 random digits + checksum
+static NSString *ci_randIMEI(void) {
+    int d[15] = {0};
+    // TAC prefix from a realistic iPhone range (353328 = iPhone 13 family; keep random within plausible)
+    const int prefix[8] = {3,5,3,3,2,8,1,1};
+    for (int i = 0; i < 8; i++) d[i] = prefix[i];
+    for (int i = 8; i < 14; i++) d[i] = arc4random_uniform(10);
+    int sum = 0;
+    for (int i = 0; i < 14; i++) {
+        int v = d[i];
+        if (i % 2 == 1) { v *= 2; if (v > 9) v -= 9; }
+        sum += v;
+    }
+    d[14] = (10 - (sum % 10)) % 10;
+    NSMutableString *s = [NSMutableString stringWithCapacity:15];
+    for (int i = 0; i < 15; i++) [s appendFormat:@"%d", d[i]];
+    return s;
+}
+static NSString *ci_randMAC(void) {
+    // Locally administered, unicast (second nibble = 2/6/A/E)
+    NSMutableString *s = [NSMutableString string];
+    for (int i = 0; i < 6; i++) {
+        if (i) [s appendString:@":"];
+        uint8_t b = arc4random_uniform(256);
+        if (i == 0) b = (b & 0xFC) | 0x02;
+        [s appendFormat:@"%02x", b];
+    }
+    return s;
+}
+static NSString *ci_randUUID(void) { return [[NSUUID UUID] UUIDString]; }
+static NSString *ci_randSerial(void) {
+    // Apple-ish format: 2 location + 3 date + 5 alnum = 10 chars
+    return [NSString stringWithFormat:@"%@%@%@",
+        ci_randAlnum(2), ci_randAlnum(3), ci_randAlnum(5)];
+}
+
+// Regional profile = coherent bundle of GPS + timezone + locale + carrier.
+// Picking real city coords + matching carrier avoids "same location every reg"
+// (accounts die) while staying plausible to fingerprinters.
+static NSArray *ci_geoProfiles(void) {
+    static NSArray *p = nil;
+    if (!p) p = @[
+        // lat, lon, tz, locale, countryCode, currency, lang, carrier, mcc, mnc, iso
+        @[@34.0522, @-118.2437, @"America/Los_Angeles", @"en_US", @"US", @"USD", @"en", @"T-Mobile",   @"310", @"260", @"us"],
+        @[@40.7128, @-74.0060,  @"America/New_York",    @"en_US", @"US", @"USD", @"en", @"Verizon",    @"311", @"480", @"us"],
+        @[@41.8781, @-87.6298,  @"America/Chicago",     @"en_US", @"US", @"USD", @"en", @"AT&T",       @"310", @"410", @"us"],
+        @[@25.7617, @-80.1918,  @"America/New_York",    @"en_US", @"US", @"USD", @"en", @"T-Mobile",   @"310", @"260", @"us"],
+        @[@37.7749, @-122.4194, @"America/Los_Angeles", @"en_US", @"US", @"USD", @"en", @"AT&T",       @"310", @"410", @"us"],
+        @[@29.7604, @-95.3698,  @"America/Chicago",     @"en_US", @"US", @"USD", @"en", @"Verizon",    @"311", @"480", @"us"],
+        @[@33.4484, @-112.0740, @"America/Phoenix",     @"en_US", @"US", @"USD", @"en", @"T-Mobile",   @"310", @"260", @"us"],
+        @[@47.6062, @-122.3321, @"America/Los_Angeles", @"en_US", @"US", @"USD", @"en", @"AT&T",       @"310", @"410", @"us"],
+        @[@51.5074, @-0.1278,   @"Europe/London",       @"en_GB", @"GB", @"GBP", @"en", @"EE",         @"234", @"30",  @"gb"],
+        @[@48.8566, @2.3522,    @"Europe/Paris",        @"fr_FR", @"FR", @"EUR", @"fr", @"Orange",     @"208", @"01",  @"fr"],
+        @[@52.5200, @13.4050,   @"Europe/Berlin",       @"de_DE", @"DE", @"EUR", @"de", @"Telekom",    @"262", @"01",  @"de"],
+        @[@41.9028, @12.4964,   @"Europe/Rome",         @"it_IT", @"IT", @"EUR", @"it", @"TIM",        @"222", @"01",  @"it"],
+        @[@40.4168, @-3.7038,   @"Europe/Madrid",       @"es_ES", @"ES", @"EUR", @"es", @"Movistar",   @"214", @"07",  @"es"],
+        @[@35.6762, @139.6503,  @"Asia/Tokyo",          @"ja_JP", @"JP", @"JPY", @"ja", @"NTT DOCOMO", @"440", @"10",  @"jp"],
+        @[@37.5665, @126.9780,  @"Asia/Seoul",          @"ko_KR", @"KR", @"KRW", @"ko", @"SK Telecom", @"450", @"05",  @"kr"],
+        @[@1.3521,  @103.8198,  @"Asia/Singapore",      @"en_SG", @"SG", @"SGD", @"en", @"Singtel",    @"525", @"01",  @"sg"],
+        @[@-33.8688,@151.2093,  @"Australia/Sydney",    @"en_AU", @"AU", @"AUD", @"en", @"Telstra",    @"505", @"01",  @"au"],
+        @[@43.6532, @-79.3832,  @"America/Toronto",     @"en_CA", @"CA", @"CAD", @"en", @"Rogers",     @"302", @"720", @"ca"],
+    ];
+    return p;
+}
+
+static double ci_randDouble(double lo, double hi) {
+    return lo + ((double)arc4random() / (double)UINT32_MAX) * (hi - lo);
+}
+
+// Area-uniform jitter inside a disk of radius `radiusKm` around (lat0, lon0).
+// Uses r = R * sqrt(U) so density is uniform across the disk — a flat
+// ±degree offset would cluster samples in the corners and be easier to
+// fingerprint as synthetic.
+static void ci_jitterCoordKm(double lat0, double lon0, double radiusKm,
+                             double *outLat, double *outLon) {
+    const double kEarthR = 6371.0; // km
+    double u1 = ci_randDouble(0.0, 1.0);
+    double u2 = ci_randDouble(0.0, 1.0);
+    double r  = radiusKm * sqrt(u1);
+    double t  = 2.0 * M_PI * u2;
+
+    // Offset in degrees (small-angle approximation — fine up to ~1000 km)
+    double dLat = (r / kEarthR) * cos(t) * (180.0 / M_PI);
+    double cosLat = cos(lat0 * M_PI / 180.0);
+    if (cosLat < 0.001) cosLat = 0.001; // guard against poles
+    double dLon = (r / kEarthR) * sin(t) * (180.0 / M_PI) / cosLat;
+
+    double lat = lat0 + dLat;
+    double lon = lon0 + dLon;
+    // Clamp & wrap
+    if (lat > 85.0) lat = 85.0; if (lat < -85.0) lat = -85.0;
+    while (lon > 180.0)  lon -= 360.0;
+    while (lon < -180.0) lon += 360.0;
+    *outLat = lat; *outLon = lon;
+}
+
+// Realistic sensor fuzz: fresh GPS fix accuracy, plausible speed/course.
+// Map apps flag speed=0 + accuracy=0 as synthetic; random but bounded values
+// look like a phone that just finished a cold GPS fix.
+static void ci_writeLocationFuzz(CIConfigManager *cm) {
+    // 5–25m horizontal accuracy — typical outdoor fix
+    [cm setObject:[NSString stringWithFormat:@"%.1f", ci_randDouble(5.0, 25.0)]
+           forKey:@"locationAccuracy"];
+    // 0–2 m/s: standing / slow walking
+    [cm setObject:[NSString stringWithFormat:@"%.2f", ci_randDouble(0.0, 2.0)]
+           forKey:@"locationSpeed"];
+    [cm setObject:[NSString stringWithFormat:@"%.1f", ci_randDouble(0.0, 360.0)]
+           forKey:@"locationCourse"];
+}
+
+// countryCode → MCC / MNC / carrierName / locale / currency / language
+// Used to align carrier/locale with the proxy country returned by ip-api.
+static NSDictionary *ci_countryMap(void) {
+    static NSDictionary *m = nil;
+    if (!m) m = @{
+        @"US": @[@"310", @"260", @"T-Mobile",   @"en_US", @"USD", @"en", @"us"],
+        @"GB": @[@"234", @"30",  @"EE",         @"en_GB", @"GBP", @"en", @"gb"],
+        @"FR": @[@"208", @"01",  @"Orange",     @"fr_FR", @"EUR", @"fr", @"fr"],
+        @"DE": @[@"262", @"01",  @"Telekom",    @"de_DE", @"EUR", @"de", @"de"],
+        @"IT": @[@"222", @"01",  @"TIM",        @"it_IT", @"EUR", @"it", @"it"],
+        @"ES": @[@"214", @"07",  @"Movistar",   @"es_ES", @"EUR", @"es", @"es"],
+        @"JP": @[@"440", @"10",  @"NTT DOCOMO", @"ja_JP", @"JPY", @"ja", @"jp"],
+        @"KR": @[@"450", @"05",  @"SK Telecom", @"ko_KR", @"KRW", @"ko", @"kr"],
+        @"SG": @[@"525", @"01",  @"Singtel",    @"en_SG", @"SGD", @"en", @"sg"],
+        @"AU": @[@"505", @"01",  @"Telstra",    @"en_AU", @"AUD", @"en", @"au"],
+        @"CA": @[@"302", @"720", @"Rogers",     @"en_CA", @"CAD", @"en", @"ca"],
+        @"NL": @[@"204", @"08",  @"KPN",        @"nl_NL", @"EUR", @"nl", @"nl"],
+        @"SE": @[@"240", @"01",  @"Telia",      @"sv_SE", @"SEK", @"sv", @"se"],
+        @"BR": @[@"724", @"06",  @"Vivo",       @"pt_BR", @"BRL", @"pt", @"br"],
+        @"IN": @[@"405", @"840", @"Jio",        @"en_IN", @"INR", @"en", @"in"],
+        @"VN": @[@"452", @"01",  @"Viettel",    @"vi_VN", @"VND", @"vi", @"vn"],
+        @"TH": @[@"520", @"03",  @"AIS",        @"th_TH", @"THB", @"th", @"th"],
+        @"PH": @[@"515", @"03",  @"Smart",      @"en_PH", @"PHP", @"en", @"ph"],
+        @"ID": @[@"510", @"10",  @"Telkomsel",  @"id_ID", @"IDR", @"id", @"id"],
+        @"MX": @[@"334", @"020", @"Telcel",     @"es_MX", @"MXN", @"es", @"mx"],
+        @"HK": @[@"454", @"00",  @"CSL",        @"zh_HK", @"HKD", @"zh", @"hk"],
+        @"TW": @[@"466", @"92",  @"Chunghwa",   @"zh_TW", @"TWD", @"zh", @"tw"],
+        @"CN": @[@"460", @"00",  @"China Mobile", @"zh_CN", @"CNY", @"zh", @"cn"],
+    };
+    return m;
+}
+
+// Blocking HTTP GET to ip-api.com — returns parsed dict or nil on any failure.
+// Runs on background queue (caller is already off main), 5s timeout.
+static NSDictionary *ci_fetchProxyGeo(NSString *url) {
+    if (!url.length) url = @"http://ip-api.com/json";
+    NSURL *u = [NSURL URLWithString:url];
+    if (!u) return nil;
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:u];
+    req.timeoutInterval = 5.0;
+    req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+    [req setValue:@"close" forHTTPHeaderField:@"Connection"];
+
+    __block NSData *data = nil; __block NSError *err = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *d, NSURLResponse *_r, NSError *e) {
+            data = d; err = e; dispatch_semaphore_signal(sem);
+        }];
+    [t resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)));
+    if (err || !data) return nil;
+
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![json isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *status = json[@"status"];
+    if (status && ![status isEqualToString:@"success"]) return nil;
+    return json;
+}
+
+// Apply ip-api geo response to config. Returns YES if applied.
+static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
+    if (!geo) return NO;
+    id latV = geo[@"lat"], lonV = geo[@"lon"];
+    if (!latV || !lonV) return NO;
+    CIConfigManager *cm = [CIConfigManager shared];
+
+    // Match proxy IP location — small jitter (~2km) only for GPS sensor
+    // realism so every reset isn't pixel-identical. Big jitter here would
+    // create an IP/GPS mismatch and defeat the point of the proxy.
+    double lat = 0, lon = 0;
+    ci_jitterCoordKm([latV doubleValue], [lonV doubleValue], 2.0, &lat, &lon);
+    double alt = ci_randDouble(5.0, 180.0);
+    [cm setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
+    [cm setObject:[NSString stringWithFormat:@"%.6f", lon] forKey:@"longitude"];
+    [cm setObject:[NSString stringWithFormat:@"%.2f", alt] forKey:@"altitude"];
+    ci_writeLocationFuzz(cm);
+
+    NSString *tz = geo[@"timezone"];
+    if ([tz isKindOfClass:[NSString class]] && tz.length) [cm setObject:tz forKey:@"timezoneName"];
+
+    NSString *cc = geo[@"countryCode"];
+    if ([cc isKindOfClass:[NSString class]] && cc.length) {
+        NSArray *info = ci_countryMap()[cc.uppercaseString];
+        if (info.count >= 7) {
+            [cm setObject:info[0] forKey:@"carrierMCC"];
+            [cm setObject:info[1] forKey:@"carrierMNC"];
+            [cm setObject:info[3] forKey:@"localeIdentifier"];
+            [cm setObject:cc.uppercaseString forKey:@"localeCountryCode"];
+            [cm setObject:info[4] forKey:@"localeCurrencyCode"];
+            [cm setObject:info[5] forKey:@"localeLanguageCode"];
+            [cm setObject:info[6] forKey:@"carrierISO"];
+            // Prefer real ISP name from ip-api so carrier matches the proxy's ASN.
+            NSString *isp = geo[@"isp"]; if (![isp isKindOfClass:[NSString class]]) isp = nil;
+            [cm setObject:(isp.length ? isp : info[2]) forKey:@"carrierName"];
+        } else {
+            // Unknown country — at least set the country code so locale is broadly right.
+            [cm setObject:cc.uppercaseString forKey:@"localeCountryCode"];
+            NSString *isp = geo[@"isp"];
+            if ([isp isKindOfClass:[NSString class]] && isp.length)
+                [cm setObject:isp forKey:@"carrierName"];
+        }
+    }
+    NSString *q = geo[@"query"];
+    if ([q isKindOfClass:[NSString class]] && q.length) [cm setObject:q forKey:@"lastResetIP"];
+    return YES;
+}
+
+// Regenerate every rotating identity + geo profile on each Reset.
+// Does NOT touch user-chosen model/iOS (those come from Picker).
+static NSUInteger ci_randomizeIdentities(void) {
+    CIConfigManager *cm = [CIConfigManager shared];
+
+    // Hardware IDs
+    NSDictionary *ids = @{
+        @"serialNumber":                          ci_randSerial(),
+        @"SerialNumber":                          ci_randSerial(),
+        @"advertisingIdentifier":                 ci_randUUID(),
+        @"identifierForVendor":                   ci_randUUID(),
+        @"UniqueDeviceID":                        ci_randHexLower(40),
+        @"UniqueChipID":                          [NSString stringWithFormat:@"%llu",
+                                                    ((unsigned long long)arc4random() << 32) | arc4random()],
+        @"InternationalMobileEquipmentIdentity":  ci_randIMEI(),
+        @"InternationalMobileEquipmentIdentity2": ci_randIMEI(),
+        @"MobileEquipmentIdentifier":             ci_randHex(14),
+        @"IntegratedCircuitCardIdentity":         [@"8901" stringByAppendingString:ci_randDigits(16)],
+        @"IntegratedCircuitCardIdentity2":        [@"8901" stringByAppendingString:ci_randDigits(16)],
+        @"WiFiAddress":                           ci_randMAC(),
+        @"BluetoothAddress":                      ci_randMAC(),
+        @"EthernetAddress":                       ci_randMAC(),
+        @"wifiBSSID":                             ci_randMAC(),
+        @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
+    };
+    [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *_) {
+        [cm setObject:v forKey:k];
+    }];
+
+    // Geo strategy:
+    //   • Proxy ON  → ip-api sees proxy's country → GPS pinned to proxy IP
+    //     (tiny ~2km jitter) so IP and GPS stay coherent.
+    //   • Proxy OFF / no internet → fetch fails → random point inside Vietnam
+    //     within `vn_radiusKm` (default 999km from central VN), VN carrier bundle.
+    NSString *apiURL = [cm stringForKey:@"ip_api_url"];
+    NSDictionary *geo = ci_fetchProxyGeo(apiURL);
+    BOOL applied = ci_applyGeoFromIPAPI(geo);
+    if (!applied) {
+        // Central Vietnam anchor (near Da Nang) so 999km disk covers all of VN.
+        const double kVNLat = 16.0, kVNLon = 107.0;
+        double radius = 999.0;
+        id rv = [cm objectForKey:@"vn_radiusKm"];
+        if ([rv respondsToSelector:@selector(doubleValue)]) {
+            double r = [rv doubleValue];
+            if (r > 0) radius = r;
+        }
+        double lat = 0, lon = 0;
+        ci_jitterCoordKm(kVNLat, kVNLon, radius, &lat, &lon);
+        double alt = ci_randDouble(5.0, 180.0);
+        [cm setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
+        [cm setObject:[NSString stringWithFormat:@"%.6f", lon] forKey:@"longitude"];
+        [cm setObject:[NSString stringWithFormat:@"%.2f", alt] forKey:@"altitude"];
+        ci_writeLocationFuzz(cm);
+
+        // VN locale/TZ + rotate between major VN telcos
+        NSArray *vnCarriers = @[
+            @[@"Viettel",      @"452", @"01"],
+            @[@"Viettel",      @"452", @"04"],
+            @[@"MobiFone",     @"452", @"02"],
+            @[@"Vinaphone",    @"452", @"03"],
+            @[@"Vinaphone",    @"452", @"07"],
+            @[@"Vietnamobile", @"452", @"05"],
+        ];
+        NSArray *car = vnCarriers[arc4random_uniform((uint32_t)vnCarriers.count)];
+        [cm setObject:@"Asia/Ho_Chi_Minh" forKey:@"timezoneName"];
+        [cm setObject:@"vi_VN" forKey:@"localeIdentifier"];
+        [cm setObject:@"VN"    forKey:@"localeCountryCode"];
+        [cm setObject:@"VND"   forKey:@"localeCurrencyCode"];
+        [cm setObject:@"vi"    forKey:@"localeLanguageCode"];
+        [cm setObject:car[0]   forKey:@"carrierName"];
+        [cm setObject:car[1]   forKey:@"carrierMCC"];
+        [cm setObject:car[2]   forKey:@"carrierMNC"];
+        [cm setObject:@"vn"    forKey:@"carrierISO"];
+    }
+
+    [cm save];
+    return ids.count + 12;
+}
+
 static int ci_run(const char *cmd) {
     pid_t pid;
     char *envp[] = { NULL };
@@ -680,10 +1037,87 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 + (CIRow *)note:(NSString *)text indent:(CGFloat)pad {
     CIRow *r = [CIRow new]; r.kind = CIRowNote; r.title = text; r.leftPad = pad; return r;
 }
++ (CIRow *)choose:(NSString *)title key:(NSString *)key indent:(CGFloat)pad {
+    CIRow *r = [CIRow new]; r.kind = CIRowChoose; r.title = title; r.key = key; r.leftPad = pad; return r;
+}
+
+// Shared preset data (iPhone 5 → 16 Pro Max)
+// Columns: name, productType, machine, width, height, scale, nativeW, nativeH, nativeScale
++ (NSArray *)devicePresets {
+    static NSArray *presets = nil;
+    if (!presets) {
+        presets = @[
+            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 7 Plus",     @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone 8",          @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 8 Plus",     @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3", @"1242", @"2208", @"3"],
+            @[@"iPhone X",          @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone XR",         @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2", @"828",  @"1792", @"2"],
+            @[@"iPhone XS",         @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone XS Max",     @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3", @"1242", @"2688", @"3"],
+            @[@"iPhone SE (2)",     @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 11",         @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2", @"828",  @"1792", @"2"],
+            @[@"iPhone 11 Pro",     @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
+            @[@"iPhone 11 Pro Max", @"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3", @"1242", @"2688", @"3"],
+            @[@"iPhone 12 mini",    @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3", @"1080", @"2340", @"3"],
+            @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3"],
+            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone SE (3)",     @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2"],
+            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3"],
+            @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3"],
+            @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3"],
+            @[@"iPhone 16 Plus",    @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3"],
+            @[@"iPhone 16 Pro",     @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3"],
+            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3"],
+        ];
+    }
+    return presets;
+}
+
+// iOS version presets — name, systemVersion, BuildVersion
++ (NSArray *)iosPresets {
+    static NSArray *v = nil;
+    if (!v) {
+        v = @[
+            @[@"iOS 12.5.7", @"12.5.7",  @"16H81"],
+            @[@"iOS 13.7",   @"13.7",    @"17H35"],
+            @[@"iOS 14.8.1", @"14.8.1",  @"18H107"],
+            @[@"iOS 15.8.3", @"15.8.3",  @"19H390"],
+            @[@"iOS 16.7.10",@"16.7.10", @"20H350"],
+            @[@"iOS 17.4.1", @"17.4.1",  @"21E236"],
+            @[@"iOS 17.5.1", @"17.5.1",  @"21F90"],
+            @[@"iOS 17.6.1", @"17.6.1",  @"21G93"],
+            @[@"iOS 17.7.2", @"17.7.2",  @"21H221"],
+            @[@"iOS 18.0.1", @"18.0.1",  @"22A3370"],
+            @[@"iOS 18.1.1", @"18.1.1",  @"22B91"],
+            @[@"iOS 18.2",   @"18.2",    @"22C152"],
+            @[@"iOS 18.3.2", @"18.3.2",  @"22D82"],
+        ];
+    }
+    return v;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Fake iOS version & model";
+    self.title = @"Fake Settings";
     self.view.backgroundColor = [CITheme bg];
     self.tableView.backgroundColor = [CITheme bg];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
@@ -691,11 +1125,27 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     self.tableView.estimatedRowHeight = 52;
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self buildRows];
-    self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)],
-        [[UIBarButtonItem alloc] initWithTitle:@"All" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAllFakes)],
-        [[UIBarButtonItem alloc] initWithTitle:@"Preset" style:UIBarButtonItemStylePlain target:self action:@selector(showPresets)],
-    ];
+    // Single compact menu on the right — avoids overflow on narrow screens.
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                      target:self action:@selector(done)];
+    UIBarButtonItem *menu = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] ?: nil
+                style:UIBarButtonItemStylePlain target:self action:@selector(showMenu)];
+    self.navigationItem.rightBarButtonItems = @[self.navigationItem.rightBarButtonItem, menu];
+}
+
+- (void)showMenu {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Chọn Model iPhone" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) { [self showPresets]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Chọn iOS Version" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) { [self showIOSPresets]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Bật/tắt toàn bộ Fake" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) { [self toggleAllFakes]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)done { [[CIConfigManager shared] save]; [self.navigationController popViewControllerAnimated:YES]; }
@@ -715,36 +1165,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (void)showPresets {
-    static NSArray *presets = nil;
-    if (!presets) {
-        // name, productType, machine, width, height, scale
-        presets = @[
-            @[@"iPhone 5",         @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2"],
-            @[@"iPhone 5s",        @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2"],
-            @[@"iPhone SE (1)",    @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2"],
-            @[@"iPhone 6",         @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2"],
-            @[@"iPhone 6 Plus",    @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3"],
-            @[@"iPhone 6s",        @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2"],
-            @[@"iPhone 6s Plus",   @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3"],
-            @[@"iPhone 7",         @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2"],
-            @[@"iPhone 7 Plus",    @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3"],
-            @[@"iPhone 8",         @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2"],
-            @[@"iPhone 8 Plus",    @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3"],
-            @[@"iPhone X",         @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3"],
-            @[@"iPhone XR",        @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2"],
-            @[@"iPhone XS",        @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3"],
-            @[@"iPhone XS Max",    @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3"],
-            @[@"iPhone SE (2)",    @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2"],
-            @[@"iPhone 11",        @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2"],
-            @[@"iPhone 11 Pro",    @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3"],
-            @[@"iPhone 11 Pro Max",@"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3"],
-            @[@"iPhone 12 mini",   @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3"],
-            @[@"iPhone 12",        @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3"],
-            @[@"iPhone 12 Pro",    @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3"],
-            @[@"iPhone 12 Pro Max",@"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3"],
-        ];
-    }
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Device Preset" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *presets = [CIFakeSettingsViewController devicePresets];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Model iPhone"
+        message:@"iPhone 5 → iPhone 16 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSArray *p in presets) {
         [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
             [self applyPreset:p];
@@ -752,11 +1175,29 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
     [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
     ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, 0, 1, 1);
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)showIOSPresets {
+    NSArray *presets = [CIFakeSettingsViewController iosPresets];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn iOS Version"
+        message:@"iOS 12 → iOS 18" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSArray *p in presets) {
+        [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+            [self applyIOSPreset:p];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, 0, 1, 1);
     [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)applyPreset:(NSArray *)p {
-    // p = [name, productType, machine, width, height, scale]
+    // p = [name, productType, machine, w, h, scale, nativeW, nativeH, nativeScale]
     CIConfigManager *cm = [CIConfigManager shared];
     [cm setObject:@"iPhone" forKey:@"deviceModel"];
     [cm setObject:@"iPhone" forKey:@"localizedModel"];
@@ -765,18 +1206,38 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [cm setObject:p[3] forKey:@"screenWidth"];
     [cm setObject:p[4] forKey:@"screenHeight"];
     [cm setObject:p[5] forKey:@"screenScale"];
+    if (p.count >= 9) {
+        [cm setObject:p[6] forKey:@"nativeScreenWidth"];
+        [cm setObject:p[7] forKey:@"nativeScreenHeight"];
+        [cm setObject:p[8] forKey:@"nativeScale"];
+    }
+    [cm setObject:p[0] forKey:@"__presetModelName"];
     [cm setObject:@(YES) forKey:@"fake_uiddevice"];
     [cm setObject:@(YES) forKey:@"fake_screen"];
     [cm save];
     [self.tableView reloadData];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Đã chọn" message:[NSString stringWithFormat:@"Preset: %@", p[0]] preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)applyIOSPreset:(NSArray *)p {
+    // p = [name, systemVersion, BuildVersion]
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:p[1] forKey:@"systemVersion"];
+    [cm setObject:p[2] forKey:@"BuildVersion"];
+    [cm setObject:p[0] forKey:@"__presetIOSName"];
+    [cm setObject:@(YES) forKey:@"fake_sysosversion"];
+    [cm save];
+    [self.tableView reloadData];
 }
 
 - (void)buildRows {
     Class C = [CIFakeSettingsViewController class];
     _rows = [NSMutableArray array];
+
+    // Quick picker shortcuts at the top
+    [_rows addObject:[C header:@"Chọn nhanh"]];
+    [_rows addObject:[C choose:@"📱  Chọn Model iPhone" key:@"__presetModelName" indent:0]];
+    [_rows addObject:[C choose:@"🍎  Chọn iOS Version" key:@"__presetIOSName" indent:0]];
+    [_rows addObject:[C note:@"Model: iPhone 5 → iPhone 16 Pro Max. iOS: 12 → 18." indent:8]];
 
     // 1. Fake iOS Version
     [_rows addObject:[C toggle:@"1. Fake iOS Version" key:@"fake_sysosversion" indent:0]];
@@ -915,28 +1376,35 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     c.backgroundColor = [CITheme bg];
 
     CGFloat W = tv.bounds.size.width;
-    CGFloat pad = 12 + r.leftPad;
+    UIEdgeInsets ins = tv.safeAreaInsets;
+    CGFloat rightEdge = W - MAX(12.0, ins.right + 4.0);
+    CGFloat pad = MAX(12 + r.leftPad, ins.left + 12);
 
     if (r.kind == CIRowHeader) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 12, W-pad-12, 28)];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 12, rightEdge-pad, 28)];
+        l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         l.text = r.title; l.font = [CITheme h2]; l.textColor = [CITheme blue];
         [c.contentView addSubview:l];
         return c;
     }
     if (r.kind == CIRowNote) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 4, W-pad-12, 36)];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 4, rightEdge-pad, 36)];
+        l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         l.text = r.title; l.font = [UIFont italicSystemFontOfSize:13]; l.textColor = [CITheme orange];
         l.numberOfLines = 0;
         [c.contentView addSubview:l];
         return c;
     }
     if (r.kind == CIRowToggle) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 10, W-pad-70, 32)];
+        CGFloat swW = 51, swRight = 9;
+        CGFloat swX = rightEdge - swW - swRight;
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 10, swX - pad - 8, 32)];
+        l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         l.text = r.title; l.font = [CITheme body]; l.textColor = [CITheme blue];
-        l.numberOfLines = 0; l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.8;
+        l.numberOfLines = 0; l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.75;
         [c.contentView addSubview:l];
         UISwitch *sw = [[UISwitch alloc] init];
-        sw.frame = CGRectMake(W-60, 8, 51, 31);
+        sw.frame = CGRectMake(swX, 8, swW, 31);
         sw.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         sw.onTintColor = [CITheme blue];
         NSString *cfgKey = [r.key hasPrefix:@"fake_"] ? [@"fake_" stringByAppendingString:[r.key substringFromIndex:5]] : r.key;
@@ -946,11 +1414,43 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [c.contentView addSubview:sw];
         return c;
     }
+    if (r.kind == CIRowChoose) {
+        // Pill-style button row — title left, current value + chevron right
+        UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pad, 6, rightEdge - pad, 50)];
+        pill.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        pill.backgroundColor = [CITheme card];
+        pill.layer.cornerRadius = 12;
+        pill.layer.borderColor = [[CITheme orange] colorWithAlphaComponent:0.6].CGColor;
+        pill.layer.borderWidth = 1.2;
+        [c.contentView addSubview:pill];
+
+        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 4, pill.bounds.size.width - 24, 22)];
+        t.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        t.text = r.title; t.font = [CITheme body]; t.textColor = [CITheme orange];
+        [pill addSubview:t];
+
+        NSString *cur = [[CIConfigManager shared] stringForKey:r.key];
+        UILabel *v = [[UILabel alloc] initWithFrame:CGRectMake(12, 24, pill.bounds.size.width - 44, 22)];
+        v.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        v.text = cur.length ? cur : @"— chạm để chọn —";
+        v.font = [CITheme small]; v.textColor = cur.length ? [CITheme text] : [CITheme dim];
+        [pill addSubview:v];
+
+        UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(pill.bounds.size.width - 28, 12, 20, 24)];
+        chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        chev.text = @"›"; chev.textColor = [CITheme dim]; chev.textAlignment = NSTextAlignmentCenter;
+        chev.font = [UIFont boldSystemFontOfSize:22];
+        [pill addSubview:chev];
+
+        c.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return c;
+    }
     if (r.kind == CIRowText) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 6, W-pad-12, 18)];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(pad, 6, rightEdge-pad, 18)];
+        l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         l.text = r.title; l.font = [CITheme small]; l.textColor = [CITheme dim];
         [c.contentView addSubview:l];
-        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(pad, 26, W-pad-12, 34)];
+        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(pad, 26, rightEdge-pad, 34)];
         tf.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         tf.attributedPlaceholder = [[NSAttributedString alloc]
             initWithString:(r.placeholder ?: @"")
@@ -977,7 +1477,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (r.kind == CIRowHeader) return 44;
     if (r.kind == CIRowNote)   return 44;
     if (r.kind == CIRowToggle) return 50;
+    if (r.kind == CIRowChoose) return 62;
     return 70;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    CIRow *r = _rows[ip.row];
+    if (r.kind != CIRowChoose) return;
+    if ([r.key isEqualToString:@"__presetModelName"]) [self showPresets];
+    else if ([r.key isEqualToString:@"__presetIOSName"]) [self showIOSPresets];
 }
 
 - (void)toggleChanged:(UISwitch *)sw {
@@ -1209,7 +1718,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
-    self.title = @"Xóa Info";
+    self.title = @"HIOS Faker";
 
     self.navigationItem.rightBarButtonItem =
         [[UIBarButtonItem alloc] initWithImage:[self menuIcon] style:UIBarButtonItemStylePlain
@@ -1304,7 +1813,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     y += 60;
 
     UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(P, y, W-2*P, 30)];
-    foot.text = @"fb.com/groups/XoaInfo"; foot.textAlignment = NSTextAlignmentCenter;
+    foot.text = @"telegram:Houselis"; foot.textAlignment = NSTextAlignmentCenter;
     foot.textColor = [CITheme blue]; foot.font = [CITheme h2];
     [sv addSubview:foot];
     y += 42;
@@ -1461,19 +1970,70 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
 
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
+    NSMutableArray<CIAppInfo *> *targets = [NSMutableArray array];
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (CIAppInfo *a in all) {
-        if ([resetBids containsObject:a.bundleID]) [names addObject:a.name ?: a.bundleID];
+        if ([resetBids containsObject:a.bundleID]) {
+            [targets addObject:a];
+            [names addObject:a.name ?: a.bundleID];
+        }
     }
 
     NSString *note = _noteField.text ?: @"";
-    NSString *title = backup ? @"Đang lưu RRS + Đặt lịch Reset..." : @"Đang đặt lịch Reset...";
+    NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Đang Change dữ liệu...";
     UIView *hud = [self showHUDWithTitle:title];
 
+    NSDate *start = [NSDate date];
+    const NSTimeInterval kMinHUD = 12.0;
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 0) Randomize hardware identifiers so every reset rolls fresh IDs
+        //    (serial, IDFA, IDFV, UDID, IMEI, MAC, ICCID, ...). GPS/locale/carrier untouched.
+        ci_randomizeIdentities();
+
         if (backup) [self createRRSForBundles:rrsBids note:note];
 
+        // 1) Kill running instances so file handles release before wipe.
+        for (CIAppInfo *a in targets) {
+            NSString *exec = nil;
+            if (a.bundlePath.length) {
+                NSBundle *b = [NSBundle bundleWithPath:a.bundlePath];
+                exec = [[b executablePath] lastPathComponent];
+                if (!exec.length) exec = [b objectForInfoDictionaryKey:@"CFBundleExecutable"];
+            }
+            if (exec.length) {
+                NSString *safe = [exec stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *cmd = [NSString stringWithFormat:@"killall -9 '%@' 2>/dev/null", safe];
+                ci_run([cmd UTF8String]);
+            }
+        }
+        // small pause for processes to exit
+        [NSThread sleepForTimeInterval:0.8];
+
+        // 2) Wipe each target's container subdirs directly.
+        NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
+                          @"Library/Cookies", @"Library/WebKit",
+                          @"Library/Application Support", @"tmp"];
+        NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        for (CIAppInfo *a in targets) {
+            if (!a.containerPath.length) continue;
+            for (NSString *sub in subs) {
+                NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
+                NSString *cmd = [NSString stringWithFormat:
+                    @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; mkdir -p '%@' 2>/dev/null",
+                    full, full, full];
+                ci_run([cmd UTF8String]);
+            }
+            // Mark wipe so tweak's on-launch wipe doesn't re-run.
+            NSString *marker = [a.containerPath stringByAppendingPathComponent:@".ci_last_wipe"];
+            [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
+                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            wiped++;
+        }
+
+        // 3) Safety net: bump wipe_counter so tweak also wipes next launch
+        //    in case any path was blocked by sandbox above.
         CIConfigManager *cm = [CIConfigManager shared];
         for (NSString *bid in resetBids) {
             NSString *k = [@"wipe_counter_" stringByAppendingString:bid];
@@ -1481,11 +2041,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         }
         [cm save];
 
+        // 4) Enforce a minimum 10-15s HUD so the work feels real.
+        NSTimeInterval elapsed = -[start timeIntervalSinceNow];
+        if (elapsed < kMinHUD) [NSThread sleepForTimeInterval:(kMinHUD - elapsed)];
+
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
-            [self alert:@"Đã đặt lịch xoá"
-                msg:[NSString stringWithFormat:@"Mở lại %lu app để tweak tự xoá dữ liệu khi app khởi động:\n\n%@",
-                    (unsigned long)resetBids.count, listMsg]];
+            NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
+            [self alert:t msg:[NSString stringWithFormat:
+                @"Đã xoá dữ liệu %lu app:\n\n%@", (unsigned long)wiped, listMsg]];
         }];
     });
 }

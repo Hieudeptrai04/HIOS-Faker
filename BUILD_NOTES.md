@@ -1,78 +1,154 @@
-# Build Notes - ChangeInfoIos
+# Build Notes — HIOS Faker (ChangeInfoIos)
 
-## Trạng thái hiện tại (17/04/2026 - Phiên làm việc tiếp theo cần giải quyết)
+Mục tiêu của file: giúp AI trợ lý (Claude, Cursor, Codex…) build đúng ngay lần đầu, không phá CI.
 
-### Vấn đề 1: CI Build liên tục FAIL
+---
 
-**Tình trạng:** Build `Build iOS Tweak (Native)` fail liên tục sau commit `d6c2c00` (fix Hooks.mm extern declarations).
-
-**Root cause hiện tại:** CHƯA XÁC ĐỊNH ĐƯỢC. Không xem được chi tiết lỗi từ GitHub Actions vì:
-- Artifact `make-output` chỉ có 809 bytes - quá nhỏ để chứa output của `make package`
-- GitHub API bị rate limit khiến không tải được logs chi tiết
-- Workflow step "Build rootless tweak" chạy ~16-42s rồi exit code 2 nhưng không capture được log đầy đủ
-
-**Các điều đã thử và không hiệu quả:**
-1. Xóa extern forward declarations trong Hooks.mm (d6c2c00) - fix code OK nhưng CI vẫn fail
-2. Thêm `make setup` trước `make package` - không tồn tại trong Theos, step fail ngay
-3. Force fresh Theos clone và SDK download mỗi lần build - vẫn fail
-4. Nhiều lần sửa workflow để capture log - artifact vẫn nhỏ (~800 bytes)
-5. `make package` exit với code 2 nhưng không rõ lý do
-
-**Lưu ý quan trọng:** Commit `643db20` ("refactor Hooks.mm to separate C-level hooks") đã BUILD THÀNH CÔNG với 41s. Tất cả commit sau đó fail trong 14-42s. Điều này gợi ý vấn đề nằm ở CI environment hoặc Theos/Makefile state, KHÔNG phải ở source code.
-
-### Vấn đề 2: Hooks.mm - ĐÃ FIX THÀNH CÔNG
-
-**Thay đổi đã thực hiện (d6c2c00):**
-- Xóa 21 dòng `extern` forward declarations cho các `orig_*` trampoline pointers
-- Giữ nguyên các `static ... = NULL` definitions - đây là cách đúng trong C
-- File: `tweak/Hooks.mm` dòng 29-48 (đã xóa)
-
-**Lý do fix đúng:**
-- C standard không cho phép `static` definition follow `extern` declaration
-- `static` function pointer vừa là declaration vừa là definition trong C
-- Chỉ cần khai báo `static ... = NULL` một lần là đủ
-
-### Files hiện tại trong repo
-
-- `tweak/Tweak.xm` - Objective-C hooks (Logos %hook)
-- `tweak/Hooks.mm` - C-level hooks dùng MSHookFunction (ĐÃ FIX)
-- `tweak/Makefile` - Build config, PACKAGE_VERSION = 2.2.0
-- `.github/workflows/build-native.yml` - CI workflow (CẦN SỬA)
-- `.github/workflows/build-deb.yml` - CI workflow đơn giản (dùng beerpiss/theos-action)
-- `.github/workflows/debug-build.yml` - Debug workflow (chờ trigger thủ công)
-- `scripts/inspect_deb.py` - Inspect .deb contents
-
-### Git commits gần nhất
+## 1. Kiến trúc repo
 
 ```
-1fd97bb ci: add make output artifact upload on failure
-c7ad7fb ci: fix exit code capture and always show log on failure
-94c8488 ci: force fresh Theos clone and SDK download to fix cache issues
-269e8e8 ci: capture make output to file and display last lines on failure
-d6c2c00 fix Hooks.mm: remove extern forward declarations, keep static definitions only  <-- FIX HOOKS.MM
-641f535 fix Hooks.mm: extern forward declarations for hook pointers (LỖI)
-b04e86d fix Hooks.mm: add #include substrate.h, use _dyld_get_image_name loop
-643db20 fix: refactor Tweak.xm to separate C-level hooks into Hooks.mm  <-- BUILD PASS ở đây!
+ChangeInfoIos/
+├── tweak/           → .dylib inject vào target apps (Logos %hook + MSHookFunction)
+│   ├── Tweak.xm     → ObjC hooks (UIDevice, CLLocation, MGCopyAnswer, …)
+│   ├── Hooks.mm     → C-level hooks (KHÔNG extern forward decl — xem §5)
+│   ├── Makefile     → PACKAGE_VERSION, TWEAK_NAME=ChangeInfoIos
+│   └── control      → Debian metadata, phải KHỚP Makefile
+├── app/             → App UI native chạy trên iPhone
+│   ├── main.m       → Toàn bộ UI + logic trong 1 file (~1900 dòng)
+│   ├── Makefile     → APPLICATION_NAME=ChangeInfoIosApp
+│   ├── control      → Debian metadata
+│   └── Resources/
+│       └── Info.plist
+└── .github/workflows/
+    └── build.yml    → CI build duy nhất. CÁC WORKFLOW `.disabled` KHÔNG ĐƯỢC KÍCH HOẠT.
 ```
 
-### Kế hoạch cần làm cho Claude tiếp theo
+CI đóng gói **1 .deb gộp** chứa cả tweak + app (xem step "Combine into single deb" trong `build.yml`).
 
-**Ưu tiên 1: Debug CI build failure**
-Mục tiêu: Xác định lý do `make package` exit code 2.
+---
 
-Cách tiếp cận gợi ý:
-1. Login vào GitHub Actions để xem trực tiếp build log: https://github.com/Hieudeptrai04/HIOS-Faker/actions/runs/24573955503
-2. Tải artifact `make-output` (run #36) để xem chi tiết lỗi
-3. So sánh environment ở commit 643db20 (pass) với hiện tại
+## 2. Cách build (CI — khuyến nghị)
 
-**Ưu tiên 2: Hoặc dùng workflow khác**
-Sử dụng `build-deb.yml` (dùng `beerpiss/theos-action`) thay vì `build-native.yml` vì nó đơn giản hơn và đã pre-configured.
+Push lên `master` với đường dẫn thay đổi nằm trong `tweak/**`, `app/**`, hoặc `.github/workflows/build.yml` → workflow chạy tự động. Hoặc vào tab **Actions** trên GitHub → `Build ChangeInfoIos` → **Run workflow**.
 
-**Ưu tiên 3: Manual trigger debug workflow**
-Vào https://github.com/Hieudeptrai04/HIOS-Faker/actions/workflows/debug-build.yml -> "Run workflow" để có log chi tiết hơn.
+Artifacts sinh ra:
+- `ChangeInfoIos-combined` — **file .deb chính** để cài lên iPhone (Sileo/Zebra)
+- `tweak-only`, `app-only` — file .deb rời (debug)
+- `app-build-log` — full `make` log nếu app build fail
 
-### Liên kết hữu ích
+---
 
-- Actions: https://github.com/Hieudeptrai04/HIOS-Faker/actions
-- Build log mới nhất: https://github.com/Hieudeptrai04/HIOS-Faker/actions/runs/24573955503
-- Artifact make-output (cần login): https://github.com/Hieudeptrai04/HIOS-Faker/actions/artifacts/6499586655
+## 3. Cách build local (macOS + Theos)
+
+```bash
+export THEOS=~/theos
+export THEOS_PACKAGE_SCHEME=rootless
+cd tweak && make package FINALPACKAGE=1 ARCHS=arm64
+cd ../app && make package FINALPACKAGE=1 ARCHS=arm64
+```
+
+Output: `tweak/packages/*.deb` và `app/packages/*.deb`.
+
+---
+
+## 4. Bump version — ĐỔI ĐỒNG THỜI 4 FILE
+
+Mỗi lần release mới, phải sửa **cả 4** chỗ này cho đồng bộ, nếu không CI sẽ gộp version lệch:
+
+| File | Key |
+|------|-----|
+| `tweak/Makefile` | `PACKAGE_VERSION = X.Y.Z` |
+| `tweak/control`  | `Version: X.Y.Z` |
+| `app/Makefile`   | `PACKAGE_VERSION = X.Y.Z` |
+| `app/control`    | `Version: X.Y.Z` |
+| `app/Resources/Info.plist` | `CFBundleShortVersionString` |
+
+Version hiện tại: **2.3.0**.
+
+---
+
+## 5. Những lỗi đã gặp và ĐỪNG lặp lại
+
+### 5.1 `extern` forward declarations trong Hooks.mm — **KHÔNG ĐƯỢC LÀM**
+C standard không cho `static <type> ptr = NULL;` đứng sau `extern <type> ptr;`. Cứ khai báo 1 lần `static MSHookFunction_t orig_foo = NULL;` là đủ. Từng bị lỗi ở commit `641f535`, fix ở `d6c2c00`.
+
+### 5.2 HTTP trong app iOS
+App gọi `http://ip-api.com/json` để lấy geo theo proxy. iOS mặc định block HTTP (ATS). **Phải giữ** trong `app/Resources/Info.plist`:
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+</dict>
+```
+
+### 5.3 Include `<math.h>` ở đầu `app/main.m`
+`main.m` dùng `cos/sin/sqrt/M_PI` cho `ci_jitterCoordKm`. Nếu bỏ `#import <math.h>` sẽ fail link trên clang strict mode.
+
+### 5.4 Không tự động stage file trong repo dirty
+`git status` đang có `deploy-deb.sh`, `icon.png`, `logo HIOS Faker.jpg`, `tweak/DEBIAN/postinst` ở trạng thái deleted nhưng **không liên quan** đến thay đổi code. Khi commit, chỉ stage các file bạn thực sự sửa — tránh `git add -A`.
+
+### 5.5 Đừng kích hoạt các workflow `.disabled`
+Trước đây repo có 8 workflow khác nhau chạy song song gây rối. Chỉ dùng `build.yml`. Nếu muốn debug, sửa `build.yml`, không tạo workflow mới.
+
+### 5.6 Theos SDK version bị pin
+`build.yml` pin `SDK_VERSION=16.5`, `SDK_RELEASE=master-146e41f`. Không bump SDK mà không cập nhật `TARGET := iphone:clang:16.5:15.0` trong cả 2 Makefile.
+
+### 5.7 Không đụng `deploy-deb.sh`
+File đó đã bị xoá từ commit trước. Không hồi sinh nó.
+
+---
+
+## 6. Tính năng đã cài (v2.3.0)
+
+### App (`app/main.m`)
+- **Tên hiển thị:** "HIOS Faker" (title + bundle display name)
+- **Footer:** "telegram:Houselis"
+- **Home:** nút `Reset Data` giờ chủ động `killall` target apps + `rm -rf` container subdirs (Documents, Library/Caches, Preferences, Cookies, WebKit, Application Support, tmp), HUD tối thiểu 12s, báo "Change thành công". Vẫn bump `wipe_counter_<bid>` làm safety net cho tweak.
+- **Fake Settings:**
+  - Picker "Chọn Model iPhone" (40 models từ iPhone 5 → 16 Pro Max, kèm native screen)
+  - Picker "Chọn iOS Version" (13 mốc từ 12.5.7 → 18.3.2)
+  - Nav bar dọn gọn: chỉ còn `Xong` + menu `⋯`
+  - Layout cell dùng `safeAreaInsets` → switch không bị notch che
+  - **Mặc định bật toàn bộ `fake_*`** (26 layer) ở lần load đầu via `seedDefaultsIfNeeded`
+- **Randomize mỗi Reset** (`ci_randomizeIdentities`):
+  - Hardware IDs: serial, IDFA, IDFV, UDID, UniqueChipID, IMEI (Luhn-valid), MEID, ICCID, MAC (Wi-Fi/BT/Ethernet), wifiSSID/BSSID
+  - GPS strategy:
+    - **Có proxy** → fetch `ip-api.com` → pin GPS vào proxy IP với jitter 2km, áp timezone/locale/carrier theo country
+    - **Không proxy** → random trong bán kính `vn_radiusKm` (default 999km) từ trung tâm VN (16°N, 107°E), rotate 6 telco VN (Viettel/MobiFone/Vinaphone/Vietnamobile)
+  - Location fuzz: `locationAccuracy` 5–25m, `locationSpeed` 0–2 m/s, `locationCourse` 0–360°
+
+### Tweak (`tweak/Tweak.xm`)
+- `buildFakeLocation` giờ đọc `locationSpeed/Course/Accuracy` từ config (thay vì hardcode `speed=0`)
+- Giữ nguyên micro-jitter 5cm/read để mô phỏng nhiễu GPS thật
+
+---
+
+## 7. Config keys quan trọng
+
+Tất cả lưu trong `/var/mobile/Library/Preferences/com.changeinfoios.plist` (tweak đọc) + `<app-sandbox>/…/config.plist` (app ghi) + Darwin notification `com.changeinfoios/ReloadPrefs` để live reload.
+
+| Key | Dùng cho |
+|-----|----------|
+| `fake_*` (26 key) | Gate từng layer, mặc định YES |
+| `latitude/longitude/altitude` | Tọa độ GPS |
+| `locationAccuracy/Speed/Course` | GPS sensor fuzz |
+| `locationEnabled` | Phải YES để tweak mới trả fake location |
+| `timezoneName`, `locale*`, `carrier*` | Theo country của proxy IP |
+| `ip_api_url` | Custom URL (default `http://ip-api.com/json`) |
+| `vn_radiusKm` | Bán kính random khi không có proxy (default 999) |
+| `__presetModelName`, `__presetIOSName` | Hiển thị giá trị đang chọn trên picker |
+| `wipe_counter_<bid>` | Trigger tweak-side wipe ở lần launch kế |
+
+---
+
+## 8. Checklist trước khi push
+
+- [ ] Đã bump version ở **4 file** (§4)?
+- [ ] `app/main.m` compile-check: còn `#import <math.h>`?
+- [ ] `Info.plist` còn `NSAllowsArbitraryLoads`?
+- [ ] Chỉ stage file mình sửa, không `git add -A`?
+- [ ] Không tạo workflow mới, chỉ sửa `build.yml`?
+- [ ] Hooks.mm không có `extern <type> orig_*`?
+
+Push lên master → vào Actions tab chờ ~2-3 phút → tải artifact `ChangeInfoIos-combined`.

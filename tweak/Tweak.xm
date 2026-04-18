@@ -608,21 +608,27 @@ static CLLocation *buildFakeLocation(void) {
     coord.longitude = [lng doubleValue];
     double altitude = alt ? [alt doubleValue] : 10.0;
 
+    // Micro-jitter (~5 cm) every read — mimics noisy GPS sensor; the large
+    // resettable jitter is already baked into lat/lng by the host app on Reset.
     double jitterLat = ((double)(arc4random_uniform(100)) - 50.0) / 1000000.0;
     double jitterLng = ((double)(arc4random_uniform(100)) - 50.0) / 1000000.0;
     coord.latitude += jitterLat;
     coord.longitude += jitterLng;
 
-    id acc = getConfig(@"locationAccuracy");
-    double hAcc = acc ? [acc doubleValue] : (5.0 + arc4random_uniform(30));
+    id acc    = getConfig(@"locationAccuracy");
+    id spdV   = getConfig(@"locationSpeed");
+    id crsV   = getConfig(@"locationCourse");
+    double hAcc   = acc  ? [acc doubleValue]  : (5.0 + arc4random_uniform(30));
+    double speed  = spdV ? [spdV doubleValue] : 0.0;
+    double course = crsV ? [crsV doubleValue] : (double)(arc4random_uniform(360));
 
     CLLocation *loc = [[CLLocation alloc]
         initWithCoordinate:coord
         altitude:altitude
         horizontalAccuracy:hAcc
         verticalAccuracy:hAcc * 1.5
-        course:(double)(arc4random_uniform(360))
-        speed:0.0
+        course:course
+        speed:speed
         timestamp:[NSDate date]];
     return loc;
 }
