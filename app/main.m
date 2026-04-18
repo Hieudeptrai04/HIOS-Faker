@@ -2082,7 +2082,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     l.text = title; l.textAlignment = NSTextAlignmentCenter;
     l.textColor = [CITheme text]; l.font = [CITheme body];
     l.numberOfLines = 2;
-    l.tag = 0xHUDLABEL;
+    l.tag = 0xC1DCE;
     [card addSubview:l];
 
     [root addSubview:dim];
@@ -2091,7 +2091,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
     UIView *card = hud.subviews.firstObject;
-    UILabel *l = [card viewWithTag:0xHUDLABEL];
+    UILabel *l = [card viewWithTag:0xC1DCE];
     if (l && [l isKindOfClass:[UILabel class]]) {
         l.text = title;
     }
