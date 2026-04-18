@@ -1,12 +1,14 @@
 name: Build iOS Tweak (macOS)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
     paths:
       - "tweak/**"
       - "app/**"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: read
