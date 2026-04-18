@@ -8,20 +8,20 @@
 <title>HIOS Faker</title>
 <style>
 :root{
-  --bg:#0b0f0c;
-  --surface:#101912;
-  --surface2:#17221a;
-  --border:rgba(141,181,153,.2);
-  --text:#ffffff;
-  --text2:#8b8fa8;
-  --accent:#8ccaa0;
+  --bg:#000;
+  --surface:#111;
+  --surface2:#1a1a1a;
+  --border:rgba(255,255,255,.1);
+  --text:#fff;
+  --text2:#888;
+  --accent:#fff;
   --btn-blue:linear-gradient(135deg,#1565c0 0%,#1976d2 100%);
   --btn-purple:linear-gradient(135deg,#6200ea 0%,#7c4dff 100%);
   --btn-red:linear-gradient(135deg,#b71c1c,#c62828);
   --success:#4caf50;
   --danger:#ef5350;
   --warn:#ffa726;
-  --tab-on:#9dd8a8;
+  --tab-on:#fff;
   --radius:14px;
   --radius-sm:10px;
   --sat:env(safe-area-inset-top,0px);
@@ -55,7 +55,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 
 /* ── Layout ── */
 #mainApp{display:flex;flex-direction:column;width:100%;min-height:100dvh;min-height:-webkit-fill-available;max-height:100dvh;max-height:-webkit-fill-available;overflow-x:clip;}
-.safe-top{flex-shrink:0;padding-top:max(var(--sat),8px);background:var(--bg);}
+.safe-top{flex-shrink:0;padding-top:max(var(--sat),8px);background:transparent;}
 .status-ip{display:none;}
 .mode-wipe .status-ip{display:none;}
 .mode-wipe .hdr{display:none;}
@@ -67,17 +67,17 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .hdr-back{
   width:28px;height:28px;border-radius:8px;
   display:none;align-items:center;justify-content:center;
-  border:1px solid rgba(141,181,153,.35);
-  color:#d7e6d8;background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.15);
+  color:#ccc;background:rgba(255,255,255,.03);
   flex-shrink:0;cursor:pointer;
 }
-.hdr-back svg{width:16px;height:16px;fill:#d7e6d8;}
+.hdr-back svg{width:16px;height:16px;fill:#ccc;}
 .hdr-logo{display:none;}
 .hdr-logo svg{width:20px;height:20px;fill:#fff;}
 .hdr-name{font-size:17px;font-weight:700;letter-spacing:-.3px;line-height:1;}
-.hdr-ver{font-size:14px;color:#b9c8bb;margin-top:2px;opacity:.95;}
-.hdr-acc{width:36px;height:36px;border-radius:50%;background:#162119;display:flex;align-items:center;justify-content:center;border:2px solid #7ab58a;padding:0;cursor:pointer;}
-.hdr-acc svg{width:19px;height:19px;fill:#9dd8a8;}
+.hdr-ver{font-size:13px;color:#555;margin-top:2px;opacity:.95;}
+.hdr-acc{width:36px;height:36px;border-radius:50%;background:#111;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.1);padding:0;cursor:pointer;}
+.hdr-acc svg{width:19px;height:19px;fill:#fff;}
 
 /* ── Pages ── */
 .page{display:none;padding:0 var(--px) 0;padding-left:max(var(--px),var(--sal));padding-right:max(var(--px),var(--sar));}
@@ -107,17 +107,17 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .top-ip{display:none;}
 
 /* ── Info card ── */
-.info-card{background:#1c2a22;border:1px solid rgba(141,181,153,.2);border-radius:14px;padding:14px 14px 12px;margin:8px 0 12px;}
+.info-card{background:transparent;border:1px solid var(--border);border-radius:14px;padding:14px 14px 12px;margin:8px 0 12px;}
 .info-row{display:flex;gap:0;}
 .info-col{flex:1;min-width:0;padding:0 8px;}
 .info-col:first-child{padding-left:0;border-right:1px solid rgba(255,255,255,.08);}
 .info-col:last-child{padding-right:0;}
 .info-col-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:8px;line-height:1;}
 .info-line{margin-bottom:4px;font-size:11px;line-height:1.35;color:#fff;}
-.info-lbl{color:#d4e1d6;}
+.info-lbl{color:#888;}
 .info-val{color:#fff;word-break:break-all;}
-.info-foot{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);font-size:12px;color:#8ccaa0;text-align:left;}
-.info-foot a{color:var(--accent);text-decoration:none;}
+.info-foot{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);font-size:12px;color:#888;text-align:left;}
+.info-foot a{color:#888;text-decoration:none;}
 .status-dot{display:none;}
 .status-dot.on{background:var(--success);box-shadow:0 0 6px var(--success);animation:pulse 2s ease infinite;}
 .status-dot.off{background:#555;}
@@ -145,7 +145,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 
 /* ── Toggle list ── */
 .tgl-list{background:transparent;border:none;border-radius:0;overflow:hidden;margin:4px 0;}
-.tgl-list.tgl-card{background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:var(--radius);}
+.tgl-list.tgl-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius);}
 .tgl-item{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:none;}
 .tgl-item:last-child{border-bottom:none;}
 .tgl-text{font-size:15px;color:#fff;font-weight:500;flex:1;min-width:0;}
@@ -160,19 +160,19 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 /* ── Toggle switch ── */
 .sw{position:relative;width:56px;height:32px;flex-shrink:0;}
 .sw input{opacity:0;width:0;height:0;position:absolute;}
-.sw .sl{display:block;width:56px;height:32px;border-radius:999px;background:#4f6054;cursor:pointer;transition:.2s;position:relative;}
-.sw .sl:before{content:'';position:absolute;left:2px;top:2px;width:28px;height:28px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);transition:transform .2s;}
-.sw input:checked+.sl{background:#39da6f;}
-.sw input:checked+.sl:before{transform:translateX(24px);}
+.sw .sl{display:block;width:56px;height:32px;border-radius:999px;background:#333;cursor:pointer;transition:.2s;position:relative;}
+.sw .sl:before{content:'';position:absolute;left:2px;top:2px;width:28px;height:28px;border-radius:50%;background:#888;transition:transform .2s;}
+.sw input:checked+.sl{background:#222;}
+.sw input:checked+.sl:before{transform:translateX(24px);background:#fff;}
 .sw input:disabled+.sl{opacity:.4;cursor:default;}
 .sw .sl:active{filter:brightness(1.08);}
 
 /* ── Selects ── */
-.sel-block{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin:12px 0;}
-.sel-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.05);}
+.sel-block{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius);overflow:hidden;margin:12px 0;}
+.sel-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.04);}
 .sel-row:last-child{border-bottom:none;}
-.sel-row label{font-size:13px;color:var(--text);font-weight:500;flex-shrink:0;}
-.sel-row select{flex:1;max-width:200px;padding:8px 10px;background:#0a0b14;border:1px solid rgba(0,212,255,.15);color:var(--text);border-radius:8px;font-size:13px;outline:none;-webkit-appearance:none;appearance:none;text-align:right;}
+.sel-row label{font-size:13px;color:#ccc;font-weight:500;flex-shrink:0;}
+.sel-row select{flex:1;max-width:200px;padding:8px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#fff;border-radius:8px;font-size:13px;outline:none;-webkit-appearance:none;appearance:none;text-align:right;}
 
 /* ── Mode banner ── */
 .ci-mode-banner{border-radius:var(--radius-sm);padding:10px 14px;margin:0 0 10px;font-size:11px;line-height:1.5;display:none;}
@@ -184,17 +184,17 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .ci-mode-err{background:rgba(183,28,28,.3);border-color:rgba(239,83,80,.4);color:#ffcdd2;}
 
 /* ── Tab bar ── */
-.tab-bar{position:fixed;bottom:0;left:0;right:0;background:#141d17;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:none;display:flex;padding:6px 0;padding-bottom:max(6px,var(--sab));padding-left:max(0px,var(--sal));padding-right:max(0px,var(--sar));z-index:100;}
+.tab-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:none;display:flex;padding:6px 0;padding-bottom:max(6px,var(--sab));padding-left:max(0px,var(--sal));padding-right:max(0px,var(--sar));z-index:100;border-top:1px solid rgba(255,255,255,.06);}
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;padding:4px 2px;border:none;background:transparent;cursor:pointer;
   transition:transform .16s ease, filter .2s ease;}
 .tab:active{transform:scale(.93);filter:brightness(1.1);}
-.tab-ic{width:24px;height:24px;display:flex;align-items:center;justify-content:center;margin-bottom:2px;opacity:.95;color:#8ba08f;}
+.tab-ic{width:24px;height:24px;display:flex;align-items:center;justify-content:center;margin-bottom:2px;opacity:.5;color:#888;}
 .tab-ic svg{width:22px;height:22px;}
-.tab.on .tab-ic{opacity:1;color:var(--tab-on);filter:drop-shadow(0 0 5px rgba(0,212,255,.5));}
+.tab.on .tab-ic{opacity:1;color:var(--tab-on);filter:none;}
 .tab.on .tab-ic svg path{fill:var(--tab-on);}
-.tab-ic svg path{fill:#8ba08f;}
-.tab-lbl{font-size:clamp(7px,2.2vw,9px);font-weight:600;color:#8ba08f;letter-spacing:.01em;white-space:nowrap;}
-.tab.on .tab-lbl{color:var(--tab-on);font-weight:700;}
+.tab-ic svg path{fill:#888;}
+.tab-lbl{font-size:clamp(7px,2.2vw,9px);font-weight:600;color:#666;letter-spacing:.01em;white-space:nowrap;}
+.tab.on .tab-lbl{color:#fff;font-weight:700;}
 
 /* ── Toast ── */
 .toast{position:fixed;top:0;left:0;right:0;padding:12px 16px;padding-top:calc(env(safe-area-inset-top,44px) + 8px);font-size:13px;font-weight:600;z-index:1001;transform:translateY(-120px);opacity:0;transition:.3s;}
@@ -206,55 +206,48 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 /* ── Busy overlay ── */
 .ci-busy{position:fixed;inset:0;background:rgba(10,11,18,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:28px;text-align:center;}
 .ci-busy.on{display:flex;}
-.ci-busy-spin{width:44px;height:44px;border-radius:50%;border:3px solid rgba(0,212,255,.2);border-top-color:var(--accent);animation:spin .8s linear infinite;}
+.ci-busy-spin{width:44px;height:44px;border-radius:50%;border:3px solid rgba(255,255,255,.15);border-top-color:#fff;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .ci-busy-title{font-size:16px;font-weight:700;}
 .ci-busy-step{font-size:12px;color:var(--text2);max-width:280px;line-height:1.45;}
 
 /* ── Login screen ── */
 #loginScreen{position:fixed;inset:0;background:var(--bg);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;}
-.lcard{width:100%;max-width:360px;background:var(--surface);border:1px solid rgba(0,212,255,.2);border-radius:20px;padding:28px 22px;box-shadow:0 0 0 1px rgba(0,212,255,.06),0 24px 60px rgba(0,0,0,.6);}
+.lcard{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 22px;box-shadow:0 24px 60px rgba(0,0,0,.8);}
 .lhdr{text-align:center;margin-bottom:24px;}
-.lhdr .logo-box{width:64px;height:64px;margin:0 auto 14px;border-radius:18px;background:linear-gradient(135deg,#1565c0,#6200ea);display:flex;align-items:center;justify-content:center;}
-.lhdr .logo-box svg{width:34px;height:34px;fill:#fff;}
-.lhdr .lt{font-size:22px;font-weight:800;letter-spacing:-.4px;}
-.lhdr .ls{font-size:11px;color:var(--text2);margin-top:4px;}
+.lhdr .lt{font-size:22px;font-weight:800;letter-spacing:-.4px;margin-top:8px;}
 .fl{font-size:11px;color:var(--text2);margin-bottom:6px;display:block;font-weight:600;text-transform:uppercase;letter-spacing:.5px;}
-.fi{width:100%;padding:14px 16px;border-radius:12px;background:#0a0b14;border:1px solid rgba(0,212,255,.15);color:var(--text);font-size:15px;outline:none;margin-bottom:12px;}
-.fi:focus{border-color:rgba(0,212,255,.45);box-shadow:0 0 0 3px rgba(0,212,255,.1);}
-.lbtn{width:100%;padding:15px;background:var(--btn-blue);color:#fff;border:none;border-radius:14px;font-size:16px;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(21,101,192,.35);}
+.fi{width:100%;padding:14px 16px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid var(--border);color:#fff;font-size:15px;outline:none;margin-bottom:12px;}
+.fi:focus{border-color:rgba(255,255,255,.3);}
+.lbtn{width:100%;padding:15px;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:14px;font-size:16px;font-weight:700;cursor:pointer;}
 .lbtn:active{transform:scale(.98);opacity:.92;}
 .lstat{margin-top:10px;text-align:center;font-size:12px;min-height:18px;color:var(--danger);}
 
 /* ── App list ── */
 .app-search-wrap{margin:8px 0;}
-.app-search{width:100%;padding:12px 14px;border-radius:12px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:14px;outline:none;}
-.app-search:focus{border-color:rgba(0,212,255,.4);}
+.app-search{width:100%;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:#fff;font-size:14px;outline:none;}
+.app-search:focus{border-color:rgba(255,255,255,.2);}
 .app-count{font-size:11px;color:var(--text2);margin:5px 2px 0;}
-.app-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.05);background:var(--surface);}
+.app-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.02);}
 .app-row:last-child{border-bottom:none;}
-.app-ico{width:42px;height:42px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:#fff;background:linear-gradient(135deg,#1565c0,#6200ea);}
+.app-ico{width:42px;height:42px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);}
 .app-txt{flex:1;min-width:0;}
 .app-name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.app-size{font-size:10px;color:#666;margin-top:2px;}
 .app-bid{display:none;}
 .empty-box{text-align:center;padding:30px 16px;color:#9fb39f;font-size:13px;line-height:1.45;}
 
 /* Wipe App form-like layout */
 #p1 .sec{padding-top:10px;}
 .wipe-hero{
-  height:126px;border-radius:12px;
-  background:#b89b74;margin:8px 0 10px;
-  border:1px solid rgba(255,255,255,.08);
+  height:0;margin:0;overflow:hidden;
 }
-.form-topcap{
-  height:12px;border-radius:12px 12px 0 0;
-  background:#2b2f48;opacity:.95;margin:2px 14px 0;
-}
+.form-topcap{height:0;margin:0;display:none;}
 .wipe-toolbar{display:none;}
 .wipe-btn{
   flex:1;border-radius:10px;
-  background:#2a3359;border:1px solid rgba(255,255,255,.08);
-  color:#d4dfd5;font-size:12px;padding:10px 6px;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);
+  color:#ddd;font-size:12px;padding:10px 6px;
 }
 .wipe-btn.wipe-danger{background:#3a2a2a;border-color:rgba(239,83,80,.25);color:#ffb4b4;}
 #appListMount.wipe-list{
@@ -262,13 +255,13 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
   background:transparent;border:none;border-radius:0;
 }
 #appListMount.wipe-list .app-row{
-  background:transparent;border-bottom:1px solid rgba(255,255,255,.08);
+  background:transparent;border-bottom:1px solid rgba(255,255,255,.04);
   padding:13px 8px;cursor:pointer;gap:10px;
 }
-#appListMount.wipe-list .app-row.active{background:rgba(255,255,255,.04);}
+#appListMount.wipe-list .app-row.active{background:rgba(255,255,255,.03);}
 #appListMount.wipe-list .app-ico{
   width:52px;height:52px;border-radius:11px;
-  background:#f3f4f6;color:#1f2937;font-size:20px;font-weight:700;
+  background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:700;
 }
 #appListMount.wipe-list .app-name{font-size:16px;font-weight:700;}
 #appListMount.wipe-list .app-bid{display:none;}
@@ -284,9 +277,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 
 /* Backup form mirrors wipe form */
 .backup-hero{
-  height:126px;border-radius:12px;
-  background:#b89b74;margin:8px 0 10px;
-  border:1px solid rgba(255,255,255,.08);
+  height:0;margin:0;overflow:hidden;
 }
 #backupListMount.backup-list{
   margin-top:0 !important;
@@ -316,7 +307,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .form-like-only .sec{display:none;}
 
 /* ── Profiles ── */
-.profile-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid rgba(255,255,255,.05);}
+.profile-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:rgba(255,255,255,.02);border-bottom:1px solid rgba(255,255,255,.04);}
 .profile-card:last-child{border-bottom:none;}
 .p-name{font-size:14px;font-weight:600;}
 .p-meta{font-size:11px;color:var(--text2);margin-top:2px;}
@@ -326,7 +317,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 
 /* ── Account/Server ── */
 .acct-logo{text-align:center;padding:24px 0 20px;}
-.acct-logo .al-box{width:60px;height:60px;margin:0 auto 10px;border-radius:16px;background:linear-gradient(135deg,#1565c0,#6200ea);display:flex;align-items:center;justify-content:center;}
+.acct-logo .al-box{width:60px;height:60px;margin:0 auto 10px;border-radius:16px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;}
 .acct-logo .al-box svg{width:30px;height:30px;fill:#fff;}
 .acct-logo .al-name{font-size:18px;font-weight:800;letter-spacing:-.3px;}
 .acct-logo .al-sub{font-size:11px;color:var(--text2);margin-top:4px;}
@@ -337,10 +328,10 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .sel-section{margin-bottom:16px;}
 .sel-sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 8px;}
 .sel-sec-title{font-size:13px;font-weight:700;color:var(--text);}
-.sel-count{font-size:11px;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 8px;margin-left:6px;}
+.sel-count{font-size:11px;font-weight:700;color:#000;background:#fff;border-radius:999px;padding:2px 8px;margin-left:6px;}
 .sel-all-btn{
-  font-size:12px;font-weight:600;color:var(--accent);
-  background:rgba(42,160,82,.12);border:1px solid rgba(42,160,82,.25);
+  font-size:12px;font-weight:600;color:#888;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
   border-radius:999px;padding:4px 14px;cursor:pointer;
 }
 .sel-all-btn:active{background:rgba(42,160,82,.25);}
@@ -352,7 +343,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
   cursor:pointer;transition:all .2s;user-select:none;
 }
 .sel-item:active{background:rgba(255,255,255,.05);}
-.sel-item.selected{border-color:rgba(42,160,82,.5);background:rgba(42,160,82,.08);}
+.sel-item.selected{border-color:rgba(255,255,255,.25);background:rgba(255,255,255,.06);}
 .sel-item input[type=checkbox]{display:none;}
 .sel-item-check{
   width:20px;height:20px;border-radius:6px;
@@ -360,9 +351,9 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
   display:flex;align-items:center;justify-content:center;
   flex-shrink:0;transition:all .2s;
 }
-.sel-item.selected .sel-item-check{background:var(--accent);border-color:var(--accent);}
+.sel-item.selected .sel-item-check{background:#fff;border-color:#fff;}
 .sel-item.selected .sel-item-check::after{
-  content:'';width:6px;height:10px;border:2px solid #fff;
+  content:'';width:6px;height:10px;border:2px solid #000;
   border-top:none;border-left:none;transform:rotate(45deg) translate(-1px,-1px);display:block;
 }
 .sel-item-info{flex:1;min-width:0;}
@@ -371,11 +362,11 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .sel-row-pad{padding-top:4px;}
 
 /* ── Fake Layers List ── */
-.fl-list-wrap{border-radius:12px;overflow:hidden;border:1px solid var(--border);margin-bottom:4px;}
+.fl-list-wrap{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.06);margin-bottom:4px;}
 .fl-item{
   display:flex;align-items:center;justify-content:space-between;
-  padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06);
-  background:var(--surface);transition:background .15s;
+  padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.04);
+  background:rgba(255,255,255,.02);transition:background .15s;
 }
 .fl-item:last-child{border-bottom:none;}
 .fl-item:active{background:rgba(255,255,255,.03);}
@@ -405,23 +396,23 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .fl-sw input:checked + .fl-sl::before{transform:translateX(18px);}
 
 /* ── Tool panel ── */
-.tool-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:12px;}
-.tool-title{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:8px;}
-.tool-panel textarea{width:100%;min-height:64px;padding:8px 10px;border-radius:8px;background:#0a0b14;border:1px solid var(--border);color:var(--text);font-size:12px;font-family:ui-monospace,monospace;resize:vertical;}
+.tool-panel{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;margin-bottom:12px;}
+.tool-title{font-size:12px;font-weight:700;color:#888;margin-bottom:8px;}
+.tool-panel textarea{width:100%;min-height:64px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:#fff;font-size:12px;font-family:ui-monospace,monospace;resize:vertical;}
 .tool-hint{font-size:11px;color:var(--text2);line-height:1.45;margin-bottom:8px;}
 .tool-hint code{font-size:10px;font-family:ui-monospace,monospace;color:var(--text2);background:rgba(0,0,0,.3);padding:1px 5px;border-radius:4px;}
 
 /* RRS panel form */
 .rrs-panel{
-  background:linear-gradient(180deg,#14281e 0%, #122117 100%);
-  border:1px solid rgba(141,181,153,.24);
+  background:rgba(255,255,255,.02);
+  border:1px solid rgba(255,255,255,.06);
   border-radius:12px;padding:12px;margin-bottom:12px;
 }
 .rrs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
 .rrs-btn{
   border:none;border-radius:10px;padding:10px 8px;
   font-size:12px;font-weight:700;color:#fff;cursor:pointer;
-  background:linear-gradient(180deg,#2f5a45 0%, #294f3c 100%);
+  background:rgba(255,255,255,.08);
   box-shadow:none;
   transition:transform .15s ease, filter .2s ease;
 }
@@ -431,15 +422,15 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .rrs-lbl{font-size:17px;color:#edf3f0;font-weight:500;}
 .rrs-input,.rrs-area{
   width:100%;border:none;outline:none;
-  border-radius:8px;background:#101912;color:#fff;
-  border:1px solid rgba(141,181,153,.18);
+  border-radius:8px;background:rgba(255,255,255,.05);color:#fff;
+  border:1px solid rgba(255,255,255,.08);
   padding:9px 12px;font-size:15px;
 }
 .rrs-area{min-height:52px;resize:vertical;}
 .rrs-list{
   min-height:360px;
-  background:linear-gradient(180deg,#15241a 0%, #132118 100%);
-  border-radius:12px;border:1px solid rgba(141,181,153,.24);
+  background:rgba(255,255,255,.02);
+  border-radius:12px;border:1px solid rgba(255,255,255,.06);
   overflow:hidden;padding:8px;flex:1 1 auto;
 }
 
@@ -447,21 +438,20 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .acct-shell{padding:8px 6px 0;}
 .acct-center{text-align:center;margin:8px 0 14px;}
 .acct-logo-mark{display:none;}
-.acct-title{font-size:36px;font-weight:700;color:#e7f2ea;letter-spacing:-.3px;line-height:1;}
-.acct-key-lbl{font-size:17px;color:#d8e5dc;margin:10px 0 6px;text-align:center;font-weight:600;}
+.acct-title{font-size:36px;font-weight:700;color:#fff;letter-spacing:-.3px;line-height:1;}
+.acct-key-lbl{font-size:17px;color:#ccc;margin:10px 0 6px;text-align:center;font-weight:600;}
 .acct-key-input{
   width:100%;padding:12px 14px;border-radius:8px;
-  background:#1a2a21;border:1px solid rgba(141,181,153,.28);
-  color:#f1f7f2;font-size:17px;outline:none;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+  color:#fff;font-size:17px;outline:none;
   transition:border-color .2s ease, box-shadow .2s ease;
 }
-.acct-key-input:focus{border-color:#79b38b;box-shadow:0 0 0 3px rgba(121,179,139,.18);}
+.acct-key-input:focus{border-color:rgba(255,255,255,.3);box-shadow:0 0 0 3px rgba(255,255,255,.05);}
 .acct-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0 10px;}
 .acct-btn{
   border:none;border-radius:22px;padding:10px 10px;
   font-size:17px;color:#fff;cursor:pointer;font-weight:600;
-  background:linear-gradient(180deg,#2f5a45 0%, #294f3c 100%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.2);
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);
   transition:transform .15s ease, filter .2s ease;
 }
 .acct-btn:active{transform:scale(.97);filter:brightness(1.07);}
@@ -499,7 +489,6 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 <div id="loginScreen">
   <div class="lcard">
     <div class="lhdr">
-      <div class="logo-box"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4l6 2.67V11c0 3.9-2.64 7.54-6 8.77C8.64 18.54 6 14.9 6 11V7.67L12 5z"/></svg></div>
       <div class="lt">HIOS Faker</div>
       <div class="ls">Device identity suite &middot; v2.2.0</div>
     </div>
@@ -1914,6 +1903,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -1933,7 +1923,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -1961,7 +1951,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -3727,6 +3717,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -3746,7 +3737,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -3774,7 +3765,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -5540,6 +5531,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -5559,7 +5551,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -5587,7 +5579,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -7353,6 +7345,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -7372,7 +7365,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -7400,7 +7393,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -9166,6 +9159,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -9185,7 +9179,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -9213,7 +9207,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -10979,6 +10973,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -10998,7 +10993,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -11026,7 +11021,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -12792,6 +12787,7 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
+function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -12811,7 +12807,7 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
@@ -12839,7 +12835,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';

@@ -102,6 +102,7 @@ static NSMutableDictionary *_config;
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSString *iconBase64;
 @property (nonatomic, strong) UIImage *icon;
+@property (nonatomic, assign) NSUInteger appSize;
 @end
 
 @implementation CIAppInfo
@@ -113,6 +114,28 @@ static NSMutableDictionary *_config;
 @end
 
 @implementation CIAppScanner
+
++ (unsigned long long)sizeOfDirectoryAtPath:(NSString *)path {
+    unsigned long long totalSize = 0;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDirectoryEnumerator *en = [fm enumeratorAtPath:path];
+    NSString *file;
+    while ((file = [en nextObject])) {
+        NSString *fullPath = [path stringByAppendingPathComponent:file];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+        if ([attrs[NSFileType] isEqualToString:NSFileTypeRegularFile]) {
+            totalSize += [attrs[NSFileSize] unsignedLongLongValue];
+        }
+    }
+    return totalSize;
+}
+
++ (NSString *)formatSize:(unsigned long long)bytes {
+    if (bytes >= 1073741824ULL) return [NSString stringWithFormat:@"%.1fGB", bytes / 1073741824.0];
+    if (bytes >= 1048576ULL) return [NSString stringWithFormat:@"%.0fMB", bytes / 1048576.0];
+    if (bytes >= 1024ULL) return [NSString stringWithFormat:@"%.0fKB", bytes / 1024.0];
+    return [NSString stringWithFormat:@"%lluB", bytes];
+}
 
 + (NSArray<CIAppInfo *> *)scanInstalledApps {
     NSMutableArray<CIAppInfo *> *result = [NSMutableArray array];
@@ -164,6 +187,9 @@ static NSMutableDictionary *_config;
                     } else {
                         info.name = bid;
                     }
+                    if ([fm fileExistsAtPath:bundlePath isDirectory:nil]) {
+                        info.appSize = [self sizeOfDirectoryAtPath:bundlePath];
+                    }
                 } else {
                     info.name = bid;
                 }
@@ -207,6 +233,8 @@ static NSMutableDictionary *_config;
                 if (![dn isKindOfClass:[NSString class]] || dn.length == 0)
                     dn = infoPlist[@"CFBundleName"];
                 info.name = ([dn isKindOfClass:[NSString class]] && dn.length > 0) ? dn : bid;
+
+                info.appSize = [self sizeOfDirectoryAtPath:appPath];
 
                 [result addObject:info];
             }
