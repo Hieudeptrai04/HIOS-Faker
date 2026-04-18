@@ -10,6 +10,10 @@ permissions:
   contents: read
   actions: write
 
+env:
+  THEOS: ${{ github.workspace }}/theos
+  THEOS_PACKAGE_SCHEME: rootless
+
 jobs:
   build:
     runs-on: macos-latest
@@ -18,45 +22,43 @@ jobs:
 
       - name: Clone Theos
         run: |
-          THEOS="$HOME/theos"
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          echo "Cloned Theos to $THEOS"
 
       - name: Download SDK
         run: |
-          THEOS="$HOME/theos"
           mkdir -p "$THEOS/sdks"
           curl -fSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+          echo "SDK installed"
+          ls "$THEOS/sdks/"
 
       - name: Build tweak
         run: |
-          THEOS="$HOME/theos"
+          echo "THEOS=$THEOS"
+          ls "$THEOS/makefiles/" | head -5
           cd tweak
           rm -rf packages/ .theos/ obj/
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee tweak_build.log
-          echo "TWEAK_EXIT: ${PIPESTATUS[0]}"
-          ls -la packages/ 2>/dev/null || echo "NO_PACKAGES"
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
+          echo "TWEAK_EXIT: $?"
 
       - name: Build app
         run: |
-          THEOS="$HOME/theos"
+          echo "THEOS=$THEOS"
           cd app
           rm -rf packages/ .theos/ obj/
-          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1 | tee app_build.log
-          echo "APP_EXIT: ${PIPESTATUS[0]}"
-          ls -la packages/ 2>/dev/null || echo "NO_PACKAGES"
+          make package THEOS="$THEOS" THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 ARCHS=arm64 2>&1
+          echo "APP_EXIT: $?"
 
       - name: Check result
         if: always()
         run: |
-          echo "=== Tweak build log tail ==="
-          tail -30 tweak/tweak_build.log 2>/dev/null || echo "No tweak log"
-          echo "=== App build log tail ==="
-          tail -30 app/app_build.log 2>/dev/null || echo "No app log"
-          echo "=== All debs ==="
-          find . -name "*.deb" -type f
+          echo "=== Tweak packages ==="
+          find . -path "*/tweak/packages/*.deb" -type f
+          echo "=== App packages ==="
+          find . -path "*/app/packages/*.deb" -type f
 
-      - name: Upload tweak deb
+      - name: Upload tweak
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -64,7 +66,7 @@ jobs:
           path: tweak/packages/*.deb
           retention-days: 1
 
-      - name: Upload app deb
+      - name: Upload app
         if: always()
         uses: actions/upload-artifact@v4
         with:
