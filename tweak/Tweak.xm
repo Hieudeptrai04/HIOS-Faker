@@ -116,6 +116,42 @@ static void loadConfig(void) {
     }
 }
 
+static void ci_wipeContainerIfScheduled(void) {
+    @autoreleasepool {
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+        if (bid.length == 0) return;
+        NSString *key = [@"wipe_counter_" stringByAppendingString:bid];
+        id v = getConfig(key);
+        long long counter = [v respondsToSelector:@selector(longLongValue)] ? [v longLongValue] : 0;
+        if (counter <= 0) return;
+
+        NSString *home = NSHomeDirectory();
+        if (home.length == 0) return;
+        NSString *marker = [home stringByAppendingPathComponent:@".ci_last_wipe"];
+        long long last = 0;
+        NSString *existing = [NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil];
+        if (existing) last = [existing longLongValue];
+        if (counter <= last) return;
+
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSArray *subdirs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
+                             @"Library/Cookies", @"Library/WebKit", @"Library/Application Support", @"tmp"];
+        NSUInteger removed = 0;
+        for (NSString *d in subdirs) {
+            NSString *full = [home stringByAppendingPathComponent:d];
+            NSArray *items = [fm contentsOfDirectoryAtPath:full error:nil];
+            for (NSString *item in items) {
+                if ([item isEqualToString:@".ci_last_wipe"]) continue;
+                NSError *err = nil;
+                if ([fm removeItemAtPath:[full stringByAppendingPathComponent:item] error:&err]) removed++;
+            }
+        }
+        [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[ChangeInfoIos] Wiped %@ (counter=%lld, items=%lu)", bid, counter, (unsigned long)removed);
+    }
+}
+
 static void onPrefsDarwinNotify(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     reloadConfigFromDisk();
     NSLog(@"[ChangeInfoIos] Prefs reloaded (%lu keys)", (unsigned long)(spoofConfig ? spoofConfig.count : 0));
@@ -1089,6 +1125,7 @@ static CLLocation *buildFakeLocation(void) {
         NSLog(@"[ChangeInfoIos] Tweak loading...");
 
         loadConfig();
+        ci_wipeContainerIfScheduled();
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
 

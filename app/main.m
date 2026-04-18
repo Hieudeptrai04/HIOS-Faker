@@ -691,11 +691,88 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     self.tableView.estimatedRowHeight = 52;
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self buildRows];
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+    self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)],
+        [[UIBarButtonItem alloc] initWithTitle:@"All" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAllFakes)],
+        [[UIBarButtonItem alloc] initWithTitle:@"Preset" style:UIBarButtonItemStylePlain target:self action:@selector(showPresets)],
+    ];
 }
 
 - (void)done { [[CIConfigManager shared] save]; [self.navigationController popViewControllerAnimated:YES]; }
+
+- (void)toggleAllFakes {
+    // Count current fake_* that are on
+    NSMutableArray *fakeKeys = [NSMutableArray array];
+    for (CIRow *r in _rows) {
+        if (r.kind == CIRowToggle && [r.key hasPrefix:@"fake_"]) [fakeKeys addObject:r.key];
+    }
+    NSInteger onCount = 0;
+    for (NSString *k in fakeKeys) if ([[CIConfigManager shared] boolForKey:k]) onCount++;
+    BOOL turnOn = onCount < (NSInteger)fakeKeys.count; // toggle
+    for (NSString *k in fakeKeys) [[CIConfigManager shared] setObject:@(turnOn) forKey:k];
+    [[CIConfigManager shared] save];
+    [self.tableView reloadData];
+}
+
+- (void)showPresets {
+    static NSArray *presets = nil;
+    if (!presets) {
+        // name, productType, machine, width, height, scale
+        presets = @[
+            @[@"iPhone 5",         @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2"],
+            @[@"iPhone 5s",        @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2"],
+            @[@"iPhone SE (1)",    @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2"],
+            @[@"iPhone 6",         @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2"],
+            @[@"iPhone 6 Plus",    @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3"],
+            @[@"iPhone 6s",        @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2"],
+            @[@"iPhone 6s Plus",   @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3"],
+            @[@"iPhone 7",         @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2"],
+            @[@"iPhone 7 Plus",    @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3"],
+            @[@"iPhone 8",         @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2"],
+            @[@"iPhone 8 Plus",    @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3"],
+            @[@"iPhone X",         @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3"],
+            @[@"iPhone XR",        @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2"],
+            @[@"iPhone XS",        @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3"],
+            @[@"iPhone XS Max",    @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3"],
+            @[@"iPhone SE (2)",    @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2"],
+            @[@"iPhone 11",        @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2"],
+            @[@"iPhone 11 Pro",    @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3"],
+            @[@"iPhone 11 Pro Max",@"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3"],
+            @[@"iPhone 12 mini",   @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3"],
+            @[@"iPhone 12",        @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3"],
+            @[@"iPhone 12 Pro",    @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3"],
+            @[@"iPhone 12 Pro Max",@"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3"],
+        ];
+    }
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Device Preset" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSArray *p in presets) {
+        [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+            [self applyPreset:p];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)applyPreset:(NSArray *)p {
+    // p = [name, productType, machine, width, height, scale]
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:@"iPhone" forKey:@"deviceModel"];
+    [cm setObject:@"iPhone" forKey:@"localizedModel"];
+    [cm setObject:p[1] forKey:@"ProductType"];
+    [cm setObject:p[2] forKey:@"uname_machine"];
+    [cm setObject:p[3] forKey:@"screenWidth"];
+    [cm setObject:p[4] forKey:@"screenHeight"];
+    [cm setObject:p[5] forKey:@"screenScale"];
+    [cm setObject:@(YES) forKey:@"fake_uiddevice"];
+    [cm setObject:@(YES) forKey:@"fake_screen"];
+    [cm save];
+    [self.tableView reloadData];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Đã chọn" message:[NSString stringWithFormat:@"Preset: %@", p[0]] preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
 
 - (void)buildRows {
     Class C = [CIFakeSettingsViewController class];
@@ -875,7 +952,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [c.contentView addSubview:l];
         UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(pad, 26, W-pad-12, 34)];
         tf.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        tf.placeholder = r.placeholder ?: @"";
+        tf.attributedPlaceholder = [[NSAttributedString alloc]
+            initWithString:(r.placeholder ?: @"")
+            attributes:@{NSForegroundColorAttributeName: [[CITheme dim] colorWithAlphaComponent:0.85]}];
         tf.font = [CITheme body]; tf.textColor = [CITheme text];
         tf.borderStyle = UITextBorderStyleNone;
         tf.backgroundColor = [CITheme card];
@@ -1382,34 +1461,31 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }
 
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
-    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (CIAppInfo *a in all) {
-        if ([resetBids containsObject:a.bundleID] && a.containerPath.length) [paths addObject:a.containerPath];
-    }
-    if (paths.count == 0) {
-        [self alert:@"Không tìm thấy container" msg:@"Không đọc được data container của app đã chọn."]; return;
+        if ([resetBids containsObject:a.bundleID]) [names addObject:a.name ?: a.bundleID];
     }
 
     NSString *note = _noteField.text ?: @"";
-    NSString *title = backup ? @"Đang lưu RRS + Reset..." : @"Đang Reset Data...";
+    NSString *title = backup ? @"Đang lưu RRS + Đặt lịch Reset..." : @"Đang đặt lịch Reset...";
     UIView *hud = [self showHUDWithTitle:title];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         if (backup) [self createRRSForBundles:rrsBids note:note];
 
-        int failed = 0;
-        for (NSString *p in paths) {
-            NSString *cmd = [NSString stringWithFormat:@"rm -rf %@/Documents/* %@/Library/Caches/* %@/Library/Preferences/* %@/tmp/* 2>/dev/null", p, p, p, p];
-            if (ci_run([cmd UTF8String]) != 0) failed++;
+        long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        CIConfigManager *cm = [CIConfigManager shared];
+        for (NSString *bid in resetBids) {
+            NSString *k = [@"wipe_counter_" stringByAppendingString:bid];
+            [cm setObject:@(counter) forKey:k];
         }
-        [[CIConfigManager shared] notifyReload];
+        [cm save];
 
-        NSUInteger total = paths.count;
-        int done = (int)(total - failed);
         [self dismissHUD:hud completion:^{
-            [self alert:@"Hoàn tất"
-                msg:[NSString stringWithFormat:@"Đã reset %d/%lu app.%@", done, (unsigned long)total,
-                    failed ? @"\n(Một số lỗi — cần root helper để xoá container app khác)" : @""]];
+            NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
+            [self alert:@"Đã đặt lịch xoá"
+                msg:[NSString stringWithFormat:@"Mở lại %lu app để tweak tự xoá dữ liệu khi app khởi động:\n\n%@",
+                    (unsigned long)resetBids.count, listMsg]];
         }];
     });
 }
