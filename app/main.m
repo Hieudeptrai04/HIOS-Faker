@@ -539,7 +539,11 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     c.textLabel.text = a.name;
     c.textLabel.textColor = [CITheme text];
     c.textLabel.font = [UIFont systemFontOfSize:16];
-    c.detailTextLabel.text = a.bundleID;
+    if (a.containerSize > 1) {
+        c.detailTextLabel.text = [NSString stringWithFormat:@"%@  •  %@", CIBytesString(a.containerSize), a.bundleID];
+    } else {
+        c.detailTextLabel.text = a.bundleID;
+    }
     c.detailTextLabel.textColor = [CITheme dim];
     c.detailTextLabel.font = [CITheme small];
     c.backgroundColor = [CITheme card];
@@ -557,6 +561,29 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     if ([_selected containsObject:a.bundleID]) [_selected removeObject:a.bundleID];
     else [_selected addObject:a.bundleID];
     [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)tableView:(UITableView *)tv willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.row >= (NSInteger)_view.count) return;
+    CIAppInfo *a = _view[ip.row];
+    if (a.containerSize != 0 || a.containerPath.length == 0) return;
+    a.containerSize = 1; // in-flight sentinel
+    NSString *path = a.containerPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        unsigned long long s = [CIAppLister sizeOfPath:path];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            a.containerSize = (s > 1 ? s : 1);
+            __strong typeof(weakSelf) strong = weakSelf;
+            if (!strong) return;
+            NSInteger idx = [strong->_view indexOfObject:a];
+            if (idx == NSNotFound) return;
+            NSIndexPath *cur = [NSIndexPath indexPathForRow:idx inSection:0];
+            if ([[strong->_table indexPathsForVisibleRows] containsObject:cur]) {
+                [strong->_table reloadRowsAtIndexPaths:@[cur] withRowAnimation:UITableViewRowAnimationNone];
+            }
+        });
+    });
 }
 @end
 

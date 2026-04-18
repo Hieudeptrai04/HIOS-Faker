@@ -107,7 +107,7 @@ jobs:
 
           VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
           cat > combined/DEBIAN/control <<EOF
-          Package: com.changeinfoios.bundle
+          Package: com.changeinfoios
           Name: ChangeInfoIos
           Version: ${VERSION}
           Architecture: iphoneos-arm64
@@ -116,6 +116,9 @@ jobs:
           Author: ChangeInfoIos
           Section: Tweaks
           Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          Replaces: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
+          Conflicts: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
+          Provides: com.changeinfoios.tweak, com.changeinfoios.app
           EOF
 
           mkdir -p out
