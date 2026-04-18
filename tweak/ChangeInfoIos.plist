@@ -1,7 +1,6 @@
 {
   Filter = {
     Bundles = (
-      "com.changeinfoios.app",
       "com.vng.zalo",
       "ph.telegra.Telegraph",
       "net.whatsapp.WhatsApp",

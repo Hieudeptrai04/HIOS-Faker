@@ -33,7 +33,6 @@
 // CONSTANTS
 // ============================================================
 static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
-static NSString *const kRRSDir         = @"/var/mobile/Library/ChangeInfoIos/RRS";
 static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static NSString *const kAppVersion = @"2.2.1-native";
@@ -46,6 +45,16 @@ static NSString *CILocalConfigPath(void) {
     });
     return p;
 }
+
+static NSString *CIRRSDir(void) {
+    static NSString *p = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        p = [dirs.firstObject stringByAppendingPathComponent:@"RRS"];
+    });
+    return p;
+}
+#define kRRSDir CIRRSDir()
 
 // ============================================================
 // CONFIG MANAGER
@@ -186,10 +195,13 @@ static int ci_run(const char *cmd) {
 }
 
 + (UIImage *)iconForBundle:(NSString *)bid size:(CGFloat)size {
-    Class UIImageCls = NSClassFromString(@"UIImage");
-    SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
-    if ([UIImageCls respondsToSelector:sel]) {
+    if (!bid) return nil;
+    @try {
+        Class UIImageCls = NSClassFromString(@"UIImage");
+        SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+        if (![UIImageCls respondsToSelector:sel]) return nil;
         NSMethodSignature *sig = [UIImageCls methodSignatureForSelector:sel];
+        if (!sig) return nil;
         NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
         inv.target = UIImageCls; inv.selector = sel;
         NSInteger format = 2;
@@ -200,9 +212,10 @@ static int ci_run(const char *cmd) {
         [inv invoke];
         UIImage *__unsafe_unretained img = nil;
         [inv getReturnValue:&img];
-        if (img) return img;
+        return img;
+    } @catch (NSException *e) {
+        return nil;
     }
-    return nil;
 }
 
 + (NSArray<CIAppInfo *> *)allApps {
@@ -210,31 +223,48 @@ static int ci_run(const char *cmd) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableArray *result = [NSMutableArray array];
-        Class LSAWCls = NSClassFromString(@"LSApplicationWorkspace");
-        LSApplicationWorkspace *ws = [LSAWCls performSelector:@selector(defaultWorkspace)];
-        NSArray *apps = [ws allInstalledApplications];
-        for (LSApplicationProxy *proxy in apps) {
-            @autoreleasepool {
-                NSString *bid = [proxy bundleIdentifier] ?: [proxy applicationIdentifier];
-                if (!bid) continue;
-                // Only AppStore-installed (User) apps — skip System / Internal / Hidden / jb app itself
-                NSString *type = [proxy applicationType] ?: @"";
-                if (![type isEqualToString:@"User"]) continue;
-                if ([bid hasPrefix:@"com.apple."]) continue;
-                if ([bid isEqualToString:@"com.changeinfoios.app"]) continue;
-                CIAppInfo *info = [[CIAppInfo alloc] init];
-                info.bundleID = bid;
-                info.name = [proxy localizedName] ?: bid;
-                id burl = [proxy bundleURL];
-                info.bundlePath = [burl respondsToSelector:@selector(path)] ? [burl path] : nil;
-                id durl = [proxy dataContainerURL];
-                info.containerPath = [durl respondsToSelector:@selector(path)] ? [durl path] : nil;
-                info.isSystem = NO;
-                info.icon = [self iconForBundle:bid size:60];
-                info.containerSize = 0; // lazy
-                [result addObject:info];
+        @try {
+            Class LSAWCls = NSClassFromString(@"LSApplicationWorkspace");
+            if (!LSAWCls) { cache = @[]; return; }
+            id ws = [LSAWCls performSelector:@selector(defaultWorkspace)];
+            NSArray *apps = [ws performSelector:@selector(allInstalledApplications)];
+            for (id proxy in apps) {
+                @autoreleasepool {
+                    @try {
+                        NSString *bid = nil;
+                        if ([proxy respondsToSelector:@selector(bundleIdentifier)])
+                            bid = [proxy performSelector:@selector(bundleIdentifier)];
+                        if (!bid && [proxy respondsToSelector:@selector(applicationIdentifier)])
+                            bid = [proxy performSelector:@selector(applicationIdentifier)];
+                        if (!bid) continue;
+                        NSString *type = @"";
+                        if ([proxy respondsToSelector:@selector(applicationType)])
+                            type = [proxy performSelector:@selector(applicationType)] ?: @"";
+                        if (![type isEqualToString:@"User"]) continue;
+                        if ([bid hasPrefix:@"com.apple."]) continue;
+                        if ([bid isEqualToString:@"com.changeinfoios.app"]) continue;
+                        CIAppInfo *info = [[CIAppInfo alloc] init];
+                        info.bundleID = bid;
+                        NSString *nm = nil;
+                        if ([proxy respondsToSelector:@selector(localizedName)])
+                            nm = [proxy performSelector:@selector(localizedName)];
+                        info.name = nm.length ? nm : bid;
+                        if ([proxy respondsToSelector:@selector(bundleURL)]) {
+                            id burl = [proxy performSelector:@selector(bundleURL)];
+                            info.bundlePath = [burl respondsToSelector:@selector(path)] ? [burl performSelector:@selector(path)] : nil;
+                        }
+                        if ([proxy respondsToSelector:@selector(dataContainerURL)]) {
+                            id durl = [proxy performSelector:@selector(dataContainerURL)];
+                            info.containerPath = [durl respondsToSelector:@selector(path)] ? [durl performSelector:@selector(path)] : nil;
+                        }
+                        info.isSystem = NO;
+                        info.icon = nil;          // lazy-load per cell
+                        info.containerSize = 0;   // lazy
+                        [result addObject:info];
+                    } @catch (NSException *ie) { /* skip bad proxy */ }
+                }
             }
-        }
+        } @catch (NSException *e) { /* fall through to empty list */ }
         [result sortUsingComparator:^NSComparisonResult(CIAppInfo *a, CIAppInfo *b) {
             return [a.name localizedCaseInsensitiveCompare:b.name];
         }];
@@ -566,24 +596,45 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 - (void)tableView:(UITableView *)tv willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.row >= (NSInteger)_view.count) return;
     CIAppInfo *a = _view[ip.row];
-    if (a.containerSize != 0 || a.containerPath.length == 0) return;
-    a.containerSize = 1; // in-flight sentinel
-    NSString *path = a.containerPath;
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        unsigned long long s = [CIAppLister sizeOfPath:path];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            a.containerSize = (s > 1 ? s : 1);
-            __strong typeof(weakSelf) strong = weakSelf;
-            if (!strong) return;
-            NSInteger idx = [strong->_view indexOfObject:a];
-            if (idx == NSNotFound) return;
-            NSIndexPath *cur = [NSIndexPath indexPathForRow:idx inSection:0];
-            if ([[strong->_table indexPathsForVisibleRows] containsObject:cur]) {
-                [strong->_table reloadRowsAtIndexPaths:@[cur] withRowAnimation:UITableViewRowAnimationNone];
-            }
+
+    // Lazy icon
+    if (!a.icon) {
+        NSString *bid = a.bundleID;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            UIImage *img = [CIAppLister iconForBundle:bid size:60];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!img) return;
+                a.icon = img;
+                __strong typeof(weakSelf) strong = weakSelf;
+                if (!strong) return;
+                NSInteger idx = [strong->_view indexOfObject:a];
+                if (idx == NSNotFound) return;
+                NSIndexPath *cur = [NSIndexPath indexPathForRow:idx inSection:0];
+                if ([[strong->_table indexPathsForVisibleRows] containsObject:cur])
+                    [strong->_table reloadRowsAtIndexPaths:@[cur] withRowAnimation:UITableViewRowAnimationNone];
+            });
         });
-    });
+    }
+
+    // Lazy size
+    if (a.containerSize == 0 && a.containerPath.length > 0) {
+        a.containerSize = 1; // in-flight sentinel
+        NSString *path = a.containerPath;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            unsigned long long s = [CIAppLister sizeOfPath:path];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                a.containerSize = (s > 1 ? s : 1);
+                __strong typeof(weakSelf) strong = weakSelf;
+                if (!strong) return;
+                NSInteger idx = [strong->_view indexOfObject:a];
+                if (idx == NSNotFound) return;
+                NSIndexPath *cur = [NSIndexPath indexPathForRow:idx inSection:0];
+                if ([[strong->_table indexPathsForVisibleRows] containsObject:cur])
+                    [strong->_table reloadRowsAtIndexPaths:@[cur] withRowAnimation:UITableViewRowAnimationNone];
+            });
+        });
+    }
 }
 @end
 
@@ -1275,21 +1326,43 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-- (UIAlertController *)showHUDWithTitle:(NSString *)title {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
-        message:@"\n\n\n" preferredStyle:UIAlertControllerStyleAlert];
+- (UIView *)showHUDWithTitle:(NSString *)title {
+    UIView *root = self.view.window ?: self.view;
+    UIView *dim = [[UIView alloc] initWithFrame:root.bounds];
+    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    dim.tag = 0xC1DCD;
+
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 220, 120)];
+    card.center = CGPointMake(root.bounds.size.width/2, root.bounds.size.height/2);
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 14;
+    card.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin
+                          | UIViewAutoresizingFlexibleTopMargin  | UIViewAutoresizingFlexibleBottomMargin;
+    [dim addSubview:card];
+
     UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
-    spin.translatesAutoresizingMaskIntoConstraints = NO;
     spin.color = [CITheme orange];
+    spin.frame = CGRectMake((220-44)/2, 16, 44, 44);
     [spin startAnimating];
-    [a.view addSubview:spin];
-    [NSLayoutConstraint activateConstraints:@[
-        [spin.centerXAnchor constraintEqualToAnchor:a.view.centerXAnchor],
-        [spin.bottomAnchor constraintEqualToAnchor:a.view.bottomAnchor constant:-24],
-    ]];
-    [self presentViewController:a animated:YES completion:nil];
-    return a;
+    [card addSubview:spin];
+
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(10, 70, 200, 40)];
+    l.text = title; l.textAlignment = NSTextAlignmentCenter;
+    l.textColor = [CITheme text]; l.font = [CITheme body];
+    l.numberOfLines = 2;
+    [card addSubview:l];
+
+    [root addSubview:dim];
+    return dim;
+}
+
+- (void)dismissHUD:(UIView *)hud completion:(void(^)(void))completion {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIView animateWithDuration:0.15 animations:^{ hud.alpha = 0; }
+            completion:^(BOOL _) { [hud removeFromSuperview]; if (completion) completion(); }];
+    });
 }
 
 - (void)saveAndReset {
@@ -1319,7 +1392,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     NSString *note = _noteField.text ?: @"";
     NSString *title = backup ? @"Đang lưu RRS + Reset..." : @"Đang Reset Data...";
-    UIAlertController *hud = [self showHUDWithTitle:title];
+    UIView *hud = [self showHUDWithTitle:title];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         if (backup) [self createRRSForBundles:rrsBids note:note];
@@ -1333,13 +1406,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
         NSUInteger total = paths.count;
         int done = (int)(total - failed);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [hud dismissViewControllerAnimated:YES completion:^{
-                [self alert:@"Hoàn tất"
-                    msg:[NSString stringWithFormat:@"Đã reset %d/%lu app.%@", done, (unsigned long)total,
-                        failed ? @"\n(Một số lỗi — cần root helper để xoá container app khác)" : @""]];
-            }];
-        });
+        [self dismissHUD:hud completion:^{
+            [self alert:@"Hoàn tất"
+                msg:[NSString stringWithFormat:@"Đã reset %d/%lu app.%@", done, (unsigned long)total,
+                    failed ? @"\n(Một số lỗi — cần root helper để xoá container app khác)" : @""]];
+        }];
     });
 }
 
@@ -1372,15 +1443,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (items.count == 0) { [self alert:@"Không có RRS" msg:@"Chưa có snapshot nào để restore."]; return; }
     CIRRSEntry *e = items.firstObject;
     NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
-    UIAlertController *hud = [self showHUDWithTitle:@"Đang Restore RRS..."];
+    UIView *hud = [self showHUDWithTitle:@"Đang Restore RRS..."];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *cmd = [NSString stringWithFormat:@"tar -xzf %@ -C /", tar];
         int rc = ci_run([cmd UTF8String]);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [hud dismissViewControllerAnimated:YES completion:^{
-                [self alert:(rc == 0 ? @"Đã restore" : @"Restore fail") msg:[NSString stringWithFormat:@"rc=%d", rc]];
-            }];
-        });
+        [self dismissHUD:hud completion:^{
+            [self alert:(rc == 0 ? @"Đã restore" : @"Restore fail") msg:[NSString stringWithFormat:@"rc=%d", rc]];
+        }];
     });
 }
 
