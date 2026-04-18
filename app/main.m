@@ -2082,10 +2082,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     l.text = title; l.textAlignment = NSTextAlignmentCenter;
     l.textColor = [CITheme text]; l.font = [CITheme body];
     l.numberOfLines = 2;
+    l.tag = 0xHUDLABEL;
     [card addSubview:l];
 
     [root addSubview:dim];
     return dim;
+}
+
+- (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
+    UIView *card = hud.subviews.firstObject;
+    UILabel *l = [card viewWithTag:0xHUDLABEL];
+    if (l && [l isKindOfClass:[UILabel class]]) {
+        l.text = title;
+    }
 }
 
 - (void)dismissHUD:(UIView *)hud completion:(void(^)(void))completion {
@@ -2128,15 +2137,30 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSDate *start = [NSDate date];
     const NSTimeInterval kMinHUD = 12.0;
 
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // 0) Randomize hardware identifiers so every reset rolls fresh IDs
-        //    (serial, IDFA, IDFV, UDID, IMEI, MAC, ICCID, ...). GPS/locale/carrier untouched.
-        ci_randomizeIdentities();
+    // Build full target list: user-selected apps + AIDA64 + Lirum + DeviceDesign
+    NSArray *aidaBids = @[
+        @"com.finalwire.aida64",
+        @"com.finalwire.aida64-ios",
+        @"com.blacksmith.lirum",
+        @"com.umang.devicedesign",
+    ];
+    NSMutableArray<CIAppInfo *> *fullTargets = [targets mutableCopy];
+    NSMutableSet<NSString *> *addedBids = [NSMutableSet setWithArray:[targets valueForKey:@"bundleID"]];
+    for (CIAppInfo *a in all) {
+        if ([aidaBids containsObject:a.bundleID] && ![addedBids containsObject:a.bundleID]) {
+            [fullTargets addObject:a];
+            [addedBids addObject:a.bundleID];
+            [names addObject:a.name ?: a.bundleID];
+        }
+    }
 
-        if (backup) [self createRRSForBundles:rrsBids note:note];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 0) Wipe data FIRST (config still has old fake info)
+        //    Then apply new fake config after wipe so next launch gets fresh data.
 
         // 1) Kill running instances so file handles release before wipe.
-        for (CIAppInfo *a in targets) {
+        for (CIAppInfo *a in fullTargets) {
+            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"Đóng app: %@...", a.name ?: a.bundleID]];
             NSString *exec = nil;
             if (a.bundlePath.length) {
                 NSBundle *b = [NSBundle bundleWithPath:a.bundlePath];
@@ -2149,7 +2173,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 ci_run([cmd UTF8String]);
             }
         }
-        // small pause for processes to exit
         [NSThread sleepForTimeInterval:0.8];
 
         // 2) Wipe each target's container subdirs directly.
@@ -2158,8 +2181,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                           @"Library/Application Support", @"tmp"];
         NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
-        for (CIAppInfo *a in targets) {
+        for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
+            [self updateHUDTitle:hud title:[NSString stringWithFormat:@"Xóa data: %@...", a.name ?: a.bundleID]];
             for (NSString *sub in subs) {
                 NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
                 NSString *cmd = [NSString stringWithFormat:
@@ -2167,23 +2191,44 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                     full, full, full];
                 ci_run([cmd UTF8String]);
             }
-            // Mark wipe so tweak's on-launch wipe doesn't re-run.
             NSString *marker = [a.containerPath stringByAppendingPathComponent:@".ci_last_wipe"];
             [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
             wiped++;
         }
 
-        // 3) Safety net: bump wipe_counter so tweak also wipes next launch
-        //    in case any path was blocked by sandbox above.
+        // 3) Wipe AIDA64-specific caches (sandbox independent)
+        [self updateHUDTitle:hud title:@"Xóa cache AIDA64..."];
+        NSArray *aidaPaths = @[
+            @"/var/mobile/Library/Caches/com.finalwire.aida64",
+            @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",
+            @"/var/mobile/Library/Preferences/com.finalwire.aida64.plist",
+            @"/var/mobile/Library/Preferences/com.finalwire.aida64-ios.plist",
+        ];
+        for (NSString *p in aidaPaths) {
+            NSString *cmd = [NSString stringWithFormat:@"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null", p, p, p];
+            ci_run([cmd UTF8String]);
+        }
+
+        // 4) Apply new fake config LAST (after wipe, before respring)
+        [self updateHUDTitle:hud title:@"Áp dụng thông tin giả mới..."];
+        ci_randomizeIdentities();
+        if (backup) [self createRRSForBundles:rrsBids note:note];
+
+        // 5) Safety net: bump wipe_counter so tweak also wipes next launch
         CIConfigManager *cm = [CIConfigManager shared];
-        for (NSString *bid in resetBids) {
+        NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
+        for (NSString *bid in allBids) {
             NSString *k = [@"wipe_counter_" stringByAppendingString:bid];
             [cm setObject:@(counter) forKey:k];
         }
         [cm save];
 
-        // 4) Enforce a minimum 10-15s HUD so the work feels real.
+        // 6) Respring to reload everything
+        [self updateHUDTitle:hud title:@"Đang respring..."];
+        ci_run("uicache --reset 2>/dev/null; killall SpringBoard 2>/dev/null");
+
+        // 7) Enforce a minimum 10-15s HUD so the work feels real.
         NSTimeInterval elapsed = -[start timeIntervalSinceNow];
         if (elapsed < kMinHUD) [NSThread sleepForTimeInterval:(kMinHUD - elapsed)];
 
@@ -2191,7 +2236,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
             NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
             [self alert:t msg:[NSString stringWithFormat:
-                @"Đã xoá dữ liệu %lu app:\n\n%@", (unsigned long)wiped, listMsg]];
+                @"Đã xoá dữ liệu %lu app:\n\n%@\n\nĐã respring để áp dụng.", (unsigned long)wiped, listMsg]];
         }];
     });
 }
