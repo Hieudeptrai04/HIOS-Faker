@@ -32,11 +32,20 @@
 // ============================================================
 // CONSTANTS
 // ============================================================
-static NSString *const kPrefPath  = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
-static NSString *const kRRSDir    = @"/var/mobile/Library/ChangeInfoIos/RRS";
-static NSString *const kNotifyReload = @"com.changeinfoios/ReloadPrefs";
+static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
+static NSString *const kRRSDir         = @"/var/mobile/Library/ChangeInfoIos/RRS";
+static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static NSString *const kAppVersion = @"2.2.1-native";
+
+static NSString *CILocalConfigPath(void) {
+    static NSString *p = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        p = [dirs.firstObject stringByAppendingPathComponent:@"config.plist"];
+    });
+    return p;
+}
 
 // ============================================================
 // CONFIG MANAGER
@@ -68,7 +77,10 @@ static NSString *const kAppVersion = @"2.2.1-native";
 }
 
 - (void)load {
-    _cfg = [[NSMutableDictionary dictionaryWithContentsOfFile:kPrefPath] mutableCopy];
+    _cfg = [[NSMutableDictionary dictionaryWithContentsOfFile:CILocalConfigPath()] mutableCopy];
+    if (!_cfg) {
+        _cfg = [[NSMutableDictionary dictionaryWithContentsOfFile:kSharedPrefPath] mutableCopy];
+    }
     if (!_cfg) _cfg = [NSMutableDictionary dictionary];
 }
 
@@ -85,15 +97,17 @@ static NSString *const kAppVersion = @"2.2.1-native";
 }
 
 - (void)save {
-    NSString *dir = [kPrefPath stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0 error:nil];
-    if (data) {
-        [data writeToFile:kPrefPath atomically:YES];
-        chmod([kPrefPath fileSystemRepresentation], 0644);
-    }
+    if (!data) return;
+    // 1) Always persist to app sandbox (writable, survives cold launch)
+    [data writeToFile:CILocalConfigPath() atomically:YES];
+    // 2) Best-effort mirror to shared path so tweak can read it (may fail on stock sandbox)
+    NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    [data writeToFile:kSharedPrefPath atomically:YES];
+    chmod([kSharedPrefPath fileSystemRepresentation], 0644);
     [self notifyReload];
 }
 
@@ -192,32 +206,41 @@ static int ci_run(const char *cmd) {
 }
 
 + (NSArray<CIAppInfo *> *)allApps {
-    NSMutableArray *result = [NSMutableArray array];
-    Class LSAWCls = NSClassFromString(@"LSApplicationWorkspace");
-    LSApplicationWorkspace *ws = [LSAWCls performSelector:@selector(defaultWorkspace)];
-    NSArray *apps = [ws allInstalledApplications];
-    for (LSApplicationProxy *proxy in apps) {
-        @autoreleasepool {
-            NSString *bid = [proxy bundleIdentifier] ?: [proxy applicationIdentifier];
-            if (!bid) continue;
-            CIAppInfo *info = [[CIAppInfo alloc] init];
-            info.bundleID = bid;
-            info.name = [proxy localizedName] ?: bid;
-            id burl = [proxy bundleURL];
-            info.bundlePath = [burl respondsToSelector:@selector(path)] ? [burl path] : nil;
-            id durl = [proxy dataContainerURL];
-            info.containerPath = [durl respondsToSelector:@selector(path)] ? [durl path] : nil;
-            NSString *type = [proxy applicationType] ?: @"";
-            info.isSystem = [type isEqualToString:@"System"];
-            info.icon = [self iconForBundle:bid size:60];
-            info.containerSize = [self sizeOfPath:info.containerPath];
-            [result addObject:info];
+    static NSArray *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray *result = [NSMutableArray array];
+        Class LSAWCls = NSClassFromString(@"LSApplicationWorkspace");
+        LSApplicationWorkspace *ws = [LSAWCls performSelector:@selector(defaultWorkspace)];
+        NSArray *apps = [ws allInstalledApplications];
+        for (LSApplicationProxy *proxy in apps) {
+            @autoreleasepool {
+                NSString *bid = [proxy bundleIdentifier] ?: [proxy applicationIdentifier];
+                if (!bid) continue;
+                // Only AppStore-installed (User) apps — skip System / Internal / Hidden / jb app itself
+                NSString *type = [proxy applicationType] ?: @"";
+                if (![type isEqualToString:@"User"]) continue;
+                if ([bid hasPrefix:@"com.apple."]) continue;
+                if ([bid isEqualToString:@"com.changeinfoios.app"]) continue;
+                CIAppInfo *info = [[CIAppInfo alloc] init];
+                info.bundleID = bid;
+                info.name = [proxy localizedName] ?: bid;
+                id burl = [proxy bundleURL];
+                info.bundlePath = [burl respondsToSelector:@selector(path)] ? [burl path] : nil;
+                id durl = [proxy dataContainerURL];
+                info.containerPath = [durl respondsToSelector:@selector(path)] ? [durl path] : nil;
+                info.isSystem = NO;
+                info.icon = [self iconForBundle:bid size:60];
+                info.containerSize = 0; // lazy
+                [result addObject:info];
+            }
         }
-    }
-    [result sortUsingComparator:^NSComparisonResult(CIAppInfo *a, CIAppInfo *b) {
-        return [a.name localizedCaseInsensitiveCompare:b.name];
-    }];
-    return result;
+        [result sortUsingComparator:^NSComparisonResult(CIAppInfo *a, CIAppInfo *b) {
+            return [a.name localizedCaseInsensitiveCompare:b.name];
+        }];
+        cache = [result copy];
+    });
+    return cache;
 }
 @end
 
@@ -331,14 +354,14 @@ static int ci_run(const char *cmd) {
 
 @implementation CITheme
 + (UIColor *)rgb:(NSUInteger)h { return [UIColor colorWithRed:((h>>16)&0xFF)/255.0 green:((h>>8)&0xFF)/255.0 blue:(h&0xFF)/255.0 alpha:1.0]; }
-+ (UIColor *)bg        { return [UIColor whiteColor]; }
-+ (UIColor *)card      { return [self rgb:0xFFFFFF]; }
-+ (UIColor *)text      { return [UIColor blackColor]; }
-+ (UIColor *)dim       { return [self rgb:0x808080]; }
-+ (UIColor *)orange    { return [self rgb:0xFF9500]; }
-+ (UIColor *)blue      { return [self rgb:0x007AFF]; }
-+ (UIColor *)separator { return [self rgb:0xE0E0E0]; }
-+ (UIColor *)border    { return [self rgb:0xFFB74D]; }
++ (UIColor *)bg        { return [self rgb:0x0F1624]; }    // deep navy
++ (UIColor *)card      { return [self rgb:0x1B2438]; }    // card navy
++ (UIColor *)text      { return [UIColor whiteColor]; }
++ (UIColor *)dim       { return [self rgb:0x9AA4B8]; }
++ (UIColor *)orange    { return [self rgb:0xFF9F1A]; }    // accent
++ (UIColor *)blue      { return [self rgb:0x4FA8FF]; }
++ (UIColor *)separator { return [self rgb:0x2A344D]; }
++ (UIColor *)border    { return [self rgb:0xFF9F1A]; }
 + (UIFont  *)h1        { return [UIFont boldSystemFontOfSize:22]; }
 + (UIFont  *)h2        { return [UIFont boldSystemFontOfSize:17]; }
 + (UIFont  *)body      { return [UIFont systemFontOfSize:15]; }
@@ -351,15 +374,18 @@ static int ci_run(const char *cmd) {
 static UIButton *CIBoxButton(NSString *title, UIColor *textColor, UIColor *borderColor) {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:title forState:UIControlStateNormal];
-    [b setTitleColor:textColor forState:UIControlStateNormal];
-    b.titleLabel.font = [CITheme h2];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:18];
     b.titleLabel.numberOfLines = 0;
     b.titleLabel.textAlignment = NSTextAlignmentCenter;
-    b.layer.borderColor = borderColor.CGColor;
-    b.layer.borderWidth = 1.5;
-    b.layer.cornerRadius = 6;
+    b.layer.cornerRadius = 14;
     b.contentEdgeInsets = UIEdgeInsetsMake(14, 10, 14, 10);
-    b.backgroundColor = [UIColor whiteColor];
+    b.backgroundColor = borderColor; // filled primary
+    b.layer.shadowColor = borderColor.CGColor;
+    b.layer.shadowOffset = CGSizeMake(0, 6);
+    b.layer.shadowOpacity = 0.35;
+    b.layer.shadowRadius = 10;
+    (void)textColor;
     return b;
 }
 
@@ -423,9 +449,13 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 
     _search = [[UISearchBar alloc] initWithFrame:CGRectMake(48, 8, self.view.bounds.size.width-48-80-16, 38)];
     _search.delegate = self;
-    _search.placeholder = @"";
+    _search.placeholder = @"Tìm app...";
     _search.searchBarStyle = UISearchBarStyleMinimal;
     _search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    _search.barStyle = UIBarStyleBlack;
+    _search.tintColor = [CITheme orange];
+    _search.searchTextField.textColor = [CITheme text];
+    _search.searchTextField.backgroundColor = [CITheme card];
     [header addSubview:_search];
 
     UIButton *action = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -447,6 +477,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     _table.tableHeaderView = header;
     _table.rowHeight = 64;
     _table.separatorColor = [CITheme separator];
+    _table.backgroundColor = [CITheme bg];
     [self.view addSubview:_table];
 
     self.navigationItem.leftBarButtonItem =
@@ -508,9 +539,11 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     c.textLabel.text = a.name;
     c.textLabel.textColor = [CITheme text];
     c.textLabel.font = [UIFont systemFontOfSize:16];
-    c.detailTextLabel.text = CIBytesString(a.containerSize);
-    c.detailTextLabel.textColor = [CITheme blue];
+    c.detailTextLabel.text = a.bundleID;
+    c.detailTextLabel.textColor = [CITheme dim];
     c.detailTextLabel.font = [CITheme small];
+    c.backgroundColor = [CITheme card];
+    c.tintColor = [CITheme orange];
     c.imageView.image = a.icon;
     c.imageView.layer.cornerRadius = 10;
     c.imageView.layer.masksToBounds = YES;
@@ -574,6 +607,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [super viewDidLoad];
     self.title = @"Fake iOS version & model";
     self.view.backgroundColor = [CITheme bg];
+    self.tableView.backgroundColor = [CITheme bg];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 52;
@@ -765,7 +799,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         tf.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         tf.placeholder = r.placeholder ?: @"";
         tf.font = [CITheme body]; tf.textColor = [CITheme text];
-        tf.borderStyle = UITextBorderStyleRoundedRect;
+        tf.borderStyle = UITextBorderStyleNone;
+        tf.backgroundColor = [CITheme card];
+        tf.layer.cornerRadius = 8;
+        tf.leftView = [[UIView alloc] initWithFrame:CGRectMake(0,0,8,0)];
+        tf.leftViewMode = UITextFieldViewModeAlways;
         tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
         tf.autocorrectionType = UITextAutocorrectionTypeNo;
         tf.text = [[CIConfigManager shared] stringForKey:r.key];
@@ -850,6 +888,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     _table.delegate = self; _table.dataSource = self;
     _table.tableHeaderView = header;
     _table.rowHeight = 110;
+    _table.backgroundColor = [CITheme bg];
+    _table.separatorColor = [CITheme separator];
     [self.view addSubview:_table];
 
     _view = [[CIRRSStore shared] entries];
@@ -1046,9 +1086,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     y += 110;
 
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(P, y, W-2*P, 180)];
-    card.layer.borderColor = [CITheme separator].CGColor;
-    card.layer.borderWidth = 1;
-    card.layer.cornerRadius = 6;
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 14;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOffset = CGSizeMake(0, 4);
+    card.layer.shadowOpacity = 0.25;
+    card.layer.shadowRadius = 8;
     [sv addSubview:card];
 
     [self addCardRow:@"1 Chọn App RESET!" detail:@"(chưa chọn)" y:0 parent:card action:@selector(pickResetApps) labelOut:&_selectedResetLabel];
@@ -1064,9 +1107,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     y += 30;
 
     UIView *bottomRow = [[UIView alloc] initWithFrame:CGRectMake(P, y, W-2*P, 60)];
-    bottomRow.layer.borderColor = [CITheme separator].CGColor;
-    bottomRow.layer.borderWidth = 1;
-    bottomRow.layer.cornerRadius = 6;
+    bottomRow.backgroundColor = [CITheme card];
+    bottomRow.layer.cornerRadius = 14;
+    bottomRow.layer.shadowColor = [UIColor blackColor].CGColor;
+    bottomRow.layer.shadowOffset = CGSizeMake(0, 4);
+    bottomRow.layer.shadowOpacity = 0.25;
+    bottomRow.layer.shadowRadius = 8;
     [sv addSubview:bottomRow];
     UIButton *manage = [UIButton buttonWithType:UIButtonTypeSystem];
     manage.frame = CGRectMake(0, 0, (W-2*P)/2, 60);
@@ -1086,9 +1132,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [bottomRow addSubview:restore];
     y += 72;
 
-    _noteField = [[UITextField alloc] initWithFrame:CGRectMake(P, y, W-2*P, 44)];
-    _noteField.placeholder = @"Ghi chú khi lưu retention (RRS)";
-    _noteField.borderStyle = UITextBorderStyleRoundedRect;
+    _noteField = [[UITextField alloc] initWithFrame:CGRectMake(P, y, W-2*P, 48)];
+    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Ghi chú khi lưu retention (RRS)"
+        attributes:@{NSForegroundColorAttributeName: [CITheme dim]}];
+    _noteField.borderStyle = UITextBorderStyleNone;
+    _noteField.backgroundColor = [CITheme card];
+    _noteField.textColor = [CITheme text];
+    _noteField.layer.cornerRadius = 12;
+    _noteField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 0)];
+    _noteField.leftViewMode = UITextFieldViewModeAlways;
     _noteField.delegate = self;
     _noteField.text = [[CIConfigManager shared] stringForKey:@"rrsNote"];
     [sv addSubview:_noteField];
@@ -1284,12 +1336,25 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @implementation CIAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     [[CIConfigManager shared] config]; // warm
+
+    // Global nav bar appearance — match dark theme
+    if (@available(iOS 15.0, *)) {
+        UINavigationBarAppearance *a = [[UINavigationBarAppearance alloc] init];
+        [a configureWithOpaqueBackground];
+        a.backgroundColor = [CITheme bg];
+        a.titleTextAttributes = @{NSForegroundColorAttributeName: [CITheme text]};
+        a.largeTitleTextAttributes = @{NSForegroundColorAttributeName: [CITheme text]};
+        UINavigationBar.appearance.standardAppearance = a;
+        UINavigationBar.appearance.scrollEdgeAppearance = a;
+        UINavigationBar.appearance.tintColor = [CITheme orange];
+    }
+
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     CIHomeViewController *home = [[CIHomeViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:home];
     nav.navigationBar.prefersLargeTitles = NO;
     self.window.rootViewController = nav;
-    self.window.backgroundColor = [UIColor whiteColor];
+    self.window.backgroundColor = [CITheme bg];
     [self.window makeKeyAndVisible];
     return YES;
 }
