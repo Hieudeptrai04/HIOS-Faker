@@ -2227,7 +2227,42 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         aidaInjected ? @"✅ YES" : @"❌ NO",
         safariInjected ? @"✅ YES" : @"❌ NO"];
 
-    // 5. Diagnosis
+    // 5. Ellekit / Substrate presence
+    NSArray *ekPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
+                         @"/var/jb/usr/lib/TweakInject.dylib",
+                         @"/var/jb/usr/lib/libsubstrate.dylib",
+                         @"/var/jb/Library/LaunchDaemons/com.ellekit.ellekitd.plist"];
+    NSMutableArray *ekFound = [NSMutableArray array];
+    for (NSString *p in ekPaths) {
+        if ([fm fileExistsAtPath:p]) [ekFound addObject:[p lastPathComponent]];
+    }
+    NSString *ekIcon = ekFound.count > 0 ? @"✅" : @"❌";
+    [out appendFormat:@"\n%@ Injection framework: %lu file(s)\n",
+        ekIcon, (unsigned long)ekFound.count];
+    for (NSString *f in ekFound) [out appendFormat:@"  • %@\n", f];
+    if (ekFound.count == 0) [out appendString:@"  (không thấy ellekit/substrate ở /var/jb/usr/lib)\n"];
+
+    // 6. Other tweaks in DynamicLibraries folder (để xem máy có load tweak khác không)
+    NSString *dylibDir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
+    NSArray *dylibItems = [fm contentsOfDirectoryAtPath:dylibDir error:nil];
+    NSUInteger dylibCount = 0;
+    for (NSString *f in dylibItems) if ([f hasSuffix:@".dylib"]) dylibCount++;
+    [out appendFormat:@"\n📦 Tweaks cài đặt: %lu dylib trong %@\n",
+        (unsigned long)dylibCount, dylibDir];
+
+    // 7. Thử dlopen dylib — lấy dlerror() xem dyld báo gì
+    [out appendString:@"\n🔬 Thử dlopen dylib:\n"];
+    dlerror();
+    void *h = dlopen("/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib", RTLD_NOW | RTLD_LOCAL);
+    const char *err = dlerror();
+    if (h) {
+        [out appendString:@"  ✅ dlopen thành công (dylib load được)\n"];
+        dlclose(h);
+    } else {
+        [out appendFormat:@"  ❌ dlopen FAIL\n  %s\n", err ? err : "(no error)"];
+    }
+
+    // 8. Diagnosis
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
         [out appendString:@"⚠ Shared prefs chưa ghi → bấm Change trước.\n"];
@@ -2235,8 +2270,21 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [out appendString:@"⚠ Dylib thiếu → cài lại .deb.\n"];
     } else if (!filterExists || !hasAidaBid || !hasAidaExec) {
         [out appendString:@"⚠ Filter plist sai → cài .deb mới nhất (commit 20dad2d+).\n"];
+    } else if (!h) {
+        [out appendString:@"⚠ dlopen FAIL — dylib tự thân load LỖI!\n"
+                          @"  Đây chính là lý do substrate skip inject.\n"
+                          @"  Đọc message dlerror() ở trên → biết framework/symbol nào sai.\n"];
+    } else if (ekFound.count == 0) {
+        [out appendString:@"⚠ KHÔNG thấy ellekit/substrate ở /var/jb/usr/lib.\n"
+                          @"  → Mở Sileo cài lại ellekit hoặc libsubstrate.\n"];
+    } else if (markers.count == 0 && dylibCount > 1) {
+        [out appendString:@"⚠ Dylib load được (dlopen OK) + có tweak khác cài,\n"
+                          @"  NHƯNG không app nào load tweak mình.\n"
+                          @"  → Reboot máy (rejailbreak) để substrate re-scan filter.\n"
+                          @"  → Hoặc respring: Sileo → Check updates → Respring.\n"];
     } else if (markers.count == 0) {
-        [out appendString:@"⚠ Tweak KHÔNG load vào app nào → ellekit/substrate có vấn đề. Cài lại ellekit.\n"];
+        [out appendString:@"⚠ Tweak KHÔNG load vào app nào → ellekit/substrate có vấn đề.\n"
+                          @"  → Reboot (rejailbreak) rồi test lại.\n"];
     } else if (safariInjected && !aidaInjected) {
         [out appendString:@"⚠ Safari OK nhưng AIDA64 không → AIDA64 có anti-debug.\n  Thử đổi tên dylib hoặc test với app khác.\n"];
     } else if (aidaInjected) {
