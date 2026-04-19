@@ -2491,6 +2491,81 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [out appendString:@"\n🧬 PreferenceLoader.dylib: not found (expected in DynamicLibraries)\n"];
     }
 
+    // 7c. Dump LC_CODE_SIGNATURE entitlements blob for both dylibs.
+    // PL injects + ours doesn't despite identical structural checks →
+    // the remaining delta is the code signature content (entitlements).
+    // ldid embeds the entitlement plist into the __LINKEDIT CodeDirectory;
+    // we read by locating the LC_CODE_SIGNATURE offset and scanning for
+    // the XML plist magic (<?xml).
+    void (^dumpEnts)(NSString *, NSString *) = ^(NSString *label, NSString *path) {
+        NSData *d = [NSData dataWithContentsOfFile:path];
+        if (d.length < 32) return;
+        const uint8_t *pb = d.bytes;
+        uint32_t pmagic = *(const uint32_t *)pb;
+        uint32_t sOff = 0;
+        if (pmagic == 0xBEBAFECA) {
+            uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
+            for (uint32_t i = 0; i < n && i < 8; i++) {
+                const uint8_t *fa = pb + 8 + i * 20;
+                uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
+                uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
+                uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
+                if (ct == 0x0100000C && (cs & 0xFF) == 2) { sOff = off; break; }
+                if (ct == 0x0100000C && sOff == 0) sOff = off;
+            }
+        }
+        if (sOff + 32 > d.length) return;
+        uint32_t ncmds = *(const uint32_t *)(pb + sOff + 16);
+        uint32_t co = sOff + 32;
+        uint32_t csOff = 0, csSize = 0;
+        for (uint32_t i = 0; i < ncmds && i < 200; i++) {
+            if (co + 8 > d.length) break;
+            uint32_t cmd = *(const uint32_t *)(pb + co);
+            uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
+            if (cmdsize < 8 || co + cmdsize > d.length) break;
+            if (cmd == 0x1D /* LC_CODE_SIGNATURE */) {
+                csOff = *(const uint32_t *)(pb + co + 8);
+                csSize = *(const uint32_t *)(pb + co + 12);
+                break;
+            }
+            co += cmdsize;
+        }
+        [out appendFormat:@"\n🔐 %@ entitlements (CS blob off=%u size=%u):\n",
+            label, csOff, csSize];
+        if (csOff == 0 || csOff + csSize > d.length) {
+            [out appendString:@"  (no CS blob or out-of-bounds)\n"];
+            return;
+        }
+        uint32_t slice = sOff;
+        uint32_t scanStart = slice + csOff;
+        uint32_t scanEnd = slice + csOff + csSize;
+        if (scanEnd > d.length) scanEnd = (uint32_t)d.length;
+        const char *xmlStart = NULL;
+        uint32_t xmlLen = 0;
+        for (uint32_t i = scanStart; i + 5 < scanEnd; i++) {
+            if (memcmp(pb + i, "<?xml", 5) == 0) {
+                xmlStart = (const char *)(pb + i);
+                for (uint32_t j = i; j + 8 < scanEnd; j++) {
+                    if (memcmp(pb + j, "</plist>", 8) == 0) {
+                        xmlLen = (j + 8) - i;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        if (xmlStart && xmlLen > 0 && xmlLen < 8192) {
+            NSString *ents = [[NSString alloc] initWithBytes:xmlStart
+                                                      length:xmlLen
+                                                    encoding:NSUTF8StringEncoding];
+            [out appendFormat:@"%@\n", ents ?: @"  (decode failed)"];
+        } else {
+            [out appendString:@"  (no XML entitlements plist in CS blob)\n"];
+        }
+    };
+    dumpEnts(@"ChangeInfoIos", dylibPath);
+    dumpEnts(@"PreferenceLoader", plPath);
+
     // 8. Diagnosis
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
