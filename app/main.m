@@ -36,6 +36,8 @@
 static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
 static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
+static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
+
 static NSString *const kAppVersion = @"2.2.1-native";
 
 static NSString *CILocalConfigPath(void) {
@@ -139,15 +141,34 @@ static NSString *CIRRSDir(void) {
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0 error:nil];
     if (!data) return;
-    // 1) Always persist to app sandbox (writable, survives cold launch)
     [data writeToFile:CILocalConfigPath() atomically:YES];
-    // 2) Best-effort mirror to shared path so tweak can read it (may fail on stock sandbox)
+
     NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    BOOL ok = [data writeToFile:kSharedPrefPath atomically:YES];
+    BOOL cocoaOK = [data writeToFile:kSharedPrefPath atomically:YES];
     chmod([kSharedPrefPath fileSystemRepresentation], 0644);
-    NSLog(@"[ChangeInfoIos] Config saved: local=%@ shared=%@ ok=%d keys=%lu",
-          CILocalConfigPath(), kSharedPrefPath, ok, (unsigned long)_cfg.count);
+
+    // Fallback: if Cocoa writeToFile: fails (sandbox), shell-copy via posix_spawn
+    // which inherits the app's platform entitlements and often bypasses the Cocoa
+    // sandbox layer. Root cause of the "Change xong nhưng tweak vẫn thấy config
+    // cũ" bug — see BUILD_NOTES §10.
+    BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:kSharedPrefPath];
+    unsigned long long sz = 0;
+    if (exists) {
+        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:kSharedPrefPath error:nil];
+        sz = [attr[NSFileSize] unsignedLongLongValue];
+    }
+    if (!cocoaOK || !exists || sz < 256) {
+        NSString *cmd = [NSString stringWithFormat:
+            @"mkdir -p '%@' 2>/tmp/ci_save.err; cp '%@' '%@' 2>>/tmp/ci_save.err && chmod 0644 '%@' 2>>/tmp/ci_save.err",
+            dir, CILocalConfigPath(), kSharedPrefPath, kSharedPrefPath];
+        int rc = ci_run([cmd UTF8String]);
+        NSLog(@"[ChangeInfoIos] shell-mirror rc=%d cocoaOK=%d existed=%d sz=%llu",
+              rc, cocoaOK, exists, sz);
+    } else {
+        NSLog(@"[ChangeInfoIos] Config saved via Cocoa: shared=%@ sz=%llu keys=%lu",
+              kSharedPrefPath, sz, (unsigned long)_cfg.count);
+    }
     [self notifyReload];
 }
 
@@ -2236,14 +2257,26 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         NSString *ios   = [cm stringForKey:@"__presetIOSName"] ?: @"—";
         NSString *serial = [cm stringForKey:@"SerialNumber"] ?: @"—";
 
+        // Diagnostic: verify shared prefs actually hit disk (see BUILD_NOTES §10).
+        NSFileManager *fm2 = [NSFileManager defaultManager];
+        BOOL sharedExists = [fm2 fileExistsAtPath:kSharedPrefPath];
+        unsigned long long sharedSize = 0;
+        if (sharedExists) {
+            NSDictionary *at = [fm2 attributesOfItemAtPath:kSharedPrefPath error:nil];
+            sharedSize = [at[NSFileSize] unsignedLongLongValue];
+        }
+        NSString *diag = sharedExists
+            ? [NSString stringWithFormat:@"Shared prefs OK (%llu bytes)", sharedSize]
+            : @"⚠️ Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.";
+
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
             NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
             [self alert:t msg:[NSString stringWithFormat:
                 @"Đã xoá dữ liệu %lu app:\n%@\n\n"
                 @"Model mới: %@\niOS mới: %@\nSerial: %@\n\n"
-                @"Đã restart SpringBoard.", (unsigned long)wiped, listMsg, model, ios,
-                [serial length] > 12 ? [serial substringToIndex:12] : serial]];
+                @"%@\nĐã restart SpringBoard.", (unsigned long)wiped, listMsg, model, ios,
+                [serial length] > 12 ? [serial substringToIndex:12] : serial, diag]];
         }];
     });
 }

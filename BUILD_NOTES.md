@@ -194,3 +194,122 @@ Tất cả lưu trong `/var/mobile/Library/Preferences/com.changeinfoios.plist` 
 - [ ] Hooks.mm không có `extern <type> orig_*`?
 
 Push lên master → vào Actions tab chờ ~2-3 phút → tải artifact `ChangeInfoIos-combined`.
+
+---
+
+## 10. 🔴 BUG ĐANG CÓ: "Change thành công nhưng AIDA64 vẫn máy gốc"
+
+### 10.1 Triệu chứng
+Bấm **Reset Data** → HUD 12s → alert "Change thành công". Mở **AIDA64** (hoặc bất kỳ target app nào), các field `Model`, `Serial`, `UDID`, `IMEI`, `MAC`, `IDFA`, `IDFV`… vẫn là giá trị **máy thật**. Hook KHÔNG hoạt động dù tweak đã inject.
+
+### 10.2 Nguyên nhân gốc (đọc kỹ trước khi fix)
+Config duy nhất mà tweak đọc được là file:
+```
+/var/mobile/Library/Preferences/com.changeinfoios.plist
+```
+Hardcode ở [tweak/Tweak.xm:78](tweak/Tweak.xm#L78) (`kConfigPath`) và [app/main.m:36](app/main.m#L36) (`kSharedPrefPath`).
+
+Flow khi bấm Reset Data:
+1. `ci_randomizeIdentities()` sinh ID mới → ghi vào `_cfg` in-memory.
+2. `[cm save]` ([app/main.m:137](app/main.m#L137)) ghi ra **2 nơi**:
+   - `CILocalConfigPath()` = `<sandbox>/Documents/config.plist` → **OK** (app's own sandbox).
+   - `kSharedPrefPath` = `/var/mobile/Library/Preferences/com.changeinfoios.plist` → **FAIL SILENT** vì Sandbox profile của app chặn `writeToFile:` Cocoa API (trả NO không throw). App chạy user `mobile` nhưng vẫn bị sandboxed.
+3. Post Darwin notification `com.changeinfoios/ReloadPrefs`.
+4. Tweak trong AIDA64 nhận notify → `reloadConfigFromDisk()` đọc lại `/var/mobile/Library/Preferences/com.changeinfoios.plist` — **FILE VẪN CŨ / RỖNG** → `spoofConfig = nil`.
+5. Mọi hook: `getConfig(...) == nil → return %orig` → **AIDA64 đọc giá trị thật**.
+
+### 10.3 Bằng chứng xác minh qua SSH
+Sau khi bấm Reset:
+```bash
+ls -la /var/mobile/Library/Preferences/com.changeinfoios.plist
+plutil -p  /var/mobile/Library/Preferences/com.changeinfoios.plist | head -30
+```
+File không tồn tại / thiếu keys như `advertisingIdentifier`, `deviceModel`, `fake_uiddevice` → **bug xác nhận**.
+
+Console.app xem log tweak:
+```
+[ChangeInfoIos] No config file at /var/mobile/Library/Preferences/com.changeinfoios.plist
+```
+Có sẵn ở [tweak/Tweak.xm:115](tweak/Tweak.xm#L115).
+
+### 10.4 Fix KHÔNG giải quyết (ĐỪNG lặp)
+- ❌ Đổi `_cfg[@"fake_*"] = @(YES)` — key đã có sẵn, không liên quan.
+- ❌ Gọi `[cm save]` nhiều lần — fail cùng chỗ.
+- ❌ `chmod 0644` sau `writeToFile:` — chmod file chưa có = no-op.
+- ❌ Tạo workflow mới để debug — lỗi runtime, không phải build.
+- ❌ Respring / reboot — không giải quyết write fail.
+- ❌ Bump version — không liên quan.
+- ❌ Đổi tweak filter — AIDA64 đã có trong list.
+- ❌ Prefix `/var/jb/` — `/var/mobile/` KHÔNG bị prefix trong rootless.
+
+### 10.5 Hướng fix đúng
+
+**Hướng A — shell copy fallback (rẻ, thử trước)**
+Trong `[CIConfigManager save]`, sau khi `writeToFile:CILocalConfigPath()` xong, thêm `ci_run()` shell copy:
+```objc
+NSString *cmd = [NSString stringWithFormat:
+    @"cp '%@' '%@' 2>/tmp/ci_save.err && chmod 0644 '%@' 2>>/tmp/ci_save.err",
+    CILocalConfigPath(), kSharedPrefPath, kSharedPrefPath];
+int rc = ci_run([cmd UTF8String]);
+NSLog(@"[ChangeInfoIos] shell mirror rc=%d", rc);
+```
+Shell `/bin/sh` spawn qua `posix_spawn` kế thừa entitlements app. Nếu rootless jailbreak có sandbox hook (ellekit/substitute) cho app, shell có thể bypass được Cocoa filter. Verify bằng `cat /tmp/ci_save.err` + §10.6.
+
+**Hướng B — entitlements.plist (nếu A fail)**
+Tạo `app/entitlements.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>platform-application</key><true/>
+    <key>com.apple.private.security.no-sandbox</key><true/>
+    <key>com.apple.private.security.container-required</key><false/>
+</dict></plist>
+```
+Trong `app/Makefile`:
+```make
+ChangeInfoIosApp_CODESIGN_FLAGS = -Sentitlements.plist
+```
+ldid sẽ sign với entitlements đó → app được FS access đầy đủ. Rebuild, verify §10.6.
+
+**Hướng C — LaunchDaemon helper (overkill)**
+Daemon root nghe Darwin notif, mirror từ sandbox sang `/var/mobile/Library/Preferences/`.
+
+**Hướng D — đổi arch, tweak tự ghi (lớn)**
+App gửi dict qua CFMessagePort / mach_msg → tweak inject trong SpringBoard (root) nhận, ghi file.
+
+### 10.6 Verify fix có work
+```bash
+# 1. Bấm Reset Data trong app
+# 2. Check file đã có:
+ls -la /var/mobile/Library/Preferences/com.changeinfoios.plist
+# Phải có: size > 2KB, mtime mới nhất
+
+# 3. Check keys fake:
+plutil -p /var/mobile/Library/Preferences/com.changeinfoios.plist | \
+    grep -E 'fake_uiddevice|advertisingIdentifier|deviceModel'
+
+# 4. killall AIDA64 && mở lại, Serial/UDID phải đổi
+killall -9 com.finalwire.aida64 2>/dev/null
+```
+
+### 10.7 KHÔNG PHẢI nguyên nhân (Cursor hay đoán sai)
+- **Filter plist** — [tweak/ChangeInfoIos.plist:16](tweak/ChangeInfoIos.plist#L16) có `com.finalwire.aida64`. Tweak CHẮC CHẮN inject.
+- **Rootless path prefix** — `/var/mobile/` KHÔNG bị prefix `/var/jb/`. Chỉ `/usr`, `/etc`, `/Applications`, `/Library/MobileSubstrate` mới bị prefix trong rootless.
+- **ellekit vs substrate** — `Depends: ellekit | mobilesubstrate` handle cả 2 case.
+- **Hook không load** — nếu vậy `fake_jbhide` cũng chết (AIDA64 sẽ detect JB). User báo hide JB work → hook load bình thường.
+- **MGCopyAnswer chưa hook** — đã hook ở [tweak/Tweak.xm:315](tweak/Tweak.xm#L315). AIDA64 dùng MGCopyAnswer.
+
+### 10.8 Gợi ý cho AI fix tiếp (IMPORTANT)
+1. Đọc kỹ §10.2–§10.5 **trước khi** đụng code. Đừng skip.
+2. Trước khi fix, SSH vào iPhone chạy §10.3 để confirm bug thật là ở write.
+3. Apply **Hướng A** trước (shell copy). Test §10.6.
+4. Fail → **Hướng B** (entitlements). Test lại.
+5. KHÔNG đụng tweak-side cho đến khi file config đã ghi xuống disk. Bug 100% ở app-side write.
+6. Log `stat`/`ls -la` của shared plist trong alert "Change thành công" để user thấy ngay file có ghi được không → khỏi phải SSH.
+
+---
+
+## 11. Fix đã áp dụng
+
+*Điền sau khi Hướng A/B được test thực tế trên iPhone. Ghi rõ hướng nào + output SSH verify.*
