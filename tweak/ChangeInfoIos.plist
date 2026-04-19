@@ -19,15 +19,13 @@
 			<string>com.tinyspeck.chatlyio</string>
 			<string>com.microsoft.Office.Outlook</string>
 			<string>com.finalwire.aida64</string>
-			<string>com.finalwire.aida64-ios</string>
-			<string>com.lookup.mobile</string>
 			<string>com.blacksmith.lirum</string>
 			<string>com.umang.devicedesign</string>
 			<string>com.apple.mobilesafari</string>
 		</array>
 		<key>Executables</key>
 		<array>
-			<string>AIDA64</string>
+			<string>AIDA64_c3</string>
 			<string>Lirum</string>
 			<string>DeviceInfo</string>
 			<string>Zalo</string>
