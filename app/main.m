@@ -2204,13 +2204,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         hasAidaExec ? @"YES" : @"NO"];
 
     // 4. Markers — which apps actually loaded the tweak
+    // NOTE: Bỏ qua marker "com.changeinfoios.app" vì nó là false positive từ
+    // v2.3.8 (lúc đó dlopen dylib vào app mình → %ctor ghi marker rồi crash).
+    // App mình KHÔNG có trong filter plist nên substrate không thể inject thật.
     NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
     NSArray *items = [fm contentsOfDirectoryAtPath:markerDir error:nil];
     NSMutableArray *markers = [NSMutableArray array];
+    BOOL hadFalseMarker = NO;
     for (NSString *f in items) {
         if ([f hasPrefix:@"injected_"] && [f hasSuffix:@".txt"]) {
             NSString *bid = [[f stringByReplacingOccurrencesOfString:@"injected_" withString:@""]
                              stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+            if ([bid isEqualToString:@"com.changeinfoios.app"]) {
+                hadFalseMarker = YES;
+                // Tự xóa luôn
+                [fm removeItemAtPath:[markerDir stringByAppendingPathComponent:f] error:nil];
+                continue;
+            }
             [markers addObject:bid];
         }
     }
@@ -2220,6 +2230,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [out appendString:@"  (KHÔNG app nào load được tweak)\n"];
     } else {
         for (NSString *bid in markers) [out appendFormat:@"  • %@\n", bid];
+    }
+    if (hadFalseMarker) {
+        [out appendString:@"  (đã xóa marker giả com.changeinfoios.app từ v2.3.8)\n"];
     }
     BOOL aidaInjected = [markers containsObject:@"com.finalwire.aida64"];
     BOOL safariInjected = [markers containsObject:@"com.apple.mobilesafari"];
@@ -2305,14 +2318,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     } else if (ekFound.count == 0) {
         [out appendString:@"⚠ KHÔNG thấy ellekit/substrate ở /var/jb/usr/lib.\n"
                           @"  → Mở Sileo cài lại ellekit hoặc libsubstrate.\n"];
-    } else if (markers.count == 0 && dylibCount > 1) {
-        [out appendString:@"⚠ Dylib load được (dlopen OK) + có tweak khác cài,\n"
-                          @"  NHƯNG không app nào load tweak mình.\n"
-                          @"  → Reboot máy (rejailbreak) để substrate re-scan filter.\n"
-                          @"  → Hoặc respring: Sileo → Check updates → Respring.\n"];
     } else if (markers.count == 0) {
-        [out appendString:@"⚠ Tweak KHÔNG load vào app nào → ellekit/substrate có vấn đề.\n"
-                          @"  → Reboot (rejailbreak) rồi test lại.\n"];
+        [out appendString:@"⚠ Substrate CÓ cài nhưng chưa inject tweak vào app nào.\n"
+                          @"  Làm tuần tự:\n"
+                          @"  1) Force-quit hết Safari/AIDA64 (swipe up kill)\n"
+                          @"  2) REBOOT máy (nếu palera1n: chạy lại loader, dopamine: chạy lại app)\n"
+                          @"  3) Sau khi jailbreak lại, mở SAFARI đầu tiên\n"
+                          @"  4) Quay lại đây bấm Debug → Safari marker phải xuất hiện\n"];
     } else if (safariInjected && !aidaInjected) {
         [out appendString:@"⚠ Safari OK nhưng AIDA64 không → AIDA64 có anti-debug.\n  Thử đổi tên dylib hoặc test với app khác.\n"];
     } else if (aidaInjected) {
