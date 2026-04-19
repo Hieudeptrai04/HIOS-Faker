@@ -62,8 +62,11 @@ static BOOL is_critical_process(void) {
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) = NULL;
 
 static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (!name) return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+
     int ret = orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
-    if (ret != 0 || !name || !oldp) return ret;
+    if (ret != 0) return ret;
+    if (!oldp || !oldlenp) return ret;
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded) return ret;
 
@@ -83,13 +86,17 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
         BOOL useStr = [nameStr isEqualToString:@"kern.osversion"] ? fakeLayer(@"sysosversion") : fakeLayer(@"sysctl");
         if (useStr) {
             NSString *val = getConfigStr(configKey);
-            if (val && oldlenp) {
+            if (val) {
                 const char *cval = [val UTF8String];
-                size_t len = strlen(cval) + 1;
-                if (*oldlenp >= len) {
-                    memcpy(oldp, cval, len);
-                    *oldlenp = len;
+                size_t needed = strlen(cval) + 1;
+                if (*oldlenp >= needed) {
+                    memcpy(oldp, cval, needed);
+                    *oldlenp = needed;
                     return 0;
+                } else {
+                    errno = ENOMEM;
+                    *oldlenp = needed;
+                    return -1;
                 }
             }
         }
