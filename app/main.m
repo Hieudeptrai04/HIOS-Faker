@@ -533,11 +533,12 @@ static NSUInteger ci_randomizeIdentities(void) {
     // deviceModel = full consumer name ("iPhone 15 Pro Max") so UIDevice.model hook
     // returns something meaningful instead of generic "iPhone"
     [cm setObject:preset[0] forKey:@"deviceModel"];
+    [cm setObject:preset[0] forKey:@"localizedModel"];
+    [cm setObject:@"iPhone" forKey:@"systemName"];
     [cm setObject:preset[1] forKey:@"ProductType"];
     [cm setObject:preset[2] forKey:@"hw_machine"];
+    [cm setObject:preset[2] forKey:@"HardwareModel"];  // MGCopyAnswer "HWModelStr" reads this
     [cm setObject:preset[2] forKey:@"uname_machine"];
-    [cm setObject:@"iPhone" forKey:@"localizedModel"];
-    [cm setObject:@"iPhone" forKey:@"systemName"];
     [cm setObject:preset[3] forKey:@"screenWidth"];
     [cm setObject:preset[4] forKey:@"screenHeight"];
     [cm setObject:preset[5] forKey:@"screenScale"];
@@ -1368,10 +1369,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)applyPreset:(NSArray *)p {
     // p = [name, productType, machine, w, h, scale, nativeW, nativeH, nativeScale]
     CIConfigManager *cm = [CIConfigManager shared];
-    [cm setObject:@"iPhone" forKey:@"deviceModel"];
-    [cm setObject:@"iPhone" forKey:@"localizedModel"];
-    [cm setObject:p[1] forKey:@"ProductType"];
+    [cm setObject:p[0] forKey:@"deviceModel"];     // full consumer name e.g. "iPhone 15 Pro Max"
+    [cm setObject:p[0] forKey:@"localizedModel"];  // same for UIDevice.localizedModel hook
+    [cm setObject:p[1] forKey:@"ProductType"];     // internal identifier e.g. "iPhone15,2"
+    [cm setObject:p[2] forKey:@"hw_machine"];
+    [cm setObject:p[2] forKey:@"HardwareModel"];   // MGCopyAnswer HWModelStr reads this key
     [cm setObject:p[2] forKey:@"uname_machine"];
+    [cm setObject:@"iPhone" forKey:@"systemName"];  // UIDevice.systemName hook
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"deviceName"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceName"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceNameMG"];
+    [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"UserAssignedDeviceName"];
+    [cm setObject:p[0] forKey:@"MarketingName"];
     [cm setObject:p[3] forKey:@"screenWidth"];
     [cm setObject:p[4] forKey:@"screenHeight"];
     [cm setObject:p[5] forKey:@"screenScale"];
