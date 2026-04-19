@@ -57,9 +57,31 @@ jobs:
           set -euo pipefail
           cd tweak
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS=arm64
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
           ls -lh packages/
           test -n "$(ls packages/*.deb 2>/dev/null)"
+
+      - name: Verify tweak dylib (arch + sign + link)
+        run: |
+          set -euo pipefail
+          cd tweak
+          DYLIB=$(find .theos/obj -name "ChangeInfoIos.dylib" | head -1)
+          test -n "$DYLIB" || { echo "ERR: no dylib built"; exit 1; }
+          echo "=== arch slices ==="
+          lipo -info "$DYLIB"
+          lipo -info "$DYLIB" | grep -qE 'arm64.*arm64e|arm64e.*arm64' || { echo "ERR: missing arm64e"; exit 1; }
+          echo "=== codesign ==="
+          ldid -e "$DYLIB" | head -20 || true
+          codesign -dv "$DYLIB" 2>&1 | head -5 || true
+          echo "=== linked frameworks ==="
+          otool -L "$DYLIB" | head -30
+          echo "=== undefined symbols (should be resolved at runtime) ==="
+          nm -u "$DYLIB" 2>/dev/null | head -20 || true
+          echo "=== extracted filter plist ==="
+          EXTRACTED=$(dpkg-deb -x packages/*.deb /tmp/tweak-verify && find /tmp/tweak-verify -name "ChangeInfoIos.plist" | head -1)
+          test -n "$EXTRACTED" || { echo "ERR: filter plist missing in .deb"; exit 1; }
+          plutil -lint "$EXTRACTED"
+          echo "Filter plist OK: $EXTRACTED"
 
       - name: Build app
         id: build-app
