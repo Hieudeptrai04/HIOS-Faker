@@ -1929,6 +1929,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [sv addSubview:b2];
     y += 110;
 
+    UIButton *dbg = [UIButton buttonWithType:UIButtonTypeSystem];
+    dbg.frame = CGRectMake(P, y, W-2*P, 44);
+    [dbg setTitle:@"🔍 Debug Inject Check" forState:UIControlStateNormal];
+    [dbg setTitleColor:[CITheme blue] forState:UIControlStateNormal];
+    dbg.titleLabel.font = [CITheme h2];
+    dbg.backgroundColor = [CITheme card];
+    dbg.layer.cornerRadius = 10;
+    dbg.layer.borderWidth = 1;
+    dbg.layer.borderColor = [CITheme border].CGColor;
+    [dbg addTarget:self action:@selector(debugCheckInject) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:dbg];
+    y += 56;
+
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(P, y, W-2*P, 180)];
     card.backgroundColor = [CITheme card];
     card.layer.cornerRadius = 14;
@@ -2140,6 +2153,106 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [UIView animateWithDuration:0.15 animations:^{ hud.alpha = 0; }
             completion:^(BOOL _) { [hud removeFromSuperview]; if (completion) completion(); }];
     });
+}
+
+- (void)debugCheckInject {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableString *out = [NSMutableString string];
+
+    // 1. Shared prefs
+    NSString *sharedPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
+    BOOL sharedExists = [fm fileExistsAtPath:sharedPath];
+    unsigned long long sharedSize = 0;
+    NSUInteger sharedKeys = 0;
+    if (sharedExists) {
+        NSDictionary *attr = [fm attributesOfItemAtPath:sharedPath error:nil];
+        sharedSize = [attr[NSFileSize] unsignedLongLongValue];
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:sharedPath];
+        sharedKeys = d.count;
+    }
+    NSString *sharedIcon = (sharedExists && sharedSize > 1024) ? @"✅" : @"❌";
+    [out appendFormat:@"%@ Shared prefs: %@\n  size=%llu bytes, keys=%lu\n\n",
+        sharedIcon, sharedExists ? @"OK" : @"MISSING", sharedSize, (unsigned long)sharedKeys];
+
+    // 2. Dylib
+    NSString *dylibPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib";
+    BOOL dylibExists = [fm fileExistsAtPath:dylibPath];
+    unsigned long long dylibSize = 0;
+    if (dylibExists) {
+        NSDictionary *attr = [fm attributesOfItemAtPath:dylibPath error:nil];
+        dylibSize = [attr[NSFileSize] unsignedLongLongValue];
+    }
+    NSString *dylibIcon = (dylibExists && dylibSize > 50000) ? @"✅" : @"❌";
+    [out appendFormat:@"%@ Dylib: %@\n  size=%llu bytes\n\n",
+        dylibIcon, dylibExists ? @"OK" : @"MISSING", dylibSize];
+
+    // 3. Filter plist
+    NSString *filterPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
+    BOOL filterExists = [fm fileExistsAtPath:filterPath];
+    NSDictionary *filter = [NSDictionary dictionaryWithContentsOfFile:filterPath];
+    NSDictionary *filt = filter[@"Filter"];
+    NSArray *bundles = [filt[@"Bundles"] isKindOfClass:[NSArray class]] ? filt[@"Bundles"] : @[];
+    NSArray *execs = [filt[@"Executables"] isKindOfClass:[NSArray class]] ? filt[@"Executables"] : @[];
+    NSString *mode = filt[@"Mode"] ?: @"?";
+    BOOL hasAidaBid = [bundles containsObject:@"com.finalwire.aida64"];
+    BOOL hasAidaExec = [execs containsObject:@"AIDA64_c3"];
+    NSString *filterIcon = (filterExists && hasAidaBid && hasAidaExec) ? @"✅" : @"❌";
+    [out appendFormat:@"%@ Filter plist: %@\n  Mode=%@ Bundles=%lu Execs=%lu\n  com.finalwire.aida64: %@\n  AIDA64_c3 exec: %@\n\n",
+        filterIcon, filterExists ? @"OK" : @"MISSING", mode,
+        (unsigned long)bundles.count, (unsigned long)execs.count,
+        hasAidaBid ? @"YES" : @"NO",
+        hasAidaExec ? @"YES" : @"NO"];
+
+    // 4. Markers — which apps actually loaded the tweak
+    NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
+    NSArray *items = [fm contentsOfDirectoryAtPath:markerDir error:nil];
+    NSMutableArray *markers = [NSMutableArray array];
+    for (NSString *f in items) {
+        if ([f hasPrefix:@"injected_"] && [f hasSuffix:@".txt"]) {
+            NSString *bid = [[f stringByReplacingOccurrencesOfString:@"injected_" withString:@""]
+                             stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+            [markers addObject:bid];
+        }
+    }
+    NSString *markerIcon = markers.count > 0 ? @"✅" : @"❌";
+    [out appendFormat:@"%@ Injection markers: %lu app(s)\n", markerIcon, (unsigned long)markers.count];
+    if (markers.count == 0) {
+        [out appendString:@"  (KHÔNG app nào load được tweak)\n"];
+    } else {
+        for (NSString *bid in markers) [out appendFormat:@"  • %@\n", bid];
+    }
+    BOOL aidaInjected = [markers containsObject:@"com.finalwire.aida64"];
+    BOOL safariInjected = [markers containsObject:@"com.apple.mobilesafari"];
+    [out appendFormat:@"\n  AIDA64 inject: %@\n  Safari inject: %@\n",
+        aidaInjected ? @"✅ YES" : @"❌ NO",
+        safariInjected ? @"✅ YES" : @"❌ NO"];
+
+    // 5. Diagnosis
+    [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
+    if (!sharedExists || sharedSize < 1024) {
+        [out appendString:@"⚠ Shared prefs chưa ghi → bấm Change trước.\n"];
+    } else if (!dylibExists) {
+        [out appendString:@"⚠ Dylib thiếu → cài lại .deb.\n"];
+    } else if (!filterExists || !hasAidaBid || !hasAidaExec) {
+        [out appendString:@"⚠ Filter plist sai → cài .deb mới nhất (commit 20dad2d+).\n"];
+    } else if (markers.count == 0) {
+        [out appendString:@"⚠ Tweak KHÔNG load vào app nào → ellekit/substrate có vấn đề. Cài lại ellekit.\n"];
+    } else if (safariInjected && !aidaInjected) {
+        [out appendString:@"⚠ Safari OK nhưng AIDA64 không → AIDA64 có anti-debug.\n  Thử đổi tên dylib hoặc test với app khác.\n"];
+    } else if (aidaInjected) {
+        [out appendString:@"✅ AIDA64 đã inject. Nếu vẫn thấy máy gốc → config key chưa đủ / chưa random.\n"];
+    } else {
+        [out appendString:@"⚠ Mở AIDA64 / Safari trước khi check (app phải chạy lần nữa sau respring).\n"];
+    }
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Debug Inject Check"
+                                                                message:out
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        [UIPasteboard generalPasteboard].string = out;
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)saveAndReset {
