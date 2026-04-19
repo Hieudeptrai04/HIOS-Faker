@@ -269,6 +269,14 @@ BOOL jbHideActive(void) {
 typedef CFTypeRef (*MGCopyAnswer_t)(CFStringRef property);
 static MGCopyAnswer_t orig_MGCopyAnswer = NULL;
 
+// MGGetBoolAnswer - returns bool for properties like "GameCenterEnabled"
+typedef BOOL (*MGGetBoolAnswer_t)(CFStringRef property);
+static MGGetBoolAnswer_t orig_MGGetBoolAnswer = NULL;
+
+// MGGetStringAnswer - returns string for properties like "DeviceName"
+typedef CFTypeRef (*MGGetStringAnswer_t)(CFStringRef property);
+static MGGetStringAnswer_t orig_MGGetStringAnswer = NULL;
+
 static NSDictionary *mgKeyMap = nil;
 
 static void initMGKeyMap() {
@@ -369,6 +377,53 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     }
 
     return orig_MGCopyAnswer(property);
+}
+
+// ============================================================
+// MGGetBoolAnswer hook - handles bool properties
+// ============================================================
+static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded || !property) return orig_MGGetBoolAnswer(property);
+    if (!fakeLayer(@"hardware")) return orig_MGGetBoolAnswer(property);
+
+    NSString *key = (__bridge NSString *)property;
+    NSString *configKey = mgKeyMap[key];
+
+    if (configKey) {
+        id val = getConfig(configKey);
+        if (val) {
+            if ([val isKindOfClass:[NSNumber class]]) return [val boolValue];
+            if ([val isKindOfClass:[NSString class]]) {
+                NSString *s = (NSString *)val;
+                if ([s isEqualToString:@"true"] || [s isEqualToString:@"YES"] || [s isEqualToString:@"1"]) return YES;
+                if ([s isEqualToString:@"false"] || [s isEqualToString:@"NO"] || [s isEqualToString:@"0"]) return NO;
+            }
+        }
+    }
+
+    return orig_MGGetBoolAnswer(property);
+}
+
+// ============================================================
+// MGGetStringAnswer hook - handles string properties
+// ============================================================
+static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded || !property) return orig_MGGetStringAnswer(property);
+    if (!fakeLayer(@"hardware")) return orig_MGGetStringAnswer(property);
+
+    initMGKeyMap();
+
+    NSString *key = (__bridge NSString *)property;
+    NSString *configKey = mgKeyMap[key];
+
+    if (configKey) {
+        NSString *val = getConfigStr(configKey);
+        if (val) return (__bridge_retained CFTypeRef)val;
+    }
+
+    return orig_MGGetStringAnswer(property);
 }
 
 // ============================================================
@@ -1154,6 +1209,18 @@ static CLLocation *buildFakeLocation(void) {
                 NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked");
             } else {
                 NSLog(@"[ChangeInfoIos] MGCopyAnswer symbol not found");
+            }
+
+            orig_MGGetBoolAnswer = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
+            if (orig_MGGetBoolAnswer) {
+                MSHookFunction((void *)orig_MGGetBoolAnswer, (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer);
+                NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked");
+            }
+
+            orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
+            if (orig_MGGetStringAnswer) {
+                MSHookFunction((void *)orig_MGGetStringAnswer, (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer);
+                NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked");
             }
         }
 

@@ -26,9 +26,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
