@@ -2269,6 +2269,62 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [out appendFormat:@"\n📦 Dylibs trong folder: %lu file\n", (unsigned long)dylibCount];
     for (NSString *f in otherDylibs) [out appendFormat:@"  • %@\n", f];
 
+    // 6b. TweakInject folder (ellekit primary scan path on Dopamine)
+    NSArray *tiDirs = @[@"/var/jb/usr/lib/TweakInject",
+                        @"/var/jb/usr/lib/Substrate/DynamicLibraries"];
+    for (NSString *dir in tiDirs) {
+        BOOL isDir = NO;
+        BOOL exists = [fm fileExistsAtPath:dir isDirectory:&isDir];
+        [out appendFormat:@"\n📁 %@: %@\n", dir,
+            exists ? (isDir ? @"exists (dir)" : @"exists (FILE not dir!)") : @"missing"];
+        if (exists && isDir) {
+            NSArray *contents = [fm contentsOfDirectoryAtPath:dir error:nil];
+            NSUInteger dlc = 0;
+            BOOL hasOurs = NO;
+            for (NSString *f in contents) {
+                if ([f hasSuffix:@".dylib"]) dlc++;
+                if ([f isEqualToString:@"ChangeInfoIos.dylib"]) hasOurs = YES;
+            }
+            [out appendFormat:@"  %lu dylib(s), ChangeInfoIos present: %@\n",
+                (unsigned long)dlc, hasOurs ? @"✅ YES" : @"❌ NO"];
+        }
+    }
+
+    // 6c. PreferenceLoader — is the only other tweak actually injecting?
+    // If PL has markers in its known cache/pref path, substrate is alive.
+    // PL writes feedback to /var/jb/Library/PreferenceLoader/ — presence
+    // of that dir + recent-modified files = PL loaded into Settings.app.
+    NSString *plDir = @"/var/jb/Library/PreferenceLoader";
+    BOOL plDirExists = [fm fileExistsAtPath:plDir];
+    [out appendFormat:@"\n🧪 PreferenceLoader runtime: %@\n",
+        plDirExists ? @"dir exists" : @"dir missing"];
+    if (plDirExists) {
+        NSArray *plItems = [fm contentsOfDirectoryAtPath:plDir error:nil];
+        [out appendFormat:@"  %lu item(s) inside\n", (unsigned long)plItems.count];
+    }
+    // Also check Settings.app preference bundle dir — if any tweak registered
+    // a prefs panel, this dir is non-empty.
+    NSString *prefBundles = @"/var/jb/Library/PreferenceBundles";
+    if ([fm fileExistsAtPath:prefBundles]) {
+        NSArray *pbItems = [fm contentsOfDirectoryAtPath:prefBundles error:nil];
+        [out appendFormat:@"  PreferenceBundles: %lu item(s)\n",
+            (unsigned long)pbItems.count];
+    }
+
+    // 6d. ellekit daemon / loader paths
+    NSArray *daemonChecks = @[
+        @"/var/jb/Library/LaunchDaemons/com.ellekit.ellekitd.plist",
+        @"/var/jb/usr/libexec/ellekit/ellekitd",
+        @"/var/jb/basebin/loader.dylib",
+        @"/var/jb/basebin/jbloader",
+        @"/var/jb/usr/lib/substitute-inserter.dylib"
+    ];
+    [out appendString:@"\n⚙ Loader/daemon files:\n"];
+    for (NSString *p in daemonChecks) {
+        [out appendFormat:@"  %@ %@\n",
+            [fm fileExistsAtPath:p] ? @"✅" : @"❌", p];
+    }
+
     // 7. Parse Mach-O: arch + install_name + dependencies + code signature
     [out appendString:@"\n🔬 Dylib Mach-O:\n"];
     BOOL archOK = NO;
