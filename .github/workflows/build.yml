@@ -61,12 +61,55 @@ jobs:
           ls -lh packages/
           test -n "$(ls packages/*.deb 2>/dev/null)"
 
-      - name: Verify tweak dylib (arch + sign + link)
+      - name: Patch CydiaSubstrate → libsubstrate.dylib (rootless compat)
         run: |
           set -euo pipefail
           cd tweak
-          DYLIB=$(find .theos/obj -name "ChangeInfoIos.dylib" | head -1)
-          test -n "$DYLIB" || { echo "ERR: no dylib built"; exit 1; }
+          # Theos mặc định link dylib với @rpath/CydiaSubstrate.framework/CydiaSubstrate.
+          # Trên rootless jb với ellekit thuần (không có CS-compat symlink), dyld
+          # fail resolve @rpath → substrate silently skip inject.
+          # Fix: extract .deb, patch dylib với install_name_tool sang path tuyệt đối
+          # /var/jb/usr/lib/libsubstrate.dylib (ellekit cung cấp), ldid -S, repack .deb.
+          DEB=$(ls packages/*.deb | head -1)
+          echo "Original .deb: $DEB"
+
+          rm -rf /tmp/deb-work
+          mkdir -p /tmp/deb-work
+          # -R preserves DEBIAN/ control directory alongside payload
+          dpkg-deb -R "$DEB" /tmp/deb-work
+
+          DEPLOYED=$(find /tmp/deb-work -name "ChangeInfoIos.dylib" | head -1)
+          test -n "$DEPLOYED" || { echo "ERR: no dylib in .deb"; exit 1; }
+
+          echo "=== before patch ==="
+          otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
+
+          if otool -L "$DEPLOYED" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            install_name_tool -change \
+              "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+              "/var/jb/usr/lib/libsubstrate.dylib" \
+              "$DEPLOYED"
+            ldid -S "$DEPLOYED"
+            echo "=== after patch ==="
+            otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit'
+          else
+            echo "No CydiaSubstrate.framework reference found — already correct"
+          fi
+
+          # Repack .deb in-place (dpkg-deb -b reads DEBIAN/ from the unpacked dir)
+          rm -f "$DEB"
+          dpkg-deb -Zxz -b /tmp/deb-work "$DEB"
+          ls -lh packages/
+
+      - name: Verify tweak dylib (from patched .deb)
+        run: |
+          set -euo pipefail
+          cd tweak
+          # Verify từ .deb cuối cùng (sau patch), không phải .theos/obj gốc
+          rm -rf /tmp/tweak-verify
+          dpkg-deb -x packages/*.deb /tmp/tweak-verify
+          DYLIB=$(find /tmp/tweak-verify -name "ChangeInfoIos.dylib" | head -1)
+          test -n "$DYLIB" || { echo "ERR: no dylib in .deb"; exit 1; }
           echo "=== arch slices ==="
           lipo -info "$DYLIB"
           lipo -info "$DYLIB" | grep -qE 'arm64.*arm64e|arm64e.*arm64' || { echo "ERR: missing arm64e"; exit 1; }
@@ -74,14 +117,20 @@ jobs:
           ldid -e "$DYLIB" | head -20 || true
           codesign -dv "$DYLIB" 2>&1 | head -5 || true
           echo "=== linked frameworks ==="
-          otool -L "$DYLIB" | head -30
-          echo "=== undefined symbols (should be resolved at runtime) ==="
+          otool -L "$DYLIB"
+          echo "=== substrate link check ==="
+          if otool -L "$DYLIB" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            echo "ERR: CydiaSubstrate.framework still referenced — patch failed!"
+            exit 1
+          fi
+          otool -L "$DYLIB" | grep -iE 'substrate|ellekit' || { echo "ERR: no substrate link at all"; exit 1; }
+          echo "=== undefined symbols ==="
           nm -u "$DYLIB" 2>/dev/null | head -20 || true
-          echo "=== extracted filter plist ==="
-          EXTRACTED=$(dpkg-deb -x packages/*.deb /tmp/tweak-verify && find /tmp/tweak-verify -name "ChangeInfoIos.plist" | head -1)
-          test -n "$EXTRACTED" || { echo "ERR: filter plist missing in .deb"; exit 1; }
-          plutil -lint "$EXTRACTED"
-          echo "Filter plist OK: $EXTRACTED"
+          echo "=== filter plist ==="
+          FILTER=$(find /tmp/tweak-verify -name "ChangeInfoIos.plist" | head -1)
+          test -n "$FILTER" || { echo "ERR: filter plist missing"; exit 1; }
+          plutil -lint "$FILTER"
+          echo "Filter plist OK: $FILTER"
 
       - name: Build app
         id: build-app
