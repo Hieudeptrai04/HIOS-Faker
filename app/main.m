@@ -2255,54 +2255,99 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     for (NSString *f in ekFound) [out appendFormat:@"  • %@\n", f];
     if (ekFound.count == 0) [out appendString:@"  (không thấy ellekit/substrate ở /var/jb/usr/lib)\n"];
 
-    // 6. Other tweaks in DynamicLibraries folder (để xem máy có load tweak khác không)
+    // 6. List ALL dylibs + plists in DynamicLibraries folder
     NSString *dylibDir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
     NSArray *dylibItems = [fm contentsOfDirectoryAtPath:dylibDir error:nil];
+    NSMutableArray *otherDylibs = [NSMutableArray array];
     NSUInteger dylibCount = 0;
-    for (NSString *f in dylibItems) if ([f hasSuffix:@".dylib"]) dylibCount++;
-    [out appendFormat:@"\n📦 Tweaks cài đặt: %lu dylib trong %@\n",
-        (unsigned long)dylibCount, dylibDir];
+    for (NSString *f in dylibItems) {
+        if ([f hasSuffix:@".dylib"]) {
+            dylibCount++;
+            if (![f isEqualToString:@"ChangeInfoIos.dylib"]) [otherDylibs addObject:f];
+        }
+    }
+    [out appendFormat:@"\n📦 Dylibs trong folder: %lu file\n", (unsigned long)dylibCount];
+    for (NSString *f in otherDylibs) [out appendFormat:@"  • %@\n", f];
 
-    // 7. Read Mach-O header để verify arch (không dlopen vì sẽ crash app —
-    // dylib link với substrate's MSHookFunction, undefined khi chưa inject).
-    [out appendString:@"\n🔬 Dylib arch:\n"];
+    // 7. Parse Mach-O: arch + install_name + dependencies + code signature
+    [out appendString:@"\n🔬 Dylib Mach-O:\n"];
     BOOL archOK = NO;
-    FILE *fp = fopen([dylibPath fileSystemRepresentation], "rb");
-    if (fp) {
-        uint32_t magic = 0;
-        fread(&magic, 4, 1, fp);
-        if (magic == 0xCAFEBABE || magic == 0xBEBAFECA) {
-            uint32_t nfatArch_be = 0;
-            fread(&nfatArch_be, 4, 1, fp);
-            uint32_t n = (nfatArch_be >> 24) | ((nfatArch_be >> 8) & 0xFF00)
-                       | ((nfatArch_be << 8) & 0xFF0000) | (nfatArch_be << 24);
+    BOOL hasCodeSig = NO;
+    NSString *installName = nil;
+    NSMutableArray *deps = [NSMutableArray array];
+
+    NSData *dylibData = [NSData dataWithContentsOfFile:dylibPath];
+    if (dylibData.length < 32) {
+        [out appendString:@"  ❌ Không đọc được dylib\n"];
+    } else {
+        const uint8_t *bytes = dylibData.bytes;
+        uint32_t magic = *(const uint32_t *)bytes;
+
+        // Pick slice offset (arm64 or arm64e in FAT, else 0 for thin)
+        uint32_t sliceOff = 0;
+        if (magic == 0xBEBAFECA) { // FAT big-endian
+            uint32_t nfatBE = *(const uint32_t *)(bytes + 4);
+            uint32_t n = __builtin_bswap32(nfatBE);
             [out appendFormat:@"  FAT binary, %u slice(s)\n", n];
             BOOL arm64 = NO, arm64e = NO;
             for (uint32_t i = 0; i < n && i < 8; i++) {
-                uint32_t cputype_be = 0, cpusubtype_be = 0;
-                fread(&cputype_be, 4, 1, fp);
-                fread(&cpusubtype_be, 4, 1, fp);
-                fseek(fp, 12, SEEK_CUR);
-                uint32_t ct = (cputype_be >> 24) | ((cputype_be >> 8) & 0xFF00)
-                            | ((cputype_be << 8) & 0xFF0000) | (cputype_be << 24);
-                uint32_t cs = (cpusubtype_be >> 24) | ((cpusubtype_be >> 8) & 0xFF00)
-                            | ((cpusubtype_be << 8) & 0xFF0000) | (cpusubtype_be << 24);
+                const uint8_t *fa = bytes + 8 + i * 20;
+                uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
+                uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
+                uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
                 if (ct == 0x0100000C) {
-                    if ((cs & 0xFF) == 2) { arm64e = YES; [out appendString:@"  • arm64e\n"]; }
-                    else { arm64 = YES; [out appendString:@"  • arm64\n"]; }
+                    if ((cs & 0xFF) == 2) {
+                        arm64e = YES;
+                        sliceOff = off;
+                        [out appendString:@"  • arm64e\n"];
+                    } else {
+                        arm64 = YES;
+                        if (sliceOff == 0) sliceOff = off;
+                        [out appendString:@"  • arm64\n"];
+                    }
                 }
             }
             archOK = arm64 && arm64e;
-        } else if (magic == 0xFEEDFACF || magic == 0xCFFAEDFE) {
-            [out appendString:@"  Thin binary (single slice)\n"];
+        } else if (magic == 0xFEEDFACF) {
+            [out appendString:@"  Thin binary (arm64)\n"];
             archOK = YES;
         } else {
-            [out appendFormat:@"  ❌ Magic lạ: 0x%08X (có thể file hỏng)\n", magic];
+            [out appendFormat:@"  ❌ Magic lạ: 0x%08X\n", magic];
         }
-        fclose(fp);
-    } else {
-        [out appendString:@"  ❌ Không mở được dylib để đọc header\n"];
+
+        if (sliceOff + 32 <= dylibData.length) {
+            // mach_header_64: magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
+            uint32_t ncmds = *(const uint32_t *)(bytes + sliceOff + 16);
+            uint32_t cmdOff = sliceOff + 32; // sizeof(mach_header_64)
+            for (uint32_t i = 0; i < ncmds && i < 200; i++) {
+                if (cmdOff + 8 > dylibData.length) break;
+                uint32_t cmd = *(const uint32_t *)(bytes + cmdOff);
+                uint32_t cmdsize = *(const uint32_t *)(bytes + cmdOff + 4);
+                if (cmdsize < 8 || cmdOff + cmdsize > dylibData.length) break;
+
+                if (cmd == 0xD /* LC_ID_DYLIB */ || cmd == 0xC /* LC_LOAD_DYLIB */) {
+                    uint32_t strOff = *(const uint32_t *)(bytes + cmdOff + 8);
+                    if (strOff < cmdsize) {
+                        const char *s = (const char *)(bytes + cmdOff + strOff);
+                        size_t maxLen = cmdsize - strOff;
+                        size_t slen = strnlen(s, maxLen);
+                        NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
+                        if (cmd == 0xD) installName = path;
+                        else if (path) [deps addObject:path];
+                    }
+                } else if (cmd == 0x1D /* LC_CODE_SIGNATURE */) {
+                    hasCodeSig = YES;
+                }
+
+                cmdOff += cmdsize;
+            }
+        }
     }
+
+    if (installName) [out appendFormat:@"  install_name = %@\n", installName];
+    [out appendFormat:@"  CodeSignature = %@\n", hasCodeSig ? @"✅ present" : @"❌ MISSING"];
+    [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)deps.count];
+    for (NSString *d in deps) [out appendFormat:@"    - %@\n", d];
 
     // 8. Diagnosis
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
@@ -2318,13 +2363,25 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     } else if (ekFound.count == 0) {
         [out appendString:@"⚠ KHÔNG thấy ellekit/substrate ở /var/jb/usr/lib.\n"
                           @"  → Mở Sileo cài lại ellekit hoặc libsubstrate.\n"];
+    } else if (!hasCodeSig) {
+        [out appendString:@"⚠ Dylib THIẾU CODE SIGNATURE!\n"
+                          @"  Substrate từ chối dylib chưa sign. CI thiếu bước ldid -S.\n"
+                          @"  Fix: build.yml cần ldid -Sentitlements.plist hoặc ldid -S <dylib>\n"];
+    } else if (installName && ![installName containsString:@"/var/jb/"]
+                          && ![installName hasPrefix:@"@"]) {
+        [out appendFormat:@"⚠ install_name SAI cho rootless JB:\n  %@\n"
+                          @"  Rootless substrate cần path /var/jb/... hoặc @rpath.\n"
+                          @"  Fix: build với THEOS_PACKAGE_SCHEME=rootless (đã có trong build.yml)\n",
+                          installName];
     } else if (markers.count == 0) {
-        [out appendString:@"⚠ Substrate CÓ cài nhưng chưa inject tweak vào app nào.\n"
-                          @"  Làm tuần tự:\n"
-                          @"  1) Force-quit hết Safari/AIDA64 (swipe up kill)\n"
-                          @"  2) REBOOT máy (nếu palera1n: chạy lại loader, dopamine: chạy lại app)\n"
-                          @"  3) Sau khi jailbreak lại, mở SAFARI đầu tiên\n"
-                          @"  4) Quay lại đây bấm Debug → Safari marker phải xuất hiện\n"];
+        [out appendString:@"⚠ Setup đủ nhưng substrate vẫn không inject.\n"
+                          @"  So sánh với dylib khác trong folder (ở mục 📦 bên trên):\n"
+                          @"  • Nếu folder CHỈ có ChangeInfoIos → máy chưa có tweak nào khác,\n"
+                          @"    không biết substrate có thực sự inject ai không.\n"
+                          @"    → Cài thử 1 tweak đơn giản (VD: BigBoardIcons) để verify.\n"
+                          @"  • Nếu có tweak khác + chúng đang work → compare install_name,\n"
+                          @"    dependencies → có thể dylib mình link sai framework.\n"
+                          @"  • Reboot + mở Safari cold-start (không qua App Switcher).\n"];
     } else if (safariInjected && !aidaInjected) {
         [out appendString:@"⚠ Safari OK nhưng AIDA64 không → AIDA64 có anti-debug.\n  Thử đổi tên dylib hoặc test với app khác.\n"];
     } else if (aidaInjected) {
