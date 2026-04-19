@@ -134,8 +134,41 @@ Ngoài ra, 2 key khác cũng thiếu:
 
 `preset[0]` là tên đầy đủ từ database (VD `"iPhone 15 Pro Max"`, `"iPhone 16 Pro"`, ...).
 
+### Bug 2 — `applyPreset:` ghi `deviceModel = @"iPhone"` cứng (commit `0a7a0c8`)
+
+#### Symptom
+Sau khi fix bug 1, user vẫn thấy model gốc nếu: bấm Change → random model → mở picker "Chọn Model iPhone" → bấm chọn model khác → model bị ghi đè thành `"iPhone"`.
+
+#### Root cause
+`applyPreset:` (dòng ~1368) — được gọi mỗi khi user chọn 1 model từ picker — ghi cứng `deviceModel = @"iPhone"` và `localizedModel = @"iPhone"` thay vì tên đầy đủ. Nó cũng thiếu `systemName`, `deviceName`, `HardwareModel`.
+
+#### Fix
+```objc:app/main.m
+// TRƯỚC:
+[cm setObject:@"iPhone" forKey:@"deviceModel"];     // SAI
+[cm setObject:@"iPhone" forKey:@"localizedModel"];   // SAI
+// (không set systemName, deviceName, HardwareModel)
+
+// SAU:
+[cm setObject:p[0] forKey:@"deviceModel"];      // full name e.g. "iPhone 15 Pro Max"
+[cm setObject:p[0] forKey:@"localizedModel"];   // same
+[cm setObject:p[1] forKey:@"ProductType"];
+[cm setObject:p[2] forKey:@"hw_machine"];
+[cm setObject:p[2] forKey:@"HardwareModel"];    // MGCopyAnswer "HWModelStr" reads this
+[cm setObject:p[2] forKey:@"uname_machine"];
+[cm setObject:@"iPhone" forKey:@"systemName"];  // UIDevice.systemName hook
+[cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"deviceName"];
+[cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceName"];
+[cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceNameMG"];
+[cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"UserAssignedDeviceName"];
+[cm setObject:p[0] forKey:@"MarketingName"];
+```
+
+Đồng thời thêm `HardwareModel` vào `ci_randomizeIdentities()` để `MGCopyAnswer("HWModelStr")` trả model thật.
+
 ### Đã commit
 - Commit: `ee7d565` — "fix: set proper deviceModel in ci_randomizeIdentities instead of generic iPhone"
+- Commit: `0a7a0c8` — "fix(app): applyPreset overwrote deviceModel with generic iPhone + add HardwareModel"
 - Branch: `master`
 - GitHub Actions: tự trigger build, artifact `ChangeInfoIos-combined`
 
