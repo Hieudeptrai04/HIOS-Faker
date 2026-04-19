@@ -1,24 +1,50 @@
-{
-  Filter = {
-    Bundles = (
-      "com.vng.zalo",
-      "ph.telegra.Telegraph",
-      "net.whatsapp.WhatsApp",
-      "com.facebook.Facebook",
-      "com.burbn.instagram",
-      "com.zhiliaoapp.musically",
-      "com.google.ios.youtube",
-      "com.atebits.Tweetie2",
-      "com.toyopagroup.picaboo",
-      "com.hammerandchisel.discord",
-      "com.tinyspeck.chatlyio",
-      "com.microsoft.Office.Outlook",
-      "com.finalwire.aida64",
-      "com.finalwire.aida64-ios",
-      "com.lookup.mobile",
-      "com.blacksmith.lirum",
-      "com.umang.devicedesign",
-      "com.apple.mobilesafari"
-    );
-  };
-}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.vng.zalo</string>
+			<string>ph.telegra.Telegraph</string>
+			<string>net.whatsapp.WhatsApp</string>
+			<string>com.facebook.Facebook</string>
+			<string>com.burbn.instagram</string>
+			<string>com.zhiliaoapp.musically</string>
+			<string>com.google.ios.youtube</string>
+			<string>com.atebits.Tweetie2</string>
+			<string>com.toyopagroup.picaboo</string>
+			<string>com.hammerandchisel.discord</string>
+			<string>com.tinyspeck.chatlyio</string>
+			<string>com.microsoft.Office.Outlook</string>
+			<string>com.finalwire.aida64</string>
+			<string>com.finalwire.aida64-ios</string>
+			<string>com.lookup.mobile</string>
+			<string>com.blacksmith.lirum</string>
+			<string>com.umang.devicedesign</string>
+			<string>com.apple.mobilesafari</string>
+		</array>
+		<key>Executables</key>
+		<array>
+			<string>AIDA64</string>
+			<string>Lirum</string>
+			<string>DeviceInfo</string>
+			<string>Zalo</string>
+			<string>Telegram</string>
+			<string>WhatsApp</string>
+			<string>Facebook</string>
+			<string>Instagram</string>
+			<string>TikTok</string>
+			<string>YouTube</string>
+			<string>Twitter</string>
+			<string>Snapchat</string>
+			<string>Discord</string>
+			<string>Slack</string>
+			<string>Outlook</string>
+		</array>
+		<key>Mode</key>
+		<string>Any</string>
+	</dict>
+</dict>
+</plist>
