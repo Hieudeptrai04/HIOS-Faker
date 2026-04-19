@@ -1,0 +1,9 @@
+Package: com.changeinfoios.helloinject
+Name: HelloInject
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Minimal inject test dylib — writes marker file only.
+Maintainer: ChangeInfoIos
+Author: ChangeInfoIos
+Section: Tweaks
+Depends: ellekit | mobilesubstrate, firmware (>= 15.0)

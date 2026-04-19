@@ -2240,6 +2240,25 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         aidaInjected ? @"✅ YES" : @"❌ NO",
         safariInjected ? @"✅ YES" : @"❌ NO"];
 
+    // 4b. HelloInject probe — minimal dylib (Foundation-only, no hooks).
+    // If HelloInject injects but ChangeInfoIos doesn't → framework overhead
+    // is the cause. If neither → loader-level problem.
+    NSMutableArray *helloMarkers = [NSMutableArray array];
+    for (NSString *f in items) {
+        if ([f hasPrefix:@"hello_"] && [f hasSuffix:@".txt"]) {
+            NSString *bid = [[f stringByReplacingOccurrencesOfString:@"hello_" withString:@""]
+                             stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+            [helloMarkers addObject:bid];
+        }
+    }
+    [out appendFormat:@"\n🧪 HelloInject probe: %lu marker(s)\n",
+        (unsigned long)helloMarkers.count];
+    if (helloMarkers.count == 0) {
+        [out appendString:@"  (minimal dylib cũng không inject → lỗi loader/sign)\n"];
+    } else {
+        for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
+    }
+
     // 5. Ellekit / Substrate presence
     NSArray *ekPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
                          @"/var/jb/usr/lib/TweakInject.dylib",

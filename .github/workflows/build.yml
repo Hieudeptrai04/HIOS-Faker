@@ -148,6 +148,31 @@ jobs:
           plutil -lint "$FILTER"
           echo "Filter plist OK: $FILTER"
 
+      - name: Build HelloInject (minimal inject probe)
+        run: |
+          set -euo pipefail
+          cd helloinject
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          ls -lh packages/
+
+          # Same post-build patch as main tweak: install_name → absolute.
+          DEB=$(ls packages/*.deb | head -1)
+          rm -rf /tmp/hello-work
+          mkdir -p /tmp/hello-work
+          dpkg-deb -R "$DEB" /tmp/hello-work
+          HELLO=$(find /tmp/hello-work -name "HelloInject.dylib" | head -1)
+          test -n "$HELLO" || { echo "ERR: HelloInject.dylib missing"; exit 1; }
+          install_name_tool -id \
+            "/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib" \
+            "$HELLO"
+          ldid -S "$HELLO"
+          echo "=== HelloInject after patch ==="
+          otool -D "$HELLO"
+          otool -L "$HELLO"
+          rm -f "$DEB"
+          dpkg-deb -Zxz -b /tmp/hello-work "$DEB"
+
       - name: Build app
         id: build-app
         run: |
@@ -179,18 +204,22 @@ jobs:
 
           TWEAK_DEB=$(ls tweak/packages/*.deb | head -1)
           APP_DEB=$(ls app/packages/*.deb | head -1)
+          HELLO_DEB=$(ls helloinject/packages/*.deb | head -1)
           echo "Tweak: $TWEAK_DEB ($(stat -f%z "$TWEAK_DEB") bytes)"
           echo "App:   $APP_DEB ($(stat -f%z "$APP_DEB") bytes)"
+          echo "Hello: $HELLO_DEB ($(stat -f%z "$HELLO_DEB") bytes)"
 
-          rm -rf combined /tmp/tweak-extract /tmp/app-extract
-          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract
+          rm -rf combined /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract
+          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract
 
           dpkg-deb -x "$TWEAK_DEB" /tmp/tweak-extract
           dpkg-deb -x "$APP_DEB"   /tmp/app-extract
+          dpkg-deb -x "$HELLO_DEB" /tmp/hello-extract
 
-          # merge file trees (tweak dylib + app bundle share /var/jb root)
+          # merge file trees (tweak dylib + app bundle + hello probe share /var/jb)
           cp -R /tmp/tweak-extract/. combined/
           cp -R /tmp/app-extract/.   combined/
+          cp -R /tmp/hello-extract/. combined/
 
           VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
           cat > combined/DEBIAN/control <<EOF
