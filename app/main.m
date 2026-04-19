@@ -2244,18 +2244,22 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // Step 4: Respring to reload tweak with new fake config
         [self updateHUDTitle:hud title:@"[4/4] Đang restart SpringBoard..."];
         [NSThread sleepForTimeInterval:1.5];
-        // First: kill SpringBoard hard (forces clean restart with fresh tweak load)
-        ci_run("killall -9 SpringBoard 2>/dev/null");
+        int respringRC = ci_run("killall -9 SpringBoard 2>/dev/null");
         [NSThread sleepForTimeInterval:4.0];
-        // Then: refresh app cache
         ci_run("uicache -a 2>/dev/null");
         [NSThread sleepForTimeInterval:2.0];
-        NSLog(@"[ChangeInfoIos] Step 4 done: respring executed");
+        BOOL respringOK = (respringRC == 0);
+        NSLog(@"[ChangeInfoIos] Step 4 done: killall rc=%d", respringRC);
 
-        // Show completion summary with fake info
-        NSString *model = [cm stringForKey:@"__presetModelName"] ?: @"—";
-        NSString *ios   = [cm stringForKey:@"__presetIOSName"] ?: @"—";
+        // Collect fake IDs to show in summary so user can verify they changed.
+        NSString *model  = [cm stringForKey:@"__presetModelName"] ?: @"—";
+        NSString *ios    = [cm stringForKey:@"__presetIOSName"] ?: @"—";
         NSString *serial = [cm stringForKey:@"SerialNumber"] ?: @"—";
+        NSString *idfa   = [cm stringForKey:@"advertisingIdentifier"] ?: @"—";
+        NSString *udid   = [cm stringForKey:@"UniqueDeviceID"] ?: @"—";
+        NSString *imei   = [cm stringForKey:@"InternationalMobileEquipmentIdentity"] ?: @"—";
+        NSString *shortSerial = [serial length] > 12 ? [serial substringToIndex:12] : serial;
+        NSString *shortUDID   = [udid length]   > 16 ? [[udid substringToIndex:16] stringByAppendingString:@"…"] : udid;
 
         // Diagnostic: verify shared prefs actually hit disk (see BUILD_NOTES §10).
         NSFileManager *fm2 = [NSFileManager defaultManager];
@@ -2265,18 +2269,30 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             NSDictionary *at = [fm2 attributesOfItemAtPath:kSharedPrefPath error:nil];
             sharedSize = [at[NSFileSize] unsignedLongLongValue];
         }
-        NSString *diag = sharedExists
-            ? [NSString stringWithFormat:@"Shared prefs OK (%llu bytes)", sharedSize]
-            : @"⚠️ Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.";
+        BOOL prefsOK = sharedExists && sharedSize >= 256;
 
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
             NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
-            [self alert:t msg:[NSString stringWithFormat:
-                @"Đã xoá dữ liệu %lu app:\n%@\n\n"
-                @"Model mới: %@\niOS mới: %@\nSerial: %@\n\n"
-                @"%@\nĐã restart SpringBoard.", (unsigned long)wiped, listMsg, model, ios,
-                [serial length] > 12 ? [serial substringToIndex:12] : serial, diag]];
+
+            // Warnings first so user sees them without scrolling.
+            NSMutableString *body = [NSMutableString string];
+            if (!prefsOK) {
+                [body appendString:@"🚨 Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.\n\n"];
+            }
+            if (!respringOK) {
+                [body appendFormat:@"⚠️ Respring fail (rc=%d) — mở lại app target có thể vẫn dùng tweak cũ.\n\n", respringRC];
+            }
+            [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
+            [body appendFormat:@"Model: %@\niOS: %@\nSerial: %@\nIDFA: %@\nUDID: %@\nIMEI: %@\n\n",
+                model, ios, shortSerial, idfa, shortUDID, imei];
+            if (prefsOK) {
+                [body appendFormat:@"✅ Shared prefs OK (%llu bytes)\n", sharedSize];
+            }
+            if (respringOK) {
+                [body appendString:@"✅ Đã restart SpringBoard."];
+            }
+            [self alert:t msg:body];
         }];
     });
 }
