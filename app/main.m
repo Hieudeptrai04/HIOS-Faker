@@ -2185,24 +2185,49 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // so the user can read what's happening on screen.
 
         // Step 1: Generate new fake identities and persist to plist
-        [self updateHUDTitle:hud title:@"[1/4] Tạo thông tin giả mới..."];
+        [self updateHUDTitle:hud title:@"[1/5] Tạo thông tin giả mới..."];
         [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
         NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
 
-        // Step 2: Wipe target app sandboxes
+        // Step 2: Kill + wipe target app sandboxes.
+        // Kill FIRST so file handles release and the app can't re-create files
+        // mid-wipe. Do it via 3 mechanisms per app for maximum coverage:
+        //   1) killall -9 '<ExecName>' — the canonical path
+        //   2) pkill -9 -f '<bundleID>' — matches cmdline (catches ext processes)
+        //   3) pkill -9 -f '<bundle-path>' — in case exec name was spoofed
         NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
                           @"Library/Cookies", @"Library/WebKit",
                           @"Library/Application Support", @"tmp"];
         NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
         NSUInteger totalApps = fullTargets.count;
+
+        void (^killApp)(CIAppInfo *) = ^(CIAppInfo *a) {
+            NSString *exec = nil;
+            if (a.bundlePath.length) {
+                NSBundle *b = [NSBundle bundleWithPath:a.bundlePath];
+                exec = [[b executablePath] lastPathComponent];
+                if (!exec.length) exec = [b objectForInfoDictionaryKey:@"CFBundleExecutable"];
+            }
+            NSString *bidSafe  = [a.bundleID   stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
+            NSString *execSafe = [exec         stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
+            NSString *pathSafe = [a.bundlePath stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
+            NSMutableString *kcmd = [NSMutableString string];
+            if (execSafe.length) [kcmd appendFormat:@"killall -9 '%@' 2>/dev/null; ", execSafe];
+            if (bidSafe.length)  [kcmd appendFormat:@"pkill -9 -f '%@' 2>/dev/null; ", bidSafe];
+            if (pathSafe.length) [kcmd appendFormat:@"pkill -9 -f '%@' 2>/dev/null; ", pathSafe];
+            if (kcmd.length) ci_run([kcmd UTF8String]);
+        };
+
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
-            NSString *stepTitle = [NSString stringWithFormat:@"[2/4] Xóa %lu/%lu: %@...",
+            NSString *stepTitle = [NSString stringWithFormat:@"[2/5] Kill + xóa %lu/%lu: %@...",
                 (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
             [self updateHUDTitle:hud title:stepTitle];
-            [NSThread sleepForTimeInterval:1.5];
+            [NSThread sleepForTimeInterval:0.8];
+            killApp(a);
+            [NSThread sleepForTimeInterval:0.5];
             for (NSString *sub in subs) {
                 NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
                 NSString *cmd = [NSString stringWithFormat:
@@ -2215,10 +2240,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
             wiped++;
         }
-        NSLog(@"[ChangeInfoIos] Step 2 done: wiped %lu apps", (unsigned long)wiped);
+        NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + save counters
-        [self updateHUDTitle:hud title:@"[3/4] Xóa cache phát hiện..."];
+        [self updateHUDTitle:hud title:@"[3/5] Xóa cache phát hiện..."];
         [NSThread sleepForTimeInterval:1.5];
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
@@ -2245,7 +2270,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // As mobile user we can't killall SpringBoard (root-owned). Try
         // sbreload/launchctl first (rootless-jb friendly), then fall back
         // to killall SpringBoard which only works if elevated.
-        [self updateHUDTitle:hud title:@"[4/4] Đang restart SpringBoard..."];
+        [self updateHUDTitle:hud title:@"[4/5] Đang restart SpringBoard..."];
         [NSThread sleepForTimeInterval:1.5];
         const char *respringCmd =
             "/var/jb/usr/bin/sbreload 2>/dev/null"
@@ -2259,6 +2284,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [NSThread sleepForTimeInterval:2.0];
         BOOL respringOK = (respringRC == 0);
         NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
+
+        // Step 5: Final kill sweep. After SpringBoard respring, iOS often
+        // auto-resumes target apps from their launch snapshot. Kill them one
+        // more time so that when the user next opens the app icon, it does a
+        // FRESH cold-start and the tweak %ctor runs again with the new config.
+        [self updateHUDTitle:hud title:@"[5/5] Dọn lần cuối..."];
+        [NSThread sleepForTimeInterval:1.0];
+        for (CIAppInfo *a in fullTargets) { killApp(a); }
+        NSLog(@"[ChangeInfoIos] Step 5 done: post-respring kill sweep");
 
         // Collect fake IDs to show in summary so user can verify they changed.
         NSString *model  = [cm stringForKey:@"__presetModelName"] ?: @"—";
@@ -2321,7 +2355,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             if (respringOK) {
                 [body appendString:@"✅ Đã restart SpringBoard.\n"];
             }
-            [body appendString:@"\n👉 Force-quit app target (vuốt lên) rồi mở lại để thấy thông tin fake mới."];
+            [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
             [self alert:t msg:body];
         }];
     });
