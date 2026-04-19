@@ -2250,16 +2250,45 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [out appendFormat:@"\n📦 Tweaks cài đặt: %lu dylib trong %@\n",
         (unsigned long)dylibCount, dylibDir];
 
-    // 7. Thử dlopen dylib — lấy dlerror() xem dyld báo gì
-    [out appendString:@"\n🔬 Thử dlopen dylib:\n"];
-    dlerror();
-    void *h = dlopen("/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib", RTLD_NOW | RTLD_LOCAL);
-    const char *err = dlerror();
-    if (h) {
-        [out appendString:@"  ✅ dlopen thành công (dylib load được)\n"];
-        dlclose(h);
+    // 7. Read Mach-O header để verify arch (không dlopen vì sẽ crash app —
+    // dylib link với substrate's MSHookFunction, undefined khi chưa inject).
+    [out appendString:@"\n🔬 Dylib arch:\n"];
+    BOOL archOK = NO;
+    FILE *fp = fopen([dylibPath fileSystemRepresentation], "rb");
+    if (fp) {
+        uint32_t magic = 0;
+        fread(&magic, 4, 1, fp);
+        if (magic == 0xCAFEBABE || magic == 0xBEBAFECA) {
+            uint32_t nfatArch_be = 0;
+            fread(&nfatArch_be, 4, 1, fp);
+            uint32_t n = (nfatArch_be >> 24) | ((nfatArch_be >> 8) & 0xFF00)
+                       | ((nfatArch_be << 8) & 0xFF0000) | (nfatArch_be << 24);
+            [out appendFormat:@"  FAT binary, %u slice(s)\n", n];
+            BOOL arm64 = NO, arm64e = NO;
+            for (uint32_t i = 0; i < n && i < 8; i++) {
+                uint32_t cputype_be = 0, cpusubtype_be = 0;
+                fread(&cputype_be, 4, 1, fp);
+                fread(&cpusubtype_be, 4, 1, fp);
+                fseek(fp, 12, SEEK_CUR);
+                uint32_t ct = (cputype_be >> 24) | ((cputype_be >> 8) & 0xFF00)
+                            | ((cputype_be << 8) & 0xFF0000) | (cputype_be << 24);
+                uint32_t cs = (cpusubtype_be >> 24) | ((cpusubtype_be >> 8) & 0xFF00)
+                            | ((cpusubtype_be << 8) & 0xFF0000) | (cpusubtype_be << 24);
+                if (ct == 0x0100000C) {
+                    if ((cs & 0xFF) == 2) { arm64e = YES; [out appendString:@"  • arm64e\n"]; }
+                    else { arm64 = YES; [out appendString:@"  • arm64\n"]; }
+                }
+            }
+            archOK = arm64 && arm64e;
+        } else if (magic == 0xFEEDFACF || magic == 0xCFFAEDFE) {
+            [out appendString:@"  Thin binary (single slice)\n"];
+            archOK = YES;
+        } else {
+            [out appendFormat:@"  ❌ Magic lạ: 0x%08X (có thể file hỏng)\n", magic];
+        }
+        fclose(fp);
     } else {
-        [out appendFormat:@"  ❌ dlopen FAIL\n  %s\n", err ? err : "(no error)"];
+        [out appendString:@"  ❌ Không mở được dylib để đọc header\n"];
     }
 
     // 8. Diagnosis
@@ -2270,10 +2299,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [out appendString:@"⚠ Dylib thiếu → cài lại .deb.\n"];
     } else if (!filterExists || !hasAidaBid || !hasAidaExec) {
         [out appendString:@"⚠ Filter plist sai → cài .deb mới nhất (commit 20dad2d+).\n"];
-    } else if (!h) {
-        [out appendString:@"⚠ dlopen FAIL — dylib tự thân load LỖI!\n"
-                          @"  Đây chính là lý do substrate skip inject.\n"
-                          @"  Đọc message dlerror() ở trên → biết framework/symbol nào sai.\n"];
+    } else if (!archOK && dylibSize > 0) {
+        [out appendString:@"⚠ Dylib thiếu arch arm64e (hoặc file hỏng).\n"
+                          @"  iPhone X cần arm64e — check CI build.\n"];
     } else if (ekFound.count == 0) {
         [out appendString:@"⚠ KHÔNG thấy ellekit/substrate ở /var/jb/usr/lib.\n"
                           @"  → Mở Sileo cài lại ellekit hoặc libsubstrate.\n"];
