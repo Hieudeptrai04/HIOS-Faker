@@ -61,15 +61,19 @@ jobs:
           ls -lh packages/
           test -n "$(ls packages/*.deb 2>/dev/null)"
 
-      - name: Patch CydiaSubstrate → libsubstrate.dylib (rootless compat)
+      - name: Patch install_name + CydiaSubstrate (rootless compat)
         run: |
           set -euo pipefail
           cd tweak
-          # Theos mặc định link dylib với @rpath/CydiaSubstrate.framework/CydiaSubstrate.
-          # Trên rootless jb với ellekit thuần (không có CS-compat symlink), dyld
-          # fail resolve @rpath → substrate silently skip inject.
-          # Fix: extract .deb, patch dylib với install_name_tool sang path tuyệt đối
-          # /var/jb/usr/lib/libsubstrate.dylib (ellekit cung cấp), ldid -S, repack .deb.
+          # Two patches in one step (must dpkg-deb repack once):
+          #
+          # (1) install_name: Theos default sets LC_ID_DYLIB to @rpath/<name>.dylib.
+          #     ellekit/substrate validates install_name matches the deploy path
+          #     when scanning DynamicLibraries/ — @rpath causes silent skip.
+          #     Control sample PreferenceLoader uses absolute path and injects
+          #     fine. Fix: install_name_tool -id to absolute deploy path.
+          # (2) CydiaSubstrate dep: redundant on ellekit-only devices, but keep
+          #     as defensive patch. libsubstrate.dylib is provided by ellekit.
           DEB=$(ls packages/*.deb | head -1)
           echo "Original .deb: $DEB"
 
@@ -82,19 +86,26 @@ jobs:
           test -n "$DEPLOYED" || { echo "ERR: no dylib in .deb"; exit 1; }
 
           echo "=== before patch ==="
+          otool -D "$DEPLOYED" || true
           otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
 
+          # (1) install_name → absolute deploy path
+          install_name_tool -id \
+            "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib" \
+            "$DEPLOYED"
+
+          # (2) CydiaSubstrate → libsubstrate.dylib (if still linked)
           if otool -L "$DEPLOYED" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
             install_name_tool -change \
               "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
               "/var/jb/usr/lib/libsubstrate.dylib" \
               "$DEPLOYED"
-            ldid -S "$DEPLOYED"
-            echo "=== after patch ==="
-            otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit'
-          else
-            echo "No CydiaSubstrate.framework reference found — already correct"
           fi
+
+          ldid -S "$DEPLOYED"
+          echo "=== after patch ==="
+          otool -D "$DEPLOYED"
+          otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
 
           # Repack .deb in-place (dpkg-deb -b reads DEBIAN/ from the unpacked dir)
           rm -f "$DEB"
@@ -118,6 +129,11 @@ jobs:
           codesign -dv "$DYLIB" 2>&1 | head -5 || true
           echo "=== linked frameworks ==="
           otool -L "$DYLIB"
+          echo "=== install_name check ==="
+          INSTALL_NAME=$(otool -D "$DYLIB" | tail -1)
+          echo "install_name = $INSTALL_NAME"
+          EXPECTED="/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib"
+          test "$INSTALL_NAME" = "$EXPECTED" || { echo "ERR: install_name wrong (expected $EXPECTED)"; exit 1; }
           echo "=== substrate link check ==="
           if otool -L "$DYLIB" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
             echo "ERR: CydiaSubstrate.framework still referenced — patch failed!"
