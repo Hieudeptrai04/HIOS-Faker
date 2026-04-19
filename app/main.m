@@ -2405,6 +2405,73 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)deps.count];
     for (NSString *d in deps) [out appendFormat:@"    - %@\n", d];
 
+    // 7b. Parse PreferenceLoader.dylib (the control — it IS injecting).
+    // Delta vs our dylib exposes what LC_ commands substrate requires.
+    NSString *plPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/PreferenceLoader.dylib";
+    if ([fm fileExistsAtPath:plPath]) {
+        [out appendString:@"\n🧬 PreferenceLoader Mach-O (control):\n"];
+        NSData *plData = [NSData dataWithContentsOfFile:plPath];
+        NSDictionary *plAttr = [fm attributesOfItemAtPath:plPath error:nil];
+        [out appendFormat:@"  size=%llu bytes\n",
+            [plAttr[NSFileSize] unsignedLongLongValue]];
+        BOOL plHasSig = NO;
+        NSString *plInstall = nil;
+        NSMutableArray *plDeps = [NSMutableArray array];
+        if (plData.length >= 32) {
+            const uint8_t *pb = plData.bytes;
+            uint32_t pmagic = *(const uint32_t *)pb;
+            uint32_t pSliceOff = 0;
+            if (pmagic == 0xBEBAFECA) {
+                uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
+                [out appendFormat:@"  FAT, %u slice(s)\n", n];
+                for (uint32_t i = 0; i < n && i < 8; i++) {
+                    const uint8_t *fa = pb + 8 + i * 20;
+                    uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
+                    uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
+                    uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
+                    if (ct == 0x0100000C) {
+                        [out appendFormat:@"  • %@\n",
+                            (cs & 0xFF) == 2 ? @"arm64e" : @"arm64"];
+                        if ((cs & 0xFF) == 2) pSliceOff = off;
+                        else if (pSliceOff == 0) pSliceOff = off;
+                    }
+                }
+            } else if (pmagic == 0xFEEDFACF) {
+                [out appendString:@"  Thin (arm64)\n"];
+            }
+            if (pSliceOff + 32 <= plData.length) {
+                uint32_t ncmds = *(const uint32_t *)(pb + pSliceOff + 16);
+                uint32_t co = pSliceOff + 32;
+                for (uint32_t i = 0; i < ncmds && i < 200; i++) {
+                    if (co + 8 > plData.length) break;
+                    uint32_t cmd = *(const uint32_t *)(pb + co);
+                    uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
+                    if (cmdsize < 8 || co + cmdsize > plData.length) break;
+                    if (cmd == 0xD || cmd == 0xC) {
+                        uint32_t strOff = *(const uint32_t *)(pb + co + 8);
+                        if (strOff < cmdsize) {
+                            const char *s = (const char *)(pb + co + strOff);
+                            size_t maxLen = cmdsize - strOff;
+                            size_t slen = strnlen(s, maxLen);
+                            NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
+                            if (cmd == 0xD) plInstall = path;
+                            else if (path) [plDeps addObject:path];
+                        }
+                    } else if (cmd == 0x1D) {
+                        plHasSig = YES;
+                    }
+                    co += cmdsize;
+                }
+            }
+        }
+        if (plInstall) [out appendFormat:@"  install_name = %@\n", plInstall];
+        [out appendFormat:@"  CodeSignature = %@\n", plHasSig ? @"✅" : @"❌"];
+        [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)plDeps.count];
+        for (NSString *d in plDeps) [out appendFormat:@"    - %@\n", d];
+    } else {
+        [out appendString:@"\n🧬 PreferenceLoader.dylib: not found (expected in DynamicLibraries)\n"];
+    }
+
     // 8. Diagnosis
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
