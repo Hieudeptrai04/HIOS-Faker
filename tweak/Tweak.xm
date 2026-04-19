@@ -359,24 +359,37 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     }
 
     NSString *configKey = mgKeyMap[key];
+    CFTypeRef result = NULL;
 
     if (configKey) {
-        if ([key isEqualToString:@"BatteryIsCharging"] || [key isEqualToString:@"AirplaneMode"]) {
-            if (getConfig(configKey))
-                return (__bridge_retained CFTypeRef)@(getConfigBool(configKey));
+        NSString *spoofedVal = getConfigStr(configKey);
+        if (spoofedVal) {
+            if ([key isEqualToString:@"BatteryIsCharging"] || [key isEqualToString:@"AirplaneMode"]) {
+                if (getConfig(configKey)) {
+                    result = (__bridge_retained CFTypeRef)@(getConfigBool(configKey));
+                }
+            } else {
+                NSSet *mgIntKeys = [NSSet setWithObjects:
+                    @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
+                    @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform", nil];
+                if ([mgIntKeys containsObject:key]) {
+                    int64_t v = configValueAsMGInteger(configKey);
+                    result = (__bridge_retained CFTypeRef)@(v);
+                } else {
+                    result = (__bridge_retained CFTypeRef)spoofedVal;
+                }
+            }
         }
-        NSSet *mgIntKeys = [NSSet setWithObjects:
-            @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
-            @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform", nil];
-        if ([mgIntKeys containsObject:key]) {
-            int64_t v = configValueAsMGInteger(configKey);
-            return (__bridge_retained CFTypeRef)@(v);
-        }
-        NSString *val = getConfigStr(configKey);
-        if (val) return (__bridge_retained CFTypeRef)val;
     }
 
-    return orig_MGCopyAnswer(property);
+    if (result) {
+        NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] SPOOFED -> %@", key, result);
+        return result;
+    }
+
+    CFTypeRef orig = orig_MGCopyAnswer(property);
+    NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] passthrough -> %@", key, orig);
+    return orig;
 }
 
 // ============================================================
