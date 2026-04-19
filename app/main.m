@@ -2241,15 +2241,24 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [cm save];
         NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded");
 
-        // Step 4: Respring to reload tweak with new fake config
+        // Step 4: Respring to reload tweak with new fake config.
+        // As mobile user we can't killall SpringBoard (root-owned). Try
+        // sbreload/launchctl first (rootless-jb friendly), then fall back
+        // to killall SpringBoard which only works if elevated.
         [self updateHUDTitle:hud title:@"[4/4] Đang restart SpringBoard..."];
         [NSThread sleepForTimeInterval:1.5];
-        int respringRC = ci_run("killall -9 SpringBoard 2>/dev/null");
+        const char *respringCmd =
+            "/var/jb/usr/bin/sbreload 2>/dev/null"
+            " || sbreload 2>/dev/null"
+            " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+            " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+            " || killall -9 SpringBoard 2>/dev/null";
+        int respringRC = ci_run(respringCmd);
         [NSThread sleepForTimeInterval:4.0];
-        ci_run("uicache -a 2>/dev/null");
+        ci_run("/var/jb/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null");
         [NSThread sleepForTimeInterval:2.0];
         BOOL respringOK = (respringRC == 0);
-        NSLog(@"[ChangeInfoIos] Step 4 done: killall rc=%d", respringRC);
+        NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
 
         // Collect fake IDs to show in summary so user can verify they changed.
         NSString *model  = [cm stringForKey:@"__presetModelName"] ?: @"—";
@@ -2271,17 +2280,34 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         }
         BOOL prefsOK = sharedExists && sharedSize >= 256;
 
+        // Check tweak injection markers. Each target's tweak %ctor writes
+        // /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt on load.
+        // If a bundle was opened since install but no marker → tweak didn't
+        // inject there. See BUILD_NOTES §10.
+        NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
+        NSMutableArray<NSString *> *notInjected = [NSMutableArray array];
+        for (CIAppInfo *a in fullTargets) {
+            if (!a.bundleID.length) continue;
+            NSString *m = [markerDir stringByAppendingFormat:@"/injected_%@.txt", a.bundleID];
+            if (![fm2 fileExistsAtPath:m]) {
+                [notInjected addObject:a.name ?: a.bundleID];
+            }
+        }
+
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
             NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
 
-            // Warnings first so user sees them without scrolling.
             NSMutableString *body = [NSMutableString string];
             if (!prefsOK) {
                 [body appendString:@"🚨 Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.\n\n"];
             }
+            if (notInjected.count > 0) {
+                [body appendFormat:@"🚨 Tweak CHƯA inject vào: %@\n(Mở app đó 1 lần rồi thử lại.)\n\n",
+                    [notInjected componentsJoinedByString:@", "]];
+            }
             if (!respringOK) {
-                [body appendFormat:@"⚠️ Respring fail (rc=%d) — mở lại app target có thể vẫn dùng tweak cũ.\n\n", respringRC];
+                [body appendFormat:@"⚠️ Respring fail (rc=%d).\n→ Hãy **force-quit** target app (vuốt lên) rồi mở lại.\n\n", respringRC];
             }
             [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
             [body appendFormat:@"Model: %@\niOS: %@\nSerial: %@\nIDFA: %@\nUDID: %@\nIMEI: %@\n\n",
@@ -2289,9 +2315,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             if (prefsOK) {
                 [body appendFormat:@"✅ Shared prefs OK (%llu bytes)\n", sharedSize];
             }
-            if (respringOK) {
-                [body appendString:@"✅ Đã restart SpringBoard."];
+            if (notInjected.count == 0 && fullTargets.count > 0) {
+                [body appendFormat:@"✅ Tweak inject OK vào %lu app\n", (unsigned long)fullTargets.count];
             }
+            if (respringOK) {
+                [body appendString:@"✅ Đã restart SpringBoard.\n"];
+            }
+            [body appendString:@"\n👉 Force-quit app target (vuốt lên) rồi mở lại để thấy thông tin fake mới."];
             [self alert:t msg:body];
         }];
     });

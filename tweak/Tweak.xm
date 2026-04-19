@@ -1128,6 +1128,17 @@ static CLLocation *buildFakeLocation(void) {
     @autoreleasepool {
         NSLog(@"[ChangeInfoIos] Tweak loading...");
 
+        // Write an injection marker so the app can verify the tweak is actually
+        // loaded into this bundle (see BUILD_NOTES §10). Per-bundle file with
+        // timestamp lets the UI flag silently-failed injection.
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
+        NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
+        [[NSFileManager defaultManager] createDirectoryAtPath:markerDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *marker = [markerDir stringByAppendingFormat:@"/injected_%@.txt", bid];
+        NSString *stamp = [NSString stringWithFormat:@"%@|%ld", bid, (long)time(NULL)];
+        [stamp writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        chmod([marker fileSystemRepresentation], 0644);
+
         loadConfig();
         ci_wipeContainerIfScheduled();
 
