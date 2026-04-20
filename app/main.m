@@ -2259,6 +2259,22 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
     }
 
+    // Dump hello_all.log — every process that loaded HelloInject writes 1 line
+    NSString *allLog = [markerDir stringByAppendingPathComponent:@"hello_all.log"];
+    if ([fm fileExistsAtPath:allLog]) {
+        NSString *logContent = [NSString stringWithContentsOfFile:allLog
+                                                         encoding:NSUTF8StringEncoding
+                                                            error:nil];
+        NSArray *lines = [logContent componentsSeparatedByString:@"\n"];
+        NSArray *last = lines.count > 20
+            ? [lines subarrayWithRange:NSMakeRange(lines.count - 20, 20)]
+            : lines;
+        [out appendFormat:@"\n  hello_all.log (last %lu lines):\n", (unsigned long)last.count];
+        for (NSString *line in last) {
+            if (line.length > 0) [out appendFormat:@"    %@\n", line];
+        }
+    }
+
     // 5. Ellekit / Substrate presence
     NSArray *ekPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
                          @"/var/jb/usr/lib/TweakInject.dylib",

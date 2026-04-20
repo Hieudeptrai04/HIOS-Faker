@@ -4,6 +4,12 @@
 <dict>
 	<key>Filter</key>
 	<dict>
+		<key>Executables</key>
+		<array>
+			<string>AIDA64_c3</string>
+			<string>MobileSafari</string>
+			<string>SpringBoard</string>
+		</array>
 		<key>Bundles</key>
 		<array>
 			<string>com.finalwire.aida64</string>
