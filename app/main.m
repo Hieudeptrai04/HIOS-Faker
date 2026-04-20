@@ -2566,6 +2566,84 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     dumpEnts(@"ChangeInfoIos", dylibPath);
     dumpEnts(@"PreferenceLoader", plPath);
 
+    // 7d. SnowBoard.dylib (Sileo-installed tweak, confirmed injecting).
+    // Compare structural fields to ours — this is a *user-installed* dylib
+    // that works, vs PL which is Dopamine-builtin.
+    NSString *dynDir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
+    NSString *snowPath = nil;
+    NSArray *dynAll = [fm contentsOfDirectoryAtPath:dynDir error:nil];
+    for (NSString *f in dynAll) {
+        NSString *low = [f lowercaseString];
+        if ([low containsString:@"snowboard"] && [low hasSuffix:@".dylib"]) {
+            snowPath = [dynDir stringByAppendingPathComponent:f];
+            break;
+        }
+    }
+    if (snowPath) {
+        [out appendFormat:@"\n🧬 SnowBoard Mach-O (user-installed, works): %@\n",
+            [snowPath lastPathComponent]];
+        NSData *sd = [NSData dataWithContentsOfFile:snowPath];
+        NSDictionary *sAttr = [fm attributesOfItemAtPath:snowPath error:nil];
+        [out appendFormat:@"  size=%llu bytes\n",
+            [sAttr[NSFileSize] unsignedLongLongValue]];
+        BOOL sSig = NO;
+        NSString *sInstall = nil;
+        NSMutableArray *sDeps = [NSMutableArray array];
+        if (sd.length >= 32) {
+            const uint8_t *pb = sd.bytes;
+            uint32_t pmagic = *(const uint32_t *)pb;
+            uint32_t pSliceOff = 0;
+            if (pmagic == 0xBEBAFECA) {
+                uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
+                [out appendFormat:@"  FAT, %u slice(s)\n", n];
+                for (uint32_t i = 0; i < n && i < 8; i++) {
+                    const uint8_t *fa = pb + 8 + i * 20;
+                    uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
+                    uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
+                    uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
+                    if (ct == 0x0100000C) {
+                        if ((cs & 0xFF) == 2) pSliceOff = off;
+                        else if (pSliceOff == 0) pSliceOff = off;
+                    }
+                }
+            } else if (pmagic == 0xFEEDFACF) {
+                [out appendString:@"  Thin (arm64)\n"];
+            }
+            if (pSliceOff + 32 <= sd.length) {
+                uint32_t ncmds = *(const uint32_t *)(pb + pSliceOff + 16);
+                uint32_t co = pSliceOff + 32;
+                for (uint32_t i = 0; i < ncmds && i < 200; i++) {
+                    if (co + 8 > sd.length) break;
+                    uint32_t cmd = *(const uint32_t *)(pb + co);
+                    uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
+                    if (cmdsize < 8 || co + cmdsize > sd.length) break;
+                    if (cmd == 0xD || cmd == 0xC) {
+                        uint32_t strOff = *(const uint32_t *)(pb + co + 8);
+                        if (strOff < cmdsize) {
+                            const char *s = (const char *)(pb + co + strOff);
+                            size_t maxLen = cmdsize - strOff;
+                            size_t slen = strnlen(s, maxLen);
+                            NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
+                            if (cmd == 0xD) sInstall = path;
+                            else if (path) [sDeps addObject:path];
+                        }
+                    } else if (cmd == 0x1D) {
+                        sSig = YES;
+                    }
+                    co += cmdsize;
+                }
+            }
+        }
+        if (sInstall) [out appendFormat:@"  install_name = %@\n", sInstall];
+        [out appendFormat:@"  CodeSignature = %@\n", sSig ? @"✅" : @"❌"];
+        [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)sDeps.count];
+        for (NSString *d in sDeps) [out appendFormat:@"    - %@\n", d];
+        dumpEnts(@"SnowBoard", snowPath);
+    } else {
+        [out appendString:@"\n🧬 SnowBoard.dylib: not found in DynamicLibraries folder\n"
+                          @"  (cài SnowBoard qua Sileo để có sample so sánh)\n"];
+    }
+
     // 8. Diagnosis
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
