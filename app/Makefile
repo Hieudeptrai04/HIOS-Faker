@@ -1,7 +1,7 @@
 # ChangeInfoIos Standalone App Makefile
 # Build: THEOS_PACKAGE_SCHEME=rootless make package
 
-PACKAGE_VERSION = 2.3.22
+PACKAGE_VERSION = 2.3.23
 ARCHS = arm64 arm64e
 
 TARGET := iphone:clang:16.5:15.0

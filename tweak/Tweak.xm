@@ -11,7 +11,9 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <WebKit/WebKit.h>
+// WebKit import removed v2.3.23 — WKWebView hook is #if-0'd; pulling
+// WebKit into the umbrella link list caused substrate to reject the
+// dylib in processes where WebKit isn't in the dyld shared cache.
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <sys/sysctl.h>
@@ -40,7 +42,7 @@
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreMotion/CoreMotion.h>
-#import <Metal/Metal.h>
+// Metal import removed v2.3.23 — %hook NSObject MTLDevice protocol is disabled.
 
 // ATTrackingManager forward declaration (iOS 14+)
 @interface ATTrackingManager : NSObject
@@ -551,15 +553,16 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 
 %end
 
-%hook CTSubscriber
-
-- (NSString *)phoneNumber {
-    if (!fakeLayer(@"network")) return %orig;
-    NSString *val = getConfigStr(@"PhoneNumber");
-    return val.length > 0 ? val : %orig;
-}
-
-%end
+// DISABLED v2.3.23: CTSubscriber is private and its class symbol may not
+// exist in every target process; Logos lookup triggered on %ctor can cause
+// dylib load to be marked faulty. Restore once main inject path is green.
+// %hook CTSubscriber
+// - (NSString *)phoneNumber {
+//     if (!fakeLayer(@"network")) return %orig;
+//     NSString *val = getConfigStr(@"PhoneNumber");
+//     return val.length > 0 ? val : %orig;
+// }
+// %end
 
 // ============================================================
 // LAYER 5: Network / SystemConfiguration
@@ -977,6 +980,14 @@ static CLLocation *buildFakeLocation(void) {
 // ============================================================
 // BONUS: ZALO-SPECIFIC DEEP HOOKS
 // ============================================================
+// DISABLED v2.3.23: WKWebView hook pulls in WebKit classes
+// (WKUserScript, WKUserContentController) that need full WebKit framework
+// to be linked at dylib load time. Under rootless, WebKit may not be
+// dyld-shared-cache visible from arbitrary tweak targets, so substrate
+// silently rejects the whole dylib. Re-enable after confirming main
+// inject path works, and move the WebKit code behind a dlopen()/objc_getClass
+// runtime lookup so dylib load never touches WebKit symbols directly.
+#if 0
 %hook WKWebView
 
 - (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
@@ -1054,6 +1065,7 @@ static CLLocation *buildFakeLocation(void) {
 }
 
 %end
+#endif // WKWebView hook disabled
 
 %hook CMMotionManager
 
@@ -1147,18 +1159,23 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
-%hook NSObject
-
-- (NSString *)name {
-    if (!fakeLayer(@"metal")) return %orig;
-    if ([self conformsToProtocol:@protocol(MTLDevice)]) {
-        NSString *fakeGPU = getConfigStr(@"zalo_metalGPU");
-        if (fakeGPU) return fakeGPU;
-    }
-    return %orig;
-}
-
-%end
+// DISABLED v2.3.23: %hook NSObject on -(NSString*)name installs globally.
+// Even with the MTLDevice protocol guard, wrapping every NSObject.name call
+// system-wide is a known cause of substrate silently skipping the dylib
+// (dyld sees a root-class swizzle and fails validation). If GPU spoofing is
+// needed later, hook MTLCreateSystemDefaultDevice or the concrete MTLDevice
+// class instead of NSObject.
+//
+// %hook NSObject
+// - (NSString *)name {
+//     if (!fakeLayer(@"metal")) return %orig;
+//     if ([self conformsToProtocol:@protocol(MTLDevice)]) {
+//         NSString *fakeGPU = getConfigStr(@"zalo_metalGPU");
+//         if (fakeGPU) return fakeGPU;
+//     }
+//     return %orig;
+// }
+// %end
 
 %hook ATTrackingManager
 
