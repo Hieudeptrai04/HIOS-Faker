@@ -221,6 +221,21 @@ jobs:
           cp -R /tmp/app-extract/.   combined/
           cp -R /tmp/hello-extract/. combined/
 
+          # Dopamine 2 / ellekit scans /var/jb/usr/lib/TweakInject/ as the PRIMARY
+          # inject path. Theos rootless only deposits into MobileSubstrate/DynamicLibraries/.
+          # Mirror both dylibs + plists to TweakInject/ so ellekit finds them
+          # regardless of which loader variant the device uses (mobilesubstrate,
+          # substitute, or ellekit native).
+          MS_DIR="combined/var/jb/Library/MobileSubstrate/DynamicLibraries"
+          TI_DIR="combined/var/jb/usr/lib/TweakInject"
+          if [ -d "$MS_DIR" ]; then
+            mkdir -p "$TI_DIR"
+            cp -v "$MS_DIR"/*.dylib "$TI_DIR"/ 2>/dev/null || true
+            cp -v "$MS_DIR"/*.plist "$TI_DIR"/ 2>/dev/null || true
+            echo "=== TweakInject mirror ==="
+            ls -la "$TI_DIR"
+          fi
+
           VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
           cat > combined/DEBIAN/control <<EOF
           Package: com.changeinfoios
@@ -240,6 +255,50 @@ jobs:
           mkdir -p out
           dpkg-deb -Zxz -b combined "out/ChangeInfoIos_${VERSION}_iphoneos-arm64.deb"
           ls -lh out/
+
+      - name: Audit combined deb layout (rootless path verification)
+        run: |
+          set -euo pipefail
+          # Rootless jailbreaks (Dopamine 2, palera1n rootless) expect:
+          #   /var/jb/Library/MobileSubstrate/DynamicLibraries/*.dylib
+          #   /var/jb/Library/MobileSubstrate/DynamicLibraries/*.plist
+          #   /var/jb/Applications/*.app  (GUI apps)
+          # If any payload lands elsewhere, ellekit/substrate never sees it
+          # and inject silently fails. This step prints the full tree + key
+          # attributes so we can diagnose missing/misplaced files from CI logs.
+          echo "=== combined/ tree ==="
+          find combined -type f -o -type l | sort
+          echo
+          echo "=== /var/jb path check ==="
+          test -d combined/var/jb || { echo "ERR: combined/var/jb missing — rootless prefix not applied"; exit 1; }
+          echo "OK: combined/var/jb exists"
+          echo
+          echo "=== substrate dylibs in payload ==="
+          find combined -path '*MobileSubstrate/DynamicLibraries*' -type f | while read f; do
+            echo "--- $f ---"
+            ls -l "$f"
+            case "$f" in
+              *.dylib)
+                echo "  install_name: $(otool -D "$f" | tail -1)"
+                echo "  arch:         $(lipo -info "$f" 2>/dev/null | sed 's/.*://')"
+                echo "  entitlements (ldid -e, head 5):"
+                ldid -e "$f" 2>/dev/null | head -5 | sed 's/^/    /'
+                ;;
+              *.plist)
+                echo "  plist contents:"
+                plutil -p "$f" | sed 's/^/    /'
+                ;;
+            esac
+          done
+          echo
+          echo "=== GUI app bundles in payload ==="
+          find combined -name 'Info.plist' -path '*.app/*' | while read f; do
+            echo "--- $f ---"
+            plutil -p "$f" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundleShortVersionString' | sed 's/^/    /'
+          done
+          echo
+          echo "=== DEBIAN/control ==="
+          cat combined/DEBIAN/control
 
       - name: Show sizes
         if: always()
