@@ -221,20 +221,54 @@ jobs:
           cp -R /tmp/app-extract/.   combined/
           cp -R /tmp/hello-extract/. combined/
 
-          # Dopamine 2 / ellekit scans /var/jb/usr/lib/TweakInject/ as the PRIMARY
-          # inject path. Theos rootless only deposits into MobileSubstrate/DynamicLibraries/.
-          # Mirror both dylibs + plists to TweakInject/ so ellekit finds them
-          # regardless of which loader variant the device uses (mobilesubstrate,
-          # substitute, or ellekit native).
-          MS_DIR="combined/var/jb/Library/MobileSubstrate/DynamicLibraries"
-          TI_DIR="combined/var/jb/usr/lib/TweakInject"
-          if [ -d "$MS_DIR" ]; then
-            mkdir -p "$TI_DIR"
-            cp -v "$MS_DIR"/*.dylib "$TI_DIR"/ 2>/dev/null || true
-            cp -v "$MS_DIR"/*.plist "$TI_DIR"/ 2>/dev/null || true
-            echo "=== TweakInject mirror ==="
-            ls -la "$TI_DIR"
+          # Some rootless loaders (Dopamine ellekit variant) scan
+          # /var/jb/usr/lib/TweakInject/ instead of MobileSubstrate/DynamicLibraries/.
+          # DO NOT copy payload there at build time — if the dir doesn't exist on
+          # the device, dpkg fails the whole install (observed on v2.3.20).
+          # Also DO NOT duplicate dylibs: two copies → loader injects twice →
+          # each hook runs 2× → lag + possible crash.
+          #
+          # Strategy: postinst script symlinks dylib+plist into TweakInject/
+          # ONLY if that directory already exists. Symlinks (not copies) so
+          # the same Mach-O is mmap'd once; no duplicate inject, no extra RAM.
+          # prerm removes the symlinks cleanly.
+          cat > combined/DEBIAN/postinst <<'POSTINST'
+          #!/bin/sh
+          set -e
+          MS="/var/jb/Library/MobileSubstrate/DynamicLibraries"
+          TI="/var/jb/usr/lib/TweakInject"
+          # Only mirror when the device actually uses TweakInject/ layout.
+          # Absent directory = loader doesn't scan here; nothing to do.
+          if [ -d "$TI" ]; then
+            for f in ChangeInfoIos HelloInject; do
+              for ext in dylib plist; do
+                src="$MS/$f.$ext"
+                dst="$TI/$f.$ext"
+                if [ -f "$src" ] && [ ! -e "$dst" ]; then
+                  ln -s "$src" "$dst" 2>/dev/null || true
+                fi
+              done
+            done
           fi
+          exit 0
+          POSTINST
+          chmod 0755 combined/DEBIAN/postinst
+
+          cat > combined/DEBIAN/prerm <<'PRERM'
+          #!/bin/sh
+          TI="/var/jb/usr/lib/TweakInject"
+          if [ -d "$TI" ]; then
+            for f in ChangeInfoIos HelloInject; do
+              for ext in dylib plist; do
+                dst="$TI/$f.$ext"
+                # Only remove if it's our symlink, never a real file placed by user.
+                [ -L "$dst" ] && rm -f "$dst"
+              done
+            done
+          fi
+          exit 0
+          PRERM
+          chmod 0755 combined/DEBIAN/prerm
 
           VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
           cat > combined/DEBIAN/control <<EOF

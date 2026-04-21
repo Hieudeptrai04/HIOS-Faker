@@ -382,13 +382,35 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
         }
     }
 
+    // Verbose-per-call logging was causing device-wide lag: MGCopyAnswer
+    // is invoked thousands of times/sec across every process we inject.
+    // Log each (key, path) the FIRST time only — enough to diagnose which
+    // properties an app reads without flooding syslog.
+    static NSMutableSet *loggedSpoof = nil;
+    static NSMutableSet *loggedPass  = nil;
+    static dispatch_once_t logOnce;
+    dispatch_once(&logOnce, ^{
+        loggedSpoof = [NSMutableSet new];
+        loggedPass  = [NSMutableSet new];
+    });
+
     if (result) {
-        NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] SPOOFED -> %@", key, result);
+        @synchronized (loggedSpoof) {
+            if (![loggedSpoof containsObject:key]) {
+                [loggedSpoof addObject:key];
+                NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] SPOOFED (first)", key);
+            }
+        }
         return result;
     }
 
     CFTypeRef orig = orig_MGCopyAnswer(property);
-    NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] passthrough -> %@", key, orig);
+    @synchronized (loggedPass) {
+        if (![loggedPass containsObject:key]) {
+            [loggedPass addObject:key];
+            NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] passthrough (first)", key);
+        }
+    }
     return orig;
 }
 
