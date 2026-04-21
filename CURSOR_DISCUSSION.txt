@@ -1,0 +1,209 @@
+================================================================
+CURSOR DISCUSSION — HIOS Faker (ChangeInfoIos)
+Viết bởi Claude Sonnet 4.7 ngày 2026-04-19
+================================================================
+
+>>> VẤN ĐỀ: Sau khi bấm Change → alert báo "thành công"
+           → Mở AIDA64 kiểm tra → VẪN THẤY THIẾT BỊ GỐC
+
+================================================================
+PHÂN TÍCH KIẾN TRÚC HIỆN TẠI
+================================================================
+
+CÓ 2 THÀNH PHẦN HOÀN TOÀN TÁCH BIỆT:
+
+1. Native iOS App (app/main.m)
+   - Bundle ID: com.changeinfoios.app
+   - Chạy ON-DEVICE trên iPhone
+   - Giao diện: Objective-C UIViewController (CIHomeViewController)
+   - Tự sinh fake config via ci_randomizeIdentities()
+   - Ghi config -> shared plist -> wipe app -> respring
+   - XEM: app/main.m:2426 (CIAppDelegate) -> 1889 (CIHomeViewController)
+   - Phiên bản INTERNAL: kAppVersion = @"2.2.1-native" (LỖI THỜI)
+
+2. Web UI (ios/ folder)
+   - HTML/JS files chạy trong BROWSER hoặc SERVER
+   - Giao tiếp với native app via WKScriptMessageHandler
+   - Bundle ID: com.changeinfoios.app (cùng app, nhưng UI web)
+   - KHÔNG được build vào .deb, chỉ là preview/alternative UI
+   - Phiên bản HIỂN THỊ trong app.html: v2.2.0 (LỖI THỜI)
+
+3. Tweak (tweak/Tweak.xm + tweak/Hooks.mm)
+   - Dylib: ChangeInfoIos.dylib
+   - Inject vào AIDA64 (com.finalwire.aida64)
+   - Hook MGCopyAnswer, UIDevice, sysctl, v.v.
+   - Đọc shared plist -> return fake values
+
+================================================================
+LUỒNG THỰC THI (KHI USER BẤM "RESET DATA" TRONG NATIVE APP)
+================================================================
+
+Step 1: ci_randomizeIdentities() (app/main.m:523)
+  -> Sinh random SerialNumber, UDID, IMEI, Model, iOS, v.v.
+  -> Ghi vào CIConfigManager._cfg (in-memory)
+  -> **KHÔNG GỌI [cm save] ở đây**
+
+Step 2-3: killApp + wipe container + save plist
+  -> [cm save] được gọi TRONG performRRSBackup step 3/5 (dòng 2275)
+  -> Ghi /var/mobile/Library/Preferences/com.changeinfoios.plist
+
+Step 4: Respring
+  -> sbreload -> launchctl kickstart -> killall SpringBoard
+
+Step 5: Kill lại target apps
+
+AIDA64 launch -> ellekit/substrate load ChangeInfoIos.dylib
+  -> %ctor chạy -> loadConfig() đọc shared plist
+  -> Hook MGCopyAnswer("SerialNumber") -> return fake value
+
+================================================================
+CÁC NGUYÊN NHÂN CÓ THỂ + CHECK TƯƠNG ỨNG
+================================================================
+
+NGUYÊN NHÂN A: Dylib không load vào AIDA64
+   CHECK: ls /var/mobile/Library/Caches/ChangeInfoIos/injected_com.finalwire.aida64.txt
+   NẾU KHÔNG CÓ FILE -> dylib KHÔNG load được
+   Lý do có thể:
+   - Framework link vẫn thiếu -> xem commit 5343817 đã apply chưa
+   - Bundle ID AIDA64 trên máy user khác
+   - ellekit/mobilesubstrate chưa cài
+
+NGUYÊN NHÂN B: Shared plist không ghi được
+   CHECK: ls -la /var/mobile/Library/Preferences/com.changeinfoios.plist
+   NẾU < 5000 bytes -> ghi thất bại
+   Lý do: Sandbox block Cocoa write, nhưng v2.3.1 đã thêm shell-copy fallback
+
+NGUYÊN NHÂN C: Bundle ID AIDA64 trên máy user KHÁC plist
+   CHECK: defaults read /Applications/AIDA64.app/Info.plist CFBundleIdentifier
+   Plist hiện tại list: com.finalwire.aida64, com.finalwire.aida64-ios
+   Có thể AIDA64 phiên bản khác có bundle ID khác
+
+NGUYÊN NHÂN D: AIDA64 không dùng MGCopyAnswer cho serial/UDID/IMEI
+   AIDA64 có thể dùng private API khác:
+   - IOKit trực tiếp (IORegistryEntryCreateCFProperty - đã hook)
+   - sysctlbyname("hw.machine") - đã hook
+   - uname() - đã hook
+   - Đọc trực tiếp từ hardware (không hook được)
+
+NGUYÊN NHÂN E: Key mismatch giữa app sinh và tweak đọc
+   Kiểm tra key mapping trong mgKeyMap (Tweak.xm:282-330):
+   - "SerialNumber" -> "SerialNumber" -> ci_randSerial() [OK]
+   - "UniqueDeviceID" -> "UniqueDeviceID" -> ci_randHex(40) [OK]
+   - "InternationalMobileEquipmentIdentity" -> ci_randIMEI() [OK]
+   - "ProductType" -> "ProductType" -> preset[1] e.g. "iPhone15,2" [OK]
+
+   Nhưng cần kiểm tra chi tiết:
+   - sysctlbyname("hw.model") hook (Hooks.mm:76) map sang "hw_model"
+   - NHƯNG ci_randomizeIdentities KHÔNG set "hw_model" trong config
+   - Key "hw_machine" được set (preset[2]) nhưng "hw_model" THIẾU
+   - sysctl hook sẽ return original value cho "hw.model" query!
+
+================================================================
+PHÁT HIỆN QUAN TRỌNG - sysctl hook mismatch
+================================================================
+
+Trong Hooks.mm:76:
+  @"hw.model": @"hw_model"
+
+Trong app/main.m ci_randomizeIdentities (dòng 539):
+  [cm setObject:preset[2] forKey:@"hw_machine"];   <- set hw_machine
+  // KHÔNG set "hw_model"
+
+Nhưng sysctl hook cho "hw.model" (dòng 76) lookup key "hw_model".
+Vì "hw_model" không có trong config -> getConfig("hw_model") = nil
+-> sysctl hook không spoof "hw.model" -> AIDA64 đọc được real hw.model
+
+ĐÂY LÀ MỘT BUG THỰC SỰ.
+
+Fix: Thêm [cm setObject:preset[2] forKey:@"hw_model"] trong ci_randomizeIdentities
+     HOẶC đổi sysctl map @"hw.model": @"hw_model" thành @"hw.model": @"hw_machine"
+
+================================================================
+CÁC BUG/KHÔNG ĐỒNG BỘ KHÁC
+================================================================
+
+BUG 1: app/main.m kAppVersion = @"2.2.1-native" (dòng 41)
+  Native app báo version 2.2.1 thay vì 2.3.6. Không ảnh hưởng chức năng
+  nhưng gây nhầm lẫn khi user report bug.
+
+BUG 2: ios/app.html hiển thị "v2.2.0" ở nhiều chỗ (dòng 24, 45, 173, 174)
+  Phiên bản web UI lỗi thời. Không ảnh hưởng tweak nhưng có thể gây
+  nhầm lẫn nếu user dùng web UI thay vì native app.
+
+BUG 3: ios/ files không được build vào .deb
+  ios/ folder nằm trong repo nhưng không có trong app/Makefile.
+  Web UI phải deploy riêng (qua server khác), không đi kèm tweak.
+  Nếu user access ios/app.html từ server -> đang dùng web UI chứ không phải
+  native app -> __ciCallNative KHÔNG HOẠT ĐỘNG (không có messageHandler).
+
+================================================================
+CHECKLIST ĐỂ DEBUG
+================================================================
+
+Trên máy jailbreak, SSH vào và chạy:
+
+1. Check shared plist:
+   plutil -p /var/mobile/Library/Preferences/com.changeinfoios.plist | grep -E "SerialNumber|UniqueDeviceID|InternationalMobileEquipmentIdentity"
+   -> Phải thấy giá trị random KHÁC real device
+
+2. Check injection marker:
+   ls -la /var/mobile/Library/Caches/ChangeInfoIos/
+   -> Phải có injected_com.finalwire.aida64.txt
+   -> NẾU KHÔNG CÓ: dylib không load
+
+3. Check tweak dylib tồn tại:
+   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.*
+   -> .dylib và .plist phải có
+
+4. Check bundle ID AIDA64:
+   defaults read /Applications/AIDA64.app/Info.plist CFBundleIdentifier
+   -> Phải là com.finalwire.aida64 hoặc com.finalwire.aida64-ios
+
+5. Check ellekit/substrate:
+   ls /var/jb/usr/lib/libellekit.dylib
+   ls /var/jb/usr/lib/libsubstrate.dylib
+   -> Phải tồn tại
+
+6. Check dylib codesign:
+   ldid -e /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib
+   -> Phải không có error
+
+7. Check log (nếu có):
+   log stream --predicate 'eventMessage CONTAINS "ChangeInfoIos"' --last 1m
+   -> Phải thấy "[ChangeInfoIos] MGCopyAnswer[SerialNumber] SPOOFED"
+   -> NẾU thấy "passthrough" thì config key không match
+
+================================================================
+KẾT LUẬN SƠ BỘ
+================================================================
+
+Vấn đề "AIDA64 vẫn thấy thiết bị gốc" có NHIỀU khả năng:
+
+1. (PHỔ BIẾN NHẤT) Dylib không load - KHÔNG CÓ injection marker
+   -> Fix: Cài lại ellekit/mobilesubstrate, kiểm tra ldid signing
+
+2. (PHỔ BIẾN) Shared plist ghi thất bại
+   -> Fix: Check size >= 5000 bytes
+
+3. (ÍT GẶP) Bundle ID AIDA64 khác plist
+   -> Fix: Thêm bundle ID đúng vào plist + rebuild
+
+4. (ÍT GẶP) AIDA64 dùng API khác không hook
+   -> Fix: Cần debug AIDA64 xem nó đọc device info từ đâu
+
+5. (BUG CODE) sysctl hook hw.model -> hw_model nhưng app không set hw_model
+   -> Fix: Đổi @"hw.model": @"hw_model" thành @"hw.model": @"hw_machine"
+   -> HOẶC thêm [cm setObject:preset[2] forKey:@"hw_model"] trong ci_randomizeIdentities
+
+================================================================
+VIỆC CẦN LÀM NGAY
+================================================================
+
+1. SSH vào máy jailbreak, chạy checklist §7 ở trên
+2. Nếu marker file KHÔNG CÓ -> vấn đề ở dylib load
+3. Nếu marker CÓ mà AIDA64 vẫn gốc -> vấn đề ở key mismatch
+4. Nếu plist < 5000 bytes -> vấn đề ở save
+
+SAU KHI CHECK XONG, ghi kết quả vào file này để tiếp tục thảo luận.
+
+================================================================

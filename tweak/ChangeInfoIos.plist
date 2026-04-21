@@ -21,6 +21,9 @@
 			<string>com.finalwire.aida64</string>
 			<string>com.blacksmith.lirum</string>
 			<string>com.umang.devicedesign</string>
+			<string>com.apple.mobilesafari</string>
+			<string>com.apple.springboard</string>
+			<string>com.apple.Preferences</string>
 		</array>
 		<key>Executables</key>
 		<array>

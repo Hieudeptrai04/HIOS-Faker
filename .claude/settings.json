@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Read(//var/jb/usr/lib/**)",
+      "Read(//var/jb/usr/**)"
+    ]
+  }
+}

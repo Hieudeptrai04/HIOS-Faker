@@ -1,0 +1,435 @@
+================================================================
+HANDOVER CHO CURSOR — HIOS Faker (ChangeInfoIos)
+Viết bởi Claude Opus 4.7 ngày 2026-04-19
+Version hiện tại: 2.3.6 (vừa push)
+================================================================
+
+>>> VẤN ĐỀ CHÍNH NGƯỜI DÙNG BÁO:
+Sau khi bấm Change → alert báo "thành công" → mở AIDA64 kiểm tra
+→ VẪN THẤY THIẾT BỊ GỐC (serial/udid/imei thật, không bị fake).
+
+Tools market khác chạy OK, tool này FAIL inject.
+
+================================================================
+1. CẤU TRÚC REPO
+================================================================
+
+ChangeInfoIos/
+├── tweak/
+│   ├── Tweak.xm            (Logos %hook ObjC: UIDevice, CLLocation, MGCopyAnswer)
+│   ├── Hooks.mm            (C-level MSHookFunction)
+│   ├── ChangeInfoIos.plist (Filter plist — XML format)
+│   ├── Makefile            (PACKAGE_VERSION=2.3.6)
+│   └── control
+├── app/
+│   ├── main.m              (~2000 dòng, toàn bộ UI + logic)
+│   ├── Makefile
+│   ├── control
+│   └── Resources/Info.plist
+└── .github/workflows/build.yml   (CI — macOS runner, Theos, rootless)
+
+CI build → 1 file .deb gộp chứa cả tweak + app.
+
+================================================================
+2. ĐÃ LÀM QUA 6 VERSIONS (2.3.0 → 2.3.6)
+================================================================
+
+--- v2.3.1: Sandbox write fallback ---
+Bug: Cocoa writeToFile: tới /var/mobile/Library/Preferences/com.changeinfoios.plist
+     fail silent vì Sandbox block.
+Fix: Thêm posix_spawn shell-copy fallback trong [CIConfigManager save].
+     Copy từ /var/mobile/Library/Preferences/com.changeinfoios.app.plist
+     sang com.changeinfoios.plist.
+File: app/main.m — hàm ci_run + block trong save.
+
+--- v2.3.2: HUD 5-state + completion summary ---
+UI: HUD hiện 5 bước (backup → wipe → randomize → write → respring)
+    + alert sau khi xong hiện Model/iOS/Serial/IDFA/UDID/IMEI.
+
+--- v2.3.3: Respring fallback chain ---
+Bug: killall SpringBoard fail rc=-1 (mobile user không có root).
+Fix: Chain: sbreload → launchctl kickstart → killall SpringBoard.
+File: app/main.m — trong performRRSBackup step 4/5.
+
+--- v2.3.4: Auto-kill target apps ---
+Bug: Target app (AIDA64) vẫn cache old values sau wipe.
+Fix: Thêm block killApp chạy 3 method:
+     killall -9 <ExecName>
+     pkill -9 -f <bundleID>
+     pkill -9 -f <bundlePath>
+File: app/main.m — trong flow performRRSBackup.
+
+--- v2.3.5: Filter plist XML + injection marker ---
+Bug: ChangeInfoIos.plist ở format ASCII/OpenStep, nghi ellekit không parse.
+Fix:
+1) Convert sang XML plist đầy đủ <?xml ... ?> header.
+2) Thêm Mode=Any, Executables fallback (AIDA64, Lirum, DeviceInfo...).
+3) Trong Tweak.xm %ctor thêm marker file:
+   /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt
+   → App check file này để biết tweak có inject thật không.
+
+--- v2.3.6: FRAMEWORK LINK FIX (root cause chính, VỪA PUSH) ---
+Bug phát hiện: Tweak.xm/Hooks.mm import WebKit, CoreTelephony, CoreLocation,
+    CoreMotion, AdSupport, SystemConfiguration, Metal, AVFoundation, Security,
+    AppSupport — NHƯNG Makefile trước đây CHỈ link UIKit + Foundation.
+    → dylib load với unresolved ObjC class symbols
+    → ellekit/substrate silently skip inject
+    → DÙ FILE .dylib + .plist NẰM ĐÚNG CHỖ, HOOK VẪN KHÔNG CHẠY.
+
+Fix (đã push commit 5343817):
+tweak/Makefile:
+  ChangeInfoIos_FRAMEWORKS = UIKit Foundation CoreFoundation CoreGraphics \
+                             CoreTelephony CoreLocation CoreMotion \
+                             AdSupport SystemConfiguration WebKit Metal \
+                             AVFoundation Security
+  ChangeInfoIos_PRIVATE_FRAMEWORKS = AppSupport
+
+.github/workflows/build.yml:
+  - ARCHS="arm64 arm64e"  (iPhone X là arm64e, trước chỉ build arm64)
+  - Thêm step "Verify tweak dylib (arch + sign + link)" chạy:
+      lipo -info <dylib>      (check 2 slice arm64+arm64e)
+      ldid -e <dylib>         (check entitlements)
+      otool -L <dylib>        (check framework links)
+      nm -u <dylib>           (liệt kê undefined symbols)
+      plutil -lint <plist>    (validate filter plist)
+    → Nếu thiếu framework/arch → CI FAIL SỚM, không tốn công cài rồi test.
+
+================================================================
+3. KIẾN TRÚC INJECT FLOW (QUAN TRỌNG HIỂU ĐÚNG)
+================================================================
+
+Luồng fake device info:
+1) App UI (main.m) sinh random values → ghi /var/mobile/Library/Preferences/
+   com.changeinfoios.plist (phải >5KB, ~142 keys).
+2) App kill target apps (AIDA64/Zalo) → chúng sẽ restart.
+3) App respring SpringBoard (sbreload ưu tiên).
+4) Khi AIDA64 launch lại:
+   a. ellekit/substrate đọc filter plist ChangeInfoIos.plist
+   b. Match bundleID (com.finalwire.aida64...) → load ChangeInfoIos.dylib
+   c. %ctor chạy → ghi injection marker + loadConfig() đọc shared prefs
+   d. Hooks active: UIDevice.systemVersion, MGCopyAnswer(serial), v.v. return fake
+5) AIDA64 call UIDevice → trả value fake, không phải thật.
+
+Điểm chết (failure points):
+- (1) fail → shared prefs 0 byte → hooks return %orig (v2.3.1 đã fix bằng shell copy)
+- (4a) fail → filter plist sai format → substrate skip (v2.3.5 đã XML hóa)
+- (4b) fail → framework link thiếu → dylib load fail → substrate skip (v2.3.6 đã fix)
+
+================================================================
+4. CÁCH VERIFY TỪNG BƯỚC SAU KHI USER TEST v2.3.6
+================================================================
+
+SSH vào máy jailbreak, chạy 4 lệnh:
+
+A) Shared prefs ghi OK chưa:
+   ls -la /var/mobile/Library/Preferences/com.changeinfoios.plist
+   # Phải > 5000 bytes
+   plutil -p /var/mobile/Library/Preferences/com.changeinfoios.plist | wc -l
+   # Phải > 100 dòng
+
+B) Dylib + plist deploy OK chưa:
+   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.*
+   # .dylib ~120KB, .plist ~700 bytes
+
+C) Tweak INJECT vào app thật chưa (marker file):
+   ls -la /var/mobile/Library/Caches/ChangeInfoIos/
+   # Phải có injected_com.finalwire.aida64.txt
+   # KHÔNG CÓ = inject fail → đọc bước D
+
+D) Log từ tweak:
+   # Trên máy jailbreak:
+   log stream --predicate 'eventMessage CONTAINS "ChangeInfoIos"'
+   # Hoặc qua USB từ Mac:
+   idevicesyslog | grep ChangeInfoIos
+   # Phải thấy:
+   #   [ChangeInfoIos] Tweak loading...
+   #   [ChangeInfoIos] loadConfig sz=5925
+   # KHÔNG thấy = dylib không load (framework link sai hoặc ellekit/substrate chưa cài)
+
+================================================================
+5. NẾU v2.3.6 VẪN KHÔNG INJECT — CHECK TIẾP GÌ
+================================================================
+
+(a) Check bundleID thực của AIDA64 trên máy user:
+    cd /Applications/AIDA64.app  (hoặc /var/containers/Bundle/Application/...)
+    defaults read ./Info.plist CFBundleIdentifier
+    → Nếu KHÔNG phải com.finalwire.aida64 → cần thêm vào Bundles trong
+      tweak/ChangeInfoIos.plist.
+
+(b) Check ellekit/substrate cài chưa:
+    ls /var/jb/usr/lib/libellekit.dylib
+    ls /var/jb/usr/lib/libsubstrate.dylib
+    → Nếu thiếu → user chưa cài dependency → .deb báo Depends: ellekit |
+      mobilesubstrate nhưng máy thiếu.
+
+(c) Check dylib đã sign đúng chưa:
+    ldid -e /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib
+    → Phải có platform-application entitlement hoặc none (tweak không cần ent).
+
+(d) Check CI log của "Verify tweak dylib" step:
+    GitHub Actions → run mới nhất → step "Verify tweak dylib"
+    → Xem output otool -L có đủ framework không, nm -u có symbol nào lạ.
+
+(e) Nếu tất cả OK mà vẫn fail → kiểm tra Hooks.mm có MSHookFunction gọi đúng
+    signature không. Có thể arm64e PAC pointer authentication chặn MSHook.
+    Thử build CHỈ arm64 (bỏ arm64e) xem hook có hoạt động trên iPhone X không.
+
+================================================================
+6. FILE QUAN TRỌNG CỦA LẦN FIX NÀY
+================================================================
+
+- tweak/Makefile                         → framework link (v2.3.6)
+- tweak/Tweak.xm                         → %ctor marker + loadConfig
+- tweak/Hooks.mm                         → C hooks
+- tweak/ChangeInfoIos.plist              → filter (XML, Mode=Any)
+- app/main.m                             → UI + save fallback + kill + respring
+- .github/workflows/build.yml            → CI + verify step
+- BUILD_NOTES.md                         → ghi chú build (§10 bug note)
+
+================================================================
+7. VERSION STATE HIỆN TẠI
+================================================================
+
+Tất cả 5 file version đã bump 2.3.5 → 2.3.6:
+- app/Makefile         PACKAGE_VERSION = 2.3.6
+- app/control          Version: 2.3.6
+- app/Resources/Info.plist   CFBundleShortVersionString = 2.3.6
+- tweak/Makefile       PACKAGE_VERSION = 2.3.6
+- tweak/control        Version: 2.3.6
+
+Commit cuối cùng: 5343817
+"v2.3.6: link missing frameworks (inject root cause) + CI dylib verify"
+
+Đã push origin/master → GitHub Actions đang build.
+
+================================================================
+8. VIỆC CURSOR CẦN LÀM TIẾP (nếu v2.3.6 vẫn fail)
+================================================================
+
+Priority 1: Đọc §5 ở trên, chạy lần lượt (a) → (e).
+
+Priority 2: Nếu CI Verify step log báo thiếu framework khác ngoài list
+            hiện tại → thêm vào ChangeInfoIos_FRAMEWORKS trong tweak/Makefile.
+
+Priority 3: Nếu bundleID AIDA64 khác → update tweak/ChangeInfoIos.plist:
+            Thêm vào array Bundles. Rebuild + cài lại.
+
+Priority 4: Nếu hook arm64e fail (PAC) → Hooks.mm dùng %hookf hoặc thử
+            build arm64 only. Nhưng user dùng iPhone X = arm64e, cần cả 2.
+
+Priority 5: Đừng rollback v2.3.1-v2.3.6 fix — các fix này đều cần thiết,
+            không phải thừa. Đặc biệt §2 v2.3.6 framework link là root
+            cause chính theo chẩn đoán cuối.
+
+================================================================
+9. ĐIỀU KHÔNG ĐƯỢC LÀM
+================================================================
+
+- KHÔNG bump version tùy ý, luôn cập nhật đồng bộ 5 file.
+- KHÔNG đổi TWEAK_NAME, APPLICATION_NAME — khớp ChangeInfoIos_FILES etc.
+- KHÔNG remove shell-copy fallback trong save — user thực đo được Cocoa
+  write fail, shell copy là cứu cánh.
+- KHÔNG remove Executables fallback trong filter plist.
+- KHÔNG để workflow .disabled được kích hoạt (chỉ build.yml chính).
+- KHÔNG skip git hooks khi commit.
+- KHÔNG force push master.
+
+================================================================
+10. SƠ ĐỒ LUỒNG CHANGE + CHẤM ĐIỂM TỪNG KHÂU
+================================================================
+
+     [HIOS Faker App UI] (com.changeinfoios.app — Apps/ChangeInfoIosApp.app)
+               │  user bấm "Change dữ liệu"
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  STEP 1: ci_randomizeIdentities()                        │
+     │  → CIConfigManager._cfg[...] = randomValues (142+ keys)  │
+     │  → [CIConfigManager save]                                │
+     │       A. writeToFile:CILocalConfigPath() XML             │  ← local app mirror
+     │       B. writeToFile:/var/mobile/Library/Preferences/    │  ← SHARED (tweak đọc)
+     │          com.changeinfoios.plist (Cocoa)                 │
+     │       C. if !cocoaOK → posix_spawn cp CILocal → Shared   │  ← SANDBOX BYPASS
+     │       D. chmod 0644 + stat verify size                   │
+     │       E. notify_post("com.changeinfoios/ReloadPrefs")    │  ← Darwin notify
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  STEP 2: Kill + wipe target apps (AIDA64 + user picks)   │
+     │  For each app:                                           │
+     │     killall -9 <ExecName>                                │
+     │     pkill -9 -f <bundleID>                               │
+     │     pkill -9 -f <bundlePath>                             │
+     │     rm -rf container/{Documents,Library/*,tmp}/*         │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  STEP 3: Clean detection caches + save wipe_counter_<bid>│
+     │         → [cm save] → (lại notify Darwin)                │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  STEP 4: Respring chain                                  │
+     │     sbreload → launchctl kickstart → killall SpringBoard │
+     │     → uicache -a                                         │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  STEP 5: Post-respring kill sweep (kill lại targets 1    │
+     │         lần nữa để block launch snapshot)                │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     User mở lại AIDA64
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  ellekit/substrate launch daemon intercept process load  │
+     │  1. Đọc /var/jb/Library/MobileSubstrate/DynamicLibraries/│
+     │     *.plist → ChangeInfoIos.plist                        │
+     │  2. Match Filter:                                        │
+     │        Bundles CONTAINS bundleID? → YES cho AIDA64       │
+     │     OR Executables CONTAINS execName? (Mode=Any)         │
+     │  3. Nếu match → dlopen ChangeInfoIos.dylib               │
+     │  4. dylib load → resolve symbols                         │
+     │        ← ***FAILURE POINT QUAN TRỌNG***                  │
+     │        Nếu thiếu framework link → unresolved Obj-C class │
+     │          → substrate SILENTLY ABORT inject               │
+     │          (đây là root cause v2.3.6 fix)                  │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     ┌─────────────────────────────────────────────────────────┐
+     │  Tweak %ctor chạy trong process AIDA64:                  │
+     │  1. Write marker:                                        │
+     │     /var/mobile/Library/Caches/ChangeInfoIos/            │
+     │     injected_com.finalwire.aida64.txt                    │
+     │  2. loadConfig():                                        │
+     │     spoofConfig = NSDictionary from                      │
+     │     /var/mobile/Library/Preferences/com.changeinfoios.   │
+     │     plist (CHÍNH LÀ FILE APP GHI Ở STEP 1-B/1-C)         │
+     │  3. ci_wipeContainerIfScheduled():                       │
+     │     check wipe_counter_<bid> > .ci_last_wipe → wipe HOME │
+     │  4. CFNotificationCenterAddObserver(ReloadPrefs)         │
+     │  5. dlopen libMobileGestalt → MSHookFunction:            │
+     │        MGCopyAnswer / MGGetBoolAnswer / MGGetStringAnswer│
+     │  6. dlopen IOKit → MSHookFunction:                       │
+     │        IORegistryEntryCreateCFProperty                   │
+     │  7. initCLvlHooks() → MSHookFunction 15 C symbols:       │
+     │     sysctlbyname, uname, stat, lstat, access, fopen,     │
+     │     dlopen, gethostname, mach_absolute_time,             │
+     │     CFAbsoluteTimeGetCurrent, dladdr, _dyld_image_count, │
+     │     _dyld_get_image_name, fork, getenv, SecItemCopyMatch │
+     │  8. Logos %hook classes: UIDevice, CTCarrier, CTTel...,  │
+     │     CLLocationManager, NSLocale, NSTimeZone, UIScreen,   │
+     │     NSProcessInfo, NSFileManager, UIApplication,         │
+     │     UIPasteboard, WKWebView, CMMotionManager,            │
+     │     NSUserDefaults, NSMutableURLRequest, NSBundle,       │
+     │     ASIdentifierManager, ATTrackingManager, NSObject     │
+     │     (MTLDevice proto), CLGeocoder                        │
+     └─────────────────────────────────────────────────────────┘
+               │
+               ▼
+     AIDA64 gọi UIDevice.systemVersion / MGCopyAnswer("SerialNumber") / sysctl("hw.machine") ...
+               │
+               ▼
+     Hook chạy → fakeLayer(X) check → getConfigStr(...) → return value FAKE từ plist
+               │
+               ▼
+     AIDA64 hiển thị thông tin FAKE → USER THẤY MÁY ĐÃ ĐỔI.
+
+-----------------------------------------------------------------
+CHẤM ĐIỂM TỪNG KHÂU (sau khi đọc toàn bộ code)
+-----------------------------------------------------------------
+
+KHÂU 1 — App ghi shared prefs:
+   [OK] Có 2-tier save: Cocoa write + shell-copy fallback.
+   [OK] chmod 0644 để tweak (process khác user) có thể đọc.
+   [OK] Sau save gọi notify_post ReloadPrefs → tweak đang chạy
+        reload config mà không cần respring.
+   Yêu cầu chạy thành công: đường dẫn CILocalConfigPath() phải tồn tại TRƯỚC
+   khi shell copy chạy. Đọc code dòng 144 — writeToFile CILocalConfigPath()
+   chạy ngay trước Cocoa write shared prefs → OK, luôn có nguồn để cp.
+
+KHÂU 2 — Kill target apps:
+   [OK] 3 method (killall ExecName, pkill bundleID, pkill bundlePath).
+   [OK] Có wipe container subdirs.
+   [OK] Có .ci_last_wipe counter để tweak tự wipe lại nếu app launch trước
+        khi rm -rf xóa sạch.
+
+KHÂU 3 — Detection cache:
+   [OK] Xóa /var/mobile/Library/Caches/com.finalwire.aida64* → AIDA64 không
+        đọc được fingerprint cũ.
+
+KHÂU 4 — Respring:
+   [OK] Chain 5 lệnh, sbreload priority (rootless-safe).
+
+KHÂU 5 — Post-kill sweep:
+   [OK] Kill lại sau respring → block launch snapshot cache.
+
+KHÂU 6 — Filter plist match AIDA64:
+   [OK] XML format, Mode=Any, có cả Bundles (com.finalwire.aida64,
+        com.finalwire.aida64-ios, com.blacksmith.lirum, com.umang.devicedesign)
+        và Executables fallback (AIDA64, Lirum, DeviceInfo).
+
+KHÂU 7 — Dylib load & framework link:
+   [FIX v2.3.6 VỪA PUSH] Tweak.xm/Hooks.mm import nhiều framework,
+   Makefile giờ link đủ 13 framework + AppSupport private.
+   [!] Nếu CI step "Verify tweak dylib" báo otool -L vẫn thiếu framework
+       hoặc nm -u còn ObjC class chưa resolve → phải add tiếp vào Makefile.
+   [!] Tweak.xm dòng 46-49 forward-declare @interface ATTrackingManager →
+       tránh cần import <AppTrackingTransparency/...>, OK trên SDK 16.5.
+   [!] Tweak.xm dòng 32-37 nếu CoreTelephony không có CTSubscriber.h thì
+       fallback @interface — OK.
+
+KHÂU 8 — %ctor execution:
+   [OK] Marker file ghi ĐẦU TIÊN (trước dlopen/MSHook) → kể cả nếu
+        dlopen libMobileGestalt fail, marker vẫn có → app UI vẫn báo
+        "đã inject". NHƯNG nếu bản thân dylib không load được thì
+        marker cũng KHÔNG có — đó chính là signal phân biệt "dylib load
+        fail" vs "dylib load OK nhưng hook fail".
+
+KHÂU 9 — Config accessor:
+   [OK] getConfigStr/getConfigBool/getConfig tự gọi reloadConfigFromDisk
+        nếu !configLoaded → tự heal lần đầu.
+   [OK] fakeLayer(X) default YES khi key "fake_X" vắng mặt → mặc định bật
+        toàn bộ layer kể cả user chưa save layer toggle.
+   [OK] isCurrentBundleTargeted: nếu targetBundles array rỗng/nil → return YES
+        (fake cho mọi bundle). Đây là hành vi đúng cho AIDA64 (không phải
+        bundle user chủ động chọn, luôn muốn fake).
+
+KHÂU 10 — Hook behavior:
+   [OK] Mọi hook đều pattern: fakeLayer check → getConfigStr → val ?: %orig.
+   [OK] MGCopyAnswer mapping đủ cho key AIDA64 đọc: UniqueDeviceID,
+        SerialNumber, IMEI, ProductType, HardwareModel, ModelNumber,
+        WiFiAddress, BluetoothAddress, EthernetAddress, BoardId, ChipID,
+        BasebandVersion, ProductVersion...
+
+-----------------------------------------------------------------
+KẾT LUẬN CHẨN ĐOÁN
+-----------------------------------------------------------------
+Luồng CODE đã ĐẦY ĐỦ, ăn khớp. Không có khâu nào thiếu logic.
+
+Nếu v2.3.6 (framework link fix) VẪN thấy AIDA64 hiển thị máy gốc, chỉ còn
+3 khả năng:
+
+  (A) Substrate/ellekit trên máy user không load dylib
+      → check /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt
+      → không có file = dylib chưa load (vấn đề ngoài code — cài lại
+        ellekit/mobilesubstrate, hoặc kiểm tra signature ldid CI làm)
+
+  (B) BundleID AIDA64 thực trên máy khác list plist
+      → SSH: defaults read /Applications/AIDA64.app/Info.plist \
+             CFBundleIdentifier
+      → nếu khác → thêm vào tweak/ChangeInfoIos.plist
+
+  (C) Shared prefs ghi chưa được (cực hiếm sau v2.3.1)
+      → SSH: ls -la /var/mobile/Library/Preferences/com.changeinfoios.plist
+      → < 5000 bytes = fail
+
+================================================================
+END HANDOVER
+================================================================
