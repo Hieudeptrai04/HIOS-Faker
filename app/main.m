@@ -2159,7 +2159,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableString *out = [NSMutableString string];
 
-    // 1. Shared prefs
+    // 1. Shared prefs (app → tweak handoff file)
     NSString *sharedPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
     BOOL sharedExists = [fm fileExistsAtPath:sharedPath];
     unsigned long long sharedSize = 0;
@@ -2170,535 +2170,92 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:sharedPath];
         sharedKeys = d.count;
     }
-    NSString *sharedIcon = (sharedExists && sharedSize > 1024) ? @"✅" : @"❌";
-    [out appendFormat:@"%@ Shared prefs: %@\n  size=%llu bytes, keys=%lu\n\n",
-        sharedIcon, sharedExists ? @"OK" : @"MISSING", sharedSize, (unsigned long)sharedKeys];
+    [out appendFormat:@"%@ Shared prefs: %llu bytes, %lu keys\n",
+        (sharedExists && sharedSize > 1024) ? @"✅" : @"❌",
+        sharedSize, (unsigned long)sharedKeys];
 
-    // 2. Dylib
-    NSString *dylibPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib";
+    // 2. Dylib + filter plist in the substrate dir
+    NSString *dylibPath  = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib";
+    NSString *filterPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
     BOOL dylibExists = [fm fileExistsAtPath:dylibPath];
     unsigned long long dylibSize = 0;
     if (dylibExists) {
-        NSDictionary *attr = [fm attributesOfItemAtPath:dylibPath error:nil];
-        dylibSize = [attr[NSFileSize] unsignedLongLongValue];
+        dylibSize = [[fm attributesOfItemAtPath:dylibPath error:nil][NSFileSize] unsignedLongLongValue];
     }
-    NSString *dylibIcon = (dylibExists && dylibSize > 50000) ? @"✅" : @"❌";
-    [out appendFormat:@"%@ Dylib: %@\n  size=%llu bytes\n\n",
-        dylibIcon, dylibExists ? @"OK" : @"MISSING", dylibSize];
+    [out appendFormat:@"%@ Dylib: %llu bytes\n",
+        (dylibExists && dylibSize > 50000) ? @"✅" : @"❌", dylibSize];
 
-    // 3. Filter plist
-    NSString *filterPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
     BOOL filterExists = [fm fileExistsAtPath:filterPath];
     NSDictionary *filter = [NSDictionary dictionaryWithContentsOfFile:filterPath];
-    NSDictionary *filt = filter[@"Filter"];
-    NSArray *bundles = [filt[@"Bundles"] isKindOfClass:[NSArray class]] ? filt[@"Bundles"] : @[];
-    NSArray *execs = [filt[@"Executables"] isKindOfClass:[NSArray class]] ? filt[@"Executables"] : @[];
-    NSString *mode = filt[@"Mode"] ?: @"?";
-    BOOL hasAidaBid = [bundles containsObject:@"com.finalwire.aida64"];
-    BOOL hasAidaExec = [execs containsObject:@"AIDA64_c3"];
-    NSString *filterIcon = (filterExists && hasAidaBid && hasAidaExec) ? @"✅" : @"❌";
-    [out appendFormat:@"%@ Filter plist: %@\n  Mode=%@ Bundles=%lu Execs=%lu\n  com.finalwire.aida64: %@\n  AIDA64_c3 exec: %@\n\n",
-        filterIcon, filterExists ? @"OK" : @"MISSING", mode,
+    NSArray *bundles = [filter[@"Filter"][@"Bundles"]     isKindOfClass:[NSArray class]] ? filter[@"Filter"][@"Bundles"]     : @[];
+    NSArray *execs   = [filter[@"Filter"][@"Executables"] isKindOfClass:[NSArray class]] ? filter[@"Filter"][@"Executables"] : @[];
+    BOOL hasAida = [bundles containsObject:@"com.finalwire.aida64"];
+    [out appendFormat:@"%@ Filter plist: %lu bundles, %lu execs, aida64=%@\n",
+        (filterExists && hasAida) ? @"✅" : @"❌",
         (unsigned long)bundles.count, (unsigned long)execs.count,
-        hasAidaBid ? @"YES" : @"NO",
-        hasAidaExec ? @"YES" : @"NO"];
+        hasAida ? @"YES" : @"NO"];
 
-    // 4. Markers — which apps actually loaded the tweak
-    // NOTE: Bỏ qua marker "com.changeinfoios.app" vì nó là false positive từ
-    // v2.3.8 (lúc đó dlopen dylib vào app mình → %ctor ghi marker rồi crash).
-    // App mình KHÔNG có trong filter plist nên substrate không thể inject thật.
+    // 3. Injection markers — the actual proof substrate loaded our dylib
     NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
     NSArray *items = [fm contentsOfDirectoryAtPath:markerDir error:nil];
     NSMutableArray *markers = [NSMutableArray array];
-    BOOL hadFalseMarker = NO;
+    NSMutableArray *helloMarkers = [NSMutableArray array];
     for (NSString *f in items) {
         if ([f hasPrefix:@"injected_"] && [f hasSuffix:@".txt"]) {
-            NSString *bid = [[f stringByReplacingOccurrencesOfString:@"injected_" withString:@""]
-                             stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+            NSString *bid = [[f substringFromIndex:9] stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+            // Skip the self-inject false positive written by an earlier debug build.
             if ([bid isEqualToString:@"com.changeinfoios.app"]) {
-                hadFalseMarker = YES;
-                // Tự xóa luôn
                 [fm removeItemAtPath:[markerDir stringByAppendingPathComponent:f] error:nil];
                 continue;
             }
             [markers addObject:bid];
-        }
-    }
-    NSString *markerIcon = markers.count > 0 ? @"✅" : @"❌";
-    [out appendFormat:@"%@ Injection markers: %lu app(s)\n", markerIcon, (unsigned long)markers.count];
-    if (markers.count == 0) {
-        [out appendString:@"  (KHÔNG app nào load được tweak)\n"];
-    } else {
-        for (NSString *bid in markers) [out appendFormat:@"  • %@\n", bid];
-    }
-    if (hadFalseMarker) {
-        [out appendString:@"  (đã xóa marker giả com.changeinfoios.app từ v2.3.8)\n"];
-    }
-    BOOL aidaInjected = [markers containsObject:@"com.finalwire.aida64"];
-    BOOL safariInjected = [markers containsObject:@"com.apple.mobilesafari"];
-    [out appendFormat:@"\n  AIDA64 inject: %@\n  Safari inject: %@\n",
-        aidaInjected ? @"✅ YES" : @"❌ NO",
-        safariInjected ? @"✅ YES" : @"❌ NO"];
-
-    // 4b. HelloInject probe — minimal dylib (Foundation-only, no hooks).
-    // If HelloInject injects but ChangeInfoIos doesn't → framework overhead
-    // is the cause. If neither → loader-level problem.
-    NSMutableArray *helloMarkers = [NSMutableArray array];
-    for (NSString *f in items) {
-        if ([f hasPrefix:@"hello_"] && [f hasSuffix:@".txt"]) {
-            NSString *bid = [[f stringByReplacingOccurrencesOfString:@"hello_" withString:@""]
-                             stringByReplacingOccurrencesOfString:@".txt" withString:@""];
+        } else if ([f hasPrefix:@"hello_"] && [f hasSuffix:@".txt"] && ![f isEqualToString:@"hello_all.log"]) {
+            NSString *bid = [[f substringFromIndex:6] stringByReplacingOccurrencesOfString:@".txt" withString:@""];
             [helloMarkers addObject:bid];
         }
     }
-    [out appendFormat:@"\n🧪 HelloInject probe: %lu marker(s)\n",
-        (unsigned long)helloMarkers.count];
-    if (helloMarkers.count == 0) {
-        [out appendString:@"  (minimal dylib cũng không inject → lỗi loader/sign)\n"];
-    } else {
-        for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
+    BOOL aidaInjected = [markers containsObject:@"com.finalwire.aida64"];
+    [out appendFormat:@"\n%@ Main tweak inject: %lu app(s)\n",
+        markers.count > 0 ? @"✅" : @"❌", (unsigned long)markers.count];
+    for (NSString *bid in markers) [out appendFormat:@"  • %@\n", bid];
+    [out appendFormat:@"%@ HelloInject probe: %lu app(s)\n",
+        helloMarkers.count > 0 ? @"✅" : @"❌", (unsigned long)helloMarkers.count];
+    for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
+
+    // 4. Loader presence — confirms ellekit/substrate is even installed
+    NSArray *loaderPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
+                             @"/var/jb/usr/lib/TweakInject.dylib",
+                             @"/var/jb/usr/lib/libsubstrate.dylib"];
+    NSMutableArray *loaderFound = [NSMutableArray array];
+    for (NSString *p in loaderPaths) {
+        if ([fm fileExistsAtPath:p]) [loaderFound addObject:[p lastPathComponent]];
     }
+    [out appendFormat:@"\n%@ Loader: %@\n",
+        loaderFound.count > 0 ? @"✅" : @"❌",
+        loaderFound.count > 0 ? [loaderFound componentsJoinedByString:@", "] : @"(none found)"];
 
-    // Dump hello_all.log — every process that loaded HelloInject writes 1 line
-    NSString *allLog = [markerDir stringByAppendingPathComponent:@"hello_all.log"];
-    if ([fm fileExistsAtPath:allLog]) {
-        NSString *logContent = [NSString stringWithContentsOfFile:allLog
-                                                         encoding:NSUTF8StringEncoding
-                                                            error:nil];
-        NSArray *lines = [logContent componentsSeparatedByString:@"\n"];
-        NSArray *last = lines.count > 20
-            ? [lines subarrayWithRange:NSMakeRange(lines.count - 20, 20)]
-            : lines;
-        [out appendFormat:@"\n  hello_all.log (last %lu lines):\n", (unsigned long)last.count];
-        for (NSString *line in last) {
-            if (line.length > 0) [out appendFormat:@"    %@\n", line];
-        }
-    }
-
-    // 5. Ellekit / Substrate presence
-    NSArray *ekPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
-                         @"/var/jb/usr/lib/TweakInject.dylib",
-                         @"/var/jb/usr/lib/libsubstrate.dylib",
-                         @"/var/jb/Library/LaunchDaemons/com.ellekit.ellekitd.plist"];
-    NSMutableArray *ekFound = [NSMutableArray array];
-    for (NSString *p in ekPaths) {
-        if ([fm fileExistsAtPath:p]) [ekFound addObject:[p lastPathComponent]];
-    }
-    NSString *ekIcon = ekFound.count > 0 ? @"✅" : @"❌";
-    [out appendFormat:@"\n%@ Injection framework: %lu file(s)\n",
-        ekIcon, (unsigned long)ekFound.count];
-    for (NSString *f in ekFound) [out appendFormat:@"  • %@\n", f];
-    if (ekFound.count == 0) [out appendString:@"  (không thấy ellekit/substrate ở /var/jb/usr/lib)\n"];
-
-    // 6. List ALL dylibs + plists in DynamicLibraries folder
-    NSString *dylibDir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
-    NSArray *dylibItems = [fm contentsOfDirectoryAtPath:dylibDir error:nil];
-    NSMutableArray *otherDylibs = [NSMutableArray array];
-    NSUInteger dylibCount = 0;
-    for (NSString *f in dylibItems) {
-        if ([f hasSuffix:@".dylib"]) {
-            dylibCount++;
-            if (![f isEqualToString:@"ChangeInfoIos.dylib"]) [otherDylibs addObject:f];
-        }
-    }
-    [out appendFormat:@"\n📦 Dylibs trong folder: %lu file\n", (unsigned long)dylibCount];
-    for (NSString *f in otherDylibs) [out appendFormat:@"  • %@\n", f];
-
-    // 6b. TweakInject folder (ellekit primary scan path on Dopamine)
-    NSArray *tiDirs = @[@"/var/jb/usr/lib/TweakInject",
-                        @"/var/jb/usr/lib/Substrate/DynamicLibraries"];
-    for (NSString *dir in tiDirs) {
-        BOOL isDir = NO;
-        BOOL exists = [fm fileExistsAtPath:dir isDirectory:&isDir];
-        [out appendFormat:@"\n📁 %@: %@\n", dir,
-            exists ? (isDir ? @"exists (dir)" : @"exists (FILE not dir!)") : @"missing"];
-        if (exists && isDir) {
-            NSArray *contents = [fm contentsOfDirectoryAtPath:dir error:nil];
-            NSUInteger dlc = 0;
-            BOOL hasOurs = NO;
-            for (NSString *f in contents) {
-                if ([f hasSuffix:@".dylib"]) dlc++;
-                if ([f isEqualToString:@"ChangeInfoIos.dylib"]) hasOurs = YES;
-            }
-            [out appendFormat:@"  %lu dylib(s), ChangeInfoIos present: %@\n",
-                (unsigned long)dlc, hasOurs ? @"✅ YES" : @"❌ NO"];
-        }
-    }
-
-    // 6c. PreferenceLoader — is the only other tweak actually injecting?
-    // If PL has markers in its known cache/pref path, substrate is alive.
-    // PL writes feedback to /var/jb/Library/PreferenceLoader/ — presence
-    // of that dir + recent-modified files = PL loaded into Settings.app.
-    NSString *plDir = @"/var/jb/Library/PreferenceLoader";
-    BOOL plDirExists = [fm fileExistsAtPath:plDir];
-    [out appendFormat:@"\n🧪 PreferenceLoader runtime: %@\n",
-        plDirExists ? @"dir exists" : @"dir missing"];
-    if (plDirExists) {
-        NSArray *plItems = [fm contentsOfDirectoryAtPath:plDir error:nil];
-        [out appendFormat:@"  %lu item(s) inside\n", (unsigned long)plItems.count];
-    }
-    // Also check Settings.app preference bundle dir — if any tweak registered
-    // a prefs panel, this dir is non-empty.
-    NSString *prefBundles = @"/var/jb/Library/PreferenceBundles";
-    if ([fm fileExistsAtPath:prefBundles]) {
-        NSArray *pbItems = [fm contentsOfDirectoryAtPath:prefBundles error:nil];
-        [out appendFormat:@"  PreferenceBundles: %lu item(s)\n",
-            (unsigned long)pbItems.count];
-    }
-
-    // 6d. ellekit daemon / loader paths
-    NSArray *daemonChecks = @[
-        @"/var/jb/Library/LaunchDaemons/com.ellekit.ellekitd.plist",
-        @"/var/jb/usr/libexec/ellekit/ellekitd",
-        @"/var/jb/basebin/loader.dylib",
-        @"/var/jb/basebin/jbloader",
-        @"/var/jb/usr/lib/substitute-inserter.dylib"
-    ];
-    [out appendString:@"\n⚙ Loader/daemon files:\n"];
-    for (NSString *p in daemonChecks) {
-        [out appendFormat:@"  %@ %@\n",
-            [fm fileExistsAtPath:p] ? @"✅" : @"❌", p];
-    }
-
-    // 7. Parse Mach-O: arch + install_name + dependencies + code signature
-    [out appendString:@"\n🔬 Dylib Mach-O:\n"];
-    BOOL archOK = NO;
-    BOOL hasCodeSig = NO;
-    NSString *installName = nil;
-    NSMutableArray *deps = [NSMutableArray array];
-
-    NSData *dylibData = [NSData dataWithContentsOfFile:dylibPath];
-    if (dylibData.length < 32) {
-        [out appendString:@"  ❌ Không đọc được dylib\n"];
-    } else {
-        const uint8_t *bytes = dylibData.bytes;
-        uint32_t magic = *(const uint32_t *)bytes;
-
-        // Pick slice offset (arm64 or arm64e in FAT, else 0 for thin)
-        uint32_t sliceOff = 0;
-        if (magic == 0xBEBAFECA) { // FAT big-endian
-            uint32_t nfatBE = *(const uint32_t *)(bytes + 4);
-            uint32_t n = __builtin_bswap32(nfatBE);
-            [out appendFormat:@"  FAT binary, %u slice(s)\n", n];
-            BOOL arm64 = NO, arm64e = NO;
-            for (uint32_t i = 0; i < n && i < 8; i++) {
-                const uint8_t *fa = bytes + 8 + i * 20;
-                uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
-                uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
-                uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
-                if (ct == 0x0100000C) {
-                    if ((cs & 0xFF) == 2) {
-                        arm64e = YES;
-                        sliceOff = off;
-                        [out appendString:@"  • arm64e\n"];
-                    } else {
-                        arm64 = YES;
-                        if (sliceOff == 0) sliceOff = off;
-                        [out appendString:@"  • arm64\n"];
-                    }
-                }
-            }
-            archOK = arm64 && arm64e;
-        } else if (magic == 0xFEEDFACF) {
-            [out appendString:@"  Thin binary (arm64)\n"];
-            archOK = YES;
-        } else {
-            [out appendFormat:@"  ❌ Magic lạ: 0x%08X\n", magic];
-        }
-
-        if (sliceOff + 32 <= dylibData.length) {
-            // mach_header_64: magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
-            uint32_t ncmds = *(const uint32_t *)(bytes + sliceOff + 16);
-            uint32_t cmdOff = sliceOff + 32; // sizeof(mach_header_64)
-            for (uint32_t i = 0; i < ncmds && i < 200; i++) {
-                if (cmdOff + 8 > dylibData.length) break;
-                uint32_t cmd = *(const uint32_t *)(bytes + cmdOff);
-                uint32_t cmdsize = *(const uint32_t *)(bytes + cmdOff + 4);
-                if (cmdsize < 8 || cmdOff + cmdsize > dylibData.length) break;
-
-                if (cmd == 0xD /* LC_ID_DYLIB */ || cmd == 0xC /* LC_LOAD_DYLIB */) {
-                    uint32_t strOff = *(const uint32_t *)(bytes + cmdOff + 8);
-                    if (strOff < cmdsize) {
-                        const char *s = (const char *)(bytes + cmdOff + strOff);
-                        size_t maxLen = cmdsize - strOff;
-                        size_t slen = strnlen(s, maxLen);
-                        NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
-                        if (cmd == 0xD) installName = path;
-                        else if (path) [deps addObject:path];
-                    }
-                } else if (cmd == 0x1D /* LC_CODE_SIGNATURE */) {
-                    hasCodeSig = YES;
-                }
-
-                cmdOff += cmdsize;
-            }
-        }
-    }
-
-    if (installName) [out appendFormat:@"  install_name = %@\n", installName];
-    [out appendFormat:@"  CodeSignature = %@\n", hasCodeSig ? @"✅ present" : @"❌ MISSING"];
-    [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)deps.count];
-    for (NSString *d in deps) [out appendFormat:@"    - %@\n", d];
-
-    // 7b. Parse PreferenceLoader.dylib (the control — it IS injecting).
-    // Delta vs our dylib exposes what LC_ commands substrate requires.
-    NSString *plPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/PreferenceLoader.dylib";
-    if ([fm fileExistsAtPath:plPath]) {
-        [out appendString:@"\n🧬 PreferenceLoader Mach-O (control):\n"];
-        NSData *plData = [NSData dataWithContentsOfFile:plPath];
-        NSDictionary *plAttr = [fm attributesOfItemAtPath:plPath error:nil];
-        [out appendFormat:@"  size=%llu bytes\n",
-            [plAttr[NSFileSize] unsignedLongLongValue]];
-        BOOL plHasSig = NO;
-        NSString *plInstall = nil;
-        NSMutableArray *plDeps = [NSMutableArray array];
-        if (plData.length >= 32) {
-            const uint8_t *pb = plData.bytes;
-            uint32_t pmagic = *(const uint32_t *)pb;
-            uint32_t pSliceOff = 0;
-            if (pmagic == 0xBEBAFECA) {
-                uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
-                [out appendFormat:@"  FAT, %u slice(s)\n", n];
-                for (uint32_t i = 0; i < n && i < 8; i++) {
-                    const uint8_t *fa = pb + 8 + i * 20;
-                    uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
-                    uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
-                    uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
-                    if (ct == 0x0100000C) {
-                        [out appendFormat:@"  • %@\n",
-                            (cs & 0xFF) == 2 ? @"arm64e" : @"arm64"];
-                        if ((cs & 0xFF) == 2) pSliceOff = off;
-                        else if (pSliceOff == 0) pSliceOff = off;
-                    }
-                }
-            } else if (pmagic == 0xFEEDFACF) {
-                [out appendString:@"  Thin (arm64)\n"];
-            }
-            if (pSliceOff + 32 <= plData.length) {
-                uint32_t ncmds = *(const uint32_t *)(pb + pSliceOff + 16);
-                uint32_t co = pSliceOff + 32;
-                for (uint32_t i = 0; i < ncmds && i < 200; i++) {
-                    if (co + 8 > plData.length) break;
-                    uint32_t cmd = *(const uint32_t *)(pb + co);
-                    uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
-                    if (cmdsize < 8 || co + cmdsize > plData.length) break;
-                    if (cmd == 0xD || cmd == 0xC) {
-                        uint32_t strOff = *(const uint32_t *)(pb + co + 8);
-                        if (strOff < cmdsize) {
-                            const char *s = (const char *)(pb + co + strOff);
-                            size_t maxLen = cmdsize - strOff;
-                            size_t slen = strnlen(s, maxLen);
-                            NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
-                            if (cmd == 0xD) plInstall = path;
-                            else if (path) [plDeps addObject:path];
-                        }
-                    } else if (cmd == 0x1D) {
-                        plHasSig = YES;
-                    }
-                    co += cmdsize;
-                }
-            }
-        }
-        if (plInstall) [out appendFormat:@"  install_name = %@\n", plInstall];
-        [out appendFormat:@"  CodeSignature = %@\n", plHasSig ? @"✅" : @"❌"];
-        [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)plDeps.count];
-        for (NSString *d in plDeps) [out appendFormat:@"    - %@\n", d];
-    } else {
-        [out appendString:@"\n🧬 PreferenceLoader.dylib: not found (expected in DynamicLibraries)\n"];
-    }
-
-    // 7c. Dump LC_CODE_SIGNATURE entitlements blob for both dylibs.
-    // PL injects + ours doesn't despite identical structural checks →
-    // the remaining delta is the code signature content (entitlements).
-    // ldid embeds the entitlement plist into the __LINKEDIT CodeDirectory;
-    // we read by locating the LC_CODE_SIGNATURE offset and scanning for
-    // the XML plist magic (<?xml).
-    void (^dumpEnts)(NSString *, NSString *) = ^(NSString *label, NSString *path) {
-        NSData *d = [NSData dataWithContentsOfFile:path];
-        if (d.length < 32) return;
-        const uint8_t *pb = d.bytes;
-        uint32_t pmagic = *(const uint32_t *)pb;
-        uint32_t sOff = 0;
-        if (pmagic == 0xBEBAFECA) {
-            uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
-            for (uint32_t i = 0; i < n && i < 8; i++) {
-                const uint8_t *fa = pb + 8 + i * 20;
-                uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
-                uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
-                uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
-                if (ct == 0x0100000C && (cs & 0xFF) == 2) { sOff = off; break; }
-                if (ct == 0x0100000C && sOff == 0) sOff = off;
-            }
-        }
-        if (sOff + 32 > d.length) return;
-        uint32_t ncmds = *(const uint32_t *)(pb + sOff + 16);
-        uint32_t co = sOff + 32;
-        uint32_t csOff = 0, csSize = 0;
-        for (uint32_t i = 0; i < ncmds && i < 200; i++) {
-            if (co + 8 > d.length) break;
-            uint32_t cmd = *(const uint32_t *)(pb + co);
-            uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
-            if (cmdsize < 8 || co + cmdsize > d.length) break;
-            if (cmd == 0x1D /* LC_CODE_SIGNATURE */) {
-                csOff = *(const uint32_t *)(pb + co + 8);
-                csSize = *(const uint32_t *)(pb + co + 12);
-                break;
-            }
-            co += cmdsize;
-        }
-        [out appendFormat:@"\n🔐 %@ entitlements (CS blob off=%u size=%u):\n",
-            label, csOff, csSize];
-        if (csOff == 0 || csOff + csSize > d.length) {
-            [out appendString:@"  (no CS blob or out-of-bounds)\n"];
-            return;
-        }
-        uint32_t slice = sOff;
-        uint32_t scanStart = slice + csOff;
-        uint32_t scanEnd = slice + csOff + csSize;
-        if (scanEnd > d.length) scanEnd = (uint32_t)d.length;
-        const char *xmlStart = NULL;
-        uint32_t xmlLen = 0;
-        for (uint32_t i = scanStart; i + 5 < scanEnd; i++) {
-            if (memcmp(pb + i, "<?xml", 5) == 0) {
-                xmlStart = (const char *)(pb + i);
-                for (uint32_t j = i; j + 8 < scanEnd; j++) {
-                    if (memcmp(pb + j, "</plist>", 8) == 0) {
-                        xmlLen = (j + 8) - i;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-        if (xmlStart && xmlLen > 0 && xmlLen < 8192) {
-            NSString *ents = [[NSString alloc] initWithBytes:xmlStart
-                                                      length:xmlLen
-                                                    encoding:NSUTF8StringEncoding];
-            [out appendFormat:@"%@\n", ents ?: @"  (decode failed)"];
-        } else {
-            [out appendString:@"  (no XML entitlements plist in CS blob)\n"];
-        }
-    };
-    dumpEnts(@"ChangeInfoIos", dylibPath);
-    dumpEnts(@"PreferenceLoader", plPath);
-
-    // 7d. SnowBoard.dylib (Sileo-installed tweak, confirmed injecting).
-    // Compare structural fields to ours — this is a *user-installed* dylib
-    // that works, vs PL which is Dopamine-builtin.
-    NSString *dynDir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
-    NSString *snowPath = nil;
-    NSArray *dynAll = [fm contentsOfDirectoryAtPath:dynDir error:nil];
-    for (NSString *f in dynAll) {
-        NSString *low = [f lowercaseString];
-        if ([low containsString:@"snowboard"] && [low hasSuffix:@".dylib"]) {
-            snowPath = [dynDir stringByAppendingPathComponent:f];
-            break;
-        }
-    }
-    if (snowPath) {
-        [out appendFormat:@"\n🧬 SnowBoard Mach-O (user-installed, works): %@\n",
-            [snowPath lastPathComponent]];
-        NSData *sd = [NSData dataWithContentsOfFile:snowPath];
-        NSDictionary *sAttr = [fm attributesOfItemAtPath:snowPath error:nil];
-        [out appendFormat:@"  size=%llu bytes\n",
-            [sAttr[NSFileSize] unsignedLongLongValue]];
-        BOOL sSig = NO;
-        NSString *sInstall = nil;
-        NSMutableArray *sDeps = [NSMutableArray array];
-        if (sd.length >= 32) {
-            const uint8_t *pb = sd.bytes;
-            uint32_t pmagic = *(const uint32_t *)pb;
-            uint32_t pSliceOff = 0;
-            if (pmagic == 0xBEBAFECA) {
-                uint32_t n = __builtin_bswap32(*(const uint32_t *)(pb + 4));
-                [out appendFormat:@"  FAT, %u slice(s)\n", n];
-                for (uint32_t i = 0; i < n && i < 8; i++) {
-                    const uint8_t *fa = pb + 8 + i * 20;
-                    uint32_t ct = __builtin_bswap32(*(const uint32_t *)fa);
-                    uint32_t cs = __builtin_bswap32(*(const uint32_t *)(fa + 4));
-                    uint32_t off = __builtin_bswap32(*(const uint32_t *)(fa + 8));
-                    if (ct == 0x0100000C) {
-                        if ((cs & 0xFF) == 2) pSliceOff = off;
-                        else if (pSliceOff == 0) pSliceOff = off;
-                    }
-                }
-            } else if (pmagic == 0xFEEDFACF) {
-                [out appendString:@"  Thin (arm64)\n"];
-            }
-            if (pSliceOff + 32 <= sd.length) {
-                uint32_t ncmds = *(const uint32_t *)(pb + pSliceOff + 16);
-                uint32_t co = pSliceOff + 32;
-                for (uint32_t i = 0; i < ncmds && i < 200; i++) {
-                    if (co + 8 > sd.length) break;
-                    uint32_t cmd = *(const uint32_t *)(pb + co);
-                    uint32_t cmdsize = *(const uint32_t *)(pb + co + 4);
-                    if (cmdsize < 8 || co + cmdsize > sd.length) break;
-                    if (cmd == 0xD || cmd == 0xC) {
-                        uint32_t strOff = *(const uint32_t *)(pb + co + 8);
-                        if (strOff < cmdsize) {
-                            const char *s = (const char *)(pb + co + strOff);
-                            size_t maxLen = cmdsize - strOff;
-                            size_t slen = strnlen(s, maxLen);
-                            NSString *path = [[NSString alloc] initWithBytes:s length:slen encoding:NSUTF8StringEncoding];
-                            if (cmd == 0xD) sInstall = path;
-                            else if (path) [sDeps addObject:path];
-                        }
-                    } else if (cmd == 0x1D) {
-                        sSig = YES;
-                    }
-                    co += cmdsize;
-                }
-            }
-        }
-        if (sInstall) [out appendFormat:@"  install_name = %@\n", sInstall];
-        [out appendFormat:@"  CodeSignature = %@\n", sSig ? @"✅" : @"❌"];
-        [out appendFormat:@"  Dependencies (%lu):\n", (unsigned long)sDeps.count];
-        for (NSString *d in sDeps) [out appendFormat:@"    - %@\n", d];
-        dumpEnts(@"SnowBoard", snowPath);
-    } else {
-        [out appendString:@"\n🧬 SnowBoard.dylib: not found in DynamicLibraries folder\n"
-                          @"  (cài SnowBoard qua Sileo để có sample so sánh)\n"];
-    }
-
-    // 8. Diagnosis
+    // 5. Diagnosis — pick the single most actionable step
     [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
-        [out appendString:@"⚠ Shared prefs chưa ghi → bấm Change trước.\n"];
-    } else if (!dylibExists) {
-        [out appendString:@"⚠ Dylib thiếu → cài lại .deb.\n"];
-    } else if (!filterExists || !hasAidaBid || !hasAidaExec) {
-        [out appendString:@"⚠ Filter plist sai → cài .deb mới nhất (commit 20dad2d+).\n"];
-    } else if (!archOK && dylibSize > 0) {
-        [out appendString:@"⚠ Dylib thiếu arch arm64e (hoặc file hỏng).\n"
-                          @"  iPhone X cần arm64e — check CI build.\n"];
-    } else if (ekFound.count == 0) {
-        [out appendString:@"⚠ KHÔNG thấy ellekit/substrate ở /var/jb/usr/lib.\n"
-                          @"  → Mở Sileo cài lại ellekit hoặc libsubstrate.\n"];
-    } else if (!hasCodeSig) {
-        [out appendString:@"⚠ Dylib THIẾU CODE SIGNATURE!\n"
-                          @"  Substrate từ chối dylib chưa sign. CI thiếu bước ldid -S.\n"
-                          @"  Fix: build.yml cần ldid -Sentitlements.plist hoặc ldid -S <dylib>\n"];
-    } else if (installName && ![installName containsString:@"/var/jb/"]
-                          && ![installName hasPrefix:@"@"]) {
-        [out appendFormat:@"⚠ install_name SAI cho rootless JB:\n  %@\n"
-                          @"  Rootless substrate cần path /var/jb/... hoặc @rpath.\n"
-                          @"  Fix: build với THEOS_PACKAGE_SCHEME=rootless (đã có trong build.yml)\n",
-                          installName];
-    } else if (markers.count == 0) {
-        [out appendString:@"⚠ Setup đủ nhưng substrate vẫn không inject.\n"
-                          @"  So sánh với dylib khác trong folder (ở mục 📦 bên trên):\n"
-                          @"  • Nếu folder CHỈ có ChangeInfoIos → máy chưa có tweak nào khác,\n"
-                          @"    không biết substrate có thực sự inject ai không.\n"
-                          @"    → Cài thử 1 tweak đơn giản (VD: BigBoardIcons) để verify.\n"
-                          @"  • Nếu có tweak khác + chúng đang work → compare install_name,\n"
-                          @"    dependencies → có thể dylib mình link sai framework.\n"
-                          @"  • Reboot + mở Safari cold-start (không qua App Switcher).\n"];
-    } else if (safariInjected && !aidaInjected) {
-        [out appendString:@"⚠ Safari OK nhưng AIDA64 không → AIDA64 có anti-debug.\n  Thử đổi tên dylib hoặc test với app khác.\n"];
-    } else if (aidaInjected) {
-        [out appendString:@"✅ AIDA64 đã inject. Nếu vẫn thấy máy gốc → config key chưa đủ / chưa random.\n"];
+        [out appendString:@"⚠ Shared prefs chưa ghi — bấm CHANGE trước rồi test lại.\n"];
+    } else if (!dylibExists || !filterExists) {
+        [out appendString:@"⚠ Thiếu dylib hoặc filter plist — cài lại .deb mới nhất.\n"];
+    } else if (!hasAida) {
+        [out appendString:@"⚠ Filter plist không có com.finalwire.aida64 — .deb cũ, cài bản mới.\n"];
+    } else if (loaderFound.count == 0) {
+        [out appendString:@"⚠ KHÔNG tìm thấy ellekit/substrate — mở Sileo cài lại loader.\n"];
+    } else if (markers.count == 0 && helloMarkers.count == 0) {
+        [out appendString:@"⚠ Loader có mặt nhưng không inject bất kỳ app nào.\n"
+                          @"  → Mở Safari rồi test lại; nếu vẫn trống → reboot máy.\n"
+                          @"  → Vẫn trống sau reboot → ellekit daemon lỗi, reinstall Dopamine.\n"];
+    } else if (markers.count == 0 && helloMarkers.count > 0) {
+        [out appendString:@"⚠ HelloInject load được nhưng ChangeInfoIos thì không.\n"
+                          @"  → Framework link của tweak chính có vấn đề, xem CI log.\n"];
+    } else if (!aidaInjected) {
+        [out appendString:@"⚠ Tweak inject được app khác nhưng chưa vào AIDA64.\n"
+                          @"  → Mở AIDA64 (cold start, không qua App Switcher) rồi check lại.\n"];
     } else {
-        [out appendString:@"⚠ Mở AIDA64 / Safari trước khi check (app phải chạy lần nữa sau respring).\n"];
+        [out appendString:@"✅ AIDA64 đã inject. Nếu vẫn thấy máy gốc → key config chưa khớp.\n"];
     }
 
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Debug Inject Check"

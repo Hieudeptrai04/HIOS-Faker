@@ -2,7 +2,7 @@
 # Build: THEOS_PACKAGE_SCHEME=rootless make package
 # Install: make install THEOS_DEVICE_IP=<ip> THEOS_DEVICE_PORT=22
 
-PACKAGE_VERSION = 2.3.21
+PACKAGE_VERSION = 2.3.22
 ARCHS = arm64 arm64e
 
 TARGET := iphone:clang:16.5:15.0
