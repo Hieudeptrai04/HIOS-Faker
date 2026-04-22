@@ -8,6 +8,8 @@
 #import <dlfcn.h>
 #import <sys/utsname.h>
 #import <math.h>
+#import <fcntl.h>
+#import <errno.h>
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -140,35 +142,90 @@ static NSString *CIRRSDir(void) {
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0 error:nil];
-    if (!data) return;
-    [data writeToFile:CILocalConfigPath() atomically:YES];
+    if (!data) { NSLog(@"[ChangeInfoIos] save: plist serialization failed!"); return; }
 
+    // Always write to app sandbox first (never fails)
+    BOOL localOK = [data writeToFile:CILocalConfigPath() atomically:YES];
+    NSLog(@"[ChangeInfoIos] save: local=%@ (%lu bytes, %lu keys)",
+          localOK ? @"OK" : @"FAIL", (unsigned long)data.length, (unsigned long)_cfg.count);
+
+    // Now try multiple strategies to write to shared prefs path
     NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    BOOL cocoaOK = [data writeToFile:kSharedPrefPath atomically:YES];
-    chmod([kSharedPrefPath fileSystemRepresentation], 0644);
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // Fallback: if Cocoa writeToFile: fails (sandbox), shell-copy via posix_spawn
-    // which inherits the app's platform entitlements and often bypasses the Cocoa
-    // sandbox layer. Root cause of the "Change xong nhưng tweak vẫn thấy config
-    // cũ" bug — see BUILD_NOTES §10.
-    BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:kSharedPrefPath];
+    // Strategy 1: Cocoa writeToFile: directly with NSData
+    NSError *writeErr = nil;
+    BOOL s1 = [data writeToFile:kSharedPrefPath options:NSDataWritingAtomic error:&writeErr];
+    NSLog(@"[ChangeInfoIos] save S1 (Cocoa write): %@ err=%@", s1 ? @"OK" : @"FAIL", writeErr);
+    if (s1) { chmod([kSharedPrefPath fileSystemRepresentation], 0644); }
+
+    // Check if S1 worked
+    BOOL exists = [fm fileExistsAtPath:kSharedPrefPath];
     unsigned long long sz = 0;
     if (exists) {
-        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:kSharedPrefPath error:nil];
+        NSDictionary *attr = [fm attributesOfItemAtPath:kSharedPrefPath error:nil];
         sz = [attr[NSFileSize] unsignedLongLongValue];
     }
-    if (!cocoaOK || !exists || sz < 256) {
-        NSString *cmd = [NSString stringWithFormat:
-            @"mkdir -p '%@' 2>/tmp/ci_save.err; cp '%@' '%@' 2>>/tmp/ci_save.err && chmod 0644 '%@' 2>>/tmp/ci_save.err",
-            dir, CILocalConfigPath(), kSharedPrefPath, kSharedPrefPath];
-        int rc = ci_run([cmd UTF8String]);
-        NSLog(@"[ChangeInfoIos] shell-mirror rc=%d cocoaOK=%d existed=%d sz=%llu",
-              rc, cocoaOK, exists, sz);
-    } else {
-        NSLog(@"[ChangeInfoIos] Config saved via Cocoa: shared=%@ sz=%llu keys=%lu",
-              kSharedPrefPath, sz, (unsigned long)_cfg.count);
+    BOOL fileOK = exists && sz >= 256;
+
+    // Strategy 2: NSFileManager copyItem (if S1 failed)
+    if (!fileOK) {
+        [fm removeItemAtPath:kSharedPrefPath error:nil];
+        NSError *cpErr = nil;
+        BOOL s2 = [fm copyItemAtPath:CILocalConfigPath() toPath:kSharedPrefPath error:&cpErr];
+        NSLog(@"[ChangeInfoIos] save S2 (FM copy): %@ err=%@", s2 ? @"OK" : @"FAIL", cpErr);
+        if (s2) {
+            chmod([kSharedPrefPath fileSystemRepresentation], 0644);
+            exists = [fm fileExistsAtPath:kSharedPrefPath];
+            if (exists) {
+                NSDictionary *attr = [fm attributesOfItemAtPath:kSharedPrefPath error:nil];
+                sz = [attr[NSFileSize] unsignedLongLongValue];
+            }
+            fileOK = exists && sz >= 256;
+        }
     }
+
+    // Strategy 3: Low-level C write (if S1 & S2 both failed)
+    if (!fileOK) {
+        int fd = open([kSharedPrefPath fileSystemRepresentation], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            ssize_t w = write(fd, data.bytes, data.length);
+            close(fd);
+            BOOL s3 = (w == (ssize_t)data.length);
+            NSLog(@"[ChangeInfoIos] save S3 (C write): %@ wrote=%zd/%lu fd=%d",
+                  s3 ? @"OK" : @"FAIL", w, (unsigned long)data.length, fd);
+            if (s3) {
+                exists = [fm fileExistsAtPath:kSharedPrefPath];
+                if (exists) {
+                    NSDictionary *attr = [fm attributesOfItemAtPath:kSharedPrefPath error:nil];
+                    sz = [attr[NSFileSize] unsignedLongLongValue];
+                }
+                fileOK = exists && sz >= 256;
+            }
+        } else {
+            NSLog(@"[ChangeInfoIos] save S3 (C write): open failed errno=%d (%s)", errno, strerror(errno));
+        }
+    }
+
+    // Strategy 4: Shell cp via posix_spawn (last resort)
+    if (!fileOK) {
+        NSString *cmd = [NSString stringWithFormat:
+            @"cp '%@' '%@' 2>/tmp/ci_save.err && chmod 0644 '%@' 2>>/tmp/ci_save.err",
+            CILocalConfigPath(), kSharedPrefPath, kSharedPrefPath];
+        int rc = ci_run([cmd UTF8String]);
+        NSLog(@"[ChangeInfoIos] save S4 (shell cp): rc=%d", rc);
+        exists = [fm fileExistsAtPath:kSharedPrefPath];
+        if (exists) {
+            NSDictionary *attr = [fm attributesOfItemAtPath:kSharedPrefPath error:nil];
+            sz = [attr[NSFileSize] unsignedLongLongValue];
+        }
+        fileOK = exists && sz >= 256;
+    }
+
+    NSLog(@"[ChangeInfoIos] save FINAL: fileOK=%d exists=%d sz=%llu path=%@",
+          fileOK, exists, sz, kSharedPrefPath);
+
     [self notifyReload];
 }
 
