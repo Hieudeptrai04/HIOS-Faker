@@ -22,26 +22,7 @@
 			<string>com.blacksmith.lirum</string>
 			<string>com.umang.devicedesign</string>
 		</array>
-		<key>Executables</key>
-		<array>
-			<string>AIDA64_c3</string>
-			<string>Lirum</string>
-			<string>DeviceInfo</string>
-			<string>Zalo</string>
-			<string>Telegram</string>
-			<string>WhatsApp</string>
-			<string>Facebook</string>
-			<string>Instagram</string>
-			<string>TikTok</string>
-			<string>YouTube</string>
-			<string>Twitter</string>
-			<string>Snapchat</string>
-			<string>Discord</string>
-			<string>Slack</string>
-			<string>Outlook</string>
-		</array>
-		<key>Mode</key>
-		<string>Any</string>
+
 	</dict>
 </dict>
 </plist>

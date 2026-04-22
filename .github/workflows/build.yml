@@ -107,6 +107,12 @@ jobs:
           otool -D "$DEPLOYED"
           otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
 
+          # Convert filter plist to XML because Dopamine ellekit requires it for complex rules
+          PLIST=$(find /tmp/deb-work -name "*.plist" | grep -v DEBIAN | head -1)
+          if [ -n "$PLIST" ]; then
+            plutil -convert xml1 "$PLIST"
+          fi
+
           # Repack .deb in-place (dpkg-deb -b reads DEBIAN/ from the unpacked dir)
           rm -f "$DEB"
           dpkg-deb -Zxz -b /tmp/deb-work "$DEB"
@@ -146,7 +152,7 @@ jobs:
           FILTER=$(find /tmp/tweak-verify -name "ChangeInfoIos.plist" | head -1)
           test -n "$FILTER" || { echo "ERR: filter plist missing"; exit 1; }
           plutil -lint "$FILTER"
-          echo "Filter plist OK: $FILTER"
+          echo "Filter plist OK (verified XML): $FILTER"
 
       - name: Build HelloInject (minimal inject probe)
         run: |
