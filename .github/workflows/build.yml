@@ -237,19 +237,41 @@ jobs:
           set -e
           MS="/var/jb/Library/MobileSubstrate/DynamicLibraries"
           TI="/var/jb/usr/lib/TweakInject"
-          # Only mirror when the device actually uses TweakInject/ layout.
-          # Absent directory = loader doesn't scan here; nothing to do.
+          JBCTL="/var/jb/basebin/jbctl"
+
+          # Step 1: Mirror dylibs to TweakInject/ (force-replace old copies/symlinks)
           if [ -d "$TI" ]; then
             for f in ChangeInfoIos HelloInject; do
               for ext in dylib plist; do
                 src="$MS/$f.$ext"
                 dst="$TI/$f.$ext"
-                if [ -f "$src" ] && [ ! -e "$dst" ]; then
-                  ln -s "$src" "$dst" 2>/dev/null || true
+                if [ -f "$src" ]; then
+                  rm -f "$dst" 2>/dev/null || true
+                  cp "$src" "$dst" 2>/dev/null || ln -sf "$src" "$dst" 2>/dev/null || true
                 fi
               done
             done
           fi
+
+          # Step 2: Register ALL binaries in Dopamine trustcache.
+          # Without this, dylibs are rejected by AMFI when loaded into user apps.
+          # This is the #1 reason tweaks fail to inject on Dopamine 2.
+          if [ -x "$JBCTL" ]; then
+            # Find all our Mach-O binaries and add their cdhashes
+            for dylib in "$MS/ChangeInfoIos.dylib" "$MS/HelloInject.dylib" \
+                         "$TI/ChangeInfoIos.dylib" "$TI/HelloInject.dylib" \
+                         "/var/jb/Applications/ChangeInfoIosApp.app/ChangeInfoIosApp"; do
+              if [ -f "$dylib" ]; then
+                # jbctl trustcache add accepts a file path on Dopamine 2.1+
+                "$JBCTL" trustcache add "$dylib" 2>/dev/null || true
+              fi
+            done
+          fi
+
+          # Step 3: Refresh icon cache for the app
+          uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || \
+            /var/jb/usr/bin/uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || true
+
           exit 0
           POSTINST
           chmod 0755 combined/DEBIAN/postinst
