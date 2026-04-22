@@ -245,19 +245,10 @@ jobs:
           TI="/var/jb/usr/lib/TweakInject"
           JBCTL="/var/jb/basebin/jbctl"
 
-          # Step 1: Mirror dylibs to TweakInject/ (force-replace old copies/symlinks)
-          if [ -d "$TI" ]; then
-            for f in ChangeInfoIos HelloInject; do
-              for ext in dylib plist; do
-                src="$MS/$f.$ext"
-                dst="$TI/$f.$ext"
-                if [ -f "$src" ]; then
-                  rm -f "$dst" 2>/dev/null || true
-                  cp "$src" "$dst" 2>/dev/null || ln -sf "$src" "$dst" 2>/dev/null || true
-                fi
-              done
-            done
-          fi
+          # Do NOT manually mirror files between MobileSubstrate and TweakInject!
+          # On Dopamine rootless, DynamicLibraries is already a symlink to TweakInject.
+          # dpkg automatically follows the symlink and puts files in TweakInject.
+          # Attempting to mirror it here creates a recursive symlink that deletes the file!
 
           # Step 2: Register ALL binaries in Dopamine trustcache.
           # Without this, dylibs are rejected by AMFI when loaded into user apps.
@@ -282,21 +273,7 @@ jobs:
           POSTINST
           chmod 0755 combined/DEBIAN/postinst
 
-          cat > combined/DEBIAN/prerm <<'PRERM'
-          #!/bin/sh
-          TI="/var/jb/usr/lib/TweakInject"
-          if [ -d "$TI" ]; then
-            for f in ChangeInfoIos HelloInject; do
-              for ext in dylib plist; do
-                dst="$TI/$f.$ext"
-                # Only remove if it's our symlink, never a real file placed by user.
-                [ -L "$dst" ] && rm -f "$dst"
-              done
-            done
-          fi
-          exit 0
-          PRERM
-          chmod 0755 combined/DEBIAN/prerm
+
 
           VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
           cat > combined/DEBIAN/control <<EOF
