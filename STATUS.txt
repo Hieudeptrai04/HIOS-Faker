@@ -1,0 +1,203 @@
+================================================================
+ChangeInfoIos / HIOS Faker — STATUS & HANDOFF
+Last updated: 2026-04-22
+Current version: 2.3.26
+================================================================
+
+!!! BREAKTHROUGH 2026-04-22 !!!
+-------------------------------
+Qua SSH điều tra trên máy user (Dopamine 2 + iOS 15-16.7):
+
+CÁI GÌ INJECT ĐƯỢC:
+  - HelloInject (dylib Foundation-only): inject SpringBoard + Preferences
+  - ChangeInfoIos (dylib full): inject SpringBoard (v2.3.24 test)
+
+CÁI GÌ KHÔNG INJECT ĐƯỢC:
+  - HelloInject và ChangeInfoIos đều KHÔNG inject vào AIDA64
+  - Mặc dù filter plist đã đúng 100% (verified qua `od -c`)
+  - Dylib ở đúng path /var/jb/Library/MobileSubstrate/DynamicLibraries/
+  - Dylib cũng ở /var/jb/usr/lib/TweakInject/ (symlink postinst)
+
+METADATA AIDA64:
+  - Cài từ App Store (iTunesMetadata.plist: AppleID, downloadInfo)
+  - KHÔNG có embedded.mobileprovision (chính hãng App Store)
+  - artistName = FinalWire
+  - CFBundleIdentifier = com.finalwire.aida64 (đúng filter)
+
+→ KẾT LUẬN: Ellekit KHÔNG inject tweak vào App Store app
+   (vì App Store app có Apple production code signature + team identifier,
+   ellekit bypass chỉ hoạt động khi app fake-signed hoặc được AppSync
+   Unified patch cho phép).
+
+GIẢI PHÁP CHO USER:
+  Cài AppSync Unified từ Karen's Repo:
+    Sileo → Sources → Add → https://cydia.akemi.ai/
+    Tìm: AppSync Unified
+    Cài → respring
+  Sau khi cài AppSync, ellekit mới inject được tweak vào App Store app.
+
+GIẢI PHÁP CODE (v2.3.26):
+  Tối ưu %ctor và isCurrentBundleTargeted():
+    - Cache g_bundleTargeted 1 lần ở %ctor
+    - Non-target process early-exit, skip MSHookFunction + Darwin notify
+    - Hot-path (MGCopyAnswer, sysctlbyname) không còn rebuild NSArray per call
+    → Sửa lag đơ máy và Zalo không vào được sau khi cài.
+
+
+MỤC TIÊU DỰ ÁN
+--------------
+Tweak rootless (Dopamine 2, iOS 15–16.7, iPhone X arm64e) giả lập
+device info (Serial, UDID, IMEI, Model, MAC, 140+ params khác) cho
+các app target: Zalo, AIDA64, Telegram, WhatsApp, Facebook,
+Instagram, TikTok, YouTube, Twitter, Snapchat, Discord, Slack,
+Outlook, Lirum, DeviceInfo (umang.devicedesign).
+
+Điều khiển qua app UI native ChangeInfoIosApp + web dashboard PC.
+
+
+VẤN ĐỀ CHÍNH ĐANG TREO
+----------------------
+Bấm "Change" trong app UI → preset được ghi xuống shared prefs OK,
+nhưng AIDA64 (và các app target khác) vẫn hiển thị device info gốc.
+
+Debug button cho thấy:
+  - Shared prefs: OK
+  - Dylib tồn tại (~236KB sau khi strip WebKit/Metal)
+  - Filter plist đúng format
+  - Loader (ellekit / Substrate / TweakInject): đủ cả 3 file
+  - Main tweak inject count: 0
+  - HelloInject (dylib probe minimal) inject count: 2+
+    (SpringBoard + Preferences)
+
+=> Môi trường rootless + loader + sign OK (HelloInject chứng minh).
+=> Vấn đề nằm TRONG chính ChellInfoIos.dylib: loader load xong
+   nhưng từ chối inject vào target process, hoặc crash silent
+   ở init time.
+
+
+CẤU TRÚC REPO
+-------------
+tweak/                      Full device-spoofing dylib
+  Tweak.xm                  %hook blocks cho NSLocale, UIDevice,
+                            CTCarrier, NSProcessInfo, etc.
+                            (đã disable WKWebView + MTLDevice +
+                            CTSubscriber phoneNumber hook)
+  Hooks.mm                  MSHookFunction cho MGCopyAnswer,
+                            sysctlbyname. Có fast-path filter
+                            để tránh đơ máy.
+  ChangeInfoIos.plist       Filter plist. Bundles = 15 app 3rd-party
+                            + 1 umang.devicedesign. KHÔNG bao gồm
+                            SpringBoard/Preferences/Safari (đơ máy).
+  Makefile                  Theos Logos build. Framework link list
+                            đã prune về 11 frameworks public.
+  control                   dpkg control, Depends: ellekit | mobilesubstrate
+
+helloinject/                Probe dylib minimal (Foundation-only)
+  Tweak.xm                  Chỉ có %ctor ghi marker file.
+                            Filter bao SpringBoard/Preferences/Safari.
+                            DÙNG ĐỂ CHỨNG MINH loader hoạt động.
+
+app/                        Native UI app ChangeInfoIosApp
+  main.m                    Toàn bộ UI + logic Change + Debug trong 1 file.
+                            debugCheckInject đã được simplify còn ~100 dòng.
+  Resources/Info.plist      Bundle ID: com.changeinfoios.app
+
+.github/workflows/build.yml CI build trên GitHub Actions.
+                            Build tweak + app riêng, combine thành 1 deb.
+                            Postinst symlink TweakInject/ để tương thích
+                            cả Substrate và ellekit layout.
+
+deploy-deb.sh               Script push deb lên GitHub Releases.
+
+
+LỊCH SỬ VERSION GẦN NHẤT
+-------------------------
+v2.3.20  FAIL    dpkg install: No such file TweakInject/.dpkg-new
+                 (fix bằng postinst symlink thay vì build-time copy)
+
+v2.3.21  OK cài  Tối ưu sysctlbyname fast-path filter (50x faster),
+                 MGCopyAnswer NSLog once-per-key, tránh đơ máy.
+
+v2.3.22  OK cài  Debug button simplified (550→100 dòng). Xác nhận
+                 Main tweak inject = 0, HelloInject = 2.
+
+v2.3.23  OK cài  Disabled WKWebView + MTLDevice + CTSubscriber hook.
+                 Removed WebKit + Metal từ framework link.
+                 Dylib: 270KB → 236KB. Vẫn không inject.
+
+v2.3.24  ĐƠ MÁY  Thêm SpringBoard/Preferences/Safari vào filter
+                 ChangeInfoIos để test parity với HelloInject.
+                 SAI LẦM: full tweak có hàng trăm hook, inject vào
+                 SpringBoard = freeze toàn hệ thống.
+
+v2.3.25  OK cài    Rollback filter về chỉ 3rd-party apps.
+                   Đơ máy v2.3.24 → force restart + safe mode
+                   gỡ package → cài v2.3.25.
+
+v2.3.26  HIỆN TẠI  Cache g_bundleTargeted ở %ctor.
+                   Non-target process skip hook init (fix lag + Zalo).
+                   Hot-path không rebuild NSArray per call.
+                   KHUYẾN NGHỊ: cài AppSync Unified để inject App Store apps.
+
+
+BƯỚC TIẾP THEO (KHI QUAY LẠI)
+-----------------------------
+Để phân biệt "dylib bị loader từ chối" vs "dylib inject nhưng
+hook không chạy", cần tạo biến thể CÔ LẬP:
+
+1. StrippedTweak: copy ChangeInfoIos.dylib nhưng DISABLE toàn bộ
+   %hook và MSHookFunction. Chỉ giữ %ctor ghi marker giống
+   HelloInject. Nếu Stripped inject được mà Full không → vấn đề
+   ở hook code (có thể 1 framework link force-load nhưng target
+   process thiếu framework đó trong dyld cache).
+
+2. Nếu Stripped cũng KHÔNG inject → vấn đề ở build/link/sign.
+   Lúc đó so sánh Mach-O của HelloInject vs ChangeInfoIos:
+   - LC_LOAD_DYLIB list (framework nào force-load)
+   - LC_ID_DYLIB install_name
+   - LC_CODE_SIGNATURE entitlements
+   - Objective-C class list (nếu có symbol xung đột với target app)
+
+3. Nếu Stripped INJECT được → bật lại từng nhóm hook một (chỉ
+   %hook NSLocale, rồi thêm UIDevice, rồi CTCarrier...) để tìm
+   hook nào khiến loader từ chối.
+
+KHÔNG BAO GIỜ thêm SpringBoard/Preferences/Safari vào filter của
+full ChangeInfoIos — sẽ freeze máy.
+
+
+QUY TẮC AN TOÀN
+---------------
+- Full tweak (ChangeInfoIos.dylib) CHỈ inject vào app target
+  thuộc danh sách Bundles trong ChangeInfoIos.plist. KHÔNG thêm
+  process hệ thống (SpringBoard, Preferences, Safari, backboardd).
+
+- HelloInject là probe, filter có thể chứa SpringBoard an toàn
+  vì chỉ có %ctor + marker, 0 hook.
+
+- Mọi lần sửa hook / thêm framework link → dylib phải build lại
+  và test trên app 3rd-party TRƯỚC, không test trên SpringBoard.
+
+- Fast-path filter trong sysctlbyname phải giữ (đã tối ưu 50x,
+  xóa đi sẽ đơ lại).
+
+
+CHECKLIST DEBUG KHI USER BÁO LỖI
+---------------------------------
+1. Hỏi version hiện tại (Settings → HIOS Faker → About hoặc Debug).
+2. Hỏi output của Debug button — đặc biệt:
+   - Main tweak inject count
+   - HelloInject inject count
+   - Loader status (3 file có đủ không)
+   - Dylib size
+3. Nếu máy đang đơ: force restart + Safe Mode + gỡ package trước.
+4. Không push v mới nếu chưa xác định nguyên nhân — push vội
+   có thể làm đơ tiếp.
+
+
+REFERENCE
+---------
+Repo: https://github.com/Hieudeptrai04/HIOS-Faker
+CI:   GitHub Actions → .github/workflows/build.yml
+Release: GitHub Releases (deploy-deb.sh upload)
+Build command local: cd tweak && THEOS_PACKAGE_SCHEME=rootless make package

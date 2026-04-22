@@ -1,6 +1,6 @@
 Package: com.changeinfoios.tweak
 Name: ChangeInfoIos
-Version: 2.3.25
+Version: 2.3.26
 Architecture: iphoneos-arm64
 Description: Device parameter spoofer for iOS 15-16.7. Changes UDID, Serial, IMEI, MAC, and 142 more parameters. Optimized for Zalo. Controlled via web dashboard from PC.
 Maintainer: ChangeInfoIos

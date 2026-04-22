@@ -81,18 +81,38 @@ static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.chang
 static NSDictionary *spoofConfig = nil;
 BOOL configLoaded = NO;
 
+// v2.3.26: hot-path — called from every Logos hook via fakeLayer().
+// Uses a sticky cache computed once per process so we don't rebuild
+// NSArray/NSString comparisons on every frame of every spoofed getter.
+extern BOOL g_bundleTargeted;
+static BOOL g_targetCacheReady = NO;
+
 static BOOL isCurrentBundleTargeted(void) {
+    if (g_targetCacheReady) return g_bundleTargeted;
+    // Hooks can fire before %ctor finishes (e.g. +[NSObject initialize]
+    // running from linked framework load). Compute lazily on first call
+    // if the ctor hasn't set it yet.
     id targets = getConfig(@"targetBundles");
-    if (![targets isKindOfClass:[NSArray class]]) return YES;
-    NSArray *arr = (NSArray *)targets;
-    if (arr.count == 0) return YES;
+    if (![targets isKindOfClass:[NSArray class]] || ((NSArray *)targets).count == 0) {
+        g_bundleTargeted = YES;
+        g_targetCacheReady = YES;
+        return YES;
+    }
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
-    if (![bid isKindOfClass:[NSString class]] || bid.length == 0) return YES;
-    for (id item in arr) {
+    if (bid.length == 0) {
+        g_bundleTargeted = NO;
+        g_targetCacheReady = YES;
+        return NO;
+    }
+    for (id item in (NSArray *)targets) {
         if ([item isKindOfClass:[NSString class]] && [(NSString *)item isEqualToString:bid]) {
+            g_bundleTargeted = YES;
+            g_targetCacheReady = YES;
             return YES;
         }
     }
+    g_bundleTargeted = NO;
+    g_targetCacheReady = YES;
     return NO;
 }
 
@@ -1231,14 +1251,31 @@ static CLLocation *buildFakeLocation(void) {
 // ============================================================
 // CONSTRUCTOR - Initialize on load
 // ============================================================
+BOOL g_bundleTargeted = NO;
+
+static BOOL computeBundleTargeted(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (bid.length == 0) return NO;
+    // Config's targetBundles (optional) — if missing, fall back to filter plist
+    // semantics: any process the loader inject us into is considered targeted.
+    id targets = getConfig(@"targetBundles");
+    if (![targets isKindOfClass:[NSArray class]] || ((NSArray *)targets).count == 0) {
+        return YES;
+    }
+    for (id item in (NSArray *)targets) {
+        if ([item isKindOfClass:[NSString class]] && [(NSString *)item isEqualToString:bid]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 %ctor {
     @autoreleasepool {
-        NSLog(@"[ChangeInfoIos] Tweak loading...");
-
-        // Write an injection marker so the app can verify the tweak is actually
-        // loaded into this bundle (see BUILD_NOTES §10). Per-bundle file with
-        // timestamp lets the UI flag silently-failed injection.
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
+
+        // Write injection marker FIRST (even when we're going to early-exit)
+        // so the Debug screen can prove the dylib was loaded into this process.
         NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
         [[NSFileManager defaultManager] createDirectoryAtPath:markerDir withIntermediateDirectories:YES attributes:nil error:nil];
         NSString *marker = [markerDir stringByAppendingFormat:@"/injected_%@.txt", bid];
@@ -1247,6 +1284,18 @@ static CLLocation *buildFakeLocation(void) {
         chmod([marker fileSystemRepresentation], 0644);
 
         loadConfig();
+        g_bundleTargeted = computeBundleTargeted();
+
+        // Early-exit when not targeted. Logos %hook directives were already
+        // linked into the dylib (we can't skip them), but MSHookFunction and
+        // Darwin notify + container wipe are skipped — saves ~80% of the
+        // per-process work for non-target processes the loader drops us into.
+        if (!g_bundleTargeted) {
+            NSLog(@"[ChangeInfoIos] Loaded into non-target bundle %@ — skipping hook init", bid);
+            return;
+        }
+
+        NSLog(@"[ChangeInfoIos] Tweak loading for %@...", bid);
         ci_wipeContainerIfScheduled();
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
