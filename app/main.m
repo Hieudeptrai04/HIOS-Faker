@@ -672,9 +672,20 @@ static NSUInteger ci_randomizeIdentities(void) {
 
 static int ci_run(const char *cmd) {
     pid_t pid;
-    char *envp[] = { NULL };
-    const char *argv[] = {"/bin/sh", "-c", cmd, NULL};
-    int rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, (char *const *)argv, envp);
+    // CRITICAL FIX: empty envp caused ALL shell commands to fail (cp, rm, mkdir,
+    // killall etc.) because $PATH was empty → binaries not found.
+    // See BUILD_NOTES §10.5 Hướng A.
+    char *envp[] = {
+        (char *)"PATH=/usr/bin:/usr/sbin:/bin:/sbin:/var/jb/usr/bin:/var/jb/usr/sbin:/var/jb/usr/libexec:/usr/libexec",
+        (char *)"HOME=/var/mobile",
+        (char *)"TERM=xterm",
+        NULL
+    };
+    // Rootless jailbreak: prefer /var/jb/usr/bin/sh
+    const char *shell = "/var/jb/usr/bin/sh";
+    if (access(shell, X_OK) != 0) shell = "/bin/sh";
+    const char *argv[] = {shell, "-c", cmd, NULL};
+    int rc = posix_spawn(&pid, shell, NULL, NULL, (char *const *)argv, envp);
     if (rc != 0) return -1;
     int status = 0; waitpid(pid, &status, 0);
     return WEXITSTATUS(status);
