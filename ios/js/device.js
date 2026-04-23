@@ -286,23 +286,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -322,20 +317,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);

@@ -1,6 +1,6 @@
 /**
  * ChangeInfoIos - .deb Package Builder v3
- * Packages tweak sources and stable WebClip launcher
+ * Packages tweak sources and native launcher
  * + Substrate tweak filter + on-device build scripts
  * 
  * Usage: node build-deb.js
@@ -18,7 +18,7 @@ const PACKAGE_ID = 'com.changeinfoios.tweak';
 var PACKAGE_NAME = 'ChangeInfoIos';
 var VERSION = '2.2.0';
 var ARCH = 'iphoneos-arm64';
-var DESCRIPTION = 'ChangeInfo device spoofer — stable WebClip + tweak sources';
+var DESCRIPTION = 'ChangeInfo device spoofer — native app + tweak sources';
 var AUTHOR = 'Admin';
 var SECTION = 'Tweaks';
 var DEPENDS = 'mobilesubstrate, firmware (>= 15.0), clang, ldid';
@@ -185,70 +185,6 @@ function getLocalIP() {
 }
 
 // ============================================================
-// SIMPLE HTTP SERVER SCRIPT (fallback khi clang khong co)
-// Serve HTML file cho WebClip, chay nhu WebClip app
-// ============================================================
-function httpServerScript() {
-  return [
-    '#!/bin/bash',
-    '# ChangeInfoIos - Simple HTTP Server for WebClip fallback',
-    '# Serves mobile-app-standalone.html on localhost',
-    '',
-    'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"',
-    'HTML_FILE="$SCRIPT_DIR/mobile-app-standalone.html"',
-    'PORT=18432',
-    '',
-    '# Check if HTML exists',
-    'if [ ! -f "$HTML_FILE" ]; then',
-    '    echo "[http-server] ERROR: HTML file not found: $HTML_FILE"',
-    '    exit 1',
-    'fi',
-    '',
-    '# Kill any existing server on this port',
-    'pkill -f "python.*http.server.*$PORT" 2>/dev/null || true',
-    '',
-    '# Start Python HTTP server (available on most jailbreaks)',
-    'cd "$SCRIPT_DIR"',
-    'exec python3 -m http.server $PORT 2>/dev/null &',
-    '',
-    '# Alternative: use python if python3 not available',
-    'if ! command -v python3 >/dev/null 2>&1; then',
-    '    exec python -m http.server $PORT 2>/dev/null &',
-    'fi',
-    '',
-    'echo "[http-server] Started on port $PORT"',
-    'echo "[http-server] Serving: $HTML_FILE"',
-  ].join('\n');
-}
-
-// ============================================================
-// WEBCLIP INFO.PLIST (Fallback khi clang khong co san)
-// Su dung HTTP server thay vi file:// vi Safari iOS khong cho phep JS chay tu file://
-// ============================================================
-function webclipPlist(iconB64) {
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0">',
-    '<dict>',
-    '    <key>URL</key>',
-    '    <string>http://localhost:18432/mobile-app-standalone.html</string>',
-    '    <key>Label</key>',
-    '    <string>HIOS Faker</string>',
-    '    <key>Icon</key>',
-    '    <data>' + iconB64 + '</data>',
-    '    <key>FullScreen</key>',
-    '    <true/>',
-    '    <key>Precomposed</key>',
-    '    <true/>',
-    '    <key>IsRemovable</key>',
-    '    <true/>',
-    '</dict>',
-    '</plist>'
-  ].join('\n');
-}
-
-// ============================================================
 // PLIST FILTER (for Substrate/ElleKit)
 // ============================================================
 function tweakPlist() {
@@ -284,11 +220,10 @@ function tweakPlist() {
 }
 
 // ============================================================
-// POSTINST - Fast install, build native app + fallback WebClip
+// POSTINST - Fast install, build native app
 // ============================================================
 function postinst() {
   var P = '/var/mobile/Library/Preferences/com.changeinfoios.plist';
-  var WC = '/var/mobile/Library/WebClips/com.changeinfoios.webclip';
   var CI = '/var/mobile/ChangeInfoIos';
   return [
     '#!/bin/bash',
@@ -316,38 +251,9 @@ function postinst() {
     '    chown mobile:mobile "' + P + '"',
     'fi',
     '',
-    '# --- Remove stale WebClip directories (prevents duplicate icons) ---',
-    'for D in /var/mobile/Library/WebClips/*/; do',
-    '    [ -d "$D" ] || continue',
-    '    LB=""',
-    '    if [ -x /usr/libexec/PlistBuddy ]; then',
-    '        LB=$(/usr/libexec/PlistBuddy -c "Print :Label" "$D/Info.plist" 2>/dev/null)',
-    '    fi',
-    '    if [ "$LB" != "HIOS Faker" ]; then',
-    '        echo "[postinst] Removing stale WebClip: $D ($LB)"',
-    '        rm -rf "$D" 2>/dev/null',
-    '    fi',
-    'done',
-    '',
-    '# Ensure WebClip directory exists with icons',
-    'mkdir -p "' + WC + '"',
-    'cp -f "' + CI + '/icon.png" "' + WC + '/icon.png" 2>/dev/null || true',
-    '',
     '# Remove stale native bundles from any previous installs',
     'rm -rf /var/jb/Applications/ChangeInfoIos.app 2>/dev/null || true',
     'rm -rf /Applications/ChangeInfoIos.app 2>/dev/null || true',
-    '',
-    '# Kill any existing HTTP server on port 18432',
-    'pkill -f "python.*http.server.*18432" 2>/dev/null || true',
-    '',
-    '# Start Python HTTP server for WebClip (fallback if no clang)',
-    'if command -v python3 >/dev/null 2>&1; then',
-    '    cd "' + CI + '" && python3 -m http.server 18432 &>/dev/null &',
-    '    echo "[postinst] HTTP server started on port 18432"',
-    'elif command -v python >/dev/null 2>&1; then',
-    '    cd "' + CI + '" && python -m http.server 18432 &>/dev/null &',
-    '    echo "[postinst] HTTP server started on port 18432 (python)"',
-    'fi',
     '',
     '# Find clang and SDK (try multiple paths)',
     'CLANG_PATH=""',
@@ -387,10 +293,10 @@ function postinst() {
     '        echo "[postinst] WARN: clang compile failed"',
     '    fi',
     'else',
-    '    echo "[postinst] Using WebClip fallback (no clang)"',
+    '    echo "[postinst] WARN: clang not found; native app not rebuilt on device"',
     'fi',
     '',
-    '# Refresh icon cache (shows WebClip icon, or native app if built)',
+    '# Refresh icon cache',
     'if command -v uicache >/dev/null 2>&1; then',
     '    uicache -a 2>/dev/null',
     'elif [ -x /var/jb/usr/bin/uicache ]; then',
@@ -404,7 +310,6 @@ function postinst() {
 function prerm() {
   return [
     '#!/bin/bash',
-    'rm -rf /var/mobile/Library/WebClips/com.changeinfoios.webclip',
     'rm -rf /var/jb/Applications/ChangeInfoIos.app',
     'rm -rf /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib',
     'rm -rf /var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist',
@@ -692,7 +597,7 @@ function infoPlistForBundle() {
 function build() {
   console.log('');
   console.log('========================================================');
-  console.log('  ChangeInfoIos - .deb Builder v3 (Native App + WebClip fallback)');
+  console.log('  ChangeInfoIos - .deb Builder v3 (Native App)');
   console.log('========================================================');
   console.log('');
 
@@ -808,21 +713,12 @@ function build() {
     tarFile('./var/jb/Applications/ChangeInfoIos.app/Info.plist', infoPlistForBundle()),
     // Note: main.m binary is compiled on-device by postinst
 
-    // --- WebClip (fallback if no clang - requires Python HTTP server) ---
-    tarDir('./var/mobile'),
-    tarDir('./var/mobile/Library'),
-    tarDir('./var/mobile/Library/WebClips'),
-    tarDir('./var/mobile/Library/WebClips/com.changeinfoios.webclip'),
-    tarFile('./var/mobile/Library/WebClips/com.changeinfoios.webclip/Info.plist', webclipPlist(iconB64)),
-    tarFile('./var/mobile/Library/WebClips/com.changeinfoios.webclip/icon.png', icon),
-
     // --- Source files for reference + manual build ---
     tarDir('./var/mobile/ChangeInfoIos'),
     tarFile('./var/mobile/ChangeInfoIos/Tweak.xm', tweakSrc || '// empty'),
     tarFile('./var/mobile/ChangeInfoIos/main.m', mainSrc || '// empty'),
     tarFile('./var/mobile/ChangeInfoIos/build-on-device.sh', buildScript(), '100755'),
     tarFile('./var/mobile/ChangeInfoIos/install-native-tools.sh', nativeToolsScript(), '100755'),
-    tarFile('./var/mobile/ChangeInfoIos/start-http-server.sh', httpServerScript(), '100755'),
     tarFile('./var/mobile/ChangeInfoIos/Makefile', makefile()),
     tarFile('./var/mobile/ChangeInfoIos/mobile-app-standalone.html', standaloneHTML || '<!-- empty -->'),
     tarFile('./var/mobile/ChangeInfoIos/Info.plist', infoPlistForBundle()),

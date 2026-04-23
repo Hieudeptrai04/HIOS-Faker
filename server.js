@@ -19,7 +19,7 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// CORS - allow mobile app WebClip to call API
+// CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token');
@@ -477,125 +477,6 @@ app.get('/api/logs', requireAuth, (req, res) => {
 app.post('/api/logs/clear', requireAuth, (req, res) => {
   logs = [];
   res.json({ success: true });
-});
-
-// ============================================================
-// MOBILE APP API ALIASES (used by WebClip mobile app)
-// ============================================================
-
-// Alias: selective-random
-app.post('/api/selective-random', requireAuth, (req, res) => {
-  try {
-    const { keys } = req.body;
-    const freshProfile = paramGen.generateFullProfile({});
-    if (!currentProfile) {
-      currentProfile = freshProfile;
-    } else if (keys && keys.length > 0) {
-      // Map friendly key names to profile field names
-      const keyMap = {
-        'UDID': 'UniqueDeviceID', 'Serial': 'SerialNumber', 'ECID': 'UniqueChipID',
-        'ProductType': 'ProductType', 'HWModel': 'HardwareModel', 'BoardId': 'BoardId',
-        'ChipID': 'ChipID', 'DeviceName': 'deviceName', 'IDFV': 'identifierForVendor',
-        'PlatformUUID': 'IOPlatformUUID',
-        'iOSVersion': 'systemVersion', 'Build': 'BuildVersion', 'Firmware': 'FirmwareVersion',
-        'Baseband': 'BasebandVersion', 'Region': 'RegionInfo', 'RegionInfo': 'RegionInfo',
-        'IMEI': 'InternationalMobileEquipmentIdentity', 'IMEI2': 'InternationalMobileEquipmentIdentity2',
-        'MEID': 'MobileEquipmentIdentifier', 'ICCID': 'IntegratedCircuitCardIdentity',
-        'Phone': 'PhoneNumber', 'Carrier': 'carrierName', 'MCC': 'MobileSubscriberCountryCode',
-        'MNC': 'MobileSubscriberNetworkCode', 'ISO': 'RegionCode', 'Radio': 'carrierRadioAccess',
-        'WiFiMAC': 'WiFiAddress', 'BTMAC': 'BluetoothAddress', 'EthMAC': 'EthernetAddress',
-        'SSID': 'wifiSSID', 'BSSID': 'wifiBSSID', 'LocalIP': 'localIP',
-        'IDFA': 'advertisingIdentifier', 'Tracking': 'isAdvertisingTrackingEnabled',
-        'hw.machine': 'hw_machine', 'hw.model': 'hw_model', 'hw.memsize': 'hw_memsize',
-        'hw.cpucores': 'hw_logicalcpu_max', 'kern.host': 'kern_hostname', 'kern.osver': 'kern_osversion',
-        'Width': 'screenWidth', 'Height': 'screenHeight', 'Scale': 'screenScale',
-        'NativeW': 'nativeScreenWidth', 'NativeH': 'nativeScreenHeight',
-        'DiskTotal': 'TotalDiskCapacity', 'DiskUsed': 'DiskUsage',
-        'Battery': 'batteryLevel', 'Color': 'DeviceColor',
-        'Locale': 'localeIdentifier', 'Country': 'localeCountryCode', 'Timezone': 'timezoneName', 'Currency': 'localeCurrencyCode',
-        'WebViewUA': 'zalo_fakeWebViewUA', 'CanvasSeed': 'web_canvasNoise', 'MetalGPU': 'zalo_metalGPU',
-        'Timing': 'zalo_timingOffset', 'KCToken': 'keychainFakeDeviceToken',
-      };
-      for (const k of keys) {
-        const field = keyMap[k] || k;
-        if (freshProfile[field] !== undefined) currentProfile[field] = freshProfile[field];
-      }
-      currentProfile._generated = new Date().toISOString();
-    } else {
-      currentProfile = freshProfile;
-    }
-    addLog('success', `Mobile selective random: ${keys ? keys.length : 'ALL'} params`);
-    res.json({ success: true, profile: currentProfile });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Alias: deploy-full (mobile) - also uses deep wipe
-app.post('/api/deploy-full', requireAuth, async (req, res) => {
-  try {
-    if (!currentProfile) return res.status(400).json({ success: false, error: 'No profile' });
-
-    // Deep wipe configured apps first
-    if (autoClearApps.length > 0) {
-      for (const bundleId of autoClearApps) {
-        try { await ssh.clearAppData(bundleId); } catch(e) {}
-      }
-    }
-
-    await new Promise(r => setTimeout(r, 2000));
-    const plistContent = paramGen.profileToPlist(currentProfile);
-    await ssh.pushConfig(plistContent);
-    await new Promise(r => setTimeout(r, 1500));
-    try { await ssh.respring(); } catch(e) {}
-    addLog('success', 'Mobile deep wipe + deploy + respring');
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Alias: clear-data
-app.post('/api/clear-data', requireAuth, async (req, res) => {
-  try {
-    const bundles = req.body.bundles || ['com.zing.zalo'];
-    for (const b of bundles) {
-      try { await ssh.clearAppData(b); } catch(e) {}
-    }
-    addLog('success', `Mobile cleared: ${bundles.join(', ')}`);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Alias: restore-profile (set profile from mobile backup)
-app.post('/api/restore-profile', requireAuth, async (req, res) => {
-  try {
-    const profile = req.body;
-    delete profile._savedAt;
-    delete profile._name;
-    currentProfile = profile;
-    // Auto deploy
-    const plistContent = paramGen.profileToPlist(currentProfile);
-    await ssh.pushConfig(plistContent);
-    await new Promise(r => setTimeout(r, 500));
-    try { await ssh.respring(); } catch(e) {}
-    addLog('success', 'Mobile restore + deploy');
-    res.json({ success: true, profile: currentProfile });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Mobile app preview route
-app.get('/mobile', (req, res) => {
-  const mobilePath = path.join(__dirname, 'tweak', 'mobile-app.html');
-  if (require('fs').existsSync(mobilePath)) {
-    res.sendFile(mobilePath);
-  } else {
-    res.status(404).send('mobile-app.html not found');
-  }
 });
 
 // ============================================================

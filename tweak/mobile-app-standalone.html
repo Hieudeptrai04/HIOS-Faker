@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>HIOS Faker</title>
 <style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 :root{
   --bg:#000;
   --surface:#111;
@@ -15,24 +16,12 @@
   --text:#fff;
   --text2:#888;
   --accent:#fff;
-  --btn-blue:linear-gradient(135deg,#1565c0 0%,#1976d2 100%);
-  --btn-purple:linear-gradient(135deg,#6200ea 0%,#7c4dff 100%);
-  --btn-red:linear-gradient(135deg,#b71c1c,#c62828);
-  --success:#4caf50;
-  --danger:#ef5350;
-  --warn:#ffa726;
-  --tab-on:#fff;
-  --radius:14px;
-  --radius-sm:10px;
   --sat:env(safe-area-inset-top,0px);
   --sab:env(safe-area-inset-bottom,0px);
   --sal:env(safe-area-inset-left,0px);
   --sar:env(safe-area-inset-right,0px);
-  --tab-h:calc(56px + var(--sab));
-  --px:clamp(14px,4vw,20px);
 }
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html{height:100%;height:-webkit-fill-available;}
+html,body{height:100%;height:-webkit-fill-available;}
 body{
   min-height:100%;min-height:100dvh;min-height:-webkit-fill-available;
   width:100%;overflow-x:clip;
@@ -42,122 +31,88 @@ body{
 input,select,textarea{-webkit-user-select:text;user-select:text;}
 button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;background:none;}
 
-/* subtle press/ripple feedback for tappable controls */
-@keyframes ciPulseTap {
-  0% { transform: scale(1); filter: brightness(1); }
-  50% { transform: scale(.97); filter: brightness(1.08); }
-  100% { transform: scale(1); filter: brightness(1); }
-}
-@keyframes ciRipple {
-  0% { opacity:.28; transform:scale(.2); }
-  100% { opacity:0; transform:scale(1.4); }
-}
+@keyframes ciPulseTap{0%{transform:scale(1);filter:brightness(1);}50%{transform:scale(.97);filter:brightness(1.08);}100%{transform:scale(1);filter:brightness(1);}}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
-/* ── Layout ── */
+/* Layout */
 #mainApp{display:flex;flex-direction:column;width:100%;min-height:100dvh;min-height:-webkit-fill-available;max-height:100dvh;max-height:-webkit-fill-available;overflow-x:clip;}
 .safe-top{flex-shrink:0;padding-top:max(var(--sat),8px);background:transparent;}
-.status-ip{display:none;}
-.mode-wipe .status-ip{display:none;}
-.mode-wipe .hdr{display:none;}
-.safe-bottom{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:clip;-webkit-overflow-scrolling:touch;overscroll-behavior-y:auto;padding-bottom:calc(var(--tab-h) + 8px);}
+.safe-bottom{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:clip;-webkit-overflow-scrolling:touch;overscroll-behavior-y:auto;padding-bottom:calc(60px + var(--sab));}
 
-/* ── Header ── */
-.hdr{display:flex;align-items:center;justify-content:space-between;padding:8px var(--px) 10px;padding-left:max(var(--px),var(--sal));padding-right:max(var(--px),var(--sar));}
+/* Header */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 20px 10px;}
 .hdr-left{display:flex;align-items:center;gap:10px;}
-.hdr-back{
-  width:28px;height:28px;border-radius:8px;
-  display:none;align-items:center;justify-content:center;
-  border:1px solid rgba(255,255,255,.15);
-  color:#ccc;background:rgba(255,255,255,.03);
-  flex-shrink:0;cursor:pointer;
-}
+.hdr-back{width:28px;height:28px;border-radius:8px;display:none;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.15);color:#ccc;background:rgba(255,255,255,.03);flex-shrink:0;cursor:pointer;}
 .hdr-back svg{width:16px;height:16px;fill:#ccc;}
-.hdr-logo{display:none;}
-.hdr-logo svg{width:20px;height:20px;fill:#fff;}
 .hdr-name{font-size:17px;font-weight:700;letter-spacing:-.3px;line-height:1;}
-.hdr-ver{font-size:13px;color:#555;margin-top:2px;opacity:.95;}
-.hdr-acc{width:36px;height:36px;border-radius:50%;background:#111;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.1);padding:0;cursor:pointer;}
-.hdr-acc svg{width:19px;height:19px;fill:#fff;}
+.hdr-ver{font-size:13px;color:#666;margin-top:2px;}
+.hdr-acc{width:34px;height:34px;border-radius:50%;background:var(--surface);display:flex;align-items:center;justify-content:center;border:1px solid var(--border);padding:0;cursor:pointer;}
+.hdr-acc svg{width:18px;height:18px;fill:#fff;}
 
-/* ── Pages ── */
-.page{display:none;padding:0 var(--px) 0;padding-left:max(var(--px),var(--sal));padding-right:max(var(--px),var(--sar));}
+/* Pages */
+.page{display:none;padding:0 20px 0;}
 .page.active{display:flex;flex-direction:column;}
-#p1.page.active,#p2.page.active,#p3.page.active,#p4.page.active{
-  flex:1;min-height:0;overflow-y:auto;
-}
-.sec{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;padding:20px 2px 10px;display:flex;align-items:center;gap:10px;}
-.sec::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.07);}
+#p1.page.active,#p2.page.active,#p3.page.active,#p4.page.active{flex:1;min-height:0;overflow-y:auto;}
+.sec{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;padding:20px 0 10px;display:flex;align-items:center;gap:10px;}
+.sec::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06);}
 .main-hidden{display:none !important;}
 .select-only{display:none !important;}
 .main-settings-mode .main-only{display:none !important;}
 .main-settings-mode .select-only{display:block !important;}
 .main-settings-mode #p1 .rrs-panel{display:none !important;}
-.main-settings-mode #p1 .rrs-list{
-  min-height:calc(100dvh - 170px);
-  border-radius:10px;
-  margin-top:8px;
-}
-.main-settings-mode #p2 .form-topcap,
-.main-settings-mode #p2 .backup-hero{display:none !important;}
-.main-settings-mode #p2 .backup-list{
-  min-height:calc(100dvh - 170px);
-  border-radius:10px;
-  margin-top:8px !important;
-}
-.top-ip{display:none;}
+.main-settings-mode #p1 .rrs-list{min-height:calc(100dvh - 170px);border-radius:10px;margin-top:8px;}
+.main-settings-mode #p2 .form-topcap,.main-settings-mode #p2 .backup-hero{display:none !important;}
+.main-settings-mode #p2 .backup-list{min-height:calc(100dvh - 170px);border-radius:10px;margin-top:8px !important;}
 
-/* ── Info card ── */
-.info-card{background:transparent;border:1px solid var(--border);border-radius:14px;padding:14px 14px 12px;margin:8px 0 12px;}
+/* Info card */
+.info-card{border:1px solid var(--border);border-radius:14px;padding:14px;margin:8px 0 12px;}
 .info-row{display:flex;gap:0;}
 .info-col{flex:1;min-width:0;padding:0 8px;}
-.info-col:first-child{padding-left:0;border-right:1px solid rgba(255,255,255,.08);}
+.info-col:first-child{padding-left:0;border-right:1px solid rgba(255,255,255,.06);}
 .info-col:last-child{padding-right:0;}
 .info-col-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:8px;line-height:1;}
-.info-line{margin-bottom:4px;font-size:11px;line-height:1.35;color:#fff;}
+.info-line{margin-bottom:4px;font-size:11px;line-height:1.35;color:#ccc;}
 .info-lbl{color:#888;}
 .info-val{color:#fff;word-break:break-all;}
 .info-foot{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);font-size:12px;color:#888;text-align:left;}
 .info-foot a{color:#888;text-decoration:none;}
 .status-dot{display:none;}
-.status-dot.on{background:var(--success);box-shadow:0 0 6px var(--success);animation:pulse 2s ease infinite;}
+.status-dot.on{background:#4caf50;box-shadow:0 0 6px #4caf50;animation:pulse 2s ease infinite;}
 .status-dot.off{background:#555;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.status-ok{color:#38d06d;font-weight:700;}
-.status-wait{color:var(--warn);font-weight:600;}
-.ip-refresh{display:none;}
+.status-ok{color:#4caf50;font-weight:700;}
+.status-wait{color:#ffa726;font-weight:600;}
 
-/* ── Buttons ── */
+/* Buttons */
 .act-row{display:flex;gap:10px;margin:10px 0 14px;align-items:center;}
-.btn{flex:1;padding:16px 8px;border-radius:18px;font-size:14px;font-weight:500;color:#fff;text-align:center;line-height:1.2;cursor:pointer;border:none;
-  position:relative;overflow:hidden;transition:transform .16s ease, filter .2s ease, box-shadow .2s ease;}
+.btn{flex:1;padding:16px 8px;border-radius:14px;font-size:14px;font-weight:500;color:#fff;text-align:center;line-height:1.2;cursor:pointer;border:none;background:var(--surface);border:1px solid var(--border);transition:transform .16s ease,filter .2s ease;}
 .btn:active{animation:ciPulseTap .25s ease;}
-.btn-blue{background:#2f4f3d;box-shadow:0 6px 20px rgba(24,40,29,.45);}
-.btn-purple{background:var(--btn-purple);box-shadow:0 4px 16px rgba(98,0,234,.35);}
-.btn-red{background:var(--btn-red);box-shadow:0 4px 14px rgba(183,28,28,.3);}
+.btn-blue{background:rgba(255,255,255,.08);box-shadow:none;}
+.btn-purple{background:#6200ea;box-shadow:none;}
+.btn-red{background:#b71c1c;box-shadow:none;}
 .btn-outline{background:var(--surface2);color:var(--text);border:1px solid var(--border);}
-.btn-sm{padding:10px 12px;font-size:12px;border-radius:var(--radius-sm);flex:none;}
+.btn-sm{padding:10px 12px;font-size:12px;border-radius:10px;flex:none;}
 .mid-btn-stack{display:flex;flex-direction:column;gap:8px;flex-shrink:0;}
-.mid-btn{width:44px;height:44px;min-width:44px;border-radius:10px;background:transparent;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:none;}
-.mid-btn svg{width:26px;height:26px;fill:none;stroke:#d7e6d8;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.mid-btn{width:44px;height:44px;min-width:44px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.mid-btn svg{width:26px;height:26px;fill:none;stroke:#ccc;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
 .mid-btn:first-child svg{width:28px;height:28px;}
-.mid-btn{transition:transform .16s ease, filter .2s ease, background-color .2s ease;}
-.mid-btn:active{transform:scale(.92);filter:brightness(1.15);background:rgba(215,230,216,.08);}
+.mid-btn:active{transform:scale(.92);filter:brightness(1.15);}
 
-/* ── Toggle list ── */
+/* Toggle list */
 .tgl-list{background:transparent;border:none;border-radius:0;overflow:hidden;margin:4px 0;}
-.tgl-list.tgl-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius);}
+.tgl-list.tgl-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px;}
 .tgl-item{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:none;}
 .tgl-item:last-child{border-bottom:none;}
 .tgl-text{font-size:15px;color:#fff;font-weight:500;flex:1;min-width:0;}
-.risk-tag{font-size:9px;color:var(--warn);margin-left:5px;font-weight:700;}
+.risk-tag{font-size:9px;color:#ffa726;margin-left:5px;font-weight:700;}
 .tgl-ctrl{display:flex;align-items:center;gap:8px;flex-shrink:0;}
 
-/* ── Layer pill ── */
+/* Layer pill */
 .layer-pill{font-size:9px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.04em;}
 .layer-pill.on{background:rgba(76,175,80,.2);color:#4caf50;border:1px solid rgba(76,175,80,.3);}
 .layer-pill.off{background:rgba(107,114,128,.15);color:#9ca3af;border:1px solid rgba(107,114,128,.2);}
 
-/* ── Toggle switch ── */
+/* Toggle switch */
 .sw{position:relative;width:56px;height:32px;flex-shrink:0;}
 .sw input{opacity:0;width:0;height:0;position:absolute;}
 .sw .sl{display:block;width:56px;height:32px;border-radius:999px;background:#333;cursor:pointer;transition:.2s;position:relative;}
@@ -167,272 +122,172 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .sw input:disabled+.sl{opacity:.4;cursor:default;}
 .sw .sl:active{filter:brightness(1.08);}
 
-/* ── Selects ── */
-.sel-block{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius);overflow:hidden;margin:12px 0;}
+/* Selects */
+.sel-block{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden;margin:12px 0;}
 .sel-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.04);}
 .sel-row:last-child{border-bottom:none;}
 .sel-row label{font-size:13px;color:#ccc;font-weight:500;flex-shrink:0;}
 .sel-row select{flex:1;max-width:200px;padding:8px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#fff;border-radius:8px;font-size:13px;outline:none;-webkit-appearance:none;appearance:none;text-align:right;}
 
-/* ── Mode banner ── */
-.ci-mode-banner{border-radius:var(--radius-sm);padding:10px 14px;margin:0 0 10px;font-size:11px;line-height:1.5;display:none;}
-.ci-mode-banner.show{display:block;}
-.ci-mode-native{background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);color:#a5d6a7;}
-.ci-mode-native strong{color:#81c784;}
-.ci-mode-webclip{background:rgba(255,167,38,.08);border:1px solid rgba(255,167,38,.4);color:#ffcc80;}
-.ci-mode-webclip strong{color:var(--warn);}
-.ci-mode-err{background:rgba(183,28,28,.3);border-color:rgba(239,83,80,.4);color:#ffcdd2;}
-
-/* ── Tab bar ── */
-.tab-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:none;display:flex;padding:6px 0;padding-bottom:max(6px,var(--sab));padding-left:max(0px,var(--sal));padding-right:max(0px,var(--sar));z-index:100;border-top:1px solid rgba(255,255,255,.06);}
-.tab{flex:1;display:flex;flex-direction:column;align-items:center;padding:4px 2px;border:none;background:transparent;cursor:pointer;
-  transition:transform .16s ease, filter .2s ease;}
+/* Tab bar */
+.tab-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);display:flex;padding:6px 0;padding-bottom:max(6px,var(--sab));padding-left:max(0px,var(--sal));padding-right:max(0px,var(--sar));z-index:100;border-top:1px solid rgba(255,255,255,.06);}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;padding:4px 2px;border:none;background:transparent;cursor:pointer;transition:transform .16s ease,filter .2s ease;}
 .tab:active{transform:scale(.93);filter:brightness(1.1);}
 .tab-ic{width:24px;height:24px;display:flex;align-items:center;justify-content:center;margin-bottom:2px;opacity:.5;color:#888;}
 .tab-ic svg{width:22px;height:22px;}
-.tab.on .tab-ic{opacity:1;color:var(--tab-on);filter:none;}
-.tab.on .tab-ic svg path{fill:var(--tab-on);}
+.tab.on .tab-ic{opacity:1;color:#fff;}
+.tab.on .tab-ic svg path{fill:#fff;}
 .tab-ic svg path{fill:#888;}
 .tab-lbl{font-size:clamp(7px,2.2vw,9px);font-weight:600;color:#666;letter-spacing:.01em;white-space:nowrap;}
 .tab.on .tab-lbl{color:#fff;font-weight:700;}
 
-/* ── Toast ── */
+/* Toast */
 .toast{position:fixed;top:0;left:0;right:0;padding:12px 16px;padding-top:calc(env(safe-area-inset-top,44px) + 8px);font-size:13px;font-weight:600;z-index:1001;transform:translateY(-120px);opacity:0;transition:.3s;}
 .toast.show{transform:translateY(0);opacity:1;}
 .t-ok{background:#1b5e20;color:#a5d6a7;border-bottom:1px solid #2e7d32;}
 .t-err{background:#b71c1c;color:#ffcdd2;border-bottom:1px solid #c62828;}
 .t-info{background:#0d47a1;color:#bbdefb;border-bottom:1px solid #1565c0;}
 
-/* ── Busy overlay ── */
-.ci-busy{position:fixed;inset:0;background:rgba(10,11,18,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:28px;text-align:center;}
+/* Busy overlay */
+.ci-busy{position:fixed;inset:0;background:rgba(0,0,0,.9);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:28px;text-align:center;}
 .ci-busy.on{display:flex;}
 .ci-busy-spin{width:44px;height:44px;border-radius:50%;border:3px solid rgba(255,255,255,.15);border-top-color:#fff;animation:spin .8s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-.ci-busy-title{font-size:16px;font-weight:700;}
-.ci-busy-step{font-size:12px;color:var(--text2);max-width:280px;line-height:1.45;}
+.ci-busy-title{font-size:16px;font-weight:700;color:#fff;}
+.ci-busy-step{font-size:12px;color:#666;max-width:280px;line-height:1.45;}
 
-/* ── Login screen ── */
+/* Login screen */
 #loginScreen{position:fixed;inset:0;background:var(--bg);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;}
 .lcard{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 22px;box-shadow:0 24px 60px rgba(0,0,0,.8);}
 .lhdr{text-align:center;margin-bottom:24px;}
 .lhdr .lt{font-size:22px;font-weight:800;letter-spacing:-.4px;margin-top:8px;}
+.lhdr .ls{font-size:11px;color:var(--text2);margin-top:4px;}
 .fl{font-size:11px;color:var(--text2);margin-bottom:6px;display:block;font-weight:600;text-transform:uppercase;letter-spacing:.5px;}
 .fi{width:100%;padding:14px 16px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid var(--border);color:#fff;font-size:15px;outline:none;margin-bottom:12px;}
 .fi:focus{border-color:rgba(255,255,255,.3);}
 .lbtn{width:100%;padding:15px;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:14px;font-size:16px;font-weight:700;cursor:pointer;}
-.lbtn:active{transform:scale(.98);opacity:.92;}
-.lstat{margin-top:10px;text-align:center;font-size:12px;min-height:18px;color:var(--danger);}
+.lbtn:active{transform:scale(.98);opacity:.9;}
+.lstat{margin-top:10px;text-align:center;font-size:12px;min-height:18px;color:#ef5350;}
 
-/* ── App list ── */
+/* App list */
 .app-search-wrap{margin:8px 0;}
 .app-search{width:100%;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:#fff;font-size:14px;outline:none;}
 .app-search:focus{border-color:rgba(255,255,255,.2);}
-.app-count{font-size:11px;color:var(--text2);margin:5px 2px 0;}
+.app-count{font-size:11px;color:#666;margin:5px 2px 0;}
 .app-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.02);}
 .app-row:last-child{border-bottom:none;}
 .app-ico{width:42px;height:42px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);}
 .app-txt{flex:1;min-width:0;}
-.app-name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.app-size{font-size:10px;color:#666;margin-top:2px;}
+.app-name{font-size:14px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .app-bid{display:none;}
-.empty-box{text-align:center;padding:30px 16px;color:#9fb39f;font-size:13px;line-height:1.45;}
+.empty-box{text-align:center;padding:30px 16px;color:#666;font-size:13px;line-height:1.45;}
 
-/* Wipe App form-like layout */
+/* Wipe App */
 #p1 .sec{padding-top:10px;}
-.wipe-hero{
-  height:0;margin:0;overflow:hidden;
-}
+.wipe-hero{height:0;margin:0;}
 .form-topcap{height:0;margin:0;display:none;}
 .wipe-toolbar{display:none;}
-.wipe-btn{
-  flex:1;border-radius:10px;
-  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);
-  color:#ddd;font-size:12px;padding:10px 6px;
-}
-.wipe-btn.wipe-danger{background:#3a2a2a;border-color:rgba(239,83,80,.25);color:#ffb4b4;}
-#appListMount.wipe-list{
-  margin-top:0 !important;
-  background:transparent;border:none;border-radius:0;
-}
-#appListMount.wipe-list .app-row{
-  background:transparent;border-bottom:1px solid rgba(255,255,255,.04);
-  padding:13px 8px;cursor:pointer;gap:10px;
-}
+.wipe-btn{flex:1;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:#ddd;font-size:12px;padding:10px 6px;}
+.wipe-btn.wipe-danger{background:rgba(183,28,28,.3);border-color:rgba(239,83,80,.25);color:#ffb4b4;}
+#appListMount.wipe-list{margin-top:0 !important;background:transparent;border:none;border-radius:0;}
+#appListMount.wipe-list .app-row{background:transparent;border-bottom:1px solid rgba(255,255,255,.04);padding:13px 8px;cursor:pointer;gap:10px;}
 #appListMount.wipe-list .app-row.active{background:rgba(255,255,255,.03);}
-#appListMount.wipe-list .app-ico{
-  width:52px;height:52px;border-radius:11px;
-  background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:700;
-}
+#appListMount.wipe-list .app-ico{width:52px;height:52px;border-radius:11px;background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:700;}
 #appListMount.wipe-list .app-name{font-size:16px;font-weight:700;}
 #appListMount.wipe-list .app-bid{display:none;}
 .app-check{position:absolute;opacity:0;pointer-events:none;}
-.app-mark{
-  width:22px;height:22px;border-radius:50%;
-  border:1px solid rgba(255,255,255,.4);
-  display:flex;align-items:center;justify-content:center;
-  font-size:12px;color:transparent;
-}
-.app-row.active .app-mark{background:#39da6f;border-color:#39da6f;color:#fff;}
+.app-mark{width:22px;height:22px;border-radius:50%;border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:12px;color:transparent;}
+.app-row.active .app-mark{background:#4caf50;border-color:#4caf50;color:#fff;}
 .mode-wipe .app-mark{display:flex;}
 
-/* Backup form mirrors wipe form */
-.backup-hero{
-  height:0;margin:0;overflow:hidden;
-}
-#backupListMount.backup-list{
-  margin-top:0 !important;
-  background:transparent;border:none;border-radius:0;
-}
-#backupListMount.backup-list .app-row{
-  background:transparent;border-bottom:1px solid rgba(255,255,255,.08);
-  padding:13px 8px;cursor:pointer;gap:10px;
-}
-#backupListMount.backup-list .app-row.active{background:rgba(255,255,255,.04);}
-#backupListMount.backup-list .app-ico{
-  width:52px;height:52px;border-radius:11px;
-  background:#f3f4f6;color:#1f2937;font-size:20px;font-weight:700;
-}
+/* Backup form */
+.backup-hero{height:0;margin:0;}
+#backupListMount.backup-list{margin-top:0 !important;background:transparent;border:none;border-radius:0;}
+#backupListMount.backup-list .app-row{background:transparent;border-bottom:1px solid rgba(255,255,255,.04);padding:13px 8px;cursor:pointer;gap:10px;}
+#backupListMount.backup-list .app-row.active{background:rgba(255,255,255,.03);}
+#backupListMount.backup-list .app-ico{width:52px;height:52px;border-radius:11px;background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:700;}
 #backupListMount.backup-list .app-name{font-size:16px;font-weight:700;}
 #backupListMount.backup-list .app-bid{display:none;}
-.backup-mark{
-  width:22px;height:22px;border-radius:50%;
-  border:1px solid rgba(255,255,255,.4);
-  display:flex;align-items:center;justify-content:center;
-  font-size:12px;color:transparent;
-}
-#backupListMount.backup-list .app-row.active .backup-mark{background:#39da6f;border-color:#39da6f;color:#fff;}
+.backup-mark{width:22px;height:22px;border-radius:50%;border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:12px;color:transparent;}
+#backupListMount.backup-list .app-row.active .backup-mark{background:#4caf50;border-color:#4caf50;color:#fff;}
 .backup-check{position:absolute;opacity:0;pointer-events:none;}
-.form-like-only .app-search-wrap,
-.form-like-only .wipe-toolbar,
-.form-like-only .sec{display:none;}
+.form-like-only .app-search-wrap,.form-like-only .wipe-toolbar,.form-like-only .sec{display:none;}
 
-/* ── Profiles ── */
+/* Profiles */
 .profile-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:rgba(255,255,255,.02);border-bottom:1px solid rgba(255,255,255,.04);}
 .profile-card:last-child{border-bottom:none;}
 .p-name{font-size:14px;font-weight:600;}
-.p-meta{font-size:11px;color:var(--text2);margin-top:2px;}
+.p-meta{font-size:11px;color:#666;margin-top:2px;}
 .p-actions{display:flex;gap:8px;flex-shrink:0;}
-.p-btn-load{padding:7px 12px;border-radius:8px;background:var(--btn-blue);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;}
-.p-btn-del{padding:7px 12px;border-radius:8px;background:var(--surface2);color:var(--danger);font-size:12px;font-weight:600;border:1px solid rgba(239,83,80,.25);cursor:pointer;}
+.p-btn-load{padding:7px 12px;border-radius:8px;background:rgba(255,255,255,.08);color:#fff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,.1);cursor:pointer;}
+.p-btn-del{padding:7px 12px;border-radius:8px;background:rgba(183,28,28,.3);color:#ef9a9a;font-size:12px;font-weight:600;border:1px solid rgba(239,83,80,.25);cursor:pointer;}
 
-/* ── Account/Server ── */
+/* Account/Server */
 .acct-logo{text-align:center;padding:24px 0 20px;}
 .acct-logo .al-box{width:60px;height:60px;margin:0 auto 10px;border-radius:16px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;}
 .acct-logo .al-box svg{width:30px;height:30px;fill:#fff;}
 .acct-logo .al-name{font-size:18px;font-weight:800;letter-spacing:-.3px;}
-.acct-logo .al-sub{font-size:11px;color:var(--text2);margin-top:4px;}
+.acct-logo .al-sub{font-size:11px;color:#666;margin-top:4px;}
+.field-block{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:14px 16px;margin-bottom:12px;}
 
-.field-block{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:12px;}
-
-/* Select Devices - iPhone Models Grid */
+/* Select Devices */
 .sel-section{margin-bottom:16px;}
-.sel-sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 8px;}
-.sel-sec-title{font-size:13px;font-weight:700;color:var(--text);}
-.sel-count{font-size:11px;font-weight:700;color:#000;background:#fff;border-radius:999px;padding:2px 8px;margin-left:6px;}
-.sel-all-btn{
-  font-size:12px;font-weight:600;color:#888;
-  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
-  border-radius:999px;padding:4px 14px;cursor:pointer;
-}
-.sel-all-btn:active{background:rgba(42,160,82,.25);}
+.sel-sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 0 8px;}
+.sel-sec-title{font-size:13px;font-weight:700;color:#fff;}
+.sel-count{font-size:11px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);border-radius:999px;padding:2px 8px;margin-left:6px;}
+.sel-all-btn{font-size:12px;font-weight:600;color:#888;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:999px;padding:4px 14px;cursor:pointer;}
+.sel-all-btn:active{background:rgba(255,255,255,.1);}
 .sel-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.sel-item{
-  display:flex;align-items:center;gap:8px;
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:10px 12px;
-  cursor:pointer;transition:all .2s;user-select:none;
-}
+.sel-item{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px 12px;cursor:pointer;transition:all .2s;user-select:none;}
 .sel-item:active{background:rgba(255,255,255,.05);}
-.sel-item.selected{border-color:rgba(255,255,255,.25);background:rgba(255,255,255,.06);}
+.sel-item.selected{border-color:rgba(255,255,255,.2);background:rgba(255,255,255,.06);}
 .sel-item input[type=checkbox]{display:none;}
-.sel-item-check{
-  width:20px;height:20px;border-radius:6px;
-  border:2px solid rgba(255,255,255,.2);
-  display:flex;align-items:center;justify-content:center;
-  flex-shrink:0;transition:all .2s;
-}
+.sel-item-check{width:20px;height:20px;border-radius:6px;border:2px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s;}
 .sel-item.selected .sel-item-check{background:#fff;border-color:#fff;}
-.sel-item.selected .sel-item-check::after{
-  content:'';width:6px;height:10px;border:2px solid #000;
-  border-top:none;border-left:none;transform:rotate(45deg) translate(-1px,-1px);display:block;
-}
+.sel-item.selected .sel-item-check::after{content:'';width:6px;height:10px;border:2px solid #000;border-top:none;border-left:none;transform:rotate(45deg) translate(-1px,-1px);display:block;}
 .sel-item-info{flex:1;min-width:0;}
-.sel-item-name{font-size:13px;font-weight:600;color:var(--text);margin-bottom:1px;}
-.sel-item-code{font-size:11px;color:var(--text2);}
+.sel-item-name{font-size:13px;font-weight:600;color:#fff;margin-bottom:1px;}
+.sel-item-code{font-size:11px;color:#666;}
 .sel-row-pad{padding-top:4px;}
 
-/* ── Fake Layers List ── */
+/* Fake Layers List */
 .fl-list-wrap{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.06);margin-bottom:4px;}
-.fl-item{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.04);
-  background:rgba(255,255,255,.02);transition:background .15s;
-}
+.fl-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.02);transition:background .15s;}
 .fl-item:last-child{border-bottom:none;}
-.fl-item:active{background:rgba(255,255,255,.03);}
+.fl-item:active{background:rgba(255,255,255,.04);}
 .fl-item.fl-risk{background:rgba(255,59,48,.05);}
 .fl-item.fl-risk .fl-name{color:#ff6b6b;}
 .fl-info{flex:1;min-width:0;}
-.fl-name{font-size:14px;font-weight:600;color:var(--text);margin-bottom:2px;}
-.fl-desc{font-size:11px;color:var(--text2);line-height:1.4;}
+.fl-name{font-size:14px;font-weight:600;color:#fff;margin-bottom:2px;}
+.fl-desc{font-size:11px;color:#666;line-height:1.4;}
 .fl-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
-.fl-status{
-  font-size:11px;font-weight:700;letter-spacing:.5px;
-  padding:2px 8px;border-radius:999px;min-width:36px;text-align:center;
-}
-.fl-status.off{background:rgba(255,255,255,.08);color:var(--text2);}
-.fl-status.on{background:rgba(52,199,89,.2);color:#34C759;}
+.fl-status{font-size:11px;font-weight:700;letter-spacing:.5px;padding:2px 8px;border-radius:999px;min-width:36px;text-align:center;}
+.fl-status.off{background:rgba(255,255,255,.06);color:#666;}
+.fl-status.on{background:rgba(76,175,80,.15);color:#4caf50;}
 .fl-sw{position:relative;display:inline-block;width:42px;height:24px;}
 .fl-sw input{opacity:0;width:0;height:0;}
-.fl-sl{
-  position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;
-  background-color:#39393D;border-radius:24px;transition:.3s;
-}
-.fl-sl::before{
-  position:absolute;content:"";height:20px;width:20px;left:2px;bottom:2px;
-  background-color:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,.25);
-}
-.fl-sw input:checked + .fl-sl{background-color:#34C759;}
-.fl-sw input:checked + .fl-sl::before{transform:translateX(18px);}
+.fl-sl{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#333;border-radius:24px;transition:.3s;}
+.fl-sl::before{position:absolute;content:"";height:20px;width:20px;left:2px;bottom:2px;background-color:#888;border-radius:50%;transition:.3s;}
+.fl-sw input:checked+.fl-sl{background-color:#222;}
+.fl-sw input:checked+.fl-sl::before{transform:translateX(18px);background-color:#fff;}
 
-/* ── Tool panel ── */
+/* Tool panel */
 .tool-panel{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;margin-bottom:12px;}
 .tool-title{font-size:12px;font-weight:700;color:#888;margin-bottom:8px;}
 .tool-panel textarea{width:100%;min-height:64px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:#fff;font-size:12px;font-family:ui-monospace,monospace;resize:vertical;}
-.tool-hint{font-size:11px;color:var(--text2);line-height:1.45;margin-bottom:8px;}
-.tool-hint code{font-size:10px;font-family:ui-monospace,monospace;color:var(--text2);background:rgba(0,0,0,.3);padding:1px 5px;border-radius:4px;}
+.tool-hint{font-size:11px;color:#666;line-height:1.45;margin-bottom:8px;}
+.tool-hint code{font-size:10px;font-family:ui-monospace,monospace;color:#666;background:rgba(0,0,0,.3);padding:1px 5px;border-radius:4px;}
 
-/* RRS panel form */
-.rrs-panel{
-  background:rgba(255,255,255,.02);
-  border:1px solid rgba(255,255,255,.06);
-  border-radius:12px;padding:12px;margin-bottom:12px;
-}
+/* RRS panel */
+.rrs-panel{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:12px;margin-bottom:12px;}
 .rrs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
-.rrs-btn{
-  border:none;border-radius:10px;padding:10px 8px;
-  font-size:12px;font-weight:700;color:#fff;cursor:pointer;
-  background:rgba(255,255,255,.08);
-  box-shadow:none;
-  transition:transform .15s ease, filter .2s ease;
-}
-.rrs-btn.red{background:linear-gradient(180deg,#872d2d 0%, #742424 100%);}
-.rrs-btn:active{transform:scale(.97);filter:brightness(1.06);}
+.rrs-btn{border:none;border-radius:10px;padding:10px 8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;background:rgba(255,255,255,.08);box-shadow:none;transition:transform .15s ease,filter .2s ease;}
+.rrs-btn.red{background:rgba(183,28,28,.5);}
+.rrs-btn:active{transform:scale(.97);filter:brightness(1.1);}
 .rrs-row{display:grid;grid-template-columns:115px 1fr;gap:8px;margin-bottom:8px;align-items:center;}
-.rrs-lbl{font-size:17px;color:#edf3f0;font-weight:500;}
-.rrs-input,.rrs-area{
-  width:100%;border:none;outline:none;
-  border-radius:8px;background:rgba(255,255,255,.05);color:#fff;
-  border:1px solid rgba(255,255,255,.08);
-  padding:9px 12px;font-size:15px;
-}
+.rrs-lbl{font-size:17px;color:#ddd;font-weight:500;}
+.rrs-input,.rrs-area{width:100%;border:none;outline:none;border-radius:8px;background:rgba(255,255,255,.05);color:#fff;border:1px solid rgba(255,255,255,.08);padding:9px 12px;font-size:15px;}
 .rrs-area{min-height:52px;resize:vertical;}
-.rrs-list{
-  min-height:360px;
-  background:rgba(255,255,255,.02);
-  border-radius:12px;border:1px solid rgba(255,255,255,.06);
-  overflow:hidden;padding:8px;flex:1 1 auto;
-}
+.rrs-list{min-height:360px;background:rgba(255,255,255,.02);border-radius:12px;border:1px solid rgba(255,255,255,.06);overflow:hidden;padding:8px;flex:1 1 auto;}
 
 /* Accounts form */
 .acct-shell{padding:8px 6px 0;}
@@ -440,40 +295,23 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .acct-logo-mark{display:none;}
 .acct-title{font-size:36px;font-weight:700;color:#fff;letter-spacing:-.3px;line-height:1;}
 .acct-key-lbl{font-size:17px;color:#ccc;margin:10px 0 6px;text-align:center;font-weight:600;}
-.acct-key-input{
-  width:100%;padding:12px 14px;border-radius:8px;
-  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
-  color:#fff;font-size:17px;outline:none;
-  transition:border-color .2s ease, box-shadow .2s ease;
-}
+.acct-key-input{width:100%;padding:12px 14px;border-radius:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#fff;font-size:17px;outline:none;transition:border-color .2s ease,box-shadow .2s ease;}
 .acct-key-input:focus{border-color:rgba(255,255,255,.3);box-shadow:0 0 0 3px rgba(255,255,255,.05);}
 .acct-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0 10px;}
-.acct-btn{
-  border:none;border-radius:22px;padding:10px 10px;
-  font-size:17px;color:#fff;cursor:pointer;font-weight:600;
-  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);
-  transition:transform .15s ease, filter .2s ease;
-}
-.acct-btn:active{transform:scale(.97);filter:brightness(1.07);}
-.acct-token{text-align:center;color:#c9d8cc;font-size:13px;margin-top:8px;letter-spacing:.4px;}
+.acct-btn{border:none;border-radius:22px;padding:10px 10px;font-size:17px;color:#fff;cursor:pointer;font-weight:600;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);transition:transform .15s ease,filter .2s ease;}
+.acct-btn:active{transform:scale(.97);filter:brightness(1.1);}
+.acct-token{text-align:center;color:#888;font-size:13px;margin-top:8px;letter-spacing:.4px;}
 
-/* ── Menu rows ── */
-.menu-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.05);}
+/* Menu rows */
+.menu-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.04);}
 .menu-row:last-child{border-bottom:none;}
-.menu-l{font-size:14px;color:var(--text);font-weight:500;}
-.menu-v{font-size:13px;color:var(--text2);}
+.menu-l{font-size:14px;color:#ccc;font-weight:500;}
+.menu-v{font-size:13px;color:#666;}
 
-/* ── Responsive ── */
-@media(max-width:300px){
-  .info-row{flex-direction:column;}
-  .info-col:first-child{border-right:none;border-bottom:1px solid rgba(255,255,255,.07);padding-bottom:10px;margin-bottom:6px;}
-  .info-col{padding:0;}
-}
-@media(max-width:321px){:root{--px:12px;}.tab-lbl{font-size:7px;}.hdr-name{font-size:15px;}}
-@media(orientation:landscape) and (max-height:430px){
-  .safe-top{padding-top:max(var(--sat),8px);}
-  .hdr{padding-top:8px;padding-bottom:8px;}
-}
+/* Responsive */
+@media(max-width:300px){.info-row{flex-direction:column;}.info-col:first-child{border-right:none;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:10px;margin-bottom:6px;}.info-col{padding:0;}}
+@media(max-width:321px){.hdr-name{font-size:15px;}}
+@media(orientation:landscape) and (max-height:430px){.safe-top{padding-top:max(var(--sat),8px);}.hdr{padding-top:8px;padding-bottom:8px;}}
 
 </style>
 </head>
@@ -523,7 +361,6 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
   <div class="safe-bottom">
 
     <div id="p0" class="page active" data-ui="page-main">
-      <div id="ciModeBanner" class="ci-mode-banner main-hidden main-only"></div>
       <div class="info-card main-only">
         <div class="info-row">
           <div class="info-col">
@@ -970,41 +807,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -1140,18 +951,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -1361,9 +1161,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -1621,23 +1421,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -1657,20 +1452,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -1903,7 +1693,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -1923,11 +1712,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -1951,7 +1739,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -2092,17 +1880,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -2115,73 +1897,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -2306,12 +2053,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -2331,7 +2072,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -2344,8 +2084,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -2784,41 +2522,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -2954,18 +2666,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -3175,9 +2876,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -3435,23 +3136,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -3471,20 +3167,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -3717,7 +3408,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -3737,11 +3427,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -3765,7 +3454,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -3906,17 +3595,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -3929,73 +3612,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -4120,12 +3768,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -4145,7 +3787,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -4158,8 +3799,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -4598,41 +4237,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -4768,18 +4381,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -4989,9 +4591,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -5249,23 +4851,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -5285,20 +4882,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -5531,7 +5123,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -5551,11 +5142,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -5579,7 +5169,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -5720,17 +5310,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -5743,73 +5327,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -5934,12 +5483,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -5959,7 +5502,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -5972,8 +5514,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -6412,41 +5952,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -6582,18 +6096,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -6803,9 +6306,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -7063,23 +6566,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -7099,20 +6597,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -7345,7 +6838,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -7365,11 +6857,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -7393,7 +6884,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -7534,17 +7025,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -7557,73 +7042,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -7748,12 +7198,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -7773,7 +7217,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -7786,8 +7229,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -8226,41 +7667,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -8396,18 +7811,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -8617,9 +8021,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -8877,23 +8281,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -8913,20 +8312,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -9159,7 +8553,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -9179,11 +8572,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -9207,7 +8599,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -9348,17 +8740,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -9371,73 +8757,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -9562,12 +8913,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -9587,7 +8932,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -9600,8 +8944,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -10040,41 +9382,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -10210,18 +9526,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -10431,9 +9736,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -10691,23 +9996,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -10727,20 +10027,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -10973,7 +10268,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -10993,11 +10287,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -11021,7 +10314,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -11162,17 +10455,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -11185,73 +10472,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -11376,12 +10628,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -11401,7 +10647,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -11414,8 +10659,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
@@ -11854,41 +11097,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -12024,18 +11241,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {
@@ -12245,9 +11451,9 @@ function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt
 var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
-  uiddevice: true, homebutton: true, hardware: true, ads: true,
-  screen: true, realscreen: false, browser: true, datetime: true,
-  locale: true, network: true, wifi: true,
+  fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
+  fake_screen: true, fake_realscreen: false, fake_browser: true, fake_datetime: true,
+  fake_locale: true, fake_network: true, fake_wifi: true,
 };
 
 function getDeviceList() {
@@ -12505,23 +11711,18 @@ async function randomizeAll() {
     var wipes = getSelectedWipes();
     ciBusyStepText('Writing profile to device…');
     await ciDelay(300);
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('App data cleared. Reloading SpringBoard…');
-        await ciAwaitNativeProgress(8000);
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      } else {
-        await ciAwaitNativeProgress(6000);
-      }
-      toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: o });
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('App data cleared. Reloading SpringBoard…');
+      await ciAwaitNativeProgress(8000);
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     } else {
-      ciBusyStepText('WebClip mode: changes not applied to device.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+      await ciAwaitNativeProgress(6000);
     }
+    toastMsg = 'Reset + apply started on device'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Reset failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -12541,20 +11742,15 @@ async function deployConfig() {
     ciBusyStepText('Writing plist…');
     await ciDelay(300);
     try { localStorage.setItem('ci_last_profile', JSON.stringify(currentProfile)); } catch (e0) {}
-    if (isCiNativeBridge()) {
-      __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
-      ciBusyStepText('Config written. Reloading SpringBoard…');
-      var phase = await ciAwaitNativeProgress(5000);
-      if (phase === 'configWritten') {
-        ciBusyStepText('Reload triggered. Please wait…');
-        await ciDelay(1500);
-      }
-      toastMsg = 'Backup & reset applied'; toastKind = 'ok';
-    } else {
-      ciBusyStepText('WebClip mode: open native app to apply.');
-      await ciDelay(1200);
-      toastMsg = 'WebClip mode: use SSH server for real device changes'; toastKind = 'err';
+    if (!isCiNativeBridge()) throw new Error('Native bridge not available');
+    __ciCallNative({ action: 'deploy', profile: currentProfile, wipes: wipes, options: getCiOptions() });
+    ciBusyStepText('Config written. Reloading SpringBoard…');
+    var phase = await ciAwaitNativeProgress(5000);
+    if (phase === 'configWritten') {
+      ciBusyStepText('Reload triggered. Please wait…');
+      await ciDelay(1500);
     }
+    toastMsg = 'Backup & reset applied'; toastKind = 'ok';
   } catch (e) { toastMsg = 'Deploy failed: ' + String(e); toastKind = 'err'; }
   finally { ciBusyHide(); }
   if (toastMsg) showToast(toastMsg, toastKind);
@@ -12787,7 +11983,6 @@ function loadAllAppIcons() {
   _processIconQueue();
 }
 
-function formatBytes(b) { if (!b || b <= 0) return ''; if (b >= 1073741824) return (b/1073741824).toFixed(1)+'GB'; if (b >= 1048576) return Math.round(b/1048576)+'MB'; if (b >= 1024) return Math.round(b/1024)+'KB'; return b+'B'; }
 function appInitial(name) { var t = (name || '?').trim(); return t.length ? t.charAt(0).toUpperCase() : '?'; }
 
 // App list rendering
@@ -12807,11 +12002,10 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="app-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleWipeRow(this)"><input class="app-check" type="checkbox" data-b="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="app-mark">✓</span></div>';
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -12835,7 +12029,7 @@ function renderBackupListFromApps(apps, isFiltered) {
       var initLetter = escapeHtml(appInitial(nm));
       var icoAttr = ' data-bid="' + escapeHtml(bid) + '" data-nm="' + escapeHtml(nm) + '"';
       var icoInner = a.icon ? '<img src="data:image/png;base64,' + a.icon + '" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;" onerror="this.parentNode.innerHTML=\'' + initLetter + '\'">' : initLetter;
-      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div>' + (a.appSize ? '<div class="app-size">' + formatBytes(a.appSize) + '</div>' : '') + '</div><span class="backup-mark">✓</span></div>';
+      h += '<div class="app-row" onclick="toggleBackupRow(this)"><input class="backup-check" type="checkbox" data-bk="' + escapeHtml(bid) + '"><div class="app-ico"' + icoAttr + '>' + icoInner + '</div><div class="app-txt"><div class="app-name">' + escapeHtml(nm) + '</div></div><span class="backup-mark">✓</span></div>';
     }
   }
   if (!h) h = '<div class="empty-box">No apps available</div>';
@@ -12976,17 +12170,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -12999,73 +12187,38 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }
 
 
@@ -13190,12 +12343,6 @@ function refreshNetworkInfo(doShowToast) {
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -13215,7 +12362,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -13228,8 +12374,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {

@@ -120,15 +120,6 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .sel-row label{font-size:13px;color:#ccc;font-weight:500;flex-shrink:0;}
 .sel-row select{flex:1;max-width:200px;padding:8px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#fff;border-radius:8px;font-size:13px;outline:none;-webkit-appearance:none;appearance:none;text-align:right;}
 
-/* Mode banner */
-.ci-mode-banner{border-radius:10px;padding:10px 14px;margin:0 0 10px;font-size:11px;line-height:1.5;display:none;}
-.ci-mode-banner.show{display:block;}
-.ci-mode-native{background:rgba(76,175,80,.1);border:1px solid rgba(76,175,80,.3);color:#a5d6a7;}
-.ci-mode-native strong{color:#81c784;}
-.ci-mode-webclip{background:rgba(255,167,38,.08);border:1px solid rgba(255,167,38,.4);color:#ffcc80;}
-.ci-mode-webclip strong{color:#ffa726;}
-.ci-mode-err{background:rgba(183,28,28,.3);border-color:rgba(239,83,80,.4);color:#ffcdd2;}
-
 /* Tab bar */
 .tab-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);display:flex;padding:6px 0;padding-bottom:max(6px,var(--sab));padding-left:max(0px,var(--sal));padding-right:max(0px,var(--sar));z-index:100;border-top:1px solid rgba(255,255,255,.06);}
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;padding:4px 2px;border:none;background:transparent;cursor:pointer;transition:transform .16s ease,filter .2s ease;}

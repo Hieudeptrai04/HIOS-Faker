@@ -246,7 +246,6 @@ function renderAppListFromNative(apps, isFiltered, bannerHtml) {
     }
   }
   var emptyMsg = __ciSettingsMode ? 'No apps found on device.' : 'No apps available. Tap <strong>Load</strong> to refresh.';
-  if (__ciAppsCache.length === 0 && isCiNativeBridge()) emptyMsg = 'No apps returned — tap <strong>Load</strong> again.';
   var body = h;
   if (!body) body = '<div class="empty-box">' + emptyMsg + '</div>';
   mount.innerHTML = (bannerHtml || '') + body;
@@ -411,17 +410,11 @@ window.__ciSetInstalledApps = function(list) {
 window.__ciSetInstallError = function(msg) {
   if (installedAppsTimer) { clearTimeout(installedAppsTimer); installedAppsTimer = null; }
   installedAppsPending = false;
-  loadFallbackApps();
+  var mount = document.getElementById('appListMount');
+  if (mount) mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+  renderBackupListFromApps([], false);
   showToast((msg && String(msg)) ? ('Lỗi đọc app: ' + String(msg)) : 'Không lấy được danh sách app trên máy', 'err');
 };
-
-function loadFallbackApps() {
-  if (FALLBACK_POPULAR_APPS.length > 0) {
-    __ciAppsCache = FALLBACK_POPULAR_APPS.slice();
-    renderAppListFromNative(__ciAppsCache, false);
-    renderBackupListFromApps(__ciAppsCache, false);
-  }
-}
 
 function requestInstalledApps() {
   var mount = document.getElementById('appListMount');
@@ -434,71 +427,36 @@ function requestInstalledApps() {
     return;
   }
 
-  if (isCiNativeBridge()) {
-    mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
-    if (installedAppsTimer) clearTimeout(installedAppsTimer);
-    installedAppsPending = true;
-    try {
-      __ciCallNative({ action: 'listApps' });
-    } catch (e1) {
-      installedAppsPending = false;
-      loadFallbackApps();
-      return;
+  if (!isCiNativeBridge()) {
+    mount.innerHTML = '<div class="empty-box">Native bridge không sẵn sàng.</div>';
+    return;
+  }
+
+  mount.innerHTML = '<div class="empty-box">Đang quét app…</div>';
+  if (installedAppsTimer) clearTimeout(installedAppsTimer);
+  installedAppsPending = true;
+  try {
+    __ciCallNative({ action: 'listApps' });
+  } catch (e1) {
+    installedAppsPending = false;
+    mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    showToast(e1.message || 'Native bridge error', 'err');
+    return;
+  }
+  installedAppsTimer = setTimeout(function() {
+    if (!installedAppsPending) return;
+    installedAppsPending = false;
+    installedAppsTimer = null;
+    if (__ciAppsCache.length === 0) {
+      mount.innerHTML = '<div class="empty-box">Không lấy được danh sách app trên máy.</div>';
+    } else {
+      renderAppListFromNative(__ciAppsCache, false);
+      renderBackupListFromApps(__ciAppsCache, false);
     }
-    installedAppsTimer = setTimeout(function() {
-      if (!installedAppsPending) return;
-      installedAppsPending = false; installedAppsTimer = null;
-      if (__ciAppsCache.length === 0) loadFallbackApps();
-      else { renderAppListFromNative(__ciAppsCache, false); renderBackupListFromApps(__ciAppsCache, false); }
-    }, 8000);
-    return;
-  }
-
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    mount.innerHTML = '<div class="empty-box">Đang tải từ server…</div>';
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { if (r.status === 401) throw new Error('Token expired'); return r.json(); })
-      .then(function(data) {
-        var apps = [];
-        if (Array.isArray(data)) {
-          apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-        }
-        if (apps.length === 0) showToast('Server returned 0 apps', 'info');
-        __ciSetInstalledApps(apps);
-      })
-      .catch(function(e) {
-        showToast(e.message || 'Server error', 'err');
-        loadFallbackApps();
-      });
-    return;
-  }
-
-  // WebClip mode with no server configured
-  loadFallbackApps();
+  }, 8000);
 }
 
 function tryRefreshAppsInBackground() {
-  if (isCiNativeBridge()) {
-    try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
-    return;
-  }
-  var serverUrl = getCiServerUrl(), token = getCiServerToken();
-  if (serverUrl && token) {
-    fetch(serverUrl + '/api/installed-apps', { headers: { 'X-Auth-Token': token } })
-      .then(function(r) { return r.status === 200 ? r.json() : null; })
-      .then(function(data) {
-        if (data && Array.isArray(data)) {
-          var apps = data.map(function(item) {
-            if (typeof item === 'string') return { bundleId: item, name: item };
-            return { bundleId: item.bundleId || item.bundle_id || item, name: item.name || item.bundleId || item };
-          });
-          __ciSetInstalledApps(apps);
-        }
-      })
-      .catch(function() {});
-  }
+  if (!isCiNativeBridge()) return;
+  try { __ciCallNative({ action: 'listApps' }); } catch (e) {}
 }

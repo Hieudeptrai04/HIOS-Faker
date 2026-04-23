@@ -2463,11 +2463,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         if (backup) [self createRRSForBundles:rrsBids note:note];
         CIConfigManager *cm = [CIConfigManager shared];
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
+        [cm setTargetBundles:allBids];
         for (NSString *bid in allBids) {
             [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
         }
         [cm save];
-        NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded");
+        NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded (%lu target bundles)", (unsigned long)allBids.count);
 
         // Step 4: Respring to reload tweak with new fake config.
         // As mobile user we can't killall SpringBoard (root-owned). Try

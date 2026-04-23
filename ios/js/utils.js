@@ -121,41 +121,15 @@ function isCiNativeBridge() {
   return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.changeinfo);
 }
 
-function isCiWebClip() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return !!(window.__CI_WEB_CLIP);
-}
-
-window.__CI_WEB_CLIP = (function() {
-  try {
-    if (window.location.protocol === 'file:') return true;
-  } catch (e) {}
-  return false;
-})();
-
 // Wrapper for all native bridge calls
-// Falls back to error toast in WebClip mode
 function __ciCallNative(msg) {
-  if (isCiNativeBridge()) {
-    try {
-      window.webkit.messageHandlers.changeinfo.postMessage(msg);
-    } catch (e) {
-      ciToast('Native bridge error: ' + e.message);
-    }
-  } else {
-    // WebClip mode - show appropriate message
-    var action = msg.action || 'unknown';
-    if (action === 'listApps') {
-      ciToast('App list not available in WebClip mode. Install via SSH server.');
-    } else if (action === 'deploy') {
-      ciToast('Device spoofing not available in WebClip mode. Use SSH server.');
-    } else if (action === 'wipe' || action === 'backup') {
-      ciToast('Wipe/Backup not available in WebClip mode. Use SSH server.');
-    } else {
-      ciToast('Native bridge not available in WebClip mode.');
-    }
+  if (!isCiNativeBridge()) {
+    throw new Error('Native bridge not available');
+  }
+  try {
+    window.webkit.messageHandlers.changeinfo.postMessage(msg);
+  } catch (e) {
+    throw new Error('Native bridge error: ' + e.message);
   }
 }
 
@@ -291,18 +265,7 @@ function setSettingsMode(enabled) {
   }
 }
 
-function refreshCiModeBanner() {
-  var el = document.getElementById('ciModeBanner');
-  if (!el) return;
-  var shell = !!(window.__CI_NATIVE_SHELL || isCiNativeBridge());
-  if (shell) {
-    el.className = 'ci-mode-banner';
-    el.innerHTML = '';
-    return;
-  }
-  el.className = 'ci-mode-banner show ci-mode-webclip';
-  el.innerHTML = 'Preview mode: open native <strong>HIOS Faker</strong> app for real apply/reset.';
-}
+function refreshCiModeBanner() {}
 
 function resetAll() {
   try {

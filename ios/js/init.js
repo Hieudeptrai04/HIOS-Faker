@@ -3,12 +3,6 @@
 // This is the CRITICAL init that ensures ALL buttons work
 // ============================================================
 
-window.__CI_NATIVE_SHELL = 0;
-
-window.__ciOnShellReady = function() {
-  refreshCiModeBanner();
-};
-
 // Called after DOM + all scripts are loaded
 function __ciAppInit() {
   // Populate selectors
@@ -28,7 +22,6 @@ function __ciAppInit() {
 
   // App data
   try { initSelectionState(); } catch (e) {}
-  try { loadFallbackApps(); } catch (e) {}
   try { requestInstalledApps(); } catch (e) {}
 
   // Network
@@ -41,8 +34,6 @@ function __ciAppInit() {
     try { renderBackupListFromApps(__ciAppsCache, false); } catch (e) {}
   }
 
-  // Banner
-  try { refreshCiModeBanner(); } catch (e) {}
 }
 
 function bindAllButtonEvents() {
