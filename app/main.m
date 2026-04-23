@@ -768,6 +768,51 @@ static int ci_run(const char *cmd) {
 + (unsigned long long)sizeOfPath:(NSString *)path;
 @end
 
+static NSString *CITweakFilterPath(void) {
+    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
+}
+
+static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
+    NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSetWithArray:@[
+        @"com.apple.springboard",
+        @"com.apple.Preferences",
+    ]];
+    NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
+
+    for (CIAppInfo *app in apps) {
+        if (app.bundleID.length) [bundles addObject:app.bundleID];
+        if (!app.bundlePath.length) continue;
+        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
+        NSString *exec = [[bundle executablePath] lastPathComponent];
+        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
+        if (exec.length) [executables addObject:exec];
+    }
+
+    NSDictionary *filter = @{
+        @"Filter": @{
+            @"Bundles": bundles.array,
+            @"Executables": executables.array,
+            @"Mode": @"Any",
+        }
+    };
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:filter
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:nil];
+    if (!data) {
+        NSLog(@"[ChangeInfoIos] filter sync: plist serialization failed");
+        return;
+    }
+
+    NSString *path = CITweakFilterPath();
+    BOOL ok = [data writeToFile:path atomically:YES];
+    if (ok) chmod([path fileSystemRepresentation], 0644);
+    NSLog(@"[ChangeInfoIos] filter sync: %@ (%lu bundles, %lu execs)",
+          ok ? @"OK" : @"FAIL",
+          (unsigned long)bundles.count,
+          (unsigned long)executables.count);
+}
+
 @implementation CIAppLister
 
 + (unsigned long long)sizeOfPath:(NSString *)path {
@@ -2464,6 +2509,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         CIConfigManager *cm = [CIConfigManager shared];
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
         [cm setTargetBundles:allBids];
+        ci_syncTweakFilterForApps(fullTargets);
         for (NSString *bid in allBids) {
             [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
         }
