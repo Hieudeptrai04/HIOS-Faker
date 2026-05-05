@@ -2,24 +2,56 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+		!!! NEVER add com.apple.UIKit or any system bundle to this list. !!!
+		Logos %hook directives bind at dylib LOAD time, BEFORE %ctor runs,
+		so a runtime denylist cannot prevent system processes from receiving
+		the hooks. v2.3.24 incident: SpringBoard inject froze the device.
+		Keep this list to 3rd-party apps only. To spoof a new app, add its
+		exact bundle ID below; do not use framework wildcards.
+	-->
 	<key>Filter</key>
 	<dict>
-		<!--
-			Bundles=com.apple.UIKit ⇒ ellekit/substrate injects the dylib into
-			every process that links UIKit (≈ every GUI app). Without this we
-			were limited to a hard-coded list of 15 apps; if the user wanted
-			to spoof anything else (banking apps, e-commerce, new social apps)
-			the dylib was never loaded and "Change" couldn't take effect.
-			Tweak.xm's %ctor early-exits for SpringBoard/Settings/CoreServices
-			via the runtime exclusion list, and isCurrentBundleTargeted()
-			gates per-process so non-target apps install zero hooks.
-		-->
 		<key>Bundles</key>
 		<array>
-			<string>com.apple.UIKit</string>
+			<string>com.vng.zalo</string>
+			<string>com.zing.zalo</string>
+			<string>vn.com.vng.zingalo</string>
+			<string>ph.telegra.Telegraph</string>
+			<string>net.whatsapp.WhatsApp</string>
+			<string>com.facebook.Facebook</string>
+			<string>com.facebook.Messenger</string>
+			<string>com.burbn.instagram</string>
+			<string>com.zhiliaoapp.musically</string>
+			<string>com.ss.iphone.ugc.Aweme</string>
+			<string>com.google.ios.youtube</string>
+			<string>com.atebits.Tweetie2</string>
+			<string>com.toyopagroup.picaboo</string>
+			<string>com.hammerandchisel.discord</string>
+			<string>com.tinyspeck.chatlyio</string>
+			<string>com.microsoft.Office.Outlook</string>
+			<string>com.finalwire.aida64</string>
+			<string>com.finalwire.aida64-ios</string>
+			<string>com.blacksmith.lirum</string>
+			<string>com.umang.devicedesign</string>
+			<string>com.shopee.vn</string>
+			<string>com.lazadaVN</string>
+			<string>com.tiki.app</string>
+			<string>jp.naver.line</string>
+			<string>com.kakao.talk</string>
+			<string>com.tencent.mm</string>
+			<string>com.netease.mm</string>
+			<string>com.viber</string>
+			<string>com.skype.skype</string>
+			<string>com.google.chrome.ios</string>
+			<string>com.tpbank.ebank</string>
+			<string>com.acb.acbmobileapp</string>
+			<string>com.VPBank.VPBankNeo</string>
+			<string>com.mojang.minecraftpe</string>
+			<string>com.nhn.android.band</string>
+			<string>com.zaloapp.zalovn</string>
+			<string>com.segf4ult.joker</string>
 		</array>
-		<key>Mode</key>
-		<string>Any</string>
 	</dict>
 </dict>
 </plist>
