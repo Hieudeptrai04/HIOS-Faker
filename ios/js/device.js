@@ -45,13 +45,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -163,13 +191,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -193,18 +224,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -230,31 +250,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions

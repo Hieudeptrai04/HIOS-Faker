@@ -249,6 +249,27 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 .sel-item-code{font-size:11px;color:#666;}
 .sel-row-pad{padding-top:4px;}
 
+/* Dual-thumb range slider for device + iOS pickers */
+.range-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:14px 16px 18px;margin:12px 0;}
+.range-hdr{display:flex;flex-direction:column;gap:6px;margin-bottom:18px;}
+.range-title{font-size:13px;font-weight:600;color:#ddd;letter-spacing:.2px;}
+.range-vals{display:flex;align-items:center;gap:8px;font-size:12px;color:#9aa;}
+.range-vals .range-min,.range-vals .range-max{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px 10px;color:#fff;font-weight:500;text-align:center;font-size:12px;}
+.range-vals .range-sep{color:#666;font-size:14px;flex-shrink:0;}
+.range-slider{position:relative;height:30px;margin:0 8px;}
+.range-track{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);height:4px;background:rgba(255,255,255,.08);border-radius:2px;}
+.range-fill{position:absolute;top:50%;transform:translateY(-50%);height:4px;background:linear-gradient(90deg,#4a90e2,#56ccf2);border-radius:2px;pointer-events:none;}
+.range-thumb{position:absolute;left:0;right:0;top:0;width:100%;height:30px;background:transparent;-webkit-appearance:none;appearance:none;pointer-events:none;outline:none;margin:0;padding:0;}
+.range-thumb::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #4a90e2;box-shadow:0 2px 6px rgba(0,0,0,.4);cursor:pointer;pointer-events:auto;position:relative;}
+.range-thumb::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #4a90e2;box-shadow:0 2px 6px rgba(0,0,0,.4);cursor:pointer;pointer-events:auto;}
+.range-thumb::-webkit-slider-runnable-track{background:transparent;border:none;}
+.range-thumb::-moz-range-track{background:transparent;border:none;}
+.range-min-thumb{z-index:2;}
+.range-max-thumb{z-index:1;}
+.range-min-thumb:active,.range-min-thumb:focus{z-index:3;}
+.range-max-thumb:active,.range-max-thumb:focus{z-index:3;}
+.range-hint{font-size:11px;color:#666;margin-top:14px;text-align:center;line-height:1.4;}
+
 /* Fake Layers List */
 .fl-list-wrap{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.06);margin-bottom:4px;}
 .fl-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.04);background:rgba(255,255,255,.02);transition:background .15s;}
@@ -394,23 +415,33 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
         <div class="tgl-item"><span class="tgl-text">Enable Web Services</span><label class="sw"><input type="checkbox" data-opt="main_webSvc" checked><span class="sl"></span></label></div>
       </div>
       <div class="sel-block select-only">
-        <div class="sel-row sel-row-pad"><label>Device</label><select id="deviceModel"></select></div>
-        <div class="sel-row"><label>iOS</label><select id="iosVersion"></select></div>
         <div class="sel-row sel-row-pad"><label>Carrier</label><select id="carrierRegion"><option value="vietnam">Vietnam</option><option value="international">International</option></select></div>
       </div>
-      <div class="sel-section select-only">
-        <div class="sel-sec-hdr">
-          <div class="sel-sec-title">iPhone Models <span class="sel-count" id="selDevCount">0</span></div>
-          <button type="button" class="sel-all-btn" id="btnSelAllDevs">All</button>
+      <div class="range-section select-only" data-range="device">
+        <div class="range-hdr">
+          <div class="range-title">iPhone Model Range</div>
+          <div class="range-vals"><span class="range-min" id="rangeDevMinLbl">iPhone 6</span><span class="range-sep">→</span><span class="range-max" id="rangeDevMaxLbl">iPhone 14 Pro Max</span></div>
         </div>
-        <div class="sel-grid" id="selDevGrid"></div>
+        <div class="range-slider" id="rangeDev">
+          <div class="range-track"></div>
+          <div class="range-fill" id="rangeDevFill"></div>
+          <input type="range" class="range-thumb range-min-thumb" id="rangeDevMin" min="0" max="0" value="0" step="1">
+          <input type="range" class="range-thumb range-max-thumb" id="rangeDevMax" min="0" max="0" value="0" step="1">
+        </div>
+        <div class="range-hint">Random sẽ chọn ngẫu nhiên 1 đời máy trong khoảng trên.</div>
       </div>
-      <div class="sel-section select-only">
-        <div class="sel-sec-hdr">
-          <div class="sel-sec-title">iOS Versions <span class="sel-count" id="selIOSCount">0</span></div>
-          <button type="button" class="sel-all-btn" id="btnSelAllIOS">All</button>
+      <div class="range-section select-only" data-range="ios">
+        <div class="range-hdr">
+          <div class="range-title">iOS Version Range</div>
+          <div class="range-vals"><span class="range-min" id="rangeIOSMinLbl">iOS 15.0</span><span class="range-sep">→</span><span class="range-max" id="rangeIOSMaxLbl">iOS 16.7.10</span></div>
         </div>
-        <div class="sel-grid" id="selIOSGrid"></div>
+        <div class="range-slider" id="rangeIOS">
+          <div class="range-track"></div>
+          <div class="range-fill" id="rangeIOSFill"></div>
+          <input type="range" class="range-thumb range-min-thumb" id="rangeIOSMin" min="0" max="0" value="0" step="1">
+          <input type="range" class="range-thumb range-max-thumb" id="rangeIOSMax" min="0" max="0" value="0" step="1">
+        </div>
+        <div class="range-hint">Random sẽ chọn ngẫu nhiên 1 phiên bản iOS trong khoảng trên.</div>
       </div>
     </div>
 
@@ -541,6 +572,15 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -563,6 +603,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -571,6 +615,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -581,6 +640,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -655,6 +722,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -1180,13 +1249,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -1298,13 +1395,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -1328,18 +1428,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -1365,31 +1454,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -1563,86 +1631,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -2132,12 +2235,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -2256,6 +2355,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -2278,6 +2386,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -2286,6 +2398,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -2296,6 +2423,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -2370,6 +2505,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -2895,13 +3032,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -3013,13 +3178,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -3043,18 +3211,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -3080,31 +3237,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -3278,86 +3414,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -3847,12 +4018,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -3971,6 +4138,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -3993,6 +4169,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -4001,6 +4181,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -4011,6 +4206,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -4085,6 +4288,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -4610,13 +4815,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -4728,13 +4961,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -4758,18 +4994,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -4795,31 +5020,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -4993,86 +5197,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -5562,12 +5801,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -5686,6 +5921,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -5708,6 +5952,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -5716,6 +5964,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -5726,6 +5989,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -5800,6 +6071,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -6325,13 +6598,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -6443,13 +6744,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -6473,18 +6777,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -6510,31 +6803,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -6708,86 +6980,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -7277,12 +7584,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -7401,6 +7704,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -7423,6 +7735,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -7431,6 +7747,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -7441,6 +7772,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -7515,6 +7854,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -8040,13 +8381,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -8158,13 +8527,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -8188,18 +8560,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -8225,31 +8586,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -8423,86 +8763,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -8992,12 +9367,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -9116,6 +9487,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -9138,6 +9518,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -9146,6 +9530,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -9156,6 +9555,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -9230,6 +9637,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -9755,13 +10164,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -9873,13 +10310,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -9903,18 +10343,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -9940,31 +10369,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -10138,86 +10546,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -10707,12 +11150,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');
@@ -10831,6 +11270,15 @@ function bindAllButtonEvents() {
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -10853,6 +11301,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -10861,6 +11313,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -10871,6 +11338,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -10945,6 +11420,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
@@ -11470,13 +11947,41 @@ function getCarrierList() { return { vietnam: CARRIERS_VN, international: CARRIE
 
 function generateFullProfile(options) {
   options = options || {};
-  var keys = Object.keys(DEVICE_DATABASE);
-  var fullReroll = options.fullDeviceReroll === true;
-  var productType = fullReroll ? randFrom(keys) : (options.productType && DEVICE_DATABASE[options.productType] ? options.productType : randFrom(keys));
+  // Device pick: prefer explicit productType, else pick from ordered range
+  // [deviceMinIdx, deviceMaxIdx] into DEVICE_RELEASE_ORDER. Falls back to the
+  // entire DB when range is unset (first run / no slider interaction yet).
+  var pool;
+  if (options.productType && DEVICE_DATABASE[options.productType]) {
+    pool = [options.productType];
+  } else if (typeof options.deviceMinIdx === 'number' && typeof options.deviceMaxIdx === 'number'
+      && Array.isArray(DEVICE_RELEASE_ORDER) && DEVICE_RELEASE_ORDER.length > 0) {
+    var lo = Math.max(0, options.deviceMinIdx | 0);
+    var hi = Math.min(DEVICE_RELEASE_ORDER.length - 1, options.deviceMaxIdx | 0);
+    if (lo > hi) { var t = lo; lo = hi; hi = t; }
+    pool = DEVICE_RELEASE_ORDER.slice(lo, hi + 1);
+  } else {
+    pool = Object.keys(DEVICE_DATABASE);
+  }
+  var productType = randFrom(pool);
+  if (!DEVICE_DATABASE[productType]) productType = Object.keys(DEVICE_DATABASE)[0];
   var device = DEVICE_DATABASE[productType];
   var hwModel = HW_MODEL_MAP[productType] || 'D17AP';
-  var iosVersions = Object.keys(IOS_VERSIONS);
-  var iosVersion = fullReroll ? randFrom(iosVersions) : (options.iosVersion && IOS_VERSIONS[options.iosVersion] ? options.iosVersion : randFrom(iosVersions));
+
+  // iOS pick: same range logic against IOS_VERSION_ORDER.
+  var iosPool;
+  if (options.iosVersion && IOS_VERSIONS[options.iosVersion]) {
+    iosPool = [options.iosVersion];
+  } else if (typeof options.iosMinIdx === 'number' && typeof options.iosMaxIdx === 'number'
+      && Array.isArray(IOS_VERSION_ORDER) && IOS_VERSION_ORDER.length > 0) {
+    var ilo = Math.max(0, options.iosMinIdx | 0);
+    var ihi = Math.min(IOS_VERSION_ORDER.length - 1, options.iosMaxIdx | 0);
+    if (ilo > ihi) { var tt = ilo; ilo = ihi; ihi = tt; }
+    iosPool = IOS_VERSION_ORDER.slice(ilo, ihi + 1);
+  } else {
+    iosPool = Object.keys(IOS_VERSIONS);
+  }
+  var iosVersion = randFrom(iosPool);
+  if (!IOS_VERSIONS[iosVersion]) iosVersion = Object.keys(IOS_VERSIONS)[0];
   var buildVersion = IOS_VERSIONS[iosVersion] || '20G75';
   var carrier = options.carrierRegion === 'international' ? randFrom(CARRIERS_INTL) : randFrom(CARRIERS_VN);
   var wifiMAC = randAppleMAC();
@@ -11588,13 +12093,16 @@ function mergeDefaultFakeLayers(p) {
 function applyFullDeviceReroll() {
   var rg = document.getElementById('carrierRegion');
   rg = rg ? rg.value : 'vietnam';
-  var sel = document.getElementById('deviceModel');
-  var selectedProduct = sel && sel.value && DEVICE_DATABASE[sel.value] ? sel.value : null;
-  var vsel = document.getElementById('iosVersion');
-  var selectedIOS = vsel && vsel.value && IOS_VERSIONS[vsel.value] ? vsel.value : null;
+  // Range slider drives both device + iOS pick. typeof getDeviceRange guards
+  // against ordering issues if this fires before apps.js initializes.
+  var devR = (typeof getDeviceRange === 'function') ? getDeviceRange() : null;
+  var iosR = (typeof getIOSRange === 'function') ? getIOSRange() : null;
   currentProfile = generateFullProfile({
-    carrierRegion: rg, fullDeviceReroll: false,
-    productType: selectedProduct, iosVersion: selectedIOS
+    carrierRegion: rg,
+    deviceMinIdx: devR ? devR.minIdx : undefined,
+    deviceMaxIdx: devR ? devR.maxIdx : undefined,
+    iosMinIdx: iosR ? iosR.minIdx : undefined,
+    iosMaxIdx: iosR ? iosR.maxIdx : undefined,
   });
   syncSelectorsFromProfile(currentProfile);
   updateInfoCard(currentProfile);
@@ -11618,18 +12126,7 @@ function updateInfoCard(p) {
 
 function syncSelectorsFromProfile(p) {
   if (!p) return;
-  var sel = document.getElementById('deviceModel');
-  if (sel && p.ProductType) {
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === p.ProductType) { sel.selectedIndex = i; break; }
-    }
-  }
-  var vsel = document.getElementById('iosVersion');
-  if (vsel && p.systemVersion) {
-    for (var j = 0; j < vsel.options.length; j++) {
-      if (vsel.options[j].value === p.systemVersion) { vsel.selectedIndex = j; break; }
-    }
-  }
+  // The dropdowns are gone — only the carrier select remains.
   var rg = document.getElementById('carrierRegion');
   if (rg && p.carrierISO) {
     rg.value = p.carrierISO === 'vn' ? 'vietnam' : 'international';
@@ -11655,31 +12152,10 @@ function escapeXml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function renderSelectPools(models, versions) {
-  if (models && models.length > 0) {
-    var sel = document.getElementById('deviceModel');
-    if (sel && sel.options.length === 0) {
-      models.forEach(function(m) {
-        var o = document.createElement('option');
-        o.value = m.productType; o.text = m.marketing;
-        if (m.marketing === 'iPhone 14 Pro Max') o.selected = true;
-        sel.appendChild(o);
-      });
-    }
-    renderSelDevices();
-  }
-  if (versions && versions.length > 0) {
-    var vsel = document.getElementById('iosVersion');
-    if (vsel && vsel.options.length === 0) {
-      versions.forEach(function(v) {
-        var o = document.createElement('option');
-        o.value = v.version; o.text = 'iOS ' + v.version;
-        if (v.version === '16.7.1') o.selected = true;
-        vsel.appendChild(o);
-      });
-    }
-    renderSelIOS();
-  }
+function renderSelectPools() {
+  // Range sliders are wired in apps.js → initRangeSliders(). Kept as no-op
+  // for back-compat with any caller path that still invokes it.
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 }
 
 // Deploy & Reset actions
@@ -11853,86 +12329,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};
@@ -12422,12 +12933,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');

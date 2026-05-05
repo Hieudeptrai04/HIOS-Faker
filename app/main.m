@@ -501,6 +501,15 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     return YES;
 }
 
+// Forward declarations so ci_randomizeIdentities() (defined here) can pull the
+// device + iOS preset arrays from CIFakeSettingsViewController (defined later
+// in this file). Both class methods return shared static arrays.
+@class CIFakeSettingsViewController;
+@interface CIFakeSettingsViewController (CIRangePresets)
++ (NSArray *)devicePresets;
++ (NSArray *)iosPresets;
+@end
+
 // Random model + iOS presets (inline to avoid forward-decl issues)
 static NSArray *ci_randomPresets(void) {
     static NSArray *presets = nil;
@@ -581,10 +590,29 @@ static NSUInteger ci_randomizeIdentities(void) {
     CIConfigManager *cm = [CIConfigManager shared];
 
     // === Random model (all fake layers auto-on) ===
-    NSArray *presets = ci_randomPresets();
-    NSArray *iosList = ci_randomIOSPresets();
-    NSArray *preset = presets[arc4random_uniform((uint32_t)presets.count)];
-    NSArray *iosPreset = iosList[arc4random_uniform((uint32_t)iosList.count)];
+    // The Fake Settings range slider stores indices into the same preset
+    // arrays the Fake Settings VC uses. Mirror those arrays here so the
+    // randomizer respects the user's [min, max] window.
+    NSArray *presets = [CIFakeSettingsViewController devicePresets];
+    NSArray *iosList = [CIFakeSettingsViewController iosPresets];
+
+    NSUInteger devN = presets.count;
+    NSUInteger iosN = iosList.count;
+    NSInteger devMaxI = devN > 0 ? (NSInteger)devN - 1 : 0;
+    NSInteger iosMaxI = iosN > 0 ? (NSInteger)iosN - 1 : 0;
+    id devMinObj = [cm objectForKey:@"__deviceMinIdx"];
+    id devMaxObj = [cm objectForKey:@"__deviceMaxIdx"];
+    id iosMinObj = [cm objectForKey:@"__iosMinIdx"];
+    id iosMaxObj = [cm objectForKey:@"__iosMaxIdx"];
+    NSInteger dLo = devMinObj ? [devMinObj integerValue] : 0;
+    NSInteger dHi = devMaxObj ? [devMaxObj integerValue] : devMaxI;
+    NSInteger iLo = iosMinObj ? [iosMinObj integerValue] : 0;
+    NSInteger iHi = iosMaxObj ? [iosMaxObj integerValue] : iosMaxI;
+    dLo = MAX(0, MIN(devMaxI, dLo)); dHi = MAX(0, MIN(devMaxI, dHi)); if (dLo > dHi) { NSInteger t = dLo; dLo = dHi; dHi = t; }
+    iLo = MAX(0, MIN(iosMaxI, iLo)); iHi = MAX(0, MIN(iosMaxI, iHi)); if (iLo > iHi) { NSInteger t = iLo; iLo = iHi; iHi = t; }
+
+    NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
+    NSArray *iosPreset = iosList[(NSUInteger)iLo + arc4random_uniform((uint32_t)(iHi - iLo + 1))];
 
     // Apply model preset
     // deviceModel = full consumer name ("iPhone 15 Pro Max") so UIDevice.model hook
@@ -1289,6 +1317,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     CIRowChoose,         // disclosure button with dropdown list
     CIRowPicker,         // radio group (options in list)
     CIRowNote,           // italic note text
+    CIRowRange,          // dual-slider; randomize picks within [minIdx, maxIdx]
 };
 
 @interface CIRow : NSObject
@@ -1298,6 +1327,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @property (nonatomic, copy)   NSArray  *options;    // for choose/picker
 @property (nonatomic, copy)   NSString *placeholder;
 @property (nonatomic, assign) CGFloat  leftPad;     // indentation level (sub-rows)
+// CIRowRange — `options` holds the ordered list of display labels;
+// `key` is the config storage key (we store @{minIdx,maxIdx} as a 2-int array).
+@property (nonatomic, copy)   NSString *minStorageKey;
+@property (nonatomic, copy)   NSString *maxStorageKey;
 @end
 @implementation CIRow @end
 
@@ -1322,6 +1355,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 + (CIRow *)choose:(NSString *)title key:(NSString *)key indent:(CGFloat)pad {
     CIRow *r = [CIRow new]; r.kind = CIRowChoose; r.title = title; r.key = key; r.leftPad = pad; return r;
+}
+// labels[] is the ordered list of items the user can sweep across. minKey/maxKey
+// store the chosen indices in CIConfigManager. Randomize functions read those
+// keys at fire time and pick uniformly in [minIdx, maxIdx].
++ (CIRow *)range:(NSString *)title labels:(NSArray<NSString *> *)labels minKey:(NSString *)minKey maxKey:(NSString *)maxKey {
+    CIRow *r = [CIRow new]; r.kind = CIRowRange; r.title = title;
+    r.options = labels; r.minStorageKey = minKey; r.maxStorageKey = maxKey;
+    return r;
 }
 
 // Shared preset data (iPhone 5 → 16 Pro Max)
@@ -1524,11 +1565,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     Class C = [CIFakeSettingsViewController class];
     _rows = [NSMutableArray array];
 
-    // Quick picker shortcuts at the top
-    [_rows addObject:[C header:@"Chọn nhanh"]];
-    [_rows addObject:[C choose:@"📱  Chọn Model iPhone" key:@"__presetModelName" indent:0]];
-    [_rows addObject:[C choose:@"🍎  Chọn iOS Version" key:@"__presetIOSName" indent:0]];
-    [_rows addObject:[C note:@"Model: iPhone 5 → iPhone 16 Pro Max. iOS: 12 → 18." indent:8]];
+    // Quick picker shortcuts at the top — replaced single-pick dropdowns with
+    // dual-thumb range sliders. Reset Data picks one device + iOS uniformly at
+    // random from the [min, max] window the user dialed in.
+    [_rows addObject:[C header:@"Random Range"]];
+    NSMutableArray *deviceLabels = [NSMutableArray array];
+    for (NSArray *p in [CIFakeSettingsViewController devicePresets]) [deviceLabels addObject:p[0]];
+    NSMutableArray *iosLabels = [NSMutableArray array];
+    for (NSArray *p in [CIFakeSettingsViewController iosPresets]) [iosLabels addObject:p[0]];
+    [_rows addObject:[C range:@"📱  iPhone Model Range"
+                       labels:deviceLabels
+                       minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
+    [_rows addObject:[C range:@"🍎  iOS Version Range"
+                       labels:iosLabels
+                       minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
+    [_rows addObject:[C note:@"Kéo 2 đầu thanh trượt — Reset Data sẽ random 1 đời máy + 1 iOS trong khoảng đã chọn." indent:8]];
+    [_rows addObject:[C choose:@"📱  Đặt cố định 1 model" key:@"__presetModelName" indent:0]];
+    [_rows addObject:[C choose:@"🍎  Đặt cố định 1 iOS" key:@"__presetIOSName" indent:0]];
 
     // 1. Fake iOS Version
     [_rows addObject:[C toggle:@"1. Fake iOS Version" key:@"fake_sysosversion" indent:0]];
@@ -1760,6 +1813,72 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [c.contentView addSubview:tf];
         return c;
     }
+    if (r.kind == CIRowRange) {
+        // Two UISliders stacked over a tinted track. The user grabs whichever
+        // is closer; we clamp on change so min ≤ max. Indices persist into
+        // CIConfigManager under r.minStorageKey / r.maxStorageKey.
+        NSInteger maxI = (NSInteger)r.options.count - 1;
+        if (maxI < 0) return c;
+        CIConfigManager *cm = [CIConfigManager shared];
+        // Default to full span when never persisted before — `objectForKey:` lets
+        // us tell "not set" (nil) apart from a real value of 0.
+        id loStored = [cm objectForKey:r.minStorageKey];
+        id hiStored = [cm objectForKey:r.maxStorageKey];
+        NSInteger lo = loStored ? [loStored integerValue] : 0;
+        NSInteger hi = hiStored ? [hiStored integerValue] : maxI;
+        lo = MAX(0, MIN(maxI, lo));
+        hi = MAX(0, MIN(maxI, hi));
+        if (lo > hi) { NSInteger t = lo; lo = hi; hi = t; }
+
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(pad, 8, rightEdge-pad, 22)];
+        title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        title.text = r.title; title.font = [CITheme body]; title.textColor = [CITheme blue];
+        [c.contentView addSubview:title];
+
+        // Min / max label row (left aligned: lo, right aligned: hi)
+        UILabel *minLbl = [[UILabel alloc] initWithFrame:CGRectMake(pad, 32, (rightEdge-pad)/2 - 4, 20)];
+        minLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        minLbl.text = r.options[lo]; minLbl.font = [CITheme small]; minLbl.textColor = [CITheme text];
+        minLbl.textAlignment = NSTextAlignmentLeft;
+        [c.contentView addSubview:minLbl];
+
+        UILabel *maxLbl = [[UILabel alloc] initWithFrame:CGRectMake(pad + (rightEdge-pad)/2 + 4, 32, (rightEdge-pad)/2 - 4, 20)];
+        maxLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        maxLbl.text = r.options[hi]; maxLbl.font = [CITheme small]; maxLbl.textColor = [CITheme text];
+        maxLbl.textAlignment = NSTextAlignmentRight;
+        [c.contentView addSubview:maxLbl];
+
+        UISlider *minSl = [[UISlider alloc] initWithFrame:CGRectMake(pad, 56, rightEdge-pad, 28)];
+        minSl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        minSl.minimumValue = 0; minSl.maximumValue = (float)maxI; minSl.value = (float)lo;
+        minSl.minimumTrackTintColor = [CITheme blue];
+        objc_setAssociatedObject(minSl, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(minSl, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(minSl, @"ciRangeIsMin", @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(minSl, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(minSl, @"ciRangeMinLbl", minLbl, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(minSl, @"ciRangeMaxLbl", maxLbl, OBJC_ASSOCIATION_ASSIGN);
+        [minSl addTarget:self action:@selector(rangeSliderChanged:) forControlEvents:UIControlEventValueChanged];
+        [c.contentView addSubview:minSl];
+
+        UISlider *maxSl = [[UISlider alloc] initWithFrame:CGRectMake(pad, 84, rightEdge-pad, 28)];
+        maxSl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        maxSl.minimumValue = 0; maxSl.maximumValue = (float)maxI; maxSl.value = (float)hi;
+        maxSl.minimumTrackTintColor = [CITheme orange];
+        objc_setAssociatedObject(maxSl, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(maxSl, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(maxSl, @"ciRangeIsMin", @(NO), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(maxSl, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(maxSl, @"ciRangeMinLbl", minLbl, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(maxSl, @"ciRangeMaxLbl", maxLbl, OBJC_ASSOCIATION_ASSIGN);
+        // Pair the two sliders so each can clamp the other.
+        objc_setAssociatedObject(minSl, @"ciRangePeer", maxSl, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(maxSl, @"ciRangePeer", minSl, OBJC_ASSOCIATION_ASSIGN);
+        [maxSl addTarget:self action:@selector(rangeSliderChanged:) forControlEvents:UIControlEventValueChanged];
+        [c.contentView addSubview:maxSl];
+
+        return c;
+    }
     return c;
 }
 
@@ -1769,7 +1888,36 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (r.kind == CIRowNote)   return 44;
     if (r.kind == CIRowToggle) return 50;
     if (r.kind == CIRowChoose) return 62;
+    if (r.kind == CIRowRange)  return 124;
     return 70;
+}
+
+- (void)rangeSliderChanged:(UISlider *)sl {
+    NSString *minKey = objc_getAssociatedObject(sl, @"ciRangeMinKey");
+    NSString *maxKey = objc_getAssociatedObject(sl, @"ciRangeMaxKey");
+    NSNumber *isMin = objc_getAssociatedObject(sl, @"ciRangeIsMin");
+    UISlider *peer = objc_getAssociatedObject(sl, @"ciRangePeer");
+    UILabel *minLbl = objc_getAssociatedObject(sl, @"ciRangeMinLbl");
+    UILabel *maxLbl = objc_getAssociatedObject(sl, @"ciRangeMaxLbl");
+    NSArray *opts = objc_getAssociatedObject(sl, @"ciRangeOptions");
+    if (!minKey || !maxKey || !opts.count) return;
+
+    NSInteger v = (NSInteger)roundf(sl.value);
+    sl.value = (float)v;
+    if (isMin.boolValue && peer && v > (NSInteger)roundf(peer.value)) { peer.value = (float)v; }
+    if (!isMin.boolValue && peer && v < (NSInteger)roundf(peer.value)) { peer.value = (float)v; }
+
+    NSInteger lo = isMin.boolValue ? v : (NSInteger)roundf(peer.value);
+    NSInteger hi = isMin.boolValue ? (NSInteger)roundf(peer.value) : v;
+    if (lo > hi) { NSInteger t = lo; lo = hi; hi = t; }
+
+    if (minLbl) minLbl.text = opts[lo];
+    if (maxLbl) maxLbl.text = opts[hi];
+
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:@(lo) forKey:minKey];
+    [cm setObject:@(hi) forKey:maxKey];
+    [cm save];
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {

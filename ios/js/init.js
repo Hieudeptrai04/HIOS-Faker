@@ -82,12 +82,8 @@ function bindAllButtonEvents() {
   var btnClearBackup = document.getElementById('btnClearBackup');
   if (btnClearBackup) btnClearBackup.onclick = function() { selectAllBackup(false); };
 
-  // Select device/iOS buttons
-  var btnSelDevs = document.getElementById('btnSelAllDevs');
-  if (btnSelDevs) btnSelDevs.onclick = selAllDevs;
-
-  var btnSelIOS = document.getElementById('btnSelAllIOS');
-  if (btnSelIOS) btnSelIOS.onclick = selAllIOS;
+  // Range sliders (replaces the old "All / multi-select grid" approach).
+  if (typeof initRangeSliders === 'function') initRangeSliders();
 
   // Settings buttons
   var btnSaveProfile = document.getElementById('btnSaveProfile');

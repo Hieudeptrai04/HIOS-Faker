@@ -93,86 +93,121 @@ function persistBackupSelection() {
   try { localStorage.setItem('ci_backup_targets', JSON.stringify(arr)); } catch (e) {}
 }
 
-function selAllDevs() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var allDevs = getDeviceList().map(function(d) { return d.productType; });
-  var allSelected = allDevs.length > 0 && allDevs.every(function(d) { return devs.indexOf(d) >= 0; });
-  var newList = allSelected ? [] : allDevs.slice();
-  savePickListToStorage(CI_PICK_DEVICES_KEY, newList);
-  renderSelDevices();
-  updateSelCounts();
+// --- Dual-thumb range slider state (replaces the legacy multi-select grid) ---
+// Both ranges store {minIdx,maxIdx} into the ordered arrays declared in
+// config-data.js. Range bounds are inclusive; randomization picks any element
+// in [minIdx, maxIdx]. If the user has not interacted yet, defaults span the
+// full list (oldest → newest).
+
+function loadRangeFromStorage(key, max) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || 'null');
+    if (raw && typeof raw.minIdx === 'number' && typeof raw.maxIdx === 'number') {
+      var lo = Math.max(0, Math.min(max, raw.minIdx));
+      var hi = Math.max(0, Math.min(max, raw.maxIdx));
+      if (lo > hi) { var t = lo; lo = hi; hi = t; }
+      return { minIdx: lo, maxIdx: hi };
+    }
+  } catch (e) {}
+  return { minIdx: 0, maxIdx: max };
 }
 
-function selAllIOS() {
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var allVers = Object.keys(IOS_VERSIONS);
-  var allSelected = allVers.length > 0 && allVers.every(function(v) { return vers.indexOf(v) >= 0; });
-  var newList = allSelected ? [] : allVers.slice();
-  savePickListToStorage(CI_PICK_IOS_KEY, newList);
-  renderSelIOS();
-  updateSelCounts();
+function saveRangeToStorage(key, range) {
+  try { localStorage.setItem(key, JSON.stringify(range)); } catch (e) {}
 }
 
-function updateSelCounts() {
-  var devs = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var vers = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var devBadge = document.getElementById('selDevCount');
-  var iosBadge = document.getElementById('selIOSCount');
-  if (devBadge) devBadge.textContent = devs.length;
-  if (iosBadge) iosBadge.textContent = vers.length;
+function getDeviceRange() {
+  return loadRangeFromStorage(CI_DEVICE_RANGE_KEY, DEVICE_RELEASE_ORDER.length - 1);
 }
 
-function toggleSelItem(item, type, value) {
-  var list = type === 'dev' ? loadPickListFromStorage(CI_PICK_DEVICES_KEY) : loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var idx = list.indexOf(value);
-  if (idx >= 0) { list.splice(idx, 1); item.classList.remove('selected'); }
-  else { list.push(value); item.classList.add('selected'); }
-  if (type === 'dev') savePickListToStorage(CI_PICK_DEVICES_KEY, list);
-  else savePickListToStorage(CI_PICK_IOS_KEY, list);
-  updateSelCounts();
+function getIOSRange() {
+  return loadRangeFromStorage(CI_IOS_RANGE_KEY, IOS_VERSION_ORDER.length - 1);
 }
 
-function renderSelDevices() {
-  var grid = document.getElementById('selDevGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_DEVICES_KEY);
-  var models = getDeviceList();
-  var h = '';
-  for (var i = 0; i < models.length; i++) {
-    var m = models[i];
-    var isSel = selected.indexOf(m.productType) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'dev\',\'' + escapeHtml(m.productType) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">' + escapeHtml(m.marketing) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(m.productType) + '</div>' +
-      '</div></div>';
+function _rangeFillStyle(slider, minIdx, maxIdx, max) {
+  if (max <= 0) return { left: '0%', width: '100%' };
+  var lo = (minIdx / max) * 100;
+  var hi = (maxIdx / max) * 100;
+  return { left: lo + '%', width: (hi - lo) + '%' };
+}
+
+function _wireRangeSlider(opts) {
+  // opts = { minEl, maxEl, fillEl, minLbl, maxLbl, items, fmt, storageKey }
+  var max = opts.items.length - 1;
+  if (max < 0) return;
+  opts.minEl.min = 0; opts.minEl.max = max;
+  opts.maxEl.min = 0; opts.maxEl.max = max;
+  var saved = loadRangeFromStorage(opts.storageKey, max);
+  opts.minEl.value = saved.minIdx;
+  opts.maxEl.value = saved.maxIdx;
+
+  function refresh(commit) {
+    var lo = parseInt(opts.minEl.value, 10) || 0;
+    var hi = parseInt(opts.maxEl.value, 10) || 0;
+    if (lo > hi) {
+      // Active thumb stays where it is; the other thumb snaps to it.
+      if (document.activeElement === opts.minEl) opts.maxEl.value = lo;
+      else opts.minEl.value = hi;
+      lo = parseInt(opts.minEl.value, 10) || 0;
+      hi = parseInt(opts.maxEl.value, 10) || 0;
+    }
+    var st = _rangeFillStyle(null, lo, hi, max);
+    opts.fillEl.style.left = st.left;
+    opts.fillEl.style.width = st.width;
+    if (opts.minLbl) opts.minLbl.textContent = opts.fmt(opts.items[lo]);
+    if (opts.maxLbl) opts.maxLbl.textContent = opts.fmt(opts.items[hi]);
+    if (commit) saveRangeToStorage(opts.storageKey, { minIdx: lo, maxIdx: hi });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+
+  opts.minEl.addEventListener('input', function() { refresh(false); });
+  opts.maxEl.addEventListener('input', function() { refresh(false); });
+  opts.minEl.addEventListener('change', function() { refresh(true); });
+  opts.maxEl.addEventListener('change', function() { refresh(true); });
+  opts.minEl.addEventListener('touchend', function() { refresh(true); });
+  opts.maxEl.addEventListener('touchend', function() { refresh(true); });
+  refresh(false);
 }
 
-function renderSelIOS() {
-  var grid = document.getElementById('selIOSGrid');
-  if (!grid) return;
-  var selected = loadPickListFromStorage(CI_PICK_IOS_KEY);
-  var versions = getIOSVersionList();
-  var h = '';
-  for (var i = 0; i < versions.length; i++) {
-    var v = versions[i];
-    var isSel = selected.indexOf(v.version) >= 0;
-    h += '<div class="sel-item' + (isSel ? ' selected' : '') + '"' +
-      ' onclick="toggleSelItem(this,\'ios\',\'' + escapeHtml(v.version) + '\')">' +
-      '<div class="sel-item-check"></div>' +
-      '<div class="sel-item-info">' +
-      '<div class="sel-item-name">iOS ' + escapeHtml(v.version) + '</div>' +
-      '<div class="sel-item-code">' + escapeHtml(v.buildVersion || '') + '</div>' +
-      '</div></div>';
+function initRangeSliders() {
+  var devMin = document.getElementById('rangeDevMin');
+  var devMax = document.getElementById('rangeDevMax');
+  var devFill = document.getElementById('rangeDevFill');
+  if (devMin && devMax && devFill) {
+    _wireRangeSlider({
+      minEl: devMin, maxEl: devMax, fillEl: devFill,
+      minLbl: document.getElementById('rangeDevMinLbl'),
+      maxLbl: document.getElementById('rangeDevMaxLbl'),
+      items: DEVICE_RELEASE_ORDER,
+      fmt: function(productType) {
+        var info = DEVICE_DATABASE[productType];
+        return info ? info.marketing : productType;
+      },
+      storageKey: CI_DEVICE_RANGE_KEY,
+    });
   }
-  grid.innerHTML = h;
-  updateSelCounts();
+  var iosMin = document.getElementById('rangeIOSMin');
+  var iosMax = document.getElementById('rangeIOSMax');
+  var iosFill = document.getElementById('rangeIOSFill');
+  if (iosMin && iosMax && iosFill) {
+    _wireRangeSlider({
+      minEl: iosMin, maxEl: iosMax, fillEl: iosFill,
+      minLbl: document.getElementById('rangeIOSMinLbl'),
+      maxLbl: document.getElementById('rangeIOSMaxLbl'),
+      items: IOS_VERSION_ORDER,
+      fmt: function(v) { return 'iOS ' + v; },
+      storageKey: CI_IOS_RANGE_KEY,
+    });
+  }
 }
+
+// Legacy stubs — old code paths still call these; they are now no-ops because
+// the multi-select grid was replaced by the range slider above.
+function selAllDevs() {}
+function selAllIOS() {}
+function updateSelCounts() {}
+function toggleSelItem() {}
+function renderSelDevices() {}
+function renderSelIOS() {}
 
 // App Icon Loader
 var __iconCache = {};

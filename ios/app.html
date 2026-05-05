@@ -87,23 +87,33 @@
         <div class="tgl-item"><span class="tgl-text">Enable Web Services</span><label class="sw"><input type="checkbox" data-opt="main_webSvc" checked><span class="sl"></span></label></div>
       </div>
       <div class="sel-block select-only">
-        <div class="sel-row sel-row-pad"><label>Device</label><select id="deviceModel"></select></div>
-        <div class="sel-row"><label>iOS</label><select id="iosVersion"></select></div>
         <div class="sel-row sel-row-pad"><label>Carrier</label><select id="carrierRegion"><option value="vietnam">Vietnam</option><option value="international">International</option></select></div>
       </div>
-      <div class="sel-section select-only">
-        <div class="sel-sec-hdr">
-          <div class="sel-sec-title">iPhone Models <span class="sel-count" id="selDevCount">0</span></div>
-          <button type="button" class="sel-all-btn" id="btnSelAllDevs">All</button>
+      <div class="range-section select-only" data-range="device">
+        <div class="range-hdr">
+          <div class="range-title">iPhone Model Range</div>
+          <div class="range-vals"><span class="range-min" id="rangeDevMinLbl">iPhone 6</span><span class="range-sep">→</span><span class="range-max" id="rangeDevMaxLbl">iPhone 14 Pro Max</span></div>
         </div>
-        <div class="sel-grid" id="selDevGrid"></div>
+        <div class="range-slider" id="rangeDev">
+          <div class="range-track"></div>
+          <div class="range-fill" id="rangeDevFill"></div>
+          <input type="range" class="range-thumb range-min-thumb" id="rangeDevMin" min="0" max="0" value="0" step="1">
+          <input type="range" class="range-thumb range-max-thumb" id="rangeDevMax" min="0" max="0" value="0" step="1">
+        </div>
+        <div class="range-hint">Random sẽ chọn ngẫu nhiên 1 đời máy trong khoảng trên.</div>
       </div>
-      <div class="sel-section select-only">
-        <div class="sel-sec-hdr">
-          <div class="sel-sec-title">iOS Versions <span class="sel-count" id="selIOSCount">0</span></div>
-          <button type="button" class="sel-all-btn" id="btnSelAllIOS">All</button>
+      <div class="range-section select-only" data-range="ios">
+        <div class="range-hdr">
+          <div class="range-title">iOS Version Range</div>
+          <div class="range-vals"><span class="range-min" id="rangeIOSMinLbl">iOS 15.0</span><span class="range-sep">→</span><span class="range-max" id="rangeIOSMaxLbl">iOS 16.7.10</span></div>
         </div>
-        <div class="sel-grid" id="selIOSGrid"></div>
+        <div class="range-slider" id="rangeIOS">
+          <div class="range-track"></div>
+          <div class="range-fill" id="rangeIOSFill"></div>
+          <input type="range" class="range-thumb range-min-thumb" id="rangeIOSMin" min="0" max="0" value="0" step="1">
+          <input type="range" class="range-thumb range-max-thumb" id="rangeIOSMax" min="0" max="0" value="0" step="1">
+        </div>
+        <div class="range-hint">Random sẽ chọn ngẫu nhiên 1 phiên bản iOS trong khoảng trên.</div>
       </div>
     </div>
 

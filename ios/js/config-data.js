@@ -3,6 +3,15 @@
 // ============================================================
 
 var DEVICE_DATABASE = {
+  'iPhone7,2':  { marketing: 'iPhone 6',        color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone7,1':  { marketing: 'iPhone 6 Plus',   color: '#7D7E80', enclosureColor: '#A6AAAE', boardId: '0x10', chipId: '0x7000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 1073741824, cpuCores: 2, gpu: 'Apple A8 GPU',  cpuType: 16777228, cpuSubtype: 1 },
+  'iPhone8,1':  { marketing: 'iPhone 6s',       color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,2':  { marketing: 'iPhone 6s Plus',  color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone8,4':  { marketing: 'iPhone SE (1st)', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8000', screenW: 320, screenH: 568, scale: 2, nativeW: 640,  nativeH: 1136, ram: 2147483648, cpuCores: 2, gpu: 'Apple A9 GPU',  cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,1':  { marketing: 'iPhone 7',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone9,2':  { marketing: 'iPhone 7 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8010', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 4, gpu: 'Apple A10 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,1': { marketing: 'iPhone 8',        color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 667, scale: 2, nativeW: 750,  nativeH: 1334, ram: 2147483648, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  'iPhone10,2': { marketing: 'iPhone 8 Plus',   color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 414, screenH: 736, scale: 3, nativeW: 1080, nativeH: 1920, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,3': { marketing: 'iPhone X', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone10,6': { marketing: 'iPhone X', color: '#F5F5F0', enclosureColor: '#E1CCAD', boardId: '0x10', chipId: '0x8015', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 3221225472, cpuCores: 6, gpu: 'Apple A11 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone11,2': { marketing: 'iPhone XS', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8020', screenW: 375, screenH: 812, scale: 3, nativeW: 1125, nativeH: 2436, ram: 4294967296, cpuCores: 6, gpu: 'Apple A12 GPU', cpuType: 16777228, cpuSubtype: 2 },
@@ -25,6 +34,10 @@ var DEVICE_DATABASE = {
 };
 
 var HW_MODEL_MAP = {
+  'iPhone7,2':  'N61AP',  'iPhone7,1':  'N56AP',
+  'iPhone8,1':  'N71AP',  'iPhone8,2':  'N66AP',  'iPhone8,4':  'N69AP',
+  'iPhone9,1':  'D10AP',  'iPhone9,2':  'D11AP',
+  'iPhone10,1': 'D20AP',  'iPhone10,2': 'D21AP',
   'iPhone10,3': 'D22AP', 'iPhone10,6': 'D221AP',
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
@@ -33,6 +46,21 @@ var HW_MODEL_MAP = {
   'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
   'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
+
+// Release order for the dual-thumb range slider — left → right = oldest → newest.
+// Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
+// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+var DEVICE_RELEASE_ORDER = [
+  'iPhone7,2', 'iPhone7,1',
+  'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
+  'iPhone9,1', 'iPhone9,2',
+  'iPhone10,1', 'iPhone10,2', 'iPhone10,3', 'iPhone10,6',
+  'iPhone11,8', 'iPhone11,2',
+  'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
+  'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
+  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
+  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
+];
 
 var IOS_VERSIONS = {
   '15.0': '19A346', '15.1': '19B74', '15.2': '19C56', '15.3': '19D50',
@@ -43,6 +71,14 @@ var IOS_VERSIONS = {
   '16.7.4': '20H240', '16.7.5': '20H307', '16.7.6': '20H320', '16.7.7': '20H330',
   '16.7.8': '20H343', '16.7.9': '20H350', '16.7.10': '20H360',
 };
+
+// Ordered iOS list — same idea as DEVICE_RELEASE_ORDER but for iOS slider.
+var IOS_VERSION_ORDER = [
+  '15.0', '15.1', '15.2', '15.3', '15.4', '15.5', '15.6', '15.7',
+  '16.0', '16.1', '16.2', '16.3', '16.4', '16.5', '16.6', '16.6.1',
+  '16.7', '16.7.1', '16.7.2', '16.7.3', '16.7.4', '16.7.5',
+  '16.7.6', '16.7.7', '16.7.8', '16.7.9', '16.7.10',
+];
 
 var CARRIERS_VN = [
   { name: 'Viettel', mcc: '452', mnc: '04', iso: 'vn' },
@@ -117,6 +153,8 @@ var CI_BUNDLE_ALIASES = {
 
 var CI_WIPE_SELECTED_KEY = 'ci_wipe_selected';
 var CI_BACKUP_SELECTED_KEY = 'ci_backup_selected';
+var CI_DEVICE_RANGE_KEY = 'ci_device_range';   // {minIdx,maxIdx} into DEVICE_RELEASE_ORDER
+var CI_IOS_RANGE_KEY = 'ci_ios_range';         // {minIdx,maxIdx} into IOS_VERSION_ORDER
 var __wipeSelectedSet = {};
 var __backupSelectedSet = {};
 var __ciAppsCache = [];
