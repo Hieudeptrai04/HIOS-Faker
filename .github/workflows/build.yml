@@ -11,8 +11,9 @@ on:
       - ".github/workflows/build.yml"
 
 permissions:
-  contents: read
+  contents: write
   actions: write
+  pages: write
 
 jobs:
   build:
@@ -285,7 +286,7 @@ jobs:
           Maintainer: ChangeInfoIos
           Author: ChangeInfoIos
           Section: Tweaks
-          Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          Depends: ellekit | mobilesubstrate, firmware (>= 15.0), ai.akemi.appsyncunified
           Replaces: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
           Conflicts: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
           Provides: com.changeinfoios.tweak, com.changeinfoios.app
@@ -370,3 +371,57 @@ jobs:
           path: app/packages/*.deb
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Build Sileo repo (Packages.xz + Release)
+        if: success() && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          mkdir -p repo/debs
+          cp out/*.deb repo/debs/
+          cd repo
+          # Packages index — Sileo reads this to list available packages.
+          dpkg-scanpackages -m debs > Packages
+          xz -k9e Packages
+          gzip -k9 Packages
+          VERSION=$(grep '^Version:' ../tweak/control | awk '{print $2}')
+          # Release file — Sileo source metadata.
+          cat > Release <<EOF
+          Origin: HIOS Faker
+          Label: HIOS Faker
+          Suite: stable
+          Version: 1.0
+          Codename: ios
+          Architectures: iphoneos-arm64
+          Components: main
+          Description: ChangeInfoIos device spoofer (tweak + UI app)
+          EOF
+          # CydiaIcon for source-list display (reuse app icon if present)
+          if [ -f ../icon.png ]; then cp ../icon.png CydiaIcon.png; fi
+          ls -la
+
+      - name: Publish Sileo repo to GitHub Pages
+        if: success() && github.ref == 'refs/heads/master'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo
+          force_orphan: true
+          commit_message: "deploy repo for ${{ github.sha }}"
+
+      - name: Publish GitHub Release
+        if: success() && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^Version:' tweak/control | awk '{print $2}')
+          TAG="v${VERSION}-${GITHUB_SHA::7}"
+          gh release create "$TAG" out/*.deb \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "HIOS Faker ${VERSION} (${GITHUB_SHA::7})" \
+            --notes "Automated build from commit ${GITHUB_SHA}.
+
+          Install via Sileo: add source \`https://hieudeptrai04.github.io/HIOS-Faker/\` then search **HIOS Faker**. Sileo will pull AppSync Unified automatically (requires \`https://cydia.akemi.ai/\` source). Reboot/respring after install.
+
+          Or download the .deb below and open with Sileo." \
+            || echo "release for $TAG may already exist — skipping"
