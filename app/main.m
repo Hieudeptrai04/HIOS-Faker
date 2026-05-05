@@ -501,15 +501,6 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     return YES;
 }
 
-// Forward declarations so ci_randomizeIdentities() (defined here) can pull the
-// device + iOS preset arrays from CIFakeSettingsViewController (defined later
-// in this file). Both class methods return shared static arrays.
-@class CIFakeSettingsViewController;
-@interface CIFakeSettingsViewController (CIRangePresets)
-+ (NSArray *)devicePresets;
-+ (NSArray *)iosPresets;
-@end
-
 // Random model + iOS presets (inline to avoid forward-decl issues)
 static NSArray *ci_randomPresets(void) {
     static NSArray *presets = nil;
@@ -590,11 +581,11 @@ static NSUInteger ci_randomizeIdentities(void) {
     CIConfigManager *cm = [CIConfigManager shared];
 
     // === Random model (all fake layers auto-on) ===
-    // The Fake Settings range slider stores indices into the same preset
-    // arrays the Fake Settings VC uses. Mirror those arrays here so the
-    // randomizer respects the user's [min, max] window.
-    NSArray *presets = [CIFakeSettingsViewController devicePresets];
-    NSArray *iosList = [CIFakeSettingsViewController iosPresets];
+    // Both ci_randomPresets()/ci_randomIOSPresets() and the Fake Settings VC
+    // pull from the same arrays (the VC's class methods delegate to these
+    // C functions), so the slider's index window aligns with the picks here.
+    NSArray *presets = ci_randomPresets();
+    NSArray *iosList = ci_randomIOSPresets();
 
     NSUInteger devN = presets.count;
     NSUInteger iosN = iosList.count;
@@ -1365,9 +1356,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     return r;
 }
 
-// Shared preset data (iPhone 5 → 16 Pro Max)
+// Shared preset data — the table-of-truth lives in the static C function
+// ci_randomPresets() (defined earlier in this file). The class method here
+// just proxies, so the range slider's labels and the Reset randomizer pick
+// from the exact same array — keeping indices aligned.
++ (NSArray *)devicePresets { return ci_randomPresets(); }
++ (NSArray *)iosPresets { return ci_randomIOSPresets(); }
+
+// Legacy in-class arrays, retained as a fallback if the C function returns
+// nil for any reason (it shouldn't — both arrays are static dispatch_once'd).
 // Columns: name, productType, machine, width, height, scale, nativeW, nativeH, nativeScale
-+ (NSArray *)devicePresets {
++ (NSArray *)devicePresetsLegacy {
     static NSArray *presets = nil;
     if (!presets) {
         presets = @[
@@ -1417,7 +1416,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 // iOS version presets — name, systemVersion, BuildVersion
-+ (NSArray *)iosPresets {
++ (NSArray *)iosPresetsLegacy {
     static NSArray *v = nil;
     if (!v) {
         v = @[
