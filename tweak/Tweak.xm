@@ -1274,6 +1274,41 @@ static BOOL computeBundleTargeted(void) {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
 
+        // SAFETY GUARD — broad UIKit filter inject puts us in every GUI app,
+        // including system processes that brick the device when hooked
+        // (v2.3.24 incident). Bail BEFORE writing the marker / loading config
+        // for any process on this denylist. The list mirrors the system-app
+        // bundles whose loop tightness or framework reach makes them unsafe
+        // to wrap with hundreds of Logos hooks at once.
+        static NSArray *kSystemDenyBundles = nil;
+        kSystemDenyBundles = @[
+            @"com.apple.springboard",
+            @"com.apple.Preferences",
+            @"com.apple.mobilesafari",
+            @"com.apple.webapp",
+            @"com.apple.mobilesms",
+            @"com.apple.MobileSMS",
+            @"com.apple.AppStore",
+            @"com.apple.camera",
+            @"com.apple.Maps",
+            @"com.apple.mobilephone",
+            @"com.apple.Spotlight",
+            @"com.apple.PineBoard",
+            @"com.apple.InCallService",
+            @"com.apple.coreauthd",
+            @"com.apple.HealthExtensions",
+            @"com.apple.Health",
+            @"com.apple.WebKit",
+            @"com.apple.WebKit.Networking",
+            @"com.apple.WebKit.WebContent",
+        ];
+        for (NSString *deny in kSystemDenyBundles) {
+            if ([bid isEqualToString:deny]) {
+                NSLog(@"[ChangeInfoIos] Skipping system bundle %@ — denylist match", bid);
+                return;
+            }
+        }
+
         // Write injection marker FIRST (even when we're going to early-exit)
         // so the Debug screen can prove the dylib was loaded into this process.
         NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";

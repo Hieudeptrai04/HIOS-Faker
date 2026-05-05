@@ -554,22 +554,86 @@ static NSArray *ci_randomPresets(void) {
 static NSArray *ci_randomIOSPresets(void) {
     static NSArray *iosList = nil;
     if (!iosList) {
+        // Granular list — every shipping minor + most patch releases from
+        // iOS 14 through 18. Matches the picker wheel resolution shown in
+        // mainstream tools (multiple decimal versions per major).
         iosList = @[
-            @[@"iOS 15.0",      @"15.0", @"19A346"],
-            @[@"iOS 15.1",      @"15.1", @"19B74"],
-            @[@"iOS 15.2",      @"15.2", @"19C56"],
-            @[@"iOS 15.3",      @"15.3", @"19D50"],
-            @[@"iOS 15.4",      @"15.4", @"19E241"],
-            @[@"iOS 15.5",      @"15.5", @"19F77"],
-            @[@"iOS 15.6",      @"15.6", @"19G71"],
-            @[@"iOS 15.7",      @"15.7", @"19H12"],
-            @[@"iOS 16.0",      @"16.0", @"20A362"],
-            @[@"iOS 16.1",      @"16.1", @"20B82"],
-            @[@"iOS 16.2",      @"16.2", @"20C65"],
-            @[@"iOS 16.3",      @"16.3", @"20D47"],
-            @[@"iOS 16.4",      @"16.4", @"20E247"],
-            @[@"iOS 16.5",      @"16.5", @"20F66"],
-            @[@"iOS 16.6.1",   @"16.6.1", @"20G81"],
+            @[@"iOS 14.0",   @"14.0",   @"18A373"],
+            @[@"iOS 14.1",   @"14.1",   @"18A8395"],
+            @[@"iOS 14.2",   @"14.2",   @"18B92"],
+            @[@"iOS 14.3",   @"14.3",   @"18C66"],
+            @[@"iOS 14.4",   @"14.4",   @"18D52"],
+            @[@"iOS 14.4.1", @"14.4.1", @"18D61"],
+            @[@"iOS 14.4.2", @"14.4.2", @"18D70"],
+            @[@"iOS 14.5",   @"14.5",   @"18E199"],
+            @[@"iOS 14.5.1", @"14.5.1", @"18E212"],
+            @[@"iOS 14.6",   @"14.6",   @"18F72"],
+            @[@"iOS 14.7",   @"14.7",   @"18G69"],
+            @[@"iOS 14.7.1", @"14.7.1", @"18G82"],
+            @[@"iOS 14.8",   @"14.8",   @"18H17"],
+            @[@"iOS 14.8.1", @"14.8.1", @"18H107"],
+            @[@"iOS 15.0",   @"15.0",   @"19A346"],
+            @[@"iOS 15.0.1", @"15.0.1", @"19A348"],
+            @[@"iOS 15.0.2", @"15.0.2", @"19A404"],
+            @[@"iOS 15.1",   @"15.1",   @"19B74"],
+            @[@"iOS 15.1.1", @"15.1.1", @"19B81"],
+            @[@"iOS 15.2",   @"15.2",   @"19C56"],
+            @[@"iOS 15.2.1", @"15.2.1", @"19C63"],
+            @[@"iOS 15.3",   @"15.3",   @"19D50"],
+            @[@"iOS 15.3.1", @"15.3.1", @"19D52"],
+            @[@"iOS 15.4",   @"15.4",   @"19E241"],
+            @[@"iOS 15.4.1", @"15.4.1", @"19E258"],
+            @[@"iOS 15.5",   @"15.5",   @"19F77"],
+            @[@"iOS 15.6",   @"15.6",   @"19G71"],
+            @[@"iOS 15.6.1", @"15.6.1", @"19G82"],
+            @[@"iOS 15.7",   @"15.7",   @"19H12"],
+            @[@"iOS 16.0",   @"16.0",   @"20A362"],
+            @[@"iOS 16.0.1", @"16.0.1", @"20A371"],
+            @[@"iOS 16.0.2", @"16.0.2", @"20A380"],
+            @[@"iOS 16.0.3", @"16.0.3", @"20A392"],
+            @[@"iOS 16.1",   @"16.1",   @"20B82"],
+            @[@"iOS 16.1.1", @"16.1.1", @"20B101"],
+            @[@"iOS 16.1.2", @"16.1.2", @"20B110"],
+            @[@"iOS 16.2",   @"16.2",   @"20C65"],
+            @[@"iOS 16.3",   @"16.3",   @"20D47"],
+            @[@"iOS 16.3.1", @"16.3.1", @"20D67"],
+            @[@"iOS 16.4",   @"16.4",   @"20E247"],
+            @[@"iOS 16.4.1", @"16.4.1", @"20E252"],
+            @[@"iOS 16.5",   @"16.5",   @"20F66"],
+            @[@"iOS 16.5.1", @"16.5.1", @"20F75"],
+            @[@"iOS 16.6",   @"16.6",   @"20G75"],
+            @[@"iOS 16.6.1", @"16.6.1", @"20G81"],
+            @[@"iOS 16.7",   @"16.7",   @"20H19"],
+            @[@"iOS 16.7.1", @"16.7.1", @"20H30"],
+            @[@"iOS 17.0",   @"17.0",   @"21A329"],
+            @[@"iOS 17.0.1", @"17.0.1", @"21A340"],
+            @[@"iOS 17.0.2", @"17.0.2", @"21A350"],
+            @[@"iOS 17.0.3", @"17.0.3", @"21A360"],
+            @[@"iOS 17.1",   @"17.1",   @"21B74"],
+            @[@"iOS 17.1.1", @"17.1.1", @"21B91"],
+            @[@"iOS 17.1.2", @"17.1.2", @"21B101"],
+            @[@"iOS 17.2",   @"17.2",   @"21C62"],
+            @[@"iOS 17.2.1", @"17.2.1", @"21C66"],
+            @[@"iOS 17.3",   @"17.3",   @"21D50"],
+            @[@"iOS 17.3.1", @"17.3.1", @"21D61"],
+            @[@"iOS 17.4",   @"17.4",   @"21E219"],
+            @[@"iOS 17.4.1", @"17.4.1", @"21E236"],
+            @[@"iOS 17.5",   @"17.5",   @"21F79"],
+            @[@"iOS 17.5.1", @"17.5.1", @"21F90"],
+            @[@"iOS 17.6",   @"17.6",   @"21G80"],
+            @[@"iOS 17.6.1", @"17.6.1", @"21G93"],
+            @[@"iOS 17.7",   @"17.7",   @"21H16"],
+            @[@"iOS 17.7.1", @"17.7.1", @"21H216"],
+            @[@"iOS 17.7.2", @"17.7.2", @"21H221"],
+            @[@"iOS 18.0",   @"18.0",   @"22A3354"],
+            @[@"iOS 18.0.1", @"18.0.1", @"22A3370"],
+            @[@"iOS 18.1",   @"18.1",   @"22B83"],
+            @[@"iOS 18.1.1", @"18.1.1", @"22B91"],
+            @[@"iOS 18.2",   @"18.2",   @"22C152"],
+            @[@"iOS 18.2.1", @"18.2.1", @"22C161"],
+            @[@"iOS 18.3",   @"18.3",   @"22D63"],
+            @[@"iOS 18.3.1", @"18.3.1", @"22D72"],
+            @[@"iOS 18.3.2", @"18.3.2", @"22D82"],
         ];
     }
     return iosList;
@@ -1325,7 +1389,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @end
 @implementation CIRow @end
 
-@interface CIFakeSettingsViewController : UITableViewController <UITextFieldDelegate>
+@interface CIFakeSettingsViewController : UITableViewController <UITextFieldDelegate, UIPickerViewDataSource, UIPickerViewDelegate>
 @end
 
 @implementation CIFakeSettingsViewController {
@@ -1564,50 +1628,31 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     Class C = [CIFakeSettingsViewController class];
     _rows = [NSMutableArray array];
 
-    // Quick picker shortcuts at the top — replaced single-pick dropdowns with
-    // dual-thumb range sliders. Reset Data picks one device + iOS uniformly at
-    // random from the [min, max] window the user dialed in.
-    [_rows addObject:[C header:@"Random Range"]];
+    // === Random Range — picker wheels for device + iOS ===
+    // Reset Data picks 1 device and 1 iOS uniformly at random from the [min,
+    // max] window the user dialed in via the wheel.
+    // Picker labels — devices show "<idx> <name>" (matches mainstream tools'
+    // wheel format), iOS shows the bare version number ("14.5", "17.5.1").
     NSMutableArray *deviceLabels = [NSMutableArray array];
-    for (NSArray *p in [CIFakeSettingsViewController devicePresets]) [deviceLabels addObject:p[0]];
+    NSArray *_devs = [CIFakeSettingsViewController devicePresets];
+    for (NSUInteger i = 0; i < _devs.count; i++) {
+        [deviceLabels addObject:[NSString stringWithFormat:@"%lu %@", (unsigned long)i, ((NSArray *)_devs[i])[0]]];
+    }
     NSMutableArray *iosLabels = [NSMutableArray array];
-    for (NSArray *p in [CIFakeSettingsViewController iosPresets]) [iosLabels addObject:p[0]];
-    [_rows addObject:[C range:@"📱  iPhone Model Range"
-                       labels:deviceLabels
-                       minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
-    [_rows addObject:[C range:@"🍎  iOS Version Range"
-                       labels:iosLabels
-                       minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
-    [_rows addObject:[C note:@"Kéo 2 đầu thanh trượt — Reset Data sẽ random 1 đời máy + 1 iOS trong khoảng đã chọn." indent:8]];
-    [_rows addObject:[C choose:@"📱  Đặt cố định 1 model" key:@"__presetModelName" indent:0]];
-    [_rows addObject:[C choose:@"🍎  Đặt cố định 1 iOS" key:@"__presetIOSName" indent:0]];
+    NSArray *_ioss = [CIFakeSettingsViewController iosPresets];
+    for (NSArray *p in _ioss) [iosLabels addObject:p[1]];
 
-    // 1. Fake iOS Version
     [_rows addObject:[C toggle:@"1. Fake iOS Version" key:@"fake_sysosversion" indent:0]];
-    [_rows addObject:[C text:@"Version (vd: 17.5.1)" key:@"systemVersion" placeholder:@"17.5.1" indent:24]];
-    [_rows addObject:[C text:@"Build version" key:@"BuildVersion" placeholder:@"21F90" indent:24]];
+    [_rows addObject:[C range:@"" labels:iosLabels minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
 
-    // 2. Fake Model
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
-    [_rows addObject:[C text:@"deviceModel" key:@"deviceModel" placeholder:@"iPhone" indent:24]];
-    [_rows addObject:[C text:@"localizedModel" key:@"localizedModel" placeholder:@"iPhone" indent:24]];
-    [_rows addObject:[C text:@"ProductType (vd: iPhone16,2)" key:@"ProductType" placeholder:@"iPhone16,2" indent:24]];
-    [_rows addObject:[C text:@"uname_machine" key:@"uname_machine" placeholder:@"iPhone16,2" indent:24]];
+    [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
-    [_rows addObject:[C text:@"screenWidth"  key:@"screenWidth"  placeholder:@"430" indent:48]];
-    [_rows addObject:[C text:@"screenHeight" key:@"screenHeight" placeholder:@"932" indent:48]];
-    [_rows addObject:[C text:@"screenScale"  key:@"screenScale"  placeholder:@"3" indent:48]];
-    [_rows addObject:[C toggle:@"2.2 Fake Full Screen (native)" key:@"fake_realscreen" indent:24]];
-    [_rows addObject:[C text:@"nativeScreenWidth"  key:@"nativeScreenWidth"  placeholder:@"1290" indent:48]];
-    [_rows addObject:[C text:@"nativeScreenHeight" key:@"nativeScreenHeight" placeholder:@"2796" indent:48]];
-    [_rows addObject:[C text:@"nativeScale"        key:@"nativeScale"        placeholder:@"3" indent:48]];
+    [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
 
-    // 3. Fake Name
+    // 3. Fake Name — kept editable since the user often wants a custom one.
     [_rows addObject:[C toggle:@"3. Fake Name" key:@"fake_processinfo" indent:0]];
-    [_rows addObject:[C text:@"deviceName"     key:@"deviceName"     placeholder:@"iPhone" indent:24]];
-    [_rows addObject:[C text:@"processHostName" key:@"processHostName" placeholder:@"iPhone" indent:24]];
-    [_rows addObject:[C text:@"kern_hostname"  key:@"kern_hostname"  placeholder:@"iPhone" indent:24]];
-    [_rows addObject:[C text:@"uname_nodename" key:@"uname_nodename" placeholder:@"iPhone" indent:24]];
+    [_rows addObject:[C text:@"deviceName" key:@"deviceName" placeholder:@"iPhone" indent:24]];
 
     // 4. Check IP + location
     [_rows addObject:[C header:@"4. Check IP Address"]];
@@ -1813,14 +1858,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         return c;
     }
     if (r.kind == CIRowRange) {
-        // Two UISliders stacked over a tinted track. The user grabs whichever
-        // is closer; we clamp on change so min ≤ max. Indices persist into
-        // CIConfigManager under r.minStorageKey / r.maxStorageKey.
+        // iOS-style two-component scroll wheel. Component 0 = min, component 1
+        // = max; each shows the same ordered label list. Range Reset picks one
+        // entry uniformly between [minIdx, maxIdx]. Indices persist on every
+        // didSelectRow under r.minStorageKey / r.maxStorageKey.
         NSInteger maxI = (NSInteger)r.options.count - 1;
         if (maxI < 0) return c;
         CIConfigManager *cm = [CIConfigManager shared];
-        // Default to full span when never persisted before — `objectForKey:` lets
-        // us tell "not set" (nil) apart from a real value of 0.
         id loStored = [cm objectForKey:r.minStorageKey];
         id hiStored = [cm objectForKey:r.maxStorageKey];
         NSInteger lo = loStored ? [loStored integerValue] : 0;
@@ -1829,52 +1873,48 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         hi = MAX(0, MIN(maxI, hi));
         if (lo > hi) { NSInteger t = lo; lo = hi; hi = t; }
 
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(pad, 8, rightEdge-pad, 22)];
-        title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        title.text = r.title; title.font = [CITheme body]; title.textColor = [CITheme blue];
-        [c.contentView addSubview:title];
+        // Title row only appears when the row has its own caption — when the
+        // range row is glued under a toggle ("1. Fake iOS Version"), we leave
+        // r.title empty and skip rendering it so the pill sits flush.
+        CGFloat pillY = 8;
+        if (r.title.length > 0) {
+            UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(pad, 6, rightEdge-pad, 22)];
+            title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+            title.text = r.title; title.font = [CITheme body]; title.textColor = [CITheme blue];
+            [c.contentView addSubview:title];
+            pillY = 32;
+        }
 
-        // Min / max label row (left aligned: lo, right aligned: hi)
-        UILabel *minLbl = [[UILabel alloc] initWithFrame:CGRectMake(pad, 32, (rightEdge-pad)/2 - 4, 20)];
-        minLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        minLbl.text = r.options[lo]; minLbl.font = [CITheme small]; minLbl.textColor = [CITheme text];
-        minLbl.textAlignment = NSTextAlignmentLeft;
-        [c.contentView addSubview:minLbl];
+        // Pill summary "Từ <min> đến <max>" sitting just above the wheel.
+        UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pad, pillY, rightEdge - pad, 36)];
+        pill.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        pill.backgroundColor = [CITheme card];
+        pill.layer.cornerRadius = 10;
+        pill.layer.borderColor = [[CITheme orange] colorWithAlphaComponent:0.6].CGColor;
+        pill.layer.borderWidth = 1.0;
+        [c.contentView addSubview:pill];
 
-        UILabel *maxLbl = [[UILabel alloc] initWithFrame:CGRectMake(pad + (rightEdge-pad)/2 + 4, 32, (rightEdge-pad)/2 - 4, 20)];
-        maxLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        maxLbl.text = r.options[hi]; maxLbl.font = [CITheme small]; maxLbl.textColor = [CITheme text];
-        maxLbl.textAlignment = NSTextAlignmentRight;
-        [c.contentView addSubview:maxLbl];
+        UILabel *summary = [[UILabel alloc] initWithFrame:CGRectMake(8, 0, pill.bounds.size.width - 16, 36)];
+        summary.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        summary.font = [CITheme body]; summary.textColor = [CITheme text];
+        summary.textAlignment = NSTextAlignmentCenter;
+        summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", r.options[lo], r.options[hi]];
+        [pill addSubview:summary];
 
-        UISlider *minSl = [[UISlider alloc] initWithFrame:CGRectMake(pad, 56, rightEdge-pad, 28)];
-        minSl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        minSl.minimumValue = 0; minSl.maximumValue = (float)maxI; minSl.value = (float)lo;
-        minSl.minimumTrackTintColor = [CITheme blue];
-        objc_setAssociatedObject(minSl, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(minSl, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(minSl, @"ciRangeIsMin", @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(minSl, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(minSl, @"ciRangeMinLbl", minLbl, OBJC_ASSOCIATION_ASSIGN);
-        objc_setAssociatedObject(minSl, @"ciRangeMaxLbl", maxLbl, OBJC_ASSOCIATION_ASSIGN);
-        [minSl addTarget:self action:@selector(rangeSliderChanged:) forControlEvents:UIControlEventValueChanged];
-        [c.contentView addSubview:minSl];
-
-        UISlider *maxSl = [[UISlider alloc] initWithFrame:CGRectMake(pad, 84, rightEdge-pad, 28)];
-        maxSl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        maxSl.minimumValue = 0; maxSl.maximumValue = (float)maxI; maxSl.value = (float)hi;
-        maxSl.minimumTrackTintColor = [CITheme orange];
-        objc_setAssociatedObject(maxSl, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(maxSl, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(maxSl, @"ciRangeIsMin", @(NO), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(maxSl, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(maxSl, @"ciRangeMinLbl", minLbl, OBJC_ASSOCIATION_ASSIGN);
-        objc_setAssociatedObject(maxSl, @"ciRangeMaxLbl", maxLbl, OBJC_ASSOCIATION_ASSIGN);
-        // Pair the two sliders so each can clamp the other.
-        objc_setAssociatedObject(minSl, @"ciRangePeer", maxSl, OBJC_ASSOCIATION_ASSIGN);
-        objc_setAssociatedObject(maxSl, @"ciRangePeer", minSl, OBJC_ASSOCIATION_ASSIGN);
-        [maxSl addTarget:self action:@selector(rangeSliderChanged:) forControlEvents:UIControlEventValueChanged];
-        [c.contentView addSubview:maxSl];
+        // 2-component UIPickerView. Component 0 = min, 1 = max. One delegate
+        // (this VC) services every range row; we associate the row's keys +
+        // labels onto the picker so the delegate can route correctly.
+        UIPickerView *pv = [[UIPickerView alloc] initWithFrame:CGRectMake(pad, pillY + 44, rightEdge - pad, 162)];
+        pv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        pv.dataSource = self;
+        pv.delegate = self;
+        objc_setAssociatedObject(pv, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(pv, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(pv, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(pv, @"ciRangeSummary", summary, OBJC_ASSOCIATION_ASSIGN);
+        [pv selectRow:lo inComponent:0 animated:NO];
+        [pv selectRow:hi inComponent:1 animated:NO];
+        [c.contentView addSubview:pv];
 
         return c;
     }
@@ -1887,31 +1927,44 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (r.kind == CIRowNote)   return 44;
     if (r.kind == CIRowToggle) return 50;
     if (r.kind == CIRowChoose) return 62;
-    if (r.kind == CIRowRange)  return 124;
+    if (r.kind == CIRowRange)  return r.title.length > 0 ? 248 : 220;
     return 70;
 }
 
-- (void)rangeSliderChanged:(UISlider *)sl {
-    NSString *minKey = objc_getAssociatedObject(sl, @"ciRangeMinKey");
-    NSString *maxKey = objc_getAssociatedObject(sl, @"ciRangeMaxKey");
-    NSNumber *isMin = objc_getAssociatedObject(sl, @"ciRangeIsMin");
-    UISlider *peer = objc_getAssociatedObject(sl, @"ciRangePeer");
-    UILabel *minLbl = objc_getAssociatedObject(sl, @"ciRangeMinLbl");
-    UILabel *maxLbl = objc_getAssociatedObject(sl, @"ciRangeMaxLbl");
-    NSArray *opts = objc_getAssociatedObject(sl, @"ciRangeOptions");
+// UIPickerView data source / delegate — services every CIRowRange picker.
+// The picker carries its own associated objects (min/max storage keys, label
+// list, summary label) so we can dispatch without a per-row delegate.
+- (NSInteger)numberOfComponentsInPickerView:(UIPickerView *)pickerView { return 2; }
+
+- (NSInteger)pickerView:(UIPickerView *)pv numberOfRowsInComponent:(NSInteger)component {
+    NSArray *opts = objc_getAssociatedObject(pv, @"ciRangeOptions");
+    return opts ? (NSInteger)opts.count : 0;
+}
+
+- (NSString *)pickerView:(UIPickerView *)pv titleForRow:(NSInteger)row forComponent:(NSInteger)component {
+    NSArray *opts = objc_getAssociatedObject(pv, @"ciRangeOptions");
+    if (row < 0 || (NSUInteger)row >= opts.count) return @"";
+    return opts[row];
+}
+
+- (CGFloat)pickerView:(UIPickerView *)pv rowHeightForComponent:(NSInteger)component { return 32; }
+
+- (void)pickerView:(UIPickerView *)pv didSelectRow:(NSInteger)row inComponent:(NSInteger)component {
+    NSString *minKey = objc_getAssociatedObject(pv, @"ciRangeMinKey");
+    NSString *maxKey = objc_getAssociatedObject(pv, @"ciRangeMaxKey");
+    NSArray *opts = objc_getAssociatedObject(pv, @"ciRangeOptions");
+    UILabel *summary = objc_getAssociatedObject(pv, @"ciRangeSummary");
     if (!minKey || !maxKey || !opts.count) return;
 
-    NSInteger v = (NSInteger)roundf(sl.value);
-    sl.value = (float)v;
-    if (isMin.boolValue && peer && v > (NSInteger)roundf(peer.value)) { peer.value = (float)v; }
-    if (!isMin.boolValue && peer && v < (NSInteger)roundf(peer.value)) { peer.value = (float)v; }
+    NSInteger lo = [pv selectedRowInComponent:0];
+    NSInteger hi = [pv selectedRowInComponent:1];
+    // Clamp: if user pulls min past max (or vice-versa) we drag the other
+    // wheel along to keep min ≤ max. The wheel that just moved is the source
+    // of truth; the other one snaps to it.
+    if (component == 0 && lo > hi) { hi = lo; [pv selectRow:hi inComponent:1 animated:YES]; }
+    if (component == 1 && hi < lo) { lo = hi; [pv selectRow:lo inComponent:0 animated:YES]; }
 
-    NSInteger lo = isMin.boolValue ? v : (NSInteger)roundf(peer.value);
-    NSInteger hi = isMin.boolValue ? (NSInteger)roundf(peer.value) : v;
-    if (lo > hi) { NSInteger t = lo; lo = hi; hi = t; }
-
-    if (minLbl) minLbl.text = opts[lo];
-    if (maxLbl) maxLbl.text = opts[hi];
+    if (summary) summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", opts[lo], opts[hi]];
 
     CIConfigManager *cm = [CIConfigManager shared];
     [cm setObject:@(lo) forKey:minKey];

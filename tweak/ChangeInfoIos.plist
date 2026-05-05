@@ -4,25 +4,22 @@
 <dict>
 	<key>Filter</key>
 	<dict>
+		<!--
+			Bundles=com.apple.UIKit ⇒ ellekit/substrate injects the dylib into
+			every process that links UIKit (≈ every GUI app). Without this we
+			were limited to a hard-coded list of 15 apps; if the user wanted
+			to spoof anything else (banking apps, e-commerce, new social apps)
+			the dylib was never loaded and "Change" couldn't take effect.
+			Tweak.xm's %ctor early-exits for SpringBoard/Settings/CoreServices
+			via the runtime exclusion list, and isCurrentBundleTargeted()
+			gates per-process so non-target apps install zero hooks.
+		-->
 		<key>Bundles</key>
 		<array>
-			<string>com.vng.zalo</string>
-			<string>ph.telegra.Telegraph</string>
-			<string>net.whatsapp.WhatsApp</string>
-			<string>com.facebook.Facebook</string>
-			<string>com.burbn.instagram</string>
-			<string>com.zhiliaoapp.musically</string>
-			<string>com.google.ios.youtube</string>
-			<string>com.atebits.Tweetie2</string>
-			<string>com.toyopagroup.picaboo</string>
-			<string>com.hammerandchisel.discord</string>
-			<string>com.tinyspeck.chatlyio</string>
-			<string>com.microsoft.Office.Outlook</string>
-			<string>com.finalwire.aida64</string>
-			<string>com.blacksmith.lirum</string>
-			<string>com.umang.devicedesign</string>
+			<string>com.apple.UIKit</string>
 		</array>
-
+		<key>Mode</key>
+		<string>Any</string>
 	</dict>
 </dict>
 </plist>
