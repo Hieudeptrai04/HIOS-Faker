@@ -733,6 +733,16 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 // ============================================================
 %hook UIScreen
 
+// Screen geometry has to stay internally consistent — UIKit asserts that
+// bounds × scale ≈ nativeBounds during scene setup; if they disagree it
+// throws NSInternalInconsistencyException which is what was crashing AIDA64
+// (and any other targeted app) at launch. Older builds gated nativeBounds /
+// nativeScale on a separate `fake_realscreen` flag that defaulted OFF, so
+// bounds returned the fake iPhone 13 size (390×844) while nativeBounds
+// stayed at the real iPhone X native (1125×2436) — UIKit asserted, scene
+// init aborted, SIGABRT. Drop the realscreen gate: if fake_screen is on
+// we spoof the whole geometry as one consistent set.
+
 - (CGRect)bounds {
     if (!fakeLayer(@"screen")) return %orig;
     id w = getConfig(@"screenWidth");
@@ -744,11 +754,23 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 }
 
 - (CGRect)nativeBounds {
-    if (!fakeLayer(@"screen") || !fakeLayer(@"realscreen")) return %orig;
+    if (!fakeLayer(@"screen")) return %orig;
     id w = getConfig(@"nativeScreenWidth");
     id h = getConfig(@"nativeScreenHeight");
     if (w && h) {
         return CGRectMake(0, 0, [w floatValue], [h floatValue]);
+    }
+    // Fallback: derive from bounds × scale so we never return real
+    // nativeBounds when bounds is faked — that mismatch is what UIKit
+    // asserts on. Using config-driven values is preferred (consistent
+    // with the device preset) but if those keys somehow aren't set,
+    // synthesise them on the fly.
+    id bw = getConfig(@"screenWidth");
+    id bh = getConfig(@"screenHeight");
+    id sc = getConfig(@"screenScale");
+    if (bw && bh && sc) {
+        CGFloat s = [sc floatValue];
+        return CGRectMake(0, 0, [bw floatValue] * s, [bh floatValue] * s);
     }
     return %orig;
 }
@@ -761,9 +783,12 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 }
 
 - (CGFloat)nativeScale {
-    if (!fakeLayer(@"screen") || !fakeLayer(@"realscreen")) return %orig;
+    if (!fakeLayer(@"screen")) return %orig;
     id val = getConfig(@"nativeScale");
     if (val) return [val floatValue];
+    // Fallback to scale so nativeScale never disagrees with scale.
+    id sc = getConfig(@"screenScale");
+    if (sc) return [sc floatValue];
     return %orig;
 }
 
