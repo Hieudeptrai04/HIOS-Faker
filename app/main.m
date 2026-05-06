@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>  // CAShapeLayer / CABasicAnimation for ring HUD
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <sys/wait.h>
@@ -1217,6 +1218,8 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 @implementation CIAppPickerViewController {
     UITableView  *_table;
     UISearchBar  *_search;
+    UILabel      *_summaryLbl;
+    UIView       *_bottomBar;
     NSArray<CIAppInfo *> *_all;
     NSArray<CIAppInfo *> *_view;
     NSMutableSet<NSString *> *_selected;
@@ -1225,7 +1228,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
-    self.title = self.mode == CIAppPickerModeReset ? @"Chọn app cần xóa dữ liệu" : @"Chọn app lưu Retention";
+    self.title = self.mode == CIAppPickerModeReset ? @"Chọn app reset" : @"Chọn app lưu RRS";
 
     _selected = [NSMutableSet set];
     NSArray *saved = self.mode == CIAppPickerModeReset
@@ -1233,54 +1236,131 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
         : [[CIConfigManager shared] rrsBundles];
     [_selected addObjectsFromArray:saved];
 
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 54)];
-    header.backgroundColor = [CITheme bg];
+    CGFloat W = self.view.bounds.size.width;
 
-    UIButton *selAll = [UIButton buttonWithType:UIButtonTypeSystem];
-    selAll.frame = CGRectMake(8, 12, 32, 32);
-    selAll.layer.borderColor = [CITheme blue].CGColor;
-    selAll.layer.borderWidth = 2;
-    selAll.layer.cornerRadius = 4;
-    [selAll addTarget:self action:@selector(toggleAll) forControlEvents:UIControlEventTouchUpInside];
-    [header addSubview:selAll];
+    // ── Top search bar (sticky, full-width with rounded fill) ─────────
+    UIView *searchWrap = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 56)];
+    searchWrap.backgroundColor = [CITheme bg];
+    searchWrap.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-    _search = [[UISearchBar alloc] initWithFrame:CGRectMake(48, 8, self.view.bounds.size.width-48-80-16, 38)];
+    UIView *searchBg = [[UIView alloc] initWithFrame:CGRectMake(16, 10, W - 32, 38)];
+    searchBg.backgroundColor = [CITheme card];
+    searchBg.layer.cornerRadius = 12;
+    searchBg.layer.borderWidth = 1;
+    searchBg.layer.borderColor = [[CITheme orange] colorWithAlphaComponent:0.25].CGColor;
+    searchBg.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [searchWrap addSubview:searchBg];
+
+    _search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, searchBg.bounds.size.width, 38)];
     _search.delegate = self;
-    _search.placeholder = @"Tìm app...";
+    _search.placeholder = @"Tìm app theo tên hoặc bundle ID…";
     _search.searchBarStyle = UISearchBarStyleMinimal;
     _search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    _search.barStyle = UIBarStyleBlack;
     _search.tintColor = [CITheme orange];
-    _search.searchTextField.textColor = [CITheme text];
-    _search.searchTextField.backgroundColor = [CITheme card];
-    [header addSubview:_search];
+    _search.backgroundImage = [UIImage new];
+    if (@available(iOS 13.0, *)) {
+        _search.searchTextField.textColor = [CITheme text];
+        _search.searchTextField.backgroundColor = [UIColor clearColor];
+        _search.searchTextField.attributedPlaceholder =
+            [[NSAttributedString alloc] initWithString:_search.placeholder
+                attributes:@{NSForegroundColorAttributeName: [CITheme dim]}];
+    }
+    [searchBg addSubview:_search];
+
+    // ── Selection summary line ────────────────────────────────────────
+    _summaryLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, W, 26)];
+    _summaryLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    _summaryLbl.textColor = [CITheme dim];
+    _summaryLbl.textAlignment = NSTextAlignmentCenter;
+    _summaryLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 80)];
+    header.backgroundColor = [CITheme bg];
+    [header addSubview:searchWrap];
+    _summaryLbl.frame = CGRectMake(0, 56, W, 22);
+    [header addSubview:_summaryLbl];
+
+    // ── Bottom sticky action bar ──────────────────────────────────────
+    UIView *bottom = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 78)];
+    bottom.backgroundColor = [CITheme card];
+    bottom.layer.shadowColor = [UIColor blackColor].CGColor;
+    bottom.layer.shadowOffset = CGSizeMake(0, -3);
+    bottom.layer.shadowOpacity = 0.25;
+    bottom.layer.shadowRadius = 8;
+    bottom.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+
+    UIButton *selAll = [UIButton buttonWithType:UIButtonTypeSystem];
+    selAll.frame = CGRectMake(16, 14, 110, 44);
+    [selAll setTitle:@"Chọn tất cả" forState:UIControlStateNormal];
+    [selAll setTitleColor:[CITheme blue] forState:UIControlStateNormal];
+    selAll.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    selAll.backgroundColor = [[CITheme blue] colorWithAlphaComponent:0.12];
+    selAll.layer.cornerRadius = 12;
+    selAll.layer.borderWidth = 1;
+    selAll.layer.borderColor = [[CITheme blue] colorWithAlphaComponent:0.4].CGColor;
+    [selAll addTarget:self action:@selector(toggleAll) forControlEvents:UIControlEventTouchUpInside];
+    [bottom addSubview:selAll];
 
     UIButton *action = [UIButton buttonWithType:UIButtonTypeSystem];
-    action.frame = CGRectMake(self.view.bounds.size.width-80-8, 8, 80, 38);
+    action.frame = CGRectMake(W - 16 - 160, 14, 160, 44);
     action.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [action setTitle:(self.mode == CIAppPickerModeReset ? @"Uninstall" : @"OK") forState:UIControlStateNormal];
-    [action setTitleColor:[CITheme orange] forState:UIControlStateNormal];
-    action.titleLabel.font = [CITheme h2];
-    action.layer.borderColor = [CITheme orange].CGColor;
-    action.layer.borderWidth = 1.5;
-    action.layer.cornerRadius = 4;
+    [action setTitle:(self.mode == CIAppPickerModeReset ? @"Xác nhận reset" : @"Xác nhận RRS") forState:UIControlStateNormal];
+    [action setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    action.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    action.backgroundColor = [CITheme orange];
+    action.layer.cornerRadius = 12;
+    action.layer.shadowColor = [CITheme orange].CGColor;
+    action.layer.shadowOffset = CGSizeMake(0, 4);
+    action.layer.shadowOpacity = 0.4;
+    action.layer.shadowRadius = 8;
     [action addTarget:self action:@selector(actionTap) forControlEvents:UIControlEventTouchUpInside];
-    [header addSubview:action];
+    [bottom addSubview:action];
 
     _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _table.delegate = self;
     _table.dataSource = self;
     _table.tableHeaderView = header;
-    _table.rowHeight = 64;
-    _table.separatorColor = [CITheme separator];
+    _table.rowHeight = 76;
+    _table.separatorStyle = UITableViewCellSeparatorStyleNone;
     _table.backgroundColor = [CITheme bg];
+    UIEdgeInsets ci = UIEdgeInsetsMake(0, 0, 90, 0);
+    _table.contentInset = ci;
+    _table.scrollIndicatorInsets = ci;
     [self.view addSubview:_table];
+
+    // bottom bar pinned to safe area
+    bottom.frame = CGRectMake(0, self.view.bounds.size.height - 78 - self.view.safeAreaInsets.bottom,
+                              W, 78 + self.view.safeAreaInsets.bottom);
+    [self.view addSubview:bottom];
+    _bottomBar = bottom;
 
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancel)];
 
+    [self updateSummary];
     [self loadAppsAsync];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (_bottomBar) {
+        CGFloat sb = self.view.safeAreaInsets.bottom;
+        _bottomBar.frame = CGRectMake(0, self.view.bounds.size.height - 78 - sb,
+                                      self.view.bounds.size.width, 78 + sb);
+    }
+}
+
+- (void)updateSummary {
+    NSUInteger n = _selected.count;
+    NSUInteger total = _view.count;
+    NSString *icon = self.mode == CIAppPickerModeReset ? @"🧹" : @"💾";
+    if (total == 0) {
+        _summaryLbl.text = [NSString stringWithFormat:@"%@  Đang tải danh sách app…", icon];
+    } else {
+        _summaryLbl.text = [NSString stringWithFormat:@"%@  Đã chọn %lu / %lu app",
+                            icon, (unsigned long)n, (unsigned long)total];
+    }
 }
 
 - (void)loadAppsAsync {
@@ -1290,6 +1370,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
             self->_all = a;
             self->_view = a;
             [self->_table reloadData];
+            [self updateSummary];
         });
     });
 }
@@ -1298,6 +1379,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     if (_selected.count == _view.count) [_selected removeAllObjects];
     else { [_selected removeAllObjects]; for (CIAppInfo *a in _view) [_selected addObject:a.bundleID]; }
     [_table reloadData];
+    [self updateSummary];
 }
 
 - (void)cancel { [self dismissViewControllerAnimated:YES completion:nil]; }
@@ -1324,40 +1406,97 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
         _view = m;
     }
     [_table reloadData];
+    [self updateSummary];
 }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return _view.count; }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    static NSString *cid = @"app";
+    // Card-style row: a rounded inner panel that hugs the screen edges with
+    // 12pt margin so successive cells look like stacked cards. Layout:
+    //   ┌───────────────────────────────────────────┐
+    //   │ [icon]  Name (bold)              [○ / ●] │   ○ = empty, ● = orange
+    //   │         bundle.id  •  size MB             │
+    //   └───────────────────────────────────────────┘
+    static NSString *cid = @"appCard";
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:cid];
-    if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
-    CIAppInfo *a = _view[ip.row];
-    c.textLabel.text = a.name;
-    c.textLabel.textColor = [CITheme text];
-    c.textLabel.font = [UIFont systemFontOfSize:16];
-    if (a.containerSize > 1) {
-        c.detailTextLabel.text = [NSString stringWithFormat:@"%@  •  %@", CIBytesString(a.containerSize), a.bundleID];
-    } else {
-        c.detailTextLabel.text = a.bundleID;
+    if (!c) {
+        c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:cid];
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+        c.backgroundColor = [UIColor clearColor];
+        c.contentView.backgroundColor = [UIColor clearColor];
     }
-    c.detailTextLabel.textColor = [CITheme dim];
-    c.detailTextLabel.font = [CITheme small];
-    c.backgroundColor = [CITheme card];
-    c.tintColor = [CITheme orange];
-    c.imageView.image = a.icon;
-    c.imageView.layer.cornerRadius = 10;
-    c.imageView.layer.masksToBounds = YES;
-    c.accessoryType = [_selected containsObject:a.bundleID] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    for (UIView *v in c.contentView.subviews) [v removeFromSuperview];
+
+    CIAppInfo *a = _view[ip.row];
+    BOOL selected = [_selected containsObject:a.bundleID];
+
+    CGFloat W = tv.bounds.size.width;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 4, W - 24, 68)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 12;
+    card.layer.borderWidth = 1;
+    card.layer.borderColor = (selected ? [CITheme orange]
+                                        : [[UIColor whiteColor] colorWithAlphaComponent:0.06]).CGColor;
+    [c.contentView addSubview:card];
+
+    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(10, 10, 48, 48)];
+    iv.image = a.icon;
+    iv.contentMode = UIViewContentModeScaleAspectFill;
+    iv.layer.cornerRadius = 12;
+    iv.layer.masksToBounds = YES;
+    iv.backgroundColor = [UIColor colorWithWhite:1 alpha:0.05];
+    [card addSubview:iv];
+
+    UILabel *name = [[UILabel alloc] initWithFrame:CGRectMake(70, 12, card.bounds.size.width - 70 - 50, 22)];
+    name.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    name.text = a.name;
+    name.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    name.textColor = [CITheme text];
+    [card addSubview:name];
+
+    UILabel *sub = [[UILabel alloc] initWithFrame:CGRectMake(70, 36, card.bounds.size.width - 70 - 50, 18)];
+    sub.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    if (a.containerSize > 1) {
+        sub.text = [NSString stringWithFormat:@"%@  •  %@", a.bundleID, CIBytesString(a.containerSize)];
+    } else {
+        sub.text = a.bundleID;
+    }
+    sub.font = [UIFont systemFontOfSize:11];
+    sub.textColor = [CITheme dim];
+    sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [card addSubview:sub];
+
+    // Custom check pill — empty circle when off, filled orange ring with
+    // ✓ when on. Stays right-aligned via FlexibleLeftMargin.
+    UIView *check = [[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width - 38, 22, 24, 24)];
+    check.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    check.layer.cornerRadius = 12;
+    check.layer.borderWidth = selected ? 0 : 1.5;
+    check.layer.borderColor = [CITheme dim].CGColor;
+    check.backgroundColor = selected ? [CITheme orange] : [UIColor clearColor];
+    [card addSubview:check];
+
+    if (selected) {
+        UILabel *tick = [[UILabel alloc] initWithFrame:check.bounds];
+        tick.text = @"✓";
+        tick.textColor = [UIColor whiteColor];
+        tick.textAlignment = NSTextAlignmentCenter;
+        tick.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+        [check addSubview:tick];
+    }
+
     return c;
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    [tv deselectRowAtIndexPath:ip animated:YES];
+    [tv deselectRowAtIndexPath:ip animated:NO];
     CIAppInfo *a = _view[ip.row];
     if ([_selected containsObject:a.bundleID]) [_selected removeObject:a.bundleID];
     else [_selected addObject:a.bundleID];
     [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+    [self updateSummary];
 }
 
 - (void)tableView:(UITableView *)tv willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
@@ -2513,108 +2652,149 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 // View tags inside the progress HUD — fetched by updateHUD:step:title:subtitle:
 // to mutate the right subview without traversing every time.
-#define CI_HUD_DIM      0xC1DCD
-#define CI_HUD_BADGE    0xC1DBC
-#define CI_HUD_STEP_LBL 0xC1DBD
-#define CI_HUD_TITLE    0xC1DCE
-#define CI_HUD_SUB      0xC1DCF
-#define CI_HUD_FILL     0xC1DD0
-#define CI_HUD_TRACK    0xC1DD2
-#define CI_HUD_SPIN     0xC1DD1
-#define CI_HUD_CHECK    0xC1DD3
-#define CI_HUD_CARD     0xC1DD4
+#define CI_HUD_DIM        0xC1DCD
+#define CI_HUD_TITLE      0xC1DCE
+#define CI_HUD_SUB        0xC1DCF
+#define CI_HUD_STEP_LBL   0xC1DBD
+#define CI_HUD_RING_HOST  0xC1DE0   // UIView holding the two CAShapeLayers
+#define CI_HUD_CHECK      0xC1DD3
+#define CI_HUD_CARD       0xC1DD4
+
+// Keys for layers attached to the ring host so we can find them later.
+static NSString *const kCIHudRingTrackKey = @"ciTrackLayer";
+static NSString *const kCIHudRingFillKey  = @"ciFillLayer";
+static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
 - (UIView *)showHUDWithTitle:(NSString *)title {
-    // Modernised reset/change progress card. Layout (300×220):
-    //   ┌──────────────────────────────┐
-    //   │  ⓪ 1/5     Title (semi)      │   step badge top-left, title beside
-    //   │           Subtitle text      │   sub label, 2 lines
-    //   │     [██████ progress ░░░ ]   │   horizontal animated progress
-    //   │                              │
-    //   │            ●●● spinner       │   tiny activity indicator
-    //   └──────────────────────────────┘
-    // updateHUD:step:total:title:subtitle: drives the badge counter, title,
-    // sub-line, and animates the fill width so the user can see something is
-    // moving even when the underlying step is just sleeping for I/O.
+    // Circular-ring progress HUD. Layout (300×280):
+    //   ┌────────────────────────────────┐
+    //   │            ╭───╮                │
+    //   │           ╱     ╲               │   outer track ring (faint)
+    //   │          │  1/5  │              │   inner step counter
+    //   │           ╲     ╱               │   orange fill ring grows w/step
+    //   │            ╰───╯                │   rotating gradient ring overlay
+    //   │                                │
+    //   │      Title (semibold)           │
+    //   │      Subtitle text              │
+    //   └────────────────────────────────┘
+    // Two CAShapeLayer rings:
+    //   trackLayer — full-circle stroke (faint colour) showing the path
+    //   fillLayer  — same circle, strokeEnd animates 0 → step/total
+    // A third layer (spinLayer) is a thin rotating arc on top of the fill
+    // for a constant "alive" indicator while the step is sleeping for I/O.
     UIView *root = self.view.window ?: self.view;
     UIView *dim = [[UIView alloc] initWithFrame:root.bounds];
-    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
+    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.70];
     dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     dim.tag = CI_HUD_DIM;
     dim.alpha = 0;
 
-    CGFloat cardW = MIN(320, root.bounds.size.width - 40);
-    CGFloat cardH = 220;
+    CGFloat cardW = MIN(300, root.bounds.size.width - 40);
+    CGFloat cardH = 280;
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, cardH)];
     card.center = CGPointMake(root.bounds.size.width/2, root.bounds.size.height/2);
     card.backgroundColor = [CITheme card];
-    card.layer.cornerRadius = 18;
+    card.layer.cornerRadius = 22;
     card.layer.shadowColor = [UIColor blackColor].CGColor;
-    card.layer.shadowOffset = CGSizeMake(0, 10);
+    card.layer.shadowOffset = CGSizeMake(0, 12);
     card.layer.shadowOpacity = 0.45;
-    card.layer.shadowRadius = 18;
+    card.layer.shadowRadius = 22;
     card.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin
                           | UIViewAutoresizingFlexibleTopMargin  | UIViewAutoresizingFlexibleBottomMargin;
     card.tag = CI_HUD_CARD;
     [dim addSubview:card];
 
-    // Step badge — orange circle, "1/5" inside.
-    CGFloat badgeSize = 40;
-    UIView *badge = [[UIView alloc] initWithFrame:CGRectMake(22, 22, badgeSize, badgeSize)];
-    badge.backgroundColor = [CITheme orange];
-    badge.layer.cornerRadius = badgeSize / 2;
-    badge.tag = CI_HUD_BADGE;
-    [card addSubview:badge];
+    // Ring host — a square view in the top half of the card. The ring layers
+    // are sized to its bounds; we keep them on the host so layout/sizing is
+    // self-contained and the rest of the card is regular UIKit.
+    CGFloat ringSize = 130;
+    UIView *ringHost = [[UIView alloc] initWithFrame:
+        CGRectMake((cardW - ringSize)/2, 28, ringSize, ringSize)];
+    ringHost.tag = CI_HUD_RING_HOST;
+    ringHost.backgroundColor = [UIColor clearColor];
+    [card addSubview:ringHost];
 
-    UILabel *stepLbl = [[UILabel alloc] initWithFrame:badge.bounds];
+    CGFloat lineW = 8.0;
+    CGFloat radius = (ringSize - lineW) / 2.0;
+    CGPoint centerP = CGPointMake(ringSize / 2.0, ringSize / 2.0);
+    UIBezierPath *circle = [UIBezierPath bezierPathWithArcCenter:centerP
+                                                          radius:radius
+                                                      startAngle:-M_PI_2
+                                                        endAngle:(3 * M_PI_2)
+                                                       clockwise:YES];
+
+    CAShapeLayer *track = [CAShapeLayer layer];
+    track.path = circle.CGPath;
+    track.frame = ringHost.bounds;
+    track.fillColor = [UIColor clearColor].CGColor;
+    track.strokeColor = [[UIColor whiteColor] colorWithAlphaComponent:0.10].CGColor;
+    track.lineWidth = lineW;
+    track.lineCap = kCALineCapRound;
+    [ringHost.layer addSublayer:track];
+    [ringHost.layer setValue:track forKey:kCIHudRingTrackKey];
+
+    CAShapeLayer *fill = [CAShapeLayer layer];
+    fill.path = circle.CGPath;
+    fill.frame = ringHost.bounds;
+    fill.fillColor = [UIColor clearColor].CGColor;
+    fill.strokeColor = [CITheme orange].CGColor;
+    fill.lineWidth = lineW;
+    fill.lineCap = kCALineCapRound;
+    fill.strokeStart = 0.0;
+    fill.strokeEnd = 0.02;  // tiny initial dot so user sees orange right away
+    [ringHost.layer addSublayer:fill];
+    [ringHost.layer setValue:fill forKey:kCIHudRingFillKey];
+
+    // Constant rotating arc — shorter stroke than `fill`, rides on top so
+    // the user sees motion even when strokeEnd hasn't changed.
+    CAShapeLayer *spin = [CAShapeLayer layer];
+    spin.path = circle.CGPath;
+    spin.frame = ringHost.bounds;
+    spin.fillColor = [UIColor clearColor].CGColor;
+    spin.strokeColor = [[CITheme orange] colorWithAlphaComponent:0.7].CGColor;
+    spin.lineWidth = lineW;
+    spin.lineCap = kCALineCapRound;
+    spin.strokeStart = 0.0;
+    spin.strokeEnd = 0.18; // 18% arc
+    [ringHost.layer addSublayer:spin];
+    [ringHost.layer setValue:spin forKey:kCIHudRingSpinKey];
+    CABasicAnimation *rot = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+    rot.fromValue = @(0);
+    rot.toValue = @(2 * M_PI);
+    rot.duration = 1.4;
+    rot.repeatCount = HUGE_VALF;
+    [spin addAnimation:rot forKey:@"rot"];
+
+    // Step counter sits dead-centre inside the ring.
+    UILabel *stepLbl = [[UILabel alloc] initWithFrame:ringHost.bounds];
+    stepLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     stepLbl.textAlignment = NSTextAlignmentCenter;
-    stepLbl.textColor = [UIColor whiteColor];
-    stepLbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    stepLbl.textColor = [CITheme text];
+    stepLbl.font = [UIFont systemFontOfSize:30 weight:UIFontWeightSemibold];
     stepLbl.text = @"…";
     stepLbl.tag = CI_HUD_STEP_LBL;
-    [badge addSubview:stepLbl];
+    [ringHost addSubview:stepLbl];
 
-    // Title — large, beside the badge.
-    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(76, 24, cardW - 96, 38)];
+    // Title + subtitle — below the ring.
+    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 178, cardW - 40, 26)];
     titleLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     titleLbl.textColor = [CITheme text];
+    titleLbl.textAlignment = NSTextAlignmentCenter;
     titleLbl.text = title ?: @"Đang xử lý";
-    titleLbl.numberOfLines = 2;
+    titleLbl.numberOfLines = 1;
     titleLbl.adjustsFontSizeToFitWidth = YES;
     titleLbl.minimumScaleFactor = 0.8;
     titleLbl.tag = CI_HUD_TITLE;
     [card addSubview:titleLbl];
 
-    // Subtitle — current activity, 2 lines.
-    UILabel *subLbl = [[UILabel alloc] initWithFrame:CGRectMake(22, 80, cardW - 44, 50)];
+    UILabel *subLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 210, cardW - 40, 50)];
     subLbl.font = [UIFont systemFontOfSize:13];
     subLbl.textColor = [CITheme dim];
+    subLbl.textAlignment = NSTextAlignmentCenter;
     subLbl.numberOfLines = 2;
     subLbl.text = @"Khởi tạo…";
     subLbl.tag = CI_HUD_SUB;
     [card addSubview:subLbl];
-
-    // Progress track + fill — fills as steps complete.
-    UIView *track = [[UIView alloc] initWithFrame:CGRectMake(22, 150, cardW - 44, 6)];
-    track.backgroundColor = [UIColor colorWithWhite:1 alpha:0.10];
-    track.layer.cornerRadius = 3;
-    track.tag = CI_HUD_TRACK;
-    [card addSubview:track];
-
-    UIView *fill = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 6)];
-    fill.backgroundColor = [CITheme orange];
-    fill.layer.cornerRadius = 3;
-    fill.tag = CI_HUD_FILL;
-    [track addSubview:fill];
-
-    // Subtle spinner — visual heartbeat under the progress bar.
-    UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    spin.color = [CITheme orange];
-    spin.frame = CGRectMake((cardW - 22)/2, 175, 22, 22);
-    spin.tag = CI_HUD_SPIN;
-    [spin startAnimating];
-    [card addSubview:spin];
 
     [root addSubview:dim];
     [UIView animateWithDuration:0.22 animations:^{ dim.alpha = 1; }];
@@ -2626,23 +2806,29 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *card = [hud viewWithTag:CI_HUD_CARD];
         if (!card) return;
-        UILabel *stepLbl  = (UILabel *)[card viewWithTag:CI_HUD_STEP_LBL];
+        UILabel *stepLbl  = (UILabel *)[[card viewWithTag:CI_HUD_RING_HOST] viewWithTag:CI_HUD_STEP_LBL];
         UILabel *titleLbl = (UILabel *)[card viewWithTag:CI_HUD_TITLE];
         UILabel *subLbl   = (UILabel *)[card viewWithTag:CI_HUD_SUB];
-        UIView  *track    =            [card viewWithTag:CI_HUD_TRACK];
-        UIView  *fill     =            [card viewWithTag:CI_HUD_FILL];
+        UIView  *ringHost =            [card viewWithTag:CI_HUD_RING_HOST];
 
         if (stepLbl)  stepLbl.text  = [NSString stringWithFormat:@"%ld/%ld", (long)step, (long)total];
         if (titleLbl && title.length) titleLbl.text = title;
         if (subLbl)   subLbl.text   = subtitle ?: @"";
 
-        if (fill && track && total > 0) {
-            CGFloat trackW = track.bounds.size.width;
-            CGFloat targetW = MAX(0.0, MIN(1.0, (CGFloat)step / (CGFloat)total)) * trackW;
-            [UIView animateWithDuration:0.30 delay:0
-                                options:UIViewAnimationOptionCurveEaseOut
-                             animations:^{ fill.frame = CGRectMake(0, 0, targetW, fill.frame.size.height); }
-                             completion:nil];
+        CAShapeLayer *fillLayer = [ringHost.layer valueForKey:kCIHudRingFillKey];
+        if (fillLayer && total > 0) {
+            CGFloat target = MAX(0.02, MIN(1.0, (CGFloat)step / (CGFloat)total));
+            // Animate strokeEnd so the orange arc sweeps to the new ratio.
+            CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
+            anim.fromValue = @(fillLayer.presentationLayer
+                                ? ((CAShapeLayer *)fillLayer.presentationLayer).strokeEnd
+                                : fillLayer.strokeEnd);
+            anim.toValue = @(target);
+            anim.duration = 0.35;
+            anim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            anim.fillMode = kCAFillModeForwards;
+            fillLayer.strokeEnd = target;
+            [fillLayer addAnimation:anim forKey:@"sweep"];
         }
     });
 }
@@ -2665,34 +2851,35 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (void)finishHUD:(UIView *)hud success:(BOOL)success message:(NSString *)message {
-    // Replace the spinner with a success/fail glyph for ~0.7s before dismiss
-    // so the user gets visual confirmation that the run completed cleanly.
+    // Stop the rotation, fill the ring 100%, fade in a ✓/✕ glyph in the
+    // centre. Caller still calls dismissHUD: separately ~0.7s later.
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *card = [hud viewWithTag:CI_HUD_CARD];
-        UIView *spin = [card viewWithTag:CI_HUD_SPIN];
-        UIView *fill = [card viewWithTag:CI_HUD_FILL];
-        UIView *track = [card viewWithTag:CI_HUD_TRACK];
+        UIView *ringHost = [card viewWithTag:CI_HUD_RING_HOST];
+        UILabel *stepLbl = (UILabel *)[ringHost viewWithTag:CI_HUD_STEP_LBL];
         UILabel *titleLbl = (UILabel *)[card viewWithTag:CI_HUD_TITLE];
         UILabel *subLbl = (UILabel *)[card viewWithTag:CI_HUD_SUB];
 
-        if (fill && track) {
-            [UIView animateWithDuration:0.20 animations:^{
-                fill.frame = CGRectMake(0, 0, track.bounds.size.width, fill.frame.size.height);
-                fill.backgroundColor = success ? [CITheme green] : [CITheme red];
-            }];
+        CAShapeLayer *fillLayer = [ringHost.layer valueForKey:kCIHudRingFillKey];
+        CAShapeLayer *spinLayer = [ringHost.layer valueForKey:kCIHudRingSpinKey];
+        if (spinLayer) [spinLayer removeAllAnimations];
+        if (spinLayer) spinLayer.opacity = 0.0;
+        if (fillLayer) {
+            fillLayer.strokeColor = (success ? [CITheme green] : [CITheme red]).CGColor;
+            CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
+            anim.fromValue = @(fillLayer.strokeEnd);
+            anim.toValue = @(1.0);
+            anim.duration = 0.25;
+            anim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            anim.fillMode = kCAFillModeForwards;
+            fillLayer.strokeEnd = 1.0;
+            [fillLayer addAnimation:anim forKey:@"finish"];
         }
-        if (spin) [spin removeFromSuperview];
-
-        UILabel *check = [[UILabel alloc] initWithFrame:CGRectMake((card.bounds.size.width - 40)/2, 168, 40, 36)];
-        check.text = success ? @"✓" : @"✕";
-        check.textAlignment = NSTextAlignmentCenter;
-        check.textColor = success ? [CITheme green] : [CITheme red];
-        check.font = [UIFont systemFontOfSize:30 weight:UIFontWeightBold];
-        check.tag = CI_HUD_CHECK;
-        check.alpha = 0;
-        [card addSubview:check];
-        [UIView animateWithDuration:0.25 animations:^{ check.alpha = 1; }];
-
+        if (stepLbl) {
+            stepLbl.text = success ? @"✓" : @"✕";
+            stepLbl.textColor = success ? [CITheme green] : [CITheme red];
+            stepLbl.font = [UIFont systemFontOfSize:48 weight:UIFontWeightBold];
+        }
         if (titleLbl) titleLbl.text = success ? @"Hoàn tất" : @"Có lỗi";
         if (subLbl)   subLbl.text   = message ?: @"";
     });
@@ -2848,12 +3035,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Bắt đầu change dữ liệu...";
     UIView *hud = [self showHUDWithTitle:title];
 
-    // Build full target list: user-selected apps + AIDA64 + Lirum + DeviceDesign
+    // Build full target list: user-selected apps + auto-include the device
+    // verifiers (AIDA / Lirum / DeviceDesign) so the user can immediately
+    // open one to confirm the spoof landed, plus Mobile Safari so all the
+    // browser-side cookie / IDFA / WebKit cache is wiped each reset (iOS
+    // shares the WebKit data store across every app that uses SFSafari /
+    // WKWebView, so leaving Safari behind leaks fingerprint state).
     NSArray *aidaBids = @[
         @"com.finalwire.aida64",
         @"com.finalwire.aida64-ios",
         @"com.blacksmith.lirum",
         @"com.umang.devicedesign",
+        @"com.apple.mobilesafari",
     ];
     NSMutableArray<CIAppInfo *> *fullTargets = [targets mutableCopy];
     NSMutableSet<NSString *> *addedBids = [NSMutableSet setWithArray:[targets valueForKey:@"bundleID"]];
