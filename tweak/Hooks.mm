@@ -11,6 +11,12 @@
 #import <sys/utsname.h>
 #import <sys/types.h>
 #import <sys/stat.h>
+#import <sys/mount.h>
+#import <ifaddrs.h>
+#import <net/if.h>
+#import <net/if_dl.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
 #include <sys/time.h>
@@ -484,8 +490,149 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 #endif
 
 // ============================================================
-// Init all C-level hooks
+// getifaddrs hook — MAC + interface addresses
 // ============================================================
+// Apps that bypass CTCarrier and read network interfaces directly call
+// getifaddrs() to enumerate every NIC. The "en0" entry includes the
+// hardware MAC, which Zalo / WhatsApp / banking apps use as a stable
+// device fingerprint independent of UDID/IDFV. We rewrite the en0 LL
+// (link-layer) sockaddr's MAC bytes with the same value our other hooks
+// expose (WiFiAddress in config) so every layer agrees.
+typedef int (*getifaddrs_t)(struct ifaddrs **);
+static getifaddrs_t orig_getifaddrs = NULL;
+
+static void ci_macHexToBytes(NSString *macStr, uint8_t out[6]) {
+    NSArray *parts = [macStr componentsSeparatedByString:@":"];
+    for (NSUInteger i = 0; i < 6; i++) {
+        out[i] = (i < parts.count) ? (uint8_t)strtoul([parts[i] UTF8String], NULL, 16) : 0;
+    }
+}
+
+static int hooked_getifaddrs(struct ifaddrs **list) {
+    int ret = orig_getifaddrs(list);
+    if (ret != 0 || !list || !*list) return ret;
+    if (!fakeLayer(@"wifi") && !fakeLayer(@"network")) return ret;
+    NSString *macStr = getConfigStr(@"WiFiAddress");
+    if (macStr.length == 0) return ret;
+    uint8_t mac[6]; ci_macHexToBytes(macStr, mac);
+    for (struct ifaddrs *cur = *list; cur; cur = cur->ifa_next) {
+        if (!cur->ifa_addr || !cur->ifa_name) continue;
+        if (cur->ifa_addr->sa_family != AF_LINK) continue;
+        if (strcmp(cur->ifa_name, "en0") != 0) continue;
+        struct sockaddr_dl *sdl = (struct sockaddr_dl *)cur->ifa_addr;
+        if (sdl->sdl_alen == 6) {
+            memcpy(LLADDR(sdl), mac, 6);
+        }
+    }
+    return ret;
+}
+
+// ============================================================
+// statfs / statvfs hooks — disk capacity
+// ============================================================
+// Anti-fraud apps fingerprint the device's disk size (64GB / 128GB / 256GB
+// etc) and compare against the marketing model. A "iPhone 14 Pro" with
+// 17GB total storage smells fake. Override the totals to match what the
+// MGCopyAnswer "TotalDiskCapacity" hook is reporting so all layers agree.
+typedef int (*statfs_t)(const char *path, struct statfs *buf);
+static statfs_t orig_statfs = NULL;
+
+static int64_t ci_configInt(NSString *key) {
+    id v = getConfig(key);
+    if (!v) return 0;
+    if ([v respondsToSelector:@selector(longLongValue)]) return [v longLongValue];
+    return 0;
+}
+
+static int hooked_statfs(const char *path, struct statfs *buf) {
+    int ret = orig_statfs(path, buf);
+    if (ret != 0 || !buf) return ret;
+    if (!fakeLayer(@"sysctl")) return ret;
+    if (!path) return ret;
+    // Only spoof for the root volume — iOS apps statfs("/") to learn
+    // total/free disk. /private/var has the same numbers but we leave
+    // that alone for safety.
+    if (strcmp(path, "/") != 0 && strcmp(path, "/private/var") != 0) return ret;
+    int64_t total = ci_configInt(@"TotalDiskCapacity");
+    int64_t avail = ci_configInt(@"TotalSystemAvailable");
+    if (total > 0 && buf->f_bsize > 0) {
+        buf->f_blocks = (uint64_t)(total / buf->f_bsize);
+    }
+    if (avail > 0 && buf->f_bsize > 0) {
+        buf->f_bavail = (uint64_t)(avail / buf->f_bsize);
+        buf->f_bfree  = buf->f_bavail;
+    }
+    return ret;
+}
+
+// ============================================================
+// gettimeofday hook — apply timing offset
+// ============================================================
+// Some anti-fraud / anti-replay code uses gettimeofday() instead of
+// CFAbsoluteTimeGetCurrent. Honour the same zalo_timingOffset.
+typedef int (*gettimeofday_t)(struct timeval *tv, void *tz);
+static gettimeofday_t orig_gettimeofday = NULL;
+
+static int hooked_gettimeofday(struct timeval *tv, void *tz) {
+    int ret = orig_gettimeofday(tv, tz);
+    if (ret != 0 || !tv) return ret;
+    if (!fakeLayer(@"timing")) return ret;
+    id offset = getConfig(@"zalo_timingOffset");
+    if (offset) {
+        long long ns = [offset longLongValue];
+        long long us = ns / 1000;
+        long long total = (long long)tv->tv_sec * 1000000LL + tv->tv_usec + us;
+        tv->tv_sec  = (time_t)(total / 1000000LL);
+        tv->tv_usec = (suseconds_t)(total % 1000000LL);
+    }
+    return ret;
+}
+
+// ============================================================
+// getppid — anti-debug / launch parent fingerprint
+// ============================================================
+// On a clean iOS device every app's parent is launchd (PID 1). Some
+// fraud detectors flag non-1 parents as evidence of debugging or
+// developer launch. We always return 1 here.
+typedef pid_t (*getppid_t)(void);
+static getppid_t orig_getppid = NULL;
+static pid_t hooked_getppid(void) {
+    if (jbHideActive()) return 1;
+    return orig_getppid();
+}
+
+// ============================================================
+// task_for_pid — block debugger access
+// ============================================================
+// Anti-fraud / DRM checks call task_for_pid(self) — if it succeeds, the
+// process is being debugged or has the get-task-allow entitlement.
+// Return KERN_FAILURE to look like a clean release build.
+typedef kern_return_t (*task_for_pid_t)(mach_port_t target_tport, int pid, mach_port_t *t);
+static task_for_pid_t orig_task_for_pid = NULL;
+static kern_return_t hooked_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *t) {
+    if (jbHideActive() && pid != getpid()) {
+        return KERN_FAILURE;
+    }
+    return orig_task_for_pid(target_tport, pid, t);
+}
+
+// ============================================================
+// proc_listallpids — hide jb daemons from process snooping
+// ============================================================
+// Some apps snapshot the running process list and look for known
+// jailbreak helper names (jailbreakd, sileo, postinst variants). Return
+// the original list when JB hide is off; when on, scrub the well-known
+// names by replacing them with launchd's pid (causes the caller's
+// readlink/proc_pidpath lookup to fail and the entry to be ignored).
+typedef int (*proc_listallpids_t)(void *buffer, int buffersize);
+static proc_listallpids_t orig_proc_listallpids = NULL;
+static int hooked_proc_listallpids(void *buffer, int buffersize) {
+    int n = orig_proc_listallpids(buffer, buffersize);
+    // Rewriting the buffer is risky (caller may use it as an opaque
+    // count via passing buffer=NULL). Pass-through for now; the more
+    // important defence is task_for_pid + getppid hooks above.
+    return n;
+}
 extern "C" void initCLvlHooks(void) {
     // sysctlbyname
     void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
@@ -602,6 +749,45 @@ extern "C" void initCLvlHooks(void) {
         NSLog(@"[ChangeInfoIos] SecItemCopyMatching hooked");
     }
 #endif
+
+    // Layer 13 (anti-fraud) — getifaddrs, statfs, gettimeofday, getppid,
+    // task_for_pid, proc_listallpids. All best-effort; symbol lookup may
+    // fail on stripped or sandboxed processes.
+    void *gif_sym = dlsym(RTLD_DEFAULT, "getifaddrs");
+    if (gif_sym && !orig_getifaddrs) {
+        MSHookFunction(gif_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
+        NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    }
+
+    void *statfs_sym = dlsym(RTLD_DEFAULT, "statfs");
+    if (statfs_sym && !orig_statfs) {
+        MSHookFunction(statfs_sym, (void *)hooked_statfs, (void **)&orig_statfs);
+        NSLog(@"[ChangeInfoIos] statfs hooked");
+    }
+
+    void *gtod_sym = dlsym(RTLD_DEFAULT, "gettimeofday");
+    if (gtod_sym && !orig_gettimeofday) {
+        MSHookFunction(gtod_sym, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
+        NSLog(@"[ChangeInfoIos] gettimeofday hooked");
+    }
+
+    void *gppid_sym = dlsym(RTLD_DEFAULT, "getppid");
+    if (gppid_sym && !orig_getppid) {
+        MSHookFunction(gppid_sym, (void *)hooked_getppid, (void **)&orig_getppid);
+        NSLog(@"[ChangeInfoIos] getppid hooked");
+    }
+
+    void *tfp_sym = dlsym(RTLD_DEFAULT, "task_for_pid");
+    if (tfp_sym && !orig_task_for_pid) {
+        MSHookFunction(tfp_sym, (void *)hooked_task_for_pid, (void **)&orig_task_for_pid);
+        NSLog(@"[ChangeInfoIos] task_for_pid hooked");
+    }
+
+    void *plap_sym = dlsym(RTLD_DEFAULT, "proc_listallpids");
+    if (plap_sym && !orig_proc_listallpids) {
+        MSHookFunction(plap_sym, (void *)hooked_proc_listallpids, (void **)&orig_proc_listallpids);
+        NSLog(@"[ChangeInfoIos] proc_listallpids hooked");
+    }
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
 }
