@@ -246,8 +246,11 @@ jobs:
           # locates the CodeDirectory blob (slot 0 in the SuperBlob), and
           # SHA256-truncates it to 20 bytes. This is identical to what Apple's
           # cdhash code does for hashType=2.
-          mkdir -p combined/var/jb/Library/dpkg/info
-          CDHASH_FILE="combined/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
+          # Ship the cdhash list outside /var/jb/Library/dpkg/info — that
+          # directory is dpkg's own metadata store and dpkg overwrites/clears
+          # custom files there on install.
+          mkdir -p combined/var/jb/etc/changeinfoios
+          CDHASH_FILE="combined/var/jb/etc/changeinfoios/cdhashes"
           node - <<'NODE_PARSE' "$CDHASH_FILE" \
             combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
             combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib
@@ -321,7 +324,7 @@ jobs:
           #     Store apps — which is why "Change" never took effect.
           MS="/var/jb/Library/MobileSubstrate/DynamicLibraries"
           JBCTL="/var/jb/basebin/jbctl"
-          CDHASHES="/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
+          CDHASHES="/var/jb/etc/changeinfoios/cdhashes"
 
           # (1) Ownership / mode — match what AppSyncUnified ships.
           for f in "$MS/ChangeInfoIos.dylib" "$MS/ChangeInfoIos.plist" \
