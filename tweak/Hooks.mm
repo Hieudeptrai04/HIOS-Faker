@@ -19,8 +19,13 @@
 #import <arpa/inet.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
+#import <objc/runtime.h>
 #include <sys/time.h>
 #include <spawn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <stdarg.h>
 #include <substrate.h>
 
 // Config accessors (defined in Tweak.xm as plain C-linkage symbols).
@@ -633,6 +638,140 @@ static int hooked_proc_listallpids(void *buffer, int buffersize) {
     // important defence is task_for_pid + getppid hooks above.
     return n;
 }
+
+// ============================================================
+// Shared: is this a jailbreak-related path?
+// ============================================================
+// Single source of truth for the path patterns we want to hide.
+// Uses prefix match — every JB-related file lives under one of these
+// roots. Used by the new open/opendir/readlink hooks below.
+static BOOL ci_isJBPath(const char *path) {
+    if (!path) return NO;
+    static const char *list[] = {
+        "/var/jb",
+        "/Applications/Cydia.app", "/Applications/Sileo.app",
+        "/Applications/Zebra.app", "/Applications/Filza.app",
+        "/usr/sbin/sshd", "/usr/bin/ssh",
+        "/usr/lib/TweakInject", "/usr/lib/libsubstrate.dylib",
+        "/usr/lib/libellekit.dylib", "/usr/lib/libhooker.dylib",
+        "/usr/lib/substitute-loader.dylib",
+        "/Library/MobileSubstrate",
+        "/var/mobile/Library/Caches/com.saurik.Cydia",
+        "/.installed_dopamine", "/.installed_palera1n",
+        "/var/binpack", "/var/LIB", "/var/ulb",
+        "/private/preboot",
+        "/etc/apt", "/etc/ssh", "/var/lib/dpkg",
+        "/var/lib/cydia", "/var/cache/apt",
+    };
+    for (size_t i = 0; i < sizeof(list)/sizeof(list[0]); i++) {
+        if (strncmp(path, list[i], strlen(list[i])) == 0) return YES;
+    }
+    return NO;
+}
+
+// ============================================================
+// open() — broader than fopen, catches direct file syscalls
+// ============================================================
+// Apps that bypass NSFileManager / fopen call open() directly; some
+// banking SDKs do this knowing NSFileManager is commonly hooked. Block
+// JB paths here too so all entry points agree.
+typedef int (*open_t)(const char *path, int flags, ...);
+static open_t orig_open = NULL;
+static int hooked_open(const char *path, int flags, ...) {
+    if (jbHideActive() && ci_isJBPath(path)) { errno = ENOENT; return -1; }
+    if (flags & O_CREAT) {
+        va_list ap; va_start(ap, flags);
+        mode_t mode = va_arg(ap, int);
+        va_end(ap);
+        return orig_open(path, flags, mode);
+    }
+    return orig_open(path, flags);
+}
+
+// ============================================================
+// opendir() — hide JB-related directories from enumeration
+// ============================================================
+// Zalo / banking apps walk /Applications and /var to look for JB
+// tooling. NULL return on opendir() of those roots makes the
+// directory look unreadable, which apps treat as "no jailbreak".
+typedef DIR *(*opendir_t)(const char *path);
+static opendir_t orig_opendir = NULL;
+static DIR *hooked_opendir(const char *path) {
+    if (jbHideActive() && ci_isJBPath(path)) { errno = ENOENT; return NULL; }
+    return orig_opendir(path);
+}
+
+// ============================================================
+// readlink() — hide /var → /private/var → /var/jb symlink chain
+// ============================================================
+// On Dopamine 2 rootless, /var/jb resolves to a path under
+// /private/preboot/<UUID>/dopamine-*/procursus via symlinks. Apps
+// that resolve symlinks see those targets and flag the device.
+// Pretend the symlink doesn't exist for JB-tagged paths.
+typedef ssize_t (*readlink_t)(const char *path, char *buf, size_t bufsize);
+static readlink_t orig_readlink = NULL;
+static ssize_t hooked_readlink(const char *path, char *buf, size_t bufsize) {
+    if (jbHideActive() && ci_isJBPath(path)) { errno = ENOENT; return -1; }
+    return orig_readlink(path, buf, bufsize);
+}
+
+// ============================================================
+// ptrace() — defeat PT_DENY_ATTACH (anti-debug)
+// ============================================================
+// Anti-fraud / DRM code calls ptrace(PT_DENY_ATTACH) at launch to
+// block debuggers attaching. Intercept and return 0 without doing
+// anything so the caller thinks debugging is locked but our own
+// diagnostics still work.
+#define CI_PT_DENY_ATTACH 31
+typedef int (*ptrace_t)(int request, pid_t pid, void *addr, int data);
+static ptrace_t orig_ptrace = NULL;
+static int hooked_ptrace(int request, pid_t pid, void *addr, int data) {
+    if (request == CI_PT_DENY_ATTACH) return 0;
+    return orig_ptrace(request, pid, addr, data);
+}
+
+// ============================================================
+// objc_getClass / objc_lookUpClass — hide tweak-loader classes
+// ============================================================
+// Apps that go all the way to runtime introspection check whether
+// well-known tweak-loader classes exist. NSClassFromString("MSHook…")
+// returns Nil on stock iOS but a real Class on jailbroken devices.
+// Rebind the runtime accessors to return Nil for any name that looks
+// like a hooking framework or known JB tool.
+typedef Class (*objc_getClass_t)(const char *name);
+static objc_getClass_t orig_objc_getClass = NULL;
+static objc_getClass_t orig_objc_lookUpClass = NULL;
+
+static BOOL ci_isJBClassName(const char *name) {
+    // Prefix-match (not substring) so we don't accidentally tag legit
+    // framework classes that happen to contain those words. Specific
+    // tweak-loader class prefixes only — avoids false positives like
+    // "ARAnchorSerializer" matching "Substrate".
+    if (!name || !*name) return NO;
+    static const char *list[] = {
+        "MSHook",          // MSHookMessageEx, MSHookFunction, MSHookIvar
+        "CydiaSubstrate",  // CydiaSubstrateClient
+        "ElleKit", "TweakInject", "libhooker",
+        "Substitute",      // ex.substitute
+        "FLEX",            // FLEXManager, FLEXExplorerViewController
+        "RevealApp", "Frida",
+        "Cydia", "Sileo", "Zebra", "Filza",
+    };
+    for (size_t i = 0; i < sizeof(list)/sizeof(list[0]); i++) {
+        if (strncmp(name, list[i], strlen(list[i])) == 0) return YES;
+    }
+    return NO;
+}
+
+static Class hooked_objc_getClass(const char *name) {
+    if (jbHideActive() && ci_isJBClassName(name)) return Nil;
+    return orig_objc_getClass(name);
+}
+static Class hooked_objc_lookUpClass(const char *name) {
+    if (jbHideActive() && ci_isJBClassName(name)) return Nil;
+    return orig_objc_lookUpClass(name);
+}
+
 extern "C" void initCLvlHooks(void) {
     // sysctlbyname
     void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
@@ -787,6 +926,39 @@ extern "C" void initCLvlHooks(void) {
     if (plap_sym && !orig_proc_listallpids) {
         MSHookFunction(plap_sym, (void *)hooked_proc_listallpids, (void **)&orig_proc_listallpids);
         NSLog(@"[ChangeInfoIos] proc_listallpids hooked");
+    }
+
+    // Layer 14 (deep JB hide) — open, opendir, readlink, ptrace,
+    // objc_getClass, objc_lookUpClass.
+    void *open_sym = dlsym(RTLD_DEFAULT, "open");
+    if (open_sym && !orig_open) {
+        MSHookFunction(open_sym, (void *)hooked_open, (void **)&orig_open);
+        NSLog(@"[ChangeInfoIos] open hooked");
+    }
+    void *opendir_sym = dlsym(RTLD_DEFAULT, "opendir");
+    if (opendir_sym && !orig_opendir) {
+        MSHookFunction(opendir_sym, (void *)hooked_opendir, (void **)&orig_opendir);
+        NSLog(@"[ChangeInfoIos] opendir hooked");
+    }
+    void *readlink_sym = dlsym(RTLD_DEFAULT, "readlink");
+    if (readlink_sym && !orig_readlink) {
+        MSHookFunction(readlink_sym, (void *)hooked_readlink, (void **)&orig_readlink);
+        NSLog(@"[ChangeInfoIos] readlink hooked");
+    }
+    void *ptrace_sym = dlsym(RTLD_DEFAULT, "ptrace");
+    if (ptrace_sym && !orig_ptrace) {
+        MSHookFunction(ptrace_sym, (void *)hooked_ptrace, (void **)&orig_ptrace);
+        NSLog(@"[ChangeInfoIos] ptrace hooked");
+    }
+    void *getClass_sym = dlsym(RTLD_DEFAULT, "objc_getClass");
+    if (getClass_sym && !orig_objc_getClass) {
+        MSHookFunction(getClass_sym, (void *)hooked_objc_getClass, (void **)&orig_objc_getClass);
+        NSLog(@"[ChangeInfoIos] objc_getClass hooked");
+    }
+    void *lookUp_sym = dlsym(RTLD_DEFAULT, "objc_lookUpClass");
+    if (lookUp_sym && !orig_objc_lookUpClass) {
+        MSHookFunction(lookUp_sym, (void *)hooked_objc_lookUpClass, (void **)&orig_objc_lookUpClass);
+        NSLog(@"[ChangeInfoIos] objc_lookUpClass hooked");
     }
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
