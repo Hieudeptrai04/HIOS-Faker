@@ -338,6 +338,14 @@ jobs:
             esac
           done
 
+          # (1b) Make the shared config dir world-writable so the host app
+          # (running as `mobile`) can drop config.plist there. The sandbox of
+          # App Store app tweaks blocks reads of /var/mobile/Library/Prefs but
+          # allows reads of /var/jb/etc/* — so this is where the tweak picks
+          # up the active config.
+          mkdir -p /var/jb/etc/changeinfoios 2>/dev/null || true
+          chmod 0777 /var/jb/etc/changeinfoios 2>/dev/null || true
+
           # (2) Trustcache — feed the embedded cdhash list, one hash per line.
           if [ -x "$JBCTL" ] && [ -f "$CDHASHES" ]; then
             while IFS= read -r h; do

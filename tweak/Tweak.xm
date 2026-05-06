@@ -118,12 +118,23 @@ static BOOL isCurrentBundleTargeted(void) {
 
 // Forward decl — async fallback path, see below.
 static void ci_loadConfigViaCFPreferencesAsync(void);
+static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 
 void reloadConfigFromDisk(void) {
     @autoreleasepool {
-        // Strategy 1 — direct file read. Fast, works in system processes
-        // (backupd, etc.) and any tweak host with a permissive sandbox.
-        NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+        // Strategy 0 — sandbox-friendly shared path. Verified live via probe
+        // dylib inside AIDA64: /var/jb/etc/changeinfoios/* IS readable from
+        // App Store app sandboxes, while /var/mobile/Library/Preferences IS
+        // NOT. Host app writes the config here in parallel with the legacy
+        // path, so this lookup wins for sandboxed tweaks.
+        NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
+
+        // Strategy 1 — direct read of the legacy path. Fast, works in system
+        // processes (backupd, etc.) and any tweak host with a permissive
+        // sandbox. Will silently fail in App Store apps — that's expected.
+        if (!config) {
+            config = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+        }
 
         // Strategy 2 — rootless mirror path. Some Dopamine 2 sandbox profiles
         // redirect /var/mobile/Library/Preferences for App Store apps; this

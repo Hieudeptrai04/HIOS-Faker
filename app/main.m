@@ -36,6 +36,9 @@
 // CONSTANTS
 // ============================================================
 static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
+// Sandbox-friendly mirror for App Store app tweaks — /var/mobile/Library/Prefs
+// is blocked by their sandboxes, /var/jb/etc/* is allowed (verified live).
+static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
@@ -238,6 +241,30 @@ static NSString *CIRRSDir(void) {
                                      appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
     }
     CFPreferencesSynchronize(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+
+    // Strategy 6: write the same plist into /var/jb/etc/changeinfoios/config.plist.
+    // Verified live via probe dylib: this path IS readable from App Store
+    // app sandboxes, while /var/mobile/Library/Preferences/ is NOT. Tweak.xm
+    // tries this path first in reloadConfigFromDisk(). Best-effort — if the
+    // dir isn't writable, we still have the cfprefsd path above.
+    @try {
+        NSString *sharedDir = [kSharedConfigPath stringByDeletingLastPathComponent];
+        [[NSFileManager defaultManager] createDirectoryAtPath:sharedDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        NSData *data = [NSPropertyListSerialization
+            dataWithPropertyList:_cfg
+                          format:NSPropertyListBinaryFormat_v1_0
+                         options:0 error:nil];
+        if (data) {
+            BOOL ok = [data writeToFile:kSharedConfigPath options:NSDataWritingAtomic error:nil];
+            if (ok) chmod([kSharedConfigPath fileSystemRepresentation], 0644);
+            NSLog(@"[ChangeInfoIos] save sandbox mirror: ok=%d path=%@", ok, kSharedConfigPath);
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[ChangeInfoIos] save sandbox mirror exception: %@", e);
+    }
 
     [self notifyReload];
 }
