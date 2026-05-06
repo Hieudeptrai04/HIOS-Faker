@@ -284,10 +284,28 @@ BOOL getConfigBool(NSString *key) {
 
 /* Plist booleans fake_<name> — missing key defaults to ON.
    Short names: uiddevice, hardware, sysctl, ... */
+//
+// Recursion guard — Telegram (12.6.3) crashed at launch with EXC_BAD_ACCESS
+// at SP boundary because:
+//   our %hook NSBundle infoDictionary  →  fakeLayer()
+//      →  isCurrentBundleTargeted()
+//          →  [[NSBundle mainBundle] bundleIdentifier]   // reads InfoDict
+//             →  -[NSBundle infoDictionary]              // hits OUR hook
+//                →  fakeLayer()  →  …  →  stack overflow
+// Per-thread guard breaks the loop: any nested fakeLayer call returns NO
+// immediately, the outer hook returns %orig, the original caller proceeds.
+static __thread int g_inFakeLayer = 0;
+
 BOOL fakeLayer(NSString *shortName) {
-    if (!isCurrentBundleTargeted()) return NO;
-    NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
-    return getConfigBool(full);
+    if (g_inFakeLayer) return NO;
+    g_inFakeLayer++;
+    BOOL out = NO;
+    if (isCurrentBundleTargeted()) {
+        NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
+        out = getConfigBool(full);
+    }
+    g_inFakeLayer--;
+    return out;
 }
 
 BOOL jbHideActive(void) {
