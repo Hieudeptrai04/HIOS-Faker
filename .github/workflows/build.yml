@@ -239,22 +239,70 @@ jobs:
           # ONLY if that directory already exists. Symlinks (not copies) so
           # the same Mach-O is mmap'd once; no duplicate inject, no extra RAM.
           # prerm removes the symlinks cleanly.
-          # Pre-compute cdhashes for every Mach-O slice. `codesign -d --verbose=4`
-          # prints only the *current* arch's CDHash by default; iterating with
-          # `--display-architecture` covers both arm64 and arm64e, which we both
-          # ship in the FAT dylib (Dopamine 2 needs the slice matching whichever
-          # arch each target process runs in).
+          # Pre-compute cdhashes for every Mach-O slice. codesign on macOS only
+          # prints the host arch's CDHash by default and has no flag to dump
+          # every slice in one go on older Xcode, so we use a tiny inline Node
+          # parser: walks the FAT/Mach-O headers, finds each LC_CODE_SIGNATURE,
+          # locates the CodeDirectory blob (slot 0 in the SuperBlob), and
+          # SHA256-truncates it to 20 bytes. This is identical to what Apple's
+          # cdhash code does for hashType=2.
           mkdir -p combined/var/jb/Library/dpkg/info
           CDHASH_FILE="combined/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
-          : > "$CDHASH_FILE"
-          for dylib in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
-                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib; do
-            [ -f "$dylib" ] || continue
-            for arch in $(lipo -archs "$dylib" 2>/dev/null); do
-              codesign -d --verbose=4 --display-architecture "$arch" "$dylib" 2>&1 \
-                | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
-            done
-          done
+          node - <<'NODE_PARSE' "$CDHASH_FILE" \
+            combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
+            combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib
+          const fs = require('fs');
+          const crypto = require('crypto');
+          const out = process.argv[2];
+          const files = process.argv.slice(3);
+          function cdHashAt(buf, base) {
+            const ncmds = buf.readUInt32LE(base + 16);
+            let off = base + 32;
+            for (let i = 0; i < ncmds; i++) {
+              const cmd = buf.readUInt32LE(off);
+              const sz  = buf.readUInt32LE(off + 4);
+              if (cmd === 0x1d) {
+                const dataOff = base + buf.readUInt32LE(off + 8);
+                const cnt = buf.readUInt32BE(dataOff + 8);
+                const hashes = [];
+                for (let j = 0; j < cnt; j++) {
+                  const idx = dataOff + 12 + j * 8;
+                  const blobOff = buf.readUInt32BE(idx + 4);
+                  const cdAbs = dataOff + blobOff;
+                  if (buf.readUInt32BE(cdAbs) === 0xfade0c02) {
+                    const cdLen = buf.readUInt32BE(cdAbs + 4);
+                    const blob = buf.slice(cdAbs, cdAbs + cdLen);
+                    const ht = buf.readUInt8(cdAbs + 36);
+                    const h = ht === 1
+                      ? crypto.createHash('sha1').update(blob).digest('hex')
+                      : crypto.createHash('sha256').update(blob).digest('hex').slice(0, 40);
+                    hashes.push({ ht, h });
+                  }
+                }
+                const sha256 = hashes.find(x => x.ht === 2);
+                return (sha256 || hashes[0] || {}).h;
+              }
+              off += sz;
+            }
+          }
+          const lines = [];
+          for (const f of files) {
+            if (!fs.existsSync(f)) continue;
+            const buf = fs.readFileSync(f);
+            const m0 = buf.readUInt32BE(0);
+            if (m0 === 0xcafebabe) {
+              const n = buf.readUInt32BE(4);
+              for (let i = 0; i < n; i++) {
+                const archOff = 8 + i * 20;
+                const offset = buf.readUInt32BE(archOff + 8);
+                lines.push(cdHashAt(buf, offset));
+              }
+            } else if (m0 === 0xcffaedfe || buf.readUInt32LE(0) === 0xfeedfacf) {
+              lines.push(cdHashAt(buf, 0));
+            }
+          }
+          fs.writeFileSync(out, lines.filter(Boolean).join('\n') + '\n');
+          NODE_PARSE
           echo "=== cdhashes packaged in deb ==="
           cat "$CDHASH_FILE"
 
