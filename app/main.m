@@ -1139,6 +1139,8 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 + (UIColor *)blue;
 + (UIColor *)separator;
 + (UIColor *)border;
++ (UIColor *)green;
++ (UIColor *)red;
 + (UIFont  *)h1;
 + (UIFont  *)h2;
 + (UIFont  *)body;
@@ -1155,6 +1157,8 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 + (UIColor *)blue      { return [self rgb:0x4FA8FF]; }
 + (UIColor *)separator { return [self rgb:0x2A344D]; }
 + (UIColor *)border    { return [self rgb:0xFF9F1A]; }
++ (UIColor *)green     { return [self rgb:0x34C759]; }    // iOS system green
++ (UIColor *)red       { return [self rgb:0xFF3B30]; }    // iOS system red
 + (UIFont  *)h1        { return [UIFont boldSystemFontOfSize:22]; }
 + (UIFont  *)h2        { return [UIFont boldSystemFontOfSize:17]; }
 + (UIFont  *)body      { return [UIFont systemFontOfSize:15]; }
@@ -2507,52 +2511,196 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+// View tags inside the progress HUD — fetched by updateHUD:step:title:subtitle:
+// to mutate the right subview without traversing every time.
+#define CI_HUD_DIM      0xC1DCD
+#define CI_HUD_BADGE    0xC1DBC
+#define CI_HUD_STEP_LBL 0xC1DBD
+#define CI_HUD_TITLE    0xC1DCE
+#define CI_HUD_SUB      0xC1DCF
+#define CI_HUD_FILL     0xC1DD0
+#define CI_HUD_TRACK    0xC1DD2
+#define CI_HUD_SPIN     0xC1DD1
+#define CI_HUD_CHECK    0xC1DD3
+#define CI_HUD_CARD     0xC1DD4
+
 - (UIView *)showHUDWithTitle:(NSString *)title {
+    // Modernised reset/change progress card. Layout (300×220):
+    //   ┌──────────────────────────────┐
+    //   │  ⓪ 1/5     Title (semi)      │   step badge top-left, title beside
+    //   │           Subtitle text      │   sub label, 2 lines
+    //   │     [██████ progress ░░░ ]   │   horizontal animated progress
+    //   │                              │
+    //   │            ●●● spinner       │   tiny activity indicator
+    //   └──────────────────────────────┘
+    // updateHUD:step:total:title:subtitle: drives the badge counter, title,
+    // sub-line, and animates the fill width so the user can see something is
+    // moving even when the underlying step is just sleeping for I/O.
     UIView *root = self.view.window ?: self.view;
     UIView *dim = [[UIView alloc] initWithFrame:root.bounds];
-    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
     dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    dim.tag = 0xC1DCD;
+    dim.tag = CI_HUD_DIM;
+    dim.alpha = 0;
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 220, 120)];
+    CGFloat cardW = MIN(320, root.bounds.size.width - 40);
+    CGFloat cardH = 220;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, cardH)];
     card.center = CGPointMake(root.bounds.size.width/2, root.bounds.size.height/2);
     card.backgroundColor = [CITheme card];
-    card.layer.cornerRadius = 14;
+    card.layer.cornerRadius = 18;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOffset = CGSizeMake(0, 10);
+    card.layer.shadowOpacity = 0.45;
+    card.layer.shadowRadius = 18;
     card.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin
                           | UIViewAutoresizingFlexibleTopMargin  | UIViewAutoresizingFlexibleBottomMargin;
+    card.tag = CI_HUD_CARD;
     [dim addSubview:card];
 
+    // Step badge — orange circle, "1/5" inside.
+    CGFloat badgeSize = 40;
+    UIView *badge = [[UIView alloc] initWithFrame:CGRectMake(22, 22, badgeSize, badgeSize)];
+    badge.backgroundColor = [CITheme orange];
+    badge.layer.cornerRadius = badgeSize / 2;
+    badge.tag = CI_HUD_BADGE;
+    [card addSubview:badge];
+
+    UILabel *stepLbl = [[UILabel alloc] initWithFrame:badge.bounds];
+    stepLbl.textAlignment = NSTextAlignmentCenter;
+    stepLbl.textColor = [UIColor whiteColor];
+    stepLbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    stepLbl.text = @"…";
+    stepLbl.tag = CI_HUD_STEP_LBL;
+    [badge addSubview:stepLbl];
+
+    // Title — large, beside the badge.
+    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(76, 24, cardW - 96, 38)];
+    titleLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    titleLbl.textColor = [CITheme text];
+    titleLbl.text = title ?: @"Đang xử lý";
+    titleLbl.numberOfLines = 2;
+    titleLbl.adjustsFontSizeToFitWidth = YES;
+    titleLbl.minimumScaleFactor = 0.8;
+    titleLbl.tag = CI_HUD_TITLE;
+    [card addSubview:titleLbl];
+
+    // Subtitle — current activity, 2 lines.
+    UILabel *subLbl = [[UILabel alloc] initWithFrame:CGRectMake(22, 80, cardW - 44, 50)];
+    subLbl.font = [UIFont systemFontOfSize:13];
+    subLbl.textColor = [CITheme dim];
+    subLbl.numberOfLines = 2;
+    subLbl.text = @"Khởi tạo…";
+    subLbl.tag = CI_HUD_SUB;
+    [card addSubview:subLbl];
+
+    // Progress track + fill — fills as steps complete.
+    UIView *track = [[UIView alloc] initWithFrame:CGRectMake(22, 150, cardW - 44, 6)];
+    track.backgroundColor = [UIColor colorWithWhite:1 alpha:0.10];
+    track.layer.cornerRadius = 3;
+    track.tag = CI_HUD_TRACK;
+    [card addSubview:track];
+
+    UIView *fill = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 6)];
+    fill.backgroundColor = [CITheme orange];
+    fill.layer.cornerRadius = 3;
+    fill.tag = CI_HUD_FILL;
+    [track addSubview:fill];
+
+    // Subtle spinner — visual heartbeat under the progress bar.
     UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     spin.color = [CITheme orange];
-    spin.frame = CGRectMake((220-44)/2, 16, 44, 44);
+    spin.frame = CGRectMake((cardW - 22)/2, 175, 22, 22);
+    spin.tag = CI_HUD_SPIN;
     [spin startAnimating];
     [card addSubview:spin];
 
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(10, 70, 200, 40)];
-    l.text = title; l.textAlignment = NSTextAlignmentCenter;
-    l.textColor = [CITheme text]; l.font = [CITheme body];
-    l.numberOfLines = 2;
-    l.tag = 0xC1DCE;
-    [card addSubview:l];
-
     [root addSubview:dim];
+    [UIView animateWithDuration:0.22 animations:^{ dim.alpha = 1; }];
     return dim;
 }
 
-- (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
+- (void)updateHUD:(UIView *)hud step:(NSInteger)step total:(NSInteger)total
+            title:(NSString *)title subtitle:(NSString *)subtitle {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *card = hud.subviews.firstObject;
-        UILabel *l = [card viewWithTag:0xC1DCE];
-        if (l && [l isKindOfClass:[UILabel class]]) {
-            l.text = title;
+        UIView *card = [hud viewWithTag:CI_HUD_CARD];
+        if (!card) return;
+        UILabel *stepLbl  = (UILabel *)[card viewWithTag:CI_HUD_STEP_LBL];
+        UILabel *titleLbl = (UILabel *)[card viewWithTag:CI_HUD_TITLE];
+        UILabel *subLbl   = (UILabel *)[card viewWithTag:CI_HUD_SUB];
+        UIView  *track    =            [card viewWithTag:CI_HUD_TRACK];
+        UIView  *fill     =            [card viewWithTag:CI_HUD_FILL];
+
+        if (stepLbl)  stepLbl.text  = [NSString stringWithFormat:@"%ld/%ld", (long)step, (long)total];
+        if (titleLbl && title.length) titleLbl.text = title;
+        if (subLbl)   subLbl.text   = subtitle ?: @"";
+
+        if (fill && track && total > 0) {
+            CGFloat trackW = track.bounds.size.width;
+            CGFloat targetW = MAX(0.0, MIN(1.0, (CGFloat)step / (CGFloat)total)) * trackW;
+            [UIView animateWithDuration:0.30 delay:0
+                                options:UIViewAnimationOptionCurveEaseOut
+                             animations:^{ fill.frame = CGRectMake(0, 0, targetW, fill.frame.size.height); }
+                             completion:nil];
         }
+    });
+}
+
+// Back-compat for callers that pass a single status string ("[2/5] Killing…").
+// Parses the "[N/M] Title…" prefix when present so the new layout still works
+// with old call sites; falls back to dropping the whole string into the title.
+- (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
+    if (title.length == 0) return;
+    NSInteger step = 0, total = 0;
+    NSString *clean = title;
+    NSScanner *sc = [NSScanner scannerWithString:title];
+    if ([sc scanString:@"[" intoString:NULL] && [sc scanInteger:&step]
+        && [sc scanString:@"/" intoString:NULL] && [sc scanInteger:&total]
+        && [sc scanString:@"]" intoString:NULL]) {
+        clean = [[title substringFromIndex:sc.scanLocation]
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }
+    [self updateHUD:hud step:step total:total title:clean subtitle:clean];
+}
+
+- (void)finishHUD:(UIView *)hud success:(BOOL)success message:(NSString *)message {
+    // Replace the spinner with a success/fail glyph for ~0.7s before dismiss
+    // so the user gets visual confirmation that the run completed cleanly.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *card = [hud viewWithTag:CI_HUD_CARD];
+        UIView *spin = [card viewWithTag:CI_HUD_SPIN];
+        UIView *fill = [card viewWithTag:CI_HUD_FILL];
+        UIView *track = [card viewWithTag:CI_HUD_TRACK];
+        UILabel *titleLbl = (UILabel *)[card viewWithTag:CI_HUD_TITLE];
+        UILabel *subLbl = (UILabel *)[card viewWithTag:CI_HUD_SUB];
+
+        if (fill && track) {
+            [UIView animateWithDuration:0.20 animations:^{
+                fill.frame = CGRectMake(0, 0, track.bounds.size.width, fill.frame.size.height);
+                fill.backgroundColor = success ? [CITheme green] : [CITheme red];
+            }];
+        }
+        if (spin) [spin removeFromSuperview];
+
+        UILabel *check = [[UILabel alloc] initWithFrame:CGRectMake((card.bounds.size.width - 40)/2, 168, 40, 36)];
+        check.text = success ? @"✓" : @"✕";
+        check.textAlignment = NSTextAlignmentCenter;
+        check.textColor = success ? [CITheme green] : [CITheme red];
+        check.font = [UIFont systemFontOfSize:30 weight:UIFontWeightBold];
+        check.tag = CI_HUD_CHECK;
+        check.alpha = 0;
+        [card addSubview:check];
+        [UIView animateWithDuration:0.25 animations:^{ check.alpha = 1; }];
+
+        if (titleLbl) titleLbl.text = success ? @"Hoàn tất" : @"Có lỗi";
+        if (subLbl)   subLbl.text   = message ?: @"";
     });
 }
 
 - (void)dismissHUD:(UIView *)hud completion:(void(^)(void))completion {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [UIView animateWithDuration:0.15 animations:^{ hud.alpha = 0; }
+        [UIView animateWithDuration:0.20 animations:^{ hud.alpha = 0; }
             completion:^(BOOL _) { [hud removeFromSuperview]; if (completion) completion(); }];
     });
 }
@@ -2722,7 +2870,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // so the user can read what's happening on screen.
 
         // Step 1: Generate new fake identities and persist to plist
-        [self updateHUDTitle:hud title:@"[1/5] Tạo thông tin giả mới..."];
+        [self updateHUD:hud step:1 total:5
+                  title:@"Tạo thông tin giả mới"
+               subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC mới…"];
         [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
         NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
@@ -2759,9 +2909,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
-            NSString *stepTitle = [NSString stringWithFormat:@"[2/5] Kill + xóa %lu/%lu: %@...",
+            NSString *sub = [NSString stringWithFormat:@"%lu/%lu — %@",
                 (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
-            [self updateHUDTitle:hud title:stepTitle];
+            [self updateHUD:hud step:2 total:5
+                      title:@"Xoá dữ liệu app target"
+                   subtitle:sub];
             [NSThread sleepForTimeInterval:0.8];
             killApp(a);
             [NSThread sleepForTimeInterval:0.5];
@@ -2780,7 +2932,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + save counters
-        [self updateHUDTitle:hud title:@"[3/5] Xóa cache phát hiện..."];
+        [self updateHUD:hud step:3 total:5
+                  title:@"Xoá cache phát hiện"
+               subtitle:@"DeviceCheck, APNS, IDFA, AIDA cache, keychain…"];
         [NSThread sleepForTimeInterval:1.5];
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
@@ -2809,7 +2963,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // As mobile user we can't killall SpringBoard (root-owned). Try
         // sbreload/launchctl first (rootless-jb friendly), then fall back
         // to killall SpringBoard which only works if elevated.
-        [self updateHUDTitle:hud title:@"[4/5] Đang restart SpringBoard..."];
+        [self updateHUD:hud step:4 total:5
+                  title:@"Restart SpringBoard"
+               subtitle:@"Reload tweak với config mới…"];
         [NSThread sleepForTimeInterval:1.5];
         const char *respringCmd =
             "/var/jb/usr/bin/sbreload 2>/dev/null"
@@ -2828,7 +2984,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         // auto-resumes target apps from their launch snapshot. Kill them one
         // more time so that when the user next opens the app icon, it does a
         // FRESH cold-start and the tweak %ctor runs again with the new config.
-        [self updateHUDTitle:hud title:@"[5/5] Dọn lần cuối..."];
+        [self updateHUD:hud step:5 total:5
+                  title:@"Dọn lần cuối"
+               subtitle:@"Đảm bảo lần mở tới là cold-start mới…"];
         [NSThread sleepForTimeInterval:1.0];
         for (CIAppInfo *a in fullTargets) { killApp(a); }
         NSLog(@"[ChangeInfoIos] Step 5 done: post-respring kill sweep");

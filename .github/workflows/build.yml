@@ -312,24 +312,46 @@ jobs:
 
           cat > combined/DEBIAN/postinst <<'POSTINST'
           #!/bin/sh
-          # Two responsibilities:
-          # (1) Make sure ellekit will accept our dylib — owned by root:wheel,
-          #     0644/0755 perms, NOT mobile:staff (the staff/group ownership
-          #     dpkg leaves behind has been observed to make ellekit's
-          #     boot-time trustcache loader skip the dylib silently).
-          # (2) Add every cdhash from the packaged list to Dopamine's runtime
-          #     trustcache via `jbctl trustcache add <cdhash>`. The previous
-          #     version called `jbctl trustcache add <path>` which Dopamine 2
-          #     rejects ("ERROR: passed cdhash has wrong length") so the
-          #     trustcache stayed empty and AMFI rejected the dylib in App
-          #     Store apps — which is why "Change" never took effect.
-          MS="/var/jb/Library/MobileSubstrate/DynamicLibraries"
-          JBCTL="/var/jb/basebin/jbctl"
-          CDHASHES="/var/jb/etc/changeinfoios/cdhashes"
+          # Universal postinst — runs on Dopamine 2, Dopamine 1, palera1n
+          # rootless, and rootful jailbreaks. Every step is best-effort and
+          # falls back gracefully if the relevant tool isn't present.
+          #
+          # Responsibilities:
+          # (1) Detect rootless prefix — /var/jb on Dopamine 2 / palera1n
+          #     rootless, "/" on rootful jailbreaks.
+          # (2) chown dylib + plist to root:wheel, 0644/0755 perms — matches
+          #     what AppSyncUnified ships and what ellekit's boot-time
+          #     trustcache loader expects (we observed mobile:staff silently
+          #     skipping inject on Dopamine 2).
+          # (3) chmod 0777 the shared config dir so the host app (running as
+          #     mobile) can drop config.plist where sandboxed tweaks can
+          #     read it (verified: App Store app sandboxes block
+          #     /var/mobile/Library/Preferences but allow /var/jb/etc/*).
+          # (4) Add every cdhash from the packaged list to the runtime
+          #     trustcache via `jbctl trustcache add <cdhash>` if jbctl
+          #     exists (Dopamine 2 only). Other jailbreaks auto-trust dylibs
+          #     under TweakInject/MobileSubstrate at boot, so this is a no-op
+          #     on those.
+          # (5) Refresh icon cache so the app shows up after install.
+          set -e
 
-          # (1) Ownership / mode — match what AppSyncUnified ships.
-          for f in "$MS/ChangeInfoIos.dylib" "$MS/ChangeInfoIos.plist" \
-                   "$MS/HelloInject.dylib" "$MS/HelloInject.plist"; do
+          # Detect rootless prefix
+          if [ -d /var/jb ]; then
+            ROOT=/var/jb
+          else
+            ROOT=
+          fi
+          MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
+          ETC="$ROOT/etc/changeinfoios"
+          # Locate jbctl across known paths.
+          JBCTL=""
+          for c in "$ROOT/basebin/jbctl" "/var/jb/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
+            [ -x "$c" ] && JBCTL="$c" && break
+          done
+
+          # (2) Ownership / mode for the tweak payload.
+          for f in "$MS/ChangeInfoIos.dylib"  "$MS/ChangeInfoIos.plist" \
+                   "$MS/HelloInject.dylib"   "$MS/HelloInject.plist"; do
             [ -e "$f" ] || continue
             chown root:wheel "$f" 2>/dev/null || true
             case "$f" in
@@ -338,25 +360,25 @@ jobs:
             esac
           done
 
-          # (1b) Make the shared config dir world-writable so the host app
-          # (running as `mobile`) can drop config.plist there. The sandbox of
-          # App Store app tweaks blocks reads of /var/mobile/Library/Prefs but
-          # allows reads of /var/jb/etc/* — so this is where the tweak picks
-          # up the active config.
-          mkdir -p /var/jb/etc/changeinfoios 2>/dev/null || true
-          chmod 0777 /var/jb/etc/changeinfoios 2>/dev/null || true
+          # (3) Shared config dir world-writable.
+          mkdir -p "$ETC" 2>/dev/null || true
+          chmod 0777 "$ETC" 2>/dev/null || true
 
-          # (2) Trustcache — feed the embedded cdhash list, one hash per line.
-          if [ -x "$JBCTL" ] && [ -f "$CDHASHES" ]; then
+          # (4) Trustcache — feed the embedded cdhash list, one hash per
+          # line. Skips silently if jbctl isn't on this jailbreak.
+          if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
             while IFS= read -r h; do
               [ -z "$h" ] && continue
               "$JBCTL" trustcache add "$h" 2>/dev/null || true
-            done < "$CDHASHES"
+            done < "$ETC/cdhashes"
           fi
 
-          # (3) Refresh icon cache for the app.
-          uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || \
-            /var/jb/usr/bin/uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || true
+          # (5) Refresh icon cache for the GUI app. Run uicache via every
+          # rootless / rootful path we know about — only one needs to land.
+          APP="$ROOT/Applications/ChangeInfoIosApp.app"
+          for u in uicache "$ROOT/usr/bin/uicache" /var/jb/usr/bin/uicache /usr/bin/uicache; do
+            command -v "$u" >/dev/null 2>&1 && "$u" -p "$APP" 2>/dev/null && break
+          done
 
           exit 0
           POSTINST
