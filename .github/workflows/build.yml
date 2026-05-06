@@ -286,7 +286,8 @@ jobs:
           Maintainer: ChangeInfoIos
           Author: ChangeInfoIos
           Section: Tweaks
-          Depends: ellekit | mobilesubstrate, firmware (>= 15.0), ai.akemi.appsyncunified
+          Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          Recommends: ai.akemi.appsyncunified
           Replaces: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
           Conflicts: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios.bundle
           Provides: com.changeinfoios.tweak, com.changeinfoios.app
