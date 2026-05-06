@@ -828,15 +828,15 @@ static NSUInteger ci_randomizeIdentities(void) {
                                                     @"CTRadioAccessTechnologyHSDPA"]
                                                   [arc4random_uniform(5)],
 
-        // CPU + RAM — pick a plausible (cores, MB) pair for modern iPhone.
-        @"physicalMemory":                        @[@"3221225472",  // 3 GB
-                                                    @"4294967296",   // 4 GB
-                                                    @"6442450944",   // 6 GB
-                                                    @"8589934592"][arc4random_uniform(4)],
-        @"processorCount":                        @"6",
-
-        // Tracking auth — 2 = denied (most realistic state for fresh device).
-        @"trackingAuthorizationStatus":           @"2",
+        // CPU + RAM + tracking auth disabled in v2.4.0-* — AIDA64
+        // crashed at scene init with EXC_CRASH/SIGABRT (objc_exception_throw
+        // → +[NSObject _copyDescription] → ___forwarding___) when these
+        // values were generated. Apple's _UIScenePerformActions chain
+        // queries NSProcessInfo and likely ATTrackingManager during launch
+        // and chokes when our hook returns a value that disagrees with the
+        // hardware-detected RAM / CPU count. Falling back to %orig (no
+        // config key set → hook bypasses) restores AIDA. We can re-enable
+        // these later with per-bundle gating if needed.
 
         // WebKit fingerprint — User-Agent matches our spoofed iOS,
         // GL vendor/renderer + Metal GPU + Canvas noise rotate every reset.
