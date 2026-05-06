@@ -923,6 +923,31 @@ static NSUInteger ci_randomizeIdentities(void) {
     return ids.count + 12;
 }
 
+// Resolve the on-disk Containers/Data path for a given bundle ID by
+// scanning every app data container's metadata.plist. Used to wipe system
+// apps (Safari, etc.) that CIAppLister doesn't enumerate because they live
+// under /Applications/ rather than /var/containers/Bundle/Application/. The
+// metadata.plist is binary plist; the bundle ID appears as a UTF-8 string
+// inside it, so a simple grep is enough to identify the right container
+// without depending on PlistBuddy or any rootless-only CLI.
+static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
+    if (bundleID.length == 0) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = @"/var/mobile/Containers/Data/Application";
+    NSArray *uuids = [fm contentsOfDirectoryAtPath:root error:nil];
+    NSData *needle = [bundleID dataUsingEncoding:NSUTF8StringEncoding];
+    for (NSString *uuid in uuids) {
+        NSString *full = [root stringByAppendingPathComponent:uuid];
+        NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+        NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
+        if (!blob) continue;
+        if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
+            return full;
+        }
+    }
+    return nil;
+}
+
 static int ci_run(const char *cmd) {
     pid_t pid;
     // CRITICAL FIX: empty envp caused ALL shell commands to fail (cp, rm, mkdir,
@@ -3468,6 +3493,28 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [addedBids addObject:a.bundleID];
             [names addObject:a.name ?: a.bundleID];
         }
+    }
+
+    // CIAppLister only enumerates 3rd-party apps under
+    // /var/containers/Bundle/Application — system apps like Mobile Safari
+    // live in /Applications/ and never appear in the list. For the
+    // auto-included BIDs, fall back to scanning /var/mobile/Containers/
+    // Data/Application for the matching data container so we can still
+    // wipe their cache / cookies / WebKit data.
+    for (NSString *bid in aidaBids) {
+        if ([addedBids containsObject:bid]) continue;
+        NSString *dataPath = ci_findDataContainerForBundle(bid);
+        if (dataPath.length == 0) continue;
+        CIAppInfo *synthetic = [CIAppInfo new];
+        synthetic.bundleID = bid;
+        synthetic.containerPath = dataPath;
+        // Fixed display name for system bundles we know about — falls back
+        // to the bundleID itself if it's a less common id.
+        if ([bid isEqualToString:@"com.apple.mobilesafari"]) synthetic.name = @"Safari";
+        else                                                  synthetic.name = bid;
+        [fullTargets addObject:synthetic];
+        [addedBids addObject:bid];
+        [names addObject:synthetic.name];
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

@@ -1318,30 +1318,22 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
-%hook NSBundle
-
-- (NSDictionary *)infoDictionary {
-    NSDictionary *orig = %orig;
-    if (!fakeLayer(@"sysosversion")) return orig;
-
-    if (self != [NSBundle mainBundle]) return orig;
-
-    NSString *fakeVersion = getConfigStr(@"systemVersion");
-    NSString *fakeBuild = getConfigStr(@"BuildVersion");
-    if (!fakeVersion && !fakeBuild) return orig;
-
-    NSMutableDictionary *patched = [orig mutableCopy];
-    if (fakeVersion) {
-        patched[@"DTPlatformVersion"] = fakeVersion;
-        patched[@"DTSDKName"] = [NSString stringWithFormat:@"iphoneos%@", fakeVersion];
-    }
-    if (fakeBuild) {
-        patched[@"DTXcodeBuild"] = fakeBuild;
-    }
-    return patched;
-}
-
-%end
+// ============================================================
+// !!! REMOVED: %hook NSBundle infoDictionary !!!
+// ============================================================
+// AIDA64 (and others) crashed with EXC_CRASH/SIGABRT during scene
+// lifecycle setup — stack showed __exceptionPreprocess →
+// objc_exception_throw → ___forwarding___ → _CF_forwarding_prep_ →
+// _UIScenePerformActionsWithLifecycleActionMask. The forwarding chain
+// triggers when objc_msgSend is called on a method that doesn't
+// exist on the receiver. Returning a mutable patched dict from
+// infoDictionary apparently confused some private Apple code path
+// expecting the original immutable backing.
+//
+// The iOS version + build are already covered at multiple safer
+// layers — sysctlbyname(kern.osversion), MGCopyAnswer(ProductVersion,
+// BuildVersion), UIDevice.systemVersion — so dropping infoDictionary
+// loses nothing material.
 
 // ============================================================
 // LAYER 12: DeviceCheck & App Attest (anti-fraud — Zalo, banking)
