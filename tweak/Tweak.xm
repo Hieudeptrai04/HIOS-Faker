@@ -116,35 +116,19 @@ static BOOL isCurrentBundleTargeted(void) {
     return NO;
 }
 
+// Forward decl — async fallback path, see below.
+static void ci_loadConfigViaCFPreferencesAsync(void);
+
 void reloadConfigFromDisk(void) {
     @autoreleasepool {
         // Strategy 1 — direct file read. Fast, works in system processes
-        // (backupd, etc.) and tweak hosts with permissive sandboxes.
+        // (backupd, etc.) and any tweak host with a permissive sandbox.
         NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
 
-        // Strategy 2 — cfprefsd-mediated read. App Store apps run in tight
-        // sandboxes that block direct reads of /var/mobile/Library/Preferences;
-        // CFPreferences talks to the cfprefsd daemon, which has access. This
-        // is the path that makes hooks actually fire inside AIDA64 / Zalo /
-        // Telegram. Without it, configLoaded stays NO and every hook returns
-        // %orig, so the app sees the real device — exactly the symptom the
-        // user reported. Diagnosed live via SSH on iPhone X / Dopamine 2.
-        if (!config) {
-            CFStringRef appID = CFSTR("com.changeinfoios");
-            CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
-            if (keys && CFArrayGetCount(keys) > 0) {
-                CFDictionaryRef dict = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
-                if (dict) {
-                    config = [(__bridge NSDictionary *)dict copy];
-                    CFRelease(dict);
-                }
-            }
-            if (keys) CFRelease(keys);
-        }
-
-        // Strategy 3 — rootless mirror path. Some Dopamine builds redirect
-        // /var/mobile/Library/Preferences to /var/jb/var/mobile/Library/...
-        // for sandboxed apps; try that path explicitly as a last resort.
+        // Strategy 2 — rootless mirror path. Some Dopamine 2 sandbox profiles
+        // redirect /var/mobile/Library/Preferences for App Store apps; this
+        // alternate prefix is accessible without sandbox permission for that
+        // path. Cheap to try synchronously.
         if (!config) {
             config = [NSDictionary dictionaryWithContentsOfFile:
                 @"/var/jb/var/mobile/Library/Preferences/com.changeinfoios.plist"];
@@ -156,8 +140,39 @@ void reloadConfigFromDisk(void) {
         } else {
             spoofConfig = nil;
             configLoaded = NO;
+            // Strategy 3 — cfprefsd over XPC. App Store apps with tight
+            // sandboxes can't read /var/mobile/Library/Preferences directly,
+            // but cfprefsd (on the receiving end of CFPreferencesCopyMultiple)
+            // can. We CANNOT call this synchronously from inside %ctor — the
+            // XPC reply needs the main thread runloop, which hasn't been
+            // started yet, so the call deadlocks the bootstrap thread (this
+            // hung opainject too). Hand it off to a background queue: hooks
+            // will fall through to %orig until the load lands a moment later.
+            ci_loadConfigViaCFPreferencesAsync();
         }
     }
+}
+
+static void ci_loadConfigViaCFPreferencesAsync(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            @autoreleasepool {
+                CFStringRef appID = CFSTR("com.changeinfoios");
+                CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+                if (keys && CFArrayGetCount(keys) > 0) {
+                    CFDictionaryRef dict = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+                    if (dict) {
+                        spoofConfig = [(__bridge NSDictionary *)dict copy];
+                        configLoaded = YES;
+                        CFRelease(dict);
+                        NSLog(@"[ChangeInfoIos] Config loaded (cfprefsd async): %lu keys", (unsigned long)spoofConfig.count);
+                    }
+                }
+                if (keys) CFRelease(keys);
+            }
+        });
+    });
 }
 
 static void loadConfig(void) {
