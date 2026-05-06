@@ -8,6 +8,7 @@ on:
     paths:
       - "tweak/**"
       - "app/**"
+      - "helloinject/**"
       - ".github/workflows/build.yml"
 
 permissions:
