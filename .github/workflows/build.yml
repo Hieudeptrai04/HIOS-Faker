@@ -239,34 +239,59 @@ jobs:
           # ONLY if that directory already exists. Symlinks (not copies) so
           # the same Mach-O is mmap'd once; no duplicate inject, no extra RAM.
           # prerm removes the symlinks cleanly.
+          # Pre-compute cdhashes on the macOS runner — `codesign -d --verbose=4`
+          # prints "CDHash=<hex>" lines for every slice in a FAT Mach-O. Stash
+          # them into a text file shipped in the deb so the postinst on the
+          # iPhone can re-trust on every install without having to parse
+          # Mach-O on-device (no codesign / ldid / jtool there).
+          mkdir -p combined/var/jb/Library/dpkg/info
+          CDHASH_FILE="combined/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
+          : > "$CDHASH_FILE"
+          for dylib in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
+                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib; do
+            [ -f "$dylib" ] || continue
+            codesign -d --verbose=4 "$dylib" 2>&1 | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+          done
+          echo "=== cdhashes packaged in deb ==="
+          cat "$CDHASH_FILE"
+
           cat > combined/DEBIAN/postinst <<'POSTINST'
           #!/bin/sh
-          set -e
+          # Two responsibilities:
+          # (1) Make sure ellekit will accept our dylib — owned by root:wheel,
+          #     0644/0755 perms, NOT mobile:staff (the staff/group ownership
+          #     dpkg leaves behind has been observed to make ellekit's
+          #     boot-time trustcache loader skip the dylib silently).
+          # (2) Add every cdhash from the packaged list to Dopamine's runtime
+          #     trustcache via `jbctl trustcache add <cdhash>`. The previous
+          #     version called `jbctl trustcache add <path>` which Dopamine 2
+          #     rejects ("ERROR: passed cdhash has wrong length") so the
+          #     trustcache stayed empty and AMFI rejected the dylib in App
+          #     Store apps — which is why "Change" never took effect.
           MS="/var/jb/Library/MobileSubstrate/DynamicLibraries"
-          TI="/var/jb/usr/lib/TweakInject"
           JBCTL="/var/jb/basebin/jbctl"
+          CDHASHES="/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
 
-          # Do NOT manually mirror files between MobileSubstrate and TweakInject!
-          # On Dopamine rootless, DynamicLibraries is already a symlink to TweakInject.
-          # dpkg automatically follows the symlink and puts files in TweakInject.
-          # Attempting to mirror it here creates a recursive symlink that deletes the file!
+          # (1) Ownership / mode — match what AppSyncUnified ships.
+          for f in "$MS/ChangeInfoIos.dylib" "$MS/ChangeInfoIos.plist" \
+                   "$MS/HelloInject.dylib" "$MS/HelloInject.plist"; do
+            [ -e "$f" ] || continue
+            chown root:wheel "$f" 2>/dev/null || true
+            case "$f" in
+              *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
+              *)       chmod 0644 "$f" 2>/dev/null || true ;;
+            esac
+          done
 
-          # Step 2: Register ALL binaries in Dopamine trustcache.
-          # Without this, dylibs are rejected by AMFI when loaded into user apps.
-          # This is the #1 reason tweaks fail to inject on Dopamine 2.
-          if [ -x "$JBCTL" ]; then
-            # Find all our Mach-O binaries and add their cdhashes
-            for dylib in "$MS/ChangeInfoIos.dylib" "$MS/HelloInject.dylib" \
-                         "$TI/ChangeInfoIos.dylib" "$TI/HelloInject.dylib" \
-                         "/var/jb/Applications/ChangeInfoIosApp.app/ChangeInfoIosApp"; do
-              if [ -f "$dylib" ]; then
-                # jbctl trustcache add accepts a file path on Dopamine 2.1+
-                "$JBCTL" trustcache add "$dylib" 2>/dev/null || true
-              fi
-            done
+          # (2) Trustcache — feed the embedded cdhash list, one hash per line.
+          if [ -x "$JBCTL" ] && [ -f "$CDHASHES" ]; then
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              "$JBCTL" trustcache add "$h" 2>/dev/null || true
+            done < "$CDHASHES"
           fi
 
-          # Step 3: Refresh icon cache for the app
+          # (3) Refresh icon cache for the app.
           uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || \
             /var/jb/usr/bin/uicache -p /var/jb/Applications/ChangeInfoIosApp.app 2>/dev/null || true
 
