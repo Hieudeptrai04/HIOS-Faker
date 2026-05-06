@@ -45,6 +45,26 @@
         if (tmp.length) {
             NSString *tmpMarker = [tmp stringByAppendingPathComponent:@"hios_hello.txt"];
             [stamp writeToFile:tmpMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+            // Also probe which prefs paths the host app can actually read,
+            // so we know where to ship the config. Each candidate gets a
+            // line: "<path>\t<size or -1>".
+            NSArray *candidates = @[
+                @"/var/mobile/Library/Preferences/com.changeinfoios.plist",
+                @"/var/jb/var/mobile/Library/Preferences/com.changeinfoios.plist",
+                @"/var/jb/etc/changeinfoios/config.plist",
+                @"/var/jb/etc/changeinfoios/cdhashes",
+            ];
+            NSMutableString *probe = [NSMutableString string];
+            for (NSString *p in candidates) {
+                NSError *err = nil;
+                NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:p error:&err];
+                long long sz = attr ? [attr[NSFileSize] longLongValue] : -1;
+                NSData *data = sz > 0 ? [NSData dataWithContentsOfFile:p options:0 error:nil] : nil;
+                [probe appendFormat:@"%@\tstat=%lld\tread=%lu\n", p, sz, (unsigned long)data.length];
+            }
+            NSString *probePath = [tmp stringByAppendingPathComponent:@"hios_probe.txt"];
+            [probe writeToFile:probePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }
     }
 }
