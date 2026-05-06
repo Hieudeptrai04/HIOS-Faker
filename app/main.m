@@ -736,13 +736,9 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:iosPreset[0] forKey:@"__presetIOSName"];
     [cm setObject:@(YES) forKey:@"fake_sysosversion"];
 
-    // WebView User-Agent — embeds the spoofed iOS version so Safari/WKWebView
-    // requests look consistent with the rest of the device fingerprint.
-    NSString *uaIOS = [iosPreset[1] stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-    NSString *fakeUA = [NSString stringWithFormat:
-        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-        uaIOS];
-    [cm setObject:fakeUA forKey:@"zalo_fakeWebViewUA"];
+    // WebView User-Agent removed — was added in ac4ec0e along with the
+    // 14 extras and triggered the same crash chain. Restore once we
+    // identify the actual trigger.
 
     // Additional keys for deep spoofing (AIDA64 reads these)
     [cm setObject:ci_randSerial() forKey:@"IOPlatformSerialNumber"];
@@ -785,10 +781,21 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:@(YES) forKey:k];
     }
 
-    // Hardware IDs + everything the Fake Info report tracks. Audited against
-    // the report's REPORT_KEYS list (64 fields total) — every row that was
-    // showing red ✕ before this commit is generated here so a fresh Reset
-    // Data lights all 64 green.
+    // Hardware IDs — REVERTED to the v2.4.0-9e19459 baseline (16 keys).
+    // The 14 extras added in ac4ec0e (PhoneNumber, localIP, carrierRadio
+    // Access, web_glVendor/Renderer/canvasNoise, zalo_metalGPU/timingOffset,
+    // clearPasteboard, zalo_fakeWebViewUA, batteryLevel/State,
+    // BatteryCurrentCapacity/IsCharging, BootNonce) caused EVERY targeted
+    // app to crash at launch — first with EXC_CRASH/SIGABRT in scene
+    // forwarding, then with std::terminate() on FrontBoardServices serial
+    // queue. User confirmed that BEFORE ac4ec0e, AIDA64 opened cleanly
+    // and showed the spoofed model — same hooks, just without the new
+    // config values. So one (or more) of the new values feeds a hook a
+    // value Apple's frameworks reject mid-launch.
+    //
+    // Going back to the 16 originals to restore the working state. We can
+    // add the missing-from-report fields back individually once we know
+    // which one is the trigger.
     NSDictionary *ids = @{
         @"serialNumber":                          ci_randSerial(),
         @"SerialNumber":                          ci_randSerial(),
@@ -807,67 +814,6 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"EthernetAddress":                       ci_randMAC(),
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
-
-        // Phone — VN format starts with +84, common operator prefixes 86/96/98
-        // (Viettel) / 90/93 (MobiFone) / 91/94 (Vinaphone).
-        @"PhoneNumber":                           [NSString stringWithFormat:@"+849%lu%@",
-                                                    (unsigned long)(arc4random_uniform(8) + 1),
-                                                    ci_randDigits(7)],
-
-        // Local LAN IP — typical home router subnet.
-        @"localIP":                               [NSString stringWithFormat:@"192.168.%lu.%lu",
-                                                    (unsigned long)(arc4random_uniform(254) + 1),
-                                                    (unsigned long)(arc4random_uniform(253) + 2)],
-
-        // Cellular tech — randomly LTE / NR (5G) / WCDMA / HSDPA, weighted to
-        // the modern stuff Vietnamese telcos actually run.
-        @"carrierRadioAccess":                    @[@"CTRadioAccessTechnologyLTE",
-                                                    @"CTRadioAccessTechnologyLTE",
-                                                    @"CTRadioAccessTechnologyNR",
-                                                    @"CTRadioAccessTechnologyWCDMA",
-                                                    @"CTRadioAccessTechnologyHSDPA"]
-                                                  [arc4random_uniform(5)],
-
-        // CPU + RAM + tracking auth disabled in v2.4.0-* — AIDA64
-        // crashed at scene init with EXC_CRASH/SIGABRT (objc_exception_throw
-        // → +[NSObject _copyDescription] → ___forwarding___) when these
-        // values were generated. Apple's _UIScenePerformActions chain
-        // queries NSProcessInfo and likely ATTrackingManager during launch
-        // and chokes when our hook returns a value that disagrees with the
-        // hardware-detected RAM / CPU count. Falling back to %orig (no
-        // config key set → hook bypasses) restores AIDA. We can re-enable
-        // these later with per-bundle gating if needed.
-
-        // WebKit fingerprint — User-Agent matches our spoofed iOS,
-        // GL vendor/renderer + Metal GPU + Canvas noise rotate every reset.
-        @"web_glVendor":                          @"Apple Inc.",
-        @"web_glRenderer":                        @[@"Apple GPU",
-                                                    @"Apple A15 GPU",
-                                                    @"Apple A16 GPU",
-                                                    @"Apple A17 Pro GPU"][arc4random_uniform(4)],
-        @"web_canvasNoise":                       ci_randHex(16),
-        @"zalo_metalGPU":                         @[@"Apple A15 GPU",
-                                                    @"Apple A16 GPU",
-                                                    @"Apple A17 Pro GPU"][arc4random_uniform(3)],
-        @"zalo_timingOffset":                     [NSString stringWithFormat:@"%d",
-                                                    (int)arc4random_uniform(1000000)],
-
-        // Tracking pasteboard — flag for Tweak.xm to clear UIPasteboard reads.
-        @"clearPasteboard":                       @"1",
-
-        // Battery — percentage as 0.0–1.0 float (UIDevice.batteryLevel),
-        // state code 0..3 (unknown / unplugged / charging / full).
-        @"batteryLevel":                          [NSString stringWithFormat:@"%.2f",
-                                                    (arc4random_uniform(80) + 15) / 100.0],
-        @"batteryState":                          [NSString stringWithFormat:@"%u",
-                                                    arc4random_uniform(3) + 1],
-        @"BatteryCurrentCapacity":                [NSString stringWithFormat:@"%u",
-                                                    arc4random_uniform(80) + 15],
-        @"BatteryIsCharging":                     (arc4random_uniform(2) ? @"1" : @"0"),
-
-        // Boot state.
-        @"BootNonce":                              [NSString stringWithFormat:@"0x%@",
-                                                    ci_randHex(16)],
     };
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *_) {
         [cm setObject:v forKey:k];
