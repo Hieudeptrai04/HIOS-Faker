@@ -731,47 +731,18 @@ static int hooked_ptrace(int request, pid_t pid, void *addr, int data) {
 }
 
 // ============================================================
-// objc_getClass / objc_lookUpClass — hide tweak-loader classes
+// !!! REMOVED: objc_getClass / objc_lookUpClass !!!
 // ============================================================
-// Apps that go all the way to runtime introspection check whether
-// well-known tweak-loader classes exist. NSClassFromString("MSHook…")
-// returns Nil on stock iOS but a real Class on jailbroken devices.
-// Rebind the runtime accessors to return Nil for any name that looks
-// like a hooking framework or known JB tool.
-typedef Class (*objc_getClass_t)(const char *name);
-static objc_getClass_t orig_objc_getClass = NULL;
-static objc_getClass_t orig_objc_lookUpClass = NULL;
-
-static BOOL ci_isJBClassName(const char *name) {
-    // Prefix-match (not substring) so we don't accidentally tag legit
-    // framework classes that happen to contain those words. Specific
-    // tweak-loader class prefixes only — avoids false positives like
-    // "ARAnchorSerializer" matching "Substrate".
-    if (!name || !*name) return NO;
-    static const char *list[] = {
-        "MSHook",          // MSHookMessageEx, MSHookFunction, MSHookIvar
-        "CydiaSubstrate",  // CydiaSubstrateClient
-        "ElleKit", "TweakInject", "libhooker",
-        "Substitute",      // ex.substitute
-        "FLEX",            // FLEXManager, FLEXExplorerViewController
-        "RevealApp", "Frida",
-        "Cydia", "Sileo", "Zebra", "Filza",
-    };
-    for (size_t i = 0; i < sizeof(list)/sizeof(list[0]); i++) {
-        if (strncmp(name, list[i], strlen(list[i])) == 0) return YES;
-    }
-    return NO;
-}
-
-static Class hooked_objc_getClass(const char *name) {
-    if (jbHideActive() && ci_isJBClassName(name)) return Nil;
-    return orig_objc_getClass(name);
-}
-static Class hooked_objc_lookUpClass(const char *name) {
-    if (jbHideActive() && ci_isJBClassName(name)) return Nil;
-    return orig_objc_lookUpClass(name);
-}
-
+// These were briefly hooked in v2.4.0-aa84601 to return Nil for
+// "MSHook…" / "CydiaSubstrate" / etc. class lookups, but the runtime
+// calls them from inside dispatch_once load gates on the main thread
+// during early app launch. Combined with our jbHideActive() →
+// getConfig() → reloadConfigFromDisk() chain (which can call
+// CFPreferences XPC), this deadlocked AIDA64's
+// _UIApplicationConfigurationLoader init and the OS SIGKILL'd it
+// after the 20s launch watchdog. Reverted in v2.4.0-* — the file
+// path, dlopen, dladdr, opendir, readlink hooks below already cover
+// 99% of JB detection vectors without the hot-path runtime risk.
 extern "C" void initCLvlHooks(void) {
     // sysctlbyname
     void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
@@ -950,16 +921,5 @@ extern "C" void initCLvlHooks(void) {
         MSHookFunction(ptrace_sym, (void *)hooked_ptrace, (void **)&orig_ptrace);
         NSLog(@"[ChangeInfoIos] ptrace hooked");
     }
-    void *getClass_sym = dlsym(RTLD_DEFAULT, "objc_getClass");
-    if (getClass_sym && !orig_objc_getClass) {
-        MSHookFunction(getClass_sym, (void *)hooked_objc_getClass, (void **)&orig_objc_getClass);
-        NSLog(@"[ChangeInfoIos] objc_getClass hooked");
-    }
-    void *lookUp_sym = dlsym(RTLD_DEFAULT, "objc_lookUpClass");
-    if (lookUp_sym && !orig_objc_lookUpClass) {
-        MSHookFunction(lookUp_sym, (void *)hooked_objc_lookUpClass, (void **)&orig_objc_lookUpClass);
-        NSLog(@"[ChangeInfoIos] objc_lookUpClass hooked");
-    }
-
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
 }

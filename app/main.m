@@ -2426,6 +2426,323 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @end
 
 // ============================================================
+// FAKE INFO REPORT VIEW CONTROLLER
+// ============================================================
+// One screen showing every faked field grouped by hook layer with a
+// green ✓ / red ✕ glyph and the current spoofed value next to it.
+// Driven entirely by [CIConfigManager shared] reads — same source the
+// tweak's getConfig() pulls from, so what the user sees here is
+// exactly what target apps will see at runtime.
+@interface CIFakeReportRow : NSObject
+@property (nonatomic, copy)   NSString *label;     // "Serial", "WiFi MAC", …
+@property (nonatomic, copy)   NSString *configKey; // key in CIConfigManager
+@property (nonatomic, copy)   NSString *value;     // resolved at build time
+@property (nonatomic, assign) BOOL      ok;        // green vs red
+@end
+@implementation CIFakeReportRow @end
+
+@interface CIFakeReportSection : NSObject
+@property (nonatomic, copy)  NSString *title;
+@property (nonatomic, copy)  NSString *icon;       // emoji prefix
+@property (nonatomic, copy)  NSArray<CIFakeReportRow *> *rows;
+@end
+@implementation CIFakeReportSection @end
+
+@interface CIFakeInfoReportViewController : UIViewController <UITableViewDelegate, UITableViewDataSource>
+@end
+
+@implementation CIFakeInfoReportViewController {
+    UITableView *_table;
+    NSArray<CIFakeReportSection *> *_sections;
+    NSInteger _okCount;
+    NSInteger _totalCount;
+}
+
++ (CIFakeReportRow *)row:(NSString *)label key:(NSString *)key {
+    CIFakeReportRow *r = [CIFakeReportRow new];
+    r.label = label; r.configKey = key;
+    NSString *v = [[CIConfigManager shared] stringForKey:key];
+    if (v.length == 0) {
+        id raw = [[CIConfigManager shared] objectForKey:key];
+        if (raw && ![raw isKindOfClass:[NSNull class]]) {
+            v = [NSString stringWithFormat:@"%@", raw];
+        }
+    }
+    r.value = v ?: @"(chưa fake)";
+    r.ok = (v.length > 0);
+    return r;
+}
+
++ (CIFakeReportSection *)section:(NSString *)title icon:(NSString *)icon rows:(NSArray<CIFakeReportRow *> *)rows {
+    CIFakeReportSection *s = [CIFakeReportSection new];
+    s.title = title; s.icon = icon; s.rows = rows;
+    return s;
+}
+
+- (void)buildSections {
+    Class C = [CIFakeInfoReportViewController class];
+    NSMutableArray *all = [NSMutableArray array];
+
+    [all addObject:[C section:@"UIDevice" icon:@"📱" rows:@[
+        [C row:@"Marketing Name" key:@"MarketingName"],
+        [C row:@"Device Name"    key:@"deviceName"],
+        [C row:@"Model"          key:@"deviceModel"],
+        [C row:@"Localized Model" key:@"localizedModel"],
+        [C row:@"System Name"    key:@"systemName"],
+        [C row:@"System Version" key:@"systemVersion"],
+        [C row:@"IDFV"           key:@"identifierForVendor"],
+    ]]];
+
+    [all addObject:[C section:@"Hardware (MGCopyAnswer)" icon:@"🔩" rows:@[
+        [C row:@"Product Type"   key:@"ProductType"],
+        [C row:@"Hardware Model" key:@"HardwareModel"],
+        [C row:@"Serial Number"  key:@"SerialNumber"],
+        [C row:@"UDID"           key:@"UniqueDeviceID"],
+        [C row:@"ECID"           key:@"UniqueChipID"],
+        [C row:@"IMEI"           key:@"InternationalMobileEquipmentIdentity"],
+        [C row:@"IMEI 2"         key:@"InternationalMobileEquipmentIdentity2"],
+        [C row:@"ICCID"          key:@"IntegratedCircuitCardIdentity"],
+        [C row:@"Region"         key:@"RegionCode"],
+        [C row:@"Model Number"   key:@"ModelNumber"],
+        [C row:@"Board ID"       key:@"BoardId"],
+        [C row:@"Chip ID"        key:@"ChipID"],
+        [C row:@"Boot Nonce"     key:@"BootNonce"],
+        [C row:@"Firmware"       key:@"FirmwareVersion"],
+        [C row:@"Baseband"       key:@"BasebandVersion"],
+        [C row:@"Phone Number"   key:@"PhoneNumber"],
+    ]]];
+
+    [all addObject:[C section:@"Network MAC" icon:@"📡" rows:@[
+        [C row:@"WiFi MAC"       key:@"WiFiAddress"],
+        [C row:@"Bluetooth MAC"  key:@"BluetoothAddress"],
+        [C row:@"Ethernet MAC"   key:@"EthernetAddress"],
+    ]]];
+
+    [all addObject:[C section:@"Carrier" icon:@"📶" rows:@[
+        [C row:@"Carrier Name"   key:@"carrierName"],
+        [C row:@"MCC"            key:@"carrierMCC"],
+        [C row:@"MNC"            key:@"carrierMNC"],
+        [C row:@"ISO"            key:@"carrierISO"],
+        [C row:@"Radio Tech"     key:@"carrierRadioAccess"],
+    ]]];
+
+    [all addObject:[C section:@"WiFi Network" icon:@"🛜" rows:@[
+        [C row:@"SSID"           key:@"wifiSSID"],
+        [C row:@"BSSID"          key:@"wifiBSSID"],
+        [C row:@"Local IP"       key:@"localIP"],
+    ]]];
+
+    [all addObject:[C section:@"Screen" icon:@"🖥️" rows:@[
+        [C row:@"Width"          key:@"screenWidth"],
+        [C row:@"Height"         key:@"screenHeight"],
+        [C row:@"Scale"          key:@"screenScale"],
+        [C row:@"Native Width"   key:@"nativeScreenWidth"],
+        [C row:@"Native Height"  key:@"nativeScreenHeight"],
+    ]]];
+
+    [all addObject:[C section:@"Locale & Time" icon:@"🌏" rows:@[
+        [C row:@"Locale ID"      key:@"localeIdentifier"],
+        [C row:@"Country"        key:@"localeCountryCode"],
+        [C row:@"Language"       key:@"localeLanguageCode"],
+        [C row:@"Currency"       key:@"localeCurrencyCode"],
+        [C row:@"Timezone"       key:@"timezoneName"],
+    ]]];
+
+    [all addObject:[C section:@"Disk & Memory" icon:@"💾" rows:@[
+        [C row:@"Total Disk"     key:@"TotalDiskCapacity"],
+        [C row:@"Free Disk"      key:@"TotalSystemAvailable"],
+        [C row:@"RAM"            key:@"physicalMemory"],
+        [C row:@"CPU Cores"      key:@"processorCount"],
+        [C row:@"hw.machine"     key:@"hw_machine"],
+    ]]];
+
+    [all addObject:[C section:@"Advertising / Tracking" icon:@"📢" rows:@[
+        [C row:@"IDFA"           key:@"advertisingIdentifier"],
+        [C row:@"Tracking Auth"  key:@"trackingAuthorizationStatus"],
+    ]]];
+
+    [all addObject:[C section:@"GPS Location" icon:@"📍" rows:@[
+        [C row:@"Enabled"        key:@"locationEnabled"],
+        [C row:@"Latitude"       key:@"latitude"],
+        [C row:@"Longitude"      key:@"longitude"],
+        [C row:@"Altitude"       key:@"altitude"],
+    ]]];
+
+    [all addObject:[C section:@"Web / GPU Fingerprint" icon:@"🌐" rows:@[
+        [C row:@"User-Agent"     key:@"zalo_fakeWebViewUA"],
+        [C row:@"GL Vendor"      key:@"web_glVendor"],
+        [C row:@"GL Renderer"    key:@"web_glRenderer"],
+        [C row:@"Canvas Noise"   key:@"web_canvasNoise"],
+        [C row:@"Metal GPU"      key:@"zalo_metalGPU"],
+        [C row:@"Timing Offset"  key:@"zalo_timingOffset"],
+    ]]];
+
+    [all addObject:[C section:@"Anti-Fraud Layers" icon:@"🛡️" rows:@[
+        [C row:@"Hide Jailbreak" key:@"hideJailbreak"],
+        [C row:@"Keychain Reset" key:@"keychainReset"],
+        [C row:@"Clear Pasteboard" key:@"clearPasteboard"],
+    ]]];
+
+    _okCount = 0; _totalCount = 0;
+    for (CIFakeReportSection *s in all) {
+        for (CIFakeReportRow *r in s.rows) {
+            _totalCount++;
+            if (r.ok) _okCount++;
+        }
+    }
+    _sections = all;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Thông tin máy fake";
+    self.view.backgroundColor = [CITheme bg];
+
+    [self buildSections];
+
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                      target:self action:@selector(done)];
+    UIBarButtonItem *copyBtn = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"doc.on.doc"] ?: nil
+                style:UIBarButtonItemStylePlain target:self action:@selector(copyAll)];
+    self.navigationItem.rightBarButtonItem = copyBtn;
+
+    // Summary header — green/red badge.
+    CGFloat W = self.view.bounds.size.width;
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 80)];
+    header.backgroundColor = [CITheme bg];
+
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 12, W - 32, 56)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 14;
+    card.layer.borderWidth = 1;
+    BOOL allOk = (_okCount == _totalCount && _totalCount > 0);
+    card.layer.borderColor = (allOk ? [CITheme green] : [CITheme orange]).CGColor;
+    [header addSubview:card];
+
+    UILabel *icon = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, 36, 56)];
+    icon.text = allOk ? @"✓" : @"⚠";
+    icon.textColor = allOk ? [CITheme green] : [CITheme orange];
+    icon.font = [UIFont systemFontOfSize:24 weight:UIFontWeightBold];
+    icon.textAlignment = NSTextAlignmentCenter;
+    [card addSubview:icon];
+
+    UILabel *line = [[UILabel alloc] initWithFrame:CGRectMake(56, 0, card.bounds.size.width - 64, 56)];
+    line.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    line.text = [NSString stringWithFormat:@"Đã fake %ld / %ld trường",
+                 (long)_okCount, (long)_totalCount];
+    line.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    line.textColor = [CITheme text];
+    [card addSubview:line];
+
+    _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleGrouped];
+    _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _table.delegate = self;
+    _table.dataSource = self;
+    _table.tableHeaderView = header;
+    _table.backgroundColor = [CITheme bg];
+    _table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    [self.view addSubview:_table];
+}
+
+- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)copyAll {
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"=== Thông tin máy fake (%ld/%ld) ===\n\n",
+        (long)_okCount, (long)_totalCount];
+    for (CIFakeReportSection *s in _sections) {
+        [out appendFormat:@"%@ %@\n", s.icon, s.title];
+        for (CIFakeReportRow *r in s.rows) {
+            [out appendFormat:@"  %@ %-22s %@\n", (r.ok ? @"✓" : @"✕"), r.label.UTF8String, r.value];
+        }
+        [out appendString:@"\n"];
+    }
+    [UIPasteboard generalPasteboard].string = out;
+    UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil message:@"Đã copy" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:toast animated:YES completion:^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [toast dismissViewControllerAnimated:YES completion:nil];
+        });
+    }];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return _sections.count; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return _sections[s].rows.count; }
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip { return 52; }
+- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s { return 48; }
+- (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s { return s == (NSInteger)_sections.count - 1 ? 30 : 8; }
+
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
+    CIFakeReportSection *sec = _sections[s];
+    UIView *v = [[UIView alloc] init];
+    v.backgroundColor = [CITheme bg];
+    NSInteger ok = 0, total = sec.rows.count;
+    for (CIFakeReportRow *r in sec.rows) if (r.ok) ok++;
+    UILabel *l = [[UILabel alloc] init];
+    l.frame = CGRectMake(20, 16, tv.bounds.size.width - 40, 28);
+    l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    l.text = [NSString stringWithFormat:@"%@  %@   %ld/%ld", sec.icon, sec.title, (long)ok, (long)total];
+    l.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    l.textColor = (ok == total) ? [CITheme green] : (ok == 0 ? [CITheme red] : [CITheme orange]);
+    [v addSubview:l];
+    return v;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *cid = @"frow";
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:cid];
+    if (!c) {
+        c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:cid];
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+        c.backgroundColor = [UIColor clearColor];
+        c.contentView.backgroundColor = [UIColor clearColor];
+    }
+    for (UIView *v in c.contentView.subviews) [v removeFromSuperview];
+
+    CIFakeReportRow *r = _sections[ip.section].rows[ip.row];
+    CGFloat W = tv.bounds.size.width;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 2, W - 32, 48)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 10;
+    card.layer.borderWidth = 1;
+    UIColor *accent = r.ok ? [CITheme green] : [CITheme red];
+    card.layer.borderColor = [accent colorWithAlphaComponent:0.35].CGColor;
+    [c.contentView addSubview:card];
+
+    UILabel *glyph = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, 24, 48)];
+    glyph.text = r.ok ? @"✓" : @"✕";
+    glyph.textColor = accent;
+    glyph.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
+    glyph.textAlignment = NSTextAlignmentCenter;
+    [card addSubview:glyph];
+
+    UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(40, 6, 130, 36)];
+    lbl.text = r.label;
+    lbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    lbl.textColor = [CITheme text];
+    [card addSubview:lbl];
+
+    UILabel *val = [[UILabel alloc] initWithFrame:CGRectMake(174, 6, card.bounds.size.width - 184, 36)];
+    val.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    val.text = r.value;
+    val.font = [UIFont systemFontOfSize:12];
+    val.textColor = r.ok ? [CITheme dim] : [[CITheme red] colorWithAlphaComponent:0.7];
+    val.numberOfLines = 2;
+    val.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    val.textAlignment = NSTextAlignmentRight;
+    [card addSubview:val];
+
+    return c;
+}
+
+@end
+
+
+// ============================================================
 // HOME VIEW CONTROLLER (matches Xóa Info layout)
 // ============================================================
 @interface CIHomeViewController : UIViewController <UITextFieldDelegate>
@@ -2476,14 +2793,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     UIButton *dbg = [UIButton buttonWithType:UIButtonTypeSystem];
     dbg.frame = CGRectMake(P, y, W-2*P, 44);
-    [dbg setTitle:@"🔍 Debug Inject Check" forState:UIControlStateNormal];
+    [dbg setTitle:@"📋 Xem thông tin máy fake" forState:UIControlStateNormal];
     [dbg setTitleColor:[CITheme blue] forState:UIControlStateNormal];
     dbg.titleLabel.font = [CITheme h2];
     dbg.backgroundColor = [CITheme card];
     dbg.layer.cornerRadius = 10;
     dbg.layer.borderWidth = 1;
     dbg.layer.borderColor = [CITheme border].CGColor;
-    [dbg addTarget:self action:@selector(debugCheckInject) forControlEvents:UIControlEventTouchUpInside];
+    [dbg addTarget:self action:@selector(showFakeInfoReport) forControlEvents:UIControlEventTouchUpInside];
     [sv addSubview:dbg];
     y += 56;
 
@@ -3005,6 +3322,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     [self presentViewController:ac animated:YES completion:nil];
 }
 
+// ============================================================
+// "Xem thông tin máy fake" — full hook status report
+// ============================================================
+// Replaces the old text-dump Debug Inject Check button. Presents a
+// modal table with every faked field grouped by hook layer; rows are
+// green when the config has a non-empty value (hook will return that
+// value to target apps) and red when the field is missing (hook
+// installed but will fall through to %orig). Helps the user verify
+// at a glance which fields actually got rolled fresh after Reset.
+- (void)showFakeInfoReport {
+    CIFakeInfoReportViewController *vc = [[CIFakeInfoReportViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
 - (void)saveAndReset {
     [self performRRSBackup:YES];
 }
@@ -3090,12 +3423,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 exec = [[b executablePath] lastPathComponent];
                 if (!exec.length) exec = [b objectForInfoDictionaryKey:@"CFBundleExecutable"];
             }
-            NSString *bidSafe  = [a.bundleID   stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
+            // IMPORTANT: do NOT pkill -f <bundleID>. That string appears in
+            // the cmdline of system services (backboardd, runningboardd,
+            // installd, containermanagerd, …) which all carry per-app state
+            // strings. Killing those caused the v2.4.0-a5256fe regression
+            // where wiping com.apple.mobilesafari took down WebKit-related
+            // daemons and AIDA64 wouldn't relaunch. Only the executable
+            // name (killall -9 <ExecName>) and the FULL bundle path
+            // (pkill -f <bundle-path>) are specific enough to be safe.
             NSString *execSafe = [exec         stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
             NSString *pathSafe = [a.bundlePath stringByReplacingOccurrencesOfString:@"'" withString:@""] ?: @"";
             NSMutableString *kcmd = [NSMutableString string];
             if (execSafe.length) [kcmd appendFormat:@"killall -9 '%@' 2>/dev/null; ", execSafe];
-            if (bidSafe.length)  [kcmd appendFormat:@"pkill -9 -f '%@' 2>/dev/null; ", bidSafe];
             if (pathSafe.length) [kcmd appendFormat:@"pkill -9 -f '%@' 2>/dev/null; ", pathSafe];
             if (kcmd.length) ci_run([kcmd UTF8String]);
         };
