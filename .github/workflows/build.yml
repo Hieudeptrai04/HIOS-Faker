@@ -239,18 +239,21 @@ jobs:
           # ONLY if that directory already exists. Symlinks (not copies) so
           # the same Mach-O is mmap'd once; no duplicate inject, no extra RAM.
           # prerm removes the symlinks cleanly.
-          # Pre-compute cdhashes on the macOS runner — `codesign -d --verbose=4`
-          # prints "CDHash=<hex>" lines for every slice in a FAT Mach-O. Stash
-          # them into a text file shipped in the deb so the postinst on the
-          # iPhone can re-trust on every install without having to parse
-          # Mach-O on-device (no codesign / ldid / jtool there).
+          # Pre-compute cdhashes for every Mach-O slice. `codesign -d --verbose=4`
+          # prints only the *current* arch's CDHash by default; iterating with
+          # `--display-architecture` covers both arm64 and arm64e, which we both
+          # ship in the FAT dylib (Dopamine 2 needs the slice matching whichever
+          # arch each target process runs in).
           mkdir -p combined/var/jb/Library/dpkg/info
           CDHASH_FILE="combined/var/jb/Library/dpkg/info/com.changeinfoios.cdhashes"
           : > "$CDHASH_FILE"
           for dylib in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
                        combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib; do
             [ -f "$dylib" ] || continue
-            codesign -d --verbose=4 "$dylib" 2>&1 | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+            for arch in $(lipo -archs "$dylib" 2>/dev/null); do
+              codesign -d --verbose=4 --display-architecture "$arch" "$dylib" 2>&1 \
+                | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+            done
           done
           echo "=== cdhashes packaged in deb ==="
           cat "$CDHASH_FILE"
