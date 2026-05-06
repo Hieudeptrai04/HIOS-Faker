@@ -1381,6 +1381,17 @@ static CLLocation *buildFakeLocation(void) {
 // App Attest is the iOS 14+ replacement: keypair stored in Secure Enclave,
 // keyId returned to app, attestation generated against a clientDataHash.
 // We return random keyIds and synthetic attestations — same idea.
+// !!! DISABLED — DCDevice hook caused targeted apps to crash with
+// std::terminate() on FrontBoardServices serial queue. AIDA64 in
+// particular SIGABRT'd on every launch the moment its bundleID was in
+// targetBundles. Likely root cause: %hook on a class that may not be
+// resolvable in every target process at dylib load time, plus our
+// dispatch_async-from-hook pattern that can re-enter into Apple's
+// completion path while the FrontBoard serial queue is mid-callout.
+// Re-enable when we can install the hook conditionally via
+// objc_getClass + MSHookMessageEx, and run the completion synchronously
+// (avoid dispatch_async).
+#if 0
 %hook DCDevice
 - (BOOL)isSupported {
     if (!fakeLayer(@"hardware")) return %orig;
@@ -1389,14 +1400,16 @@ static CLLocation *buildFakeLocation(void) {
 - (void)generateTokenWithCompletionHandler:(void (^)(NSData *token, NSError *error))completion {
     if (!fakeLayer(@"hardware")) { %orig; return; }
     if (!completion) return;
-    // 32 random bytes — Apple's tokens are opaque from the app's POV.
     uint8_t buf[32];
     arc4random_buf(buf, sizeof(buf));
     NSData *fake = [NSData dataWithBytes:buf length:sizeof(buf)];
     dispatch_async(dispatch_get_main_queue(), ^{ completion(fake, nil); });
 }
 %end
+#endif
 
+// !!! DISABLED — same root cause as DCDevice above. Re-enable later.
+#if 0
 %hook DCAppAttestService
 - (BOOL)isSupported {
     if (!fakeLayer(@"hardware")) return %orig;
@@ -1405,7 +1418,6 @@ static CLLocation *buildFakeLocation(void) {
 - (void)generateKeyWithCompletionHandler:(void (^)(NSString *keyId, NSError *error))completion {
     if (!fakeLayer(@"hardware")) { %orig; return; }
     if (!completion) return;
-    // keyId is base64-ish of a random SHA256 hash on real iOS.
     uint8_t buf[32];
     arc4random_buf(buf, sizeof(buf));
     NSData *raw = [NSData dataWithBytes:buf length:sizeof(buf)];
@@ -1416,20 +1428,21 @@ static CLLocation *buildFakeLocation(void) {
     completionHandler:(void (^)(NSData *attestation, NSError *error))completion {
     if (!fakeLayer(@"hardware")) { %orig; return; }
     if (!completion) return;
-    // Return a chunky random blob — real attestations are ~1.5–2 KB.
     NSMutableData *fake = [NSMutableData dataWithLength:1600];
     arc4random_buf(fake.mutableBytes, fake.length);
     dispatch_async(dispatch_get_main_queue(), ^{ completion(fake, nil); });
 }
 %end
+#endif
 
 // ============================================================
-// LAYER 13: LocalAuthentication (Touch ID / Face ID presence)
+// LAYER 13: LocalAuthentication — DISABLED for same crash reason.
+// %hook on a class that may not be in every target process at dylib
+// load time, plus LAContext.canEvaluatePolicy is called early during
+// scene init in some apps and our return-YES-without-checking-real-
+// biometrics breaks an internal invariant. Re-enable later.
 // ============================================================
-// Anti-fraud signals: device with biometrics is more "real" than one
-// without; older models without Face ID look different on the wire.
-// canEvaluatePolicy is the standard probe — return YES so the app
-// thinks the device has working biometrics regardless of actual hw.
+#if 0
 %hook LAContext
 - (BOOL)canEvaluatePolicy:(NSInteger)policy error:(NSError **)error {
     if (!fakeLayer(@"hardware")) return %orig;
@@ -1437,6 +1450,7 @@ static CLLocation *buildFakeLocation(void) {
     return YES;
 }
 %end
+#endif
 
 // ============================================================
 // C-LEVEL HOOKS - Implemented in Hooks.mm via MSHookFunction
