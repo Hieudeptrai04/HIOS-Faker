@@ -1394,6 +1394,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 @implementation CIFakeSettingsViewController {
     NSMutableArray<CIRow *> *_rows;
+    NSMutableSet<NSString *> *_expandedRangeKeys;
 }
 
 + (CIRow *)toggle:(NSString *)title key:(NSString *)key indent:(CGFloat)pad {
@@ -1510,6 +1511,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 52;
+    _expandedRangeKeys = [NSMutableSet set];
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self buildRows];
     // Single compact menu on the right — avoids overflow on narrow screens.
@@ -1858,10 +1860,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         return c;
     }
     if (r.kind == CIRowRange) {
-        // iOS-style two-component scroll wheel. Component 0 = min, component 1
-        // = max; each shows the same ordered label list. Range Reset picks one
-        // entry uniformly between [minIdx, maxIdx]. Indices persist on every
-        // didSelectRow under r.minStorageKey / r.maxStorageKey.
+        // Collapsed by default — pill shows "Từ X đến Y" summary; tapping the
+        // pill expands a 2-component UIPickerView underneath. Tapping again
+        // collapses. State lives in _expandedRangeKeys keyed by minStorageKey.
         NSInteger maxI = (NSInteger)r.options.count - 1;
         if (maxI < 0) return c;
         CIConfigManager *cm = [CIConfigManager shared];
@@ -1873,9 +1874,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         hi = MAX(0, MIN(maxI, hi));
         if (lo > hi) { NSInteger t = lo; lo = hi; hi = t; }
 
-        // Title row only appears when the row has its own caption — when the
-        // range row is glued under a toggle ("1. Fake iOS Version"), we leave
-        // r.title empty and skip rendering it so the pill sits flush.
+        BOOL expanded = [_expandedRangeKeys containsObject:r.minStorageKey];
+
         CGFloat pillY = 8;
         if (r.title.length > 0) {
             UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(pad, 6, rightEdge-pad, 22)];
@@ -1885,36 +1885,49 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             pillY = 32;
         }
 
-        // Pill summary "Từ <min> đến <max>" sitting just above the wheel.
-        UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pad, pillY, rightEdge - pad, 36)];
+        // Tappable pill — UIControl so we can hook UIControlEventTouchUpInside
+        // and animate the row expansion. A trailing chevron rotates when open.
+        UIControl *pill = [[UIControl alloc] initWithFrame:CGRectMake(pad, pillY, rightEdge - pad, 40)];
         pill.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         pill.backgroundColor = [CITheme card];
         pill.layer.cornerRadius = 10;
         pill.layer.borderColor = [[CITheme orange] colorWithAlphaComponent:0.6].CGColor;
         pill.layer.borderWidth = 1.0;
+        objc_setAssociatedObject(pill, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        [pill addTarget:self action:@selector(toggleRangePill:) forControlEvents:UIControlEventTouchUpInside];
         [c.contentView addSubview:pill];
 
-        UILabel *summary = [[UILabel alloc] initWithFrame:CGRectMake(8, 0, pill.bounds.size.width - 16, 36)];
+        UILabel *summary = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, pill.bounds.size.width - 44, 40)];
         summary.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        summary.font = [CITheme body]; summary.textColor = [CITheme text];
+        summary.font = [CITheme body];
+        summary.textColor = [UIColor whiteColor];
         summary.textAlignment = NSTextAlignmentCenter;
         summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", r.options[lo], r.options[hi]];
+        summary.userInteractionEnabled = NO;
         [pill addSubview:summary];
 
-        // 2-component UIPickerView. Component 0 = min, 1 = max. One delegate
-        // (this VC) services every range row; we associate the row's keys +
-        // labels onto the picker so the delegate can route correctly.
-        UIPickerView *pv = [[UIPickerView alloc] initWithFrame:CGRectMake(pad, pillY + 44, rightEdge - pad, 162)];
-        pv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        pv.dataSource = self;
-        pv.delegate = self;
-        objc_setAssociatedObject(pv, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(pv, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(pv, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(pv, @"ciRangeSummary", summary, OBJC_ASSOCIATION_ASSIGN);
-        [pv selectRow:lo inComponent:0 animated:NO];
-        [pv selectRow:hi inComponent:1 animated:NO];
-        [c.contentView addSubview:pv];
+        UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(pill.bounds.size.width - 28, 8, 20, 24)];
+        chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        chev.text = expanded ? @"˅" : @"›";
+        chev.textColor = [UIColor whiteColor];
+        chev.textAlignment = NSTextAlignmentCenter;
+        chev.font = [UIFont boldSystemFontOfSize:18];
+        chev.userInteractionEnabled = NO;
+        [pill addSubview:chev];
+
+        if (expanded) {
+            UIPickerView *pv = [[UIPickerView alloc] initWithFrame:CGRectMake(pad, pillY + 48, rightEdge - pad, 162)];
+            pv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+            pv.dataSource = self;
+            pv.delegate = self;
+            objc_setAssociatedObject(pv, @"ciRangeMinKey", r.minStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(pv, @"ciRangeMaxKey", r.maxStorageKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(pv, @"ciRangeOptions", r.options, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(pv, @"ciRangeSummary", summary, OBJC_ASSOCIATION_ASSIGN);
+            [pv selectRow:lo inComponent:0 animated:NO];
+            [pv selectRow:hi inComponent:1 animated:NO];
+            [c.contentView addSubview:pv];
+        }
 
         return c;
     }
@@ -1927,7 +1940,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (r.kind == CIRowNote)   return 44;
     if (r.kind == CIRowToggle) return 50;
     if (r.kind == CIRowChoose) return 62;
-    if (r.kind == CIRowRange)  return r.title.length > 0 ? 248 : 220;
+    if (r.kind == CIRowRange) {
+        BOOL expanded = [_expandedRangeKeys containsObject:r.minStorageKey];
+        CGFloat headerH = (r.title.length > 0) ? 32 : 0;
+        // 8 top + 40 pill + (expanded ? 8 + 162 picker : 0) + 8 bottom
+        return headerH + 8 + 40 + (expanded ? (8 + 162) : 0) + 8;
+    }
     return 70;
 }
 
@@ -1948,6 +1966,37 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (CGFloat)pickerView:(UIPickerView *)pv rowHeightForComponent:(NSInteger)component { return 32; }
+
+// Override the default dim system color — UIPickerView default text color
+// renders almost-black on our dark background. Returning a custom UILabel
+// per row forces clean white text, large enough to read on the wheel.
+- (UIView *)pickerView:(UIPickerView *)pv viewForRow:(NSInteger)row forComponent:(NSInteger)component reusingView:(UIView *)reusingView {
+    UILabel *l = [reusingView isKindOfClass:[UILabel class]] ? (UILabel *)reusingView : [[UILabel alloc] init];
+    NSArray *opts = objc_getAssociatedObject(pv, @"ciRangeOptions");
+    l.text = (row >= 0 && (NSUInteger)row < opts.count) ? opts[row] : @"";
+    l.textColor = [UIColor whiteColor];
+    l.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.adjustsFontSizeToFitWidth = YES;
+    l.minimumScaleFactor = 0.7;
+    return l;
+}
+
+- (void)toggleRangePill:(UIControl *)sender {
+    NSString *key = objc_getAssociatedObject(sender, @"ciRangeMinKey");
+    if (!key) return;
+    if ([_expandedRangeKeys containsObject:key]) [_expandedRangeKeys removeObject:key];
+    else [_expandedRangeKeys addObject:key];
+    NSInteger rowIdx = -1;
+    for (NSUInteger i = 0; i < _rows.count; i++) {
+        if ([_rows[i].minStorageKey isEqualToString:key]) { rowIdx = (NSInteger)i; break; }
+    }
+    if (rowIdx < 0) { [self.tableView reloadData]; return; }
+    [self.tableView beginUpdates];
+    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:rowIdx inSection:0]]
+                         withRowAnimation:UITableViewRowAnimationFade];
+    [self.tableView endUpdates];
+}
 
 - (void)pickerView:(UIPickerView *)pv didSelectRow:(NSInteger)row inComponent:(NSInteger)component {
     NSString *minKey = objc_getAssociatedObject(pv, @"ciRangeMinKey");
