@@ -118,7 +118,38 @@ static BOOL isCurrentBundleTargeted(void) {
 
 void reloadConfigFromDisk(void) {
     @autoreleasepool {
+        // Strategy 1 — direct file read. Fast, works in system processes
+        // (backupd, etc.) and tweak hosts with permissive sandboxes.
         NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+
+        // Strategy 2 — cfprefsd-mediated read. App Store apps run in tight
+        // sandboxes that block direct reads of /var/mobile/Library/Preferences;
+        // CFPreferences talks to the cfprefsd daemon, which has access. This
+        // is the path that makes hooks actually fire inside AIDA64 / Zalo /
+        // Telegram. Without it, configLoaded stays NO and every hook returns
+        // %orig, so the app sees the real device — exactly the symptom the
+        // user reported. Diagnosed live via SSH on iPhone X / Dopamine 2.
+        if (!config) {
+            CFStringRef appID = CFSTR("com.changeinfoios");
+            CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+            if (keys && CFArrayGetCount(keys) > 0) {
+                CFDictionaryRef dict = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+                if (dict) {
+                    config = [(__bridge NSDictionary *)dict copy];
+                    CFRelease(dict);
+                }
+            }
+            if (keys) CFRelease(keys);
+        }
+
+        // Strategy 3 — rootless mirror path. Some Dopamine builds redirect
+        // /var/mobile/Library/Preferences to /var/jb/var/mobile/Library/...
+        // for sandboxed apps; try that path explicitly as a last resort.
+        if (!config) {
+            config = [NSDictionary dictionaryWithContentsOfFile:
+                @"/var/jb/var/mobile/Library/Preferences/com.changeinfoios.plist"];
+        }
+
         if (config) {
             spoofConfig = [config copy];
             configLoaded = YES;

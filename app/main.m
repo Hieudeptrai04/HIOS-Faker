@@ -226,6 +226,19 @@ static NSString *CIRRSDir(void) {
     NSLog(@"[ChangeInfoIos] save FINAL: fileOK=%d exists=%d sz=%llu path=%@",
           fileOK, exists, sz, kSharedPrefPath);
 
+    // Strategy 5: also push every key through CFPreferences. The tweak running
+    // inside an App Store app's sandbox can't read /var/mobile/Library/Prefs
+    // directly, but it CAN read via CFPreferencesCopyValue (cfprefsd brokers
+    // the access). Without this, hooks load but configLoaded stays NO and
+    // every getter falls through %orig — i.e. "Change" never takes effect.
+    CFStringRef appID = CFSTR("com.changeinfoios");
+    for (NSString *k in _cfg) {
+        id v = _cfg[k];
+        if (v) CFPreferencesSetValue((__bridge CFStringRef)k, (__bridge CFPropertyListRef)v,
+                                     appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    }
+    CFPreferencesSynchronize(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+
     [self notifyReload];
 }
 
