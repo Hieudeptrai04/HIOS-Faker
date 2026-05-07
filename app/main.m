@@ -543,50 +543,87 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
 }
 
 // Random model + iOS presets (inline to avoid forward-decl issues)
+// Per-device preset row: real iPhone specs that need to stay coherent so apps
+// and the iOS frameworks reading them don't see contradictions (e.g. iPhone 12
+// with an A16 chip ID would throw assertions in Apple's hardware probes).
+// Index map (NSArray columns):
+//   0  modelName              "iPhone 12"
+//   1  productType             "iPhone13,2"
+//   2  hwMachine               "iPhone13,2"
+//   3  screenWidth             "390"
+//   4  screenHeight            "844"
+//   5  screenScale             "3"
+//   6  nativeWidth             "1170"
+//   7  nativeHeight            "2532"
+//   8  nativeScale             "3"
+//   9  chipName                "A14 Bionic"
+//   10 chipIDHex               "0x8101"        — real ProductTypeIdentifier
+//   11 boardIDHex              "0x18"          — real BoardId
+//   12 ramBytesNumber          @(4294967296)   — NSNumber, 4 GB
+//   13 cpuCoresNumber          @(6)            — NSNumber
+//   14 minIOSMajor             @(14)
+//   15 maxIOSMajor             @(18)
+//   16 colorChoices            @[@"Black", @"White", ...]   — real launch colors
 static NSArray *ci_randomPresets(void) {
     static NSArray *presets = nil;
     if (!presets) {
+        NSArray *colorsClassic = @[@"Space Gray", @"Silver", @"Gold"];
+        NSArray *colorsX       = @[@"Space Gray", @"Silver"];
+        NSArray *colorsXR      = @[@"Black", @"White", @"Red", @"Yellow", @"Blue", @"Coral"];
+        NSArray *colors11      = @[@"Black", @"White", @"Red", @"Yellow", @"Green", @"Purple"];
+        NSArray *colors11Pro   = @[@"Space Gray", @"Silver", @"Gold", @"Midnight Green"];
+        NSArray *colors12      = @[@"Black", @"White", @"Red", @"Green", @"Blue", @"Purple"];
+        NSArray *colors12Pro   = @[@"Pacific Blue", @"Graphite", @"Silver", @"Gold"];
+        NSArray *colors13      = @[@"Pink", @"Blue", @"Midnight", @"Starlight", @"Red", @"Green"];
+        NSArray *colors13Pro   = @[@"Sierra Blue", @"Silver", @"Gold", @"Graphite", @"Alpine Green"];
+        NSArray *colors14      = @[@"Midnight", @"Starlight", @"Blue", @"Purple", @"Red", @"Yellow"];
+        NSArray *colors14Pro   = @[@"Space Black", @"Silver", @"Gold", @"Deep Purple"];
+        NSArray *colors15      = @[@"Black", @"Blue", @"Green", @"Yellow", @"Pink"];
+        NSArray *colors15Pro   = @[@"Black Titanium", @"White Titanium", @"Blue Titanium", @"Natural Titanium"];
+        NSArray *colors16      = @[@"Black", @"White", @"Pink", @"Teal", @"Ultramarine"];
+        NSArray *colors16Pro   = @[@"Black Titanium", @"White Titanium", @"Natural Titanium", @"Desert Titanium"];
+
         presets = @[
-            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 7 Plus",    @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone 8",          @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 8 Plus",    @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone X",          @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone XR",         @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2", @"828",  @"1792", @"2"],
-            @[@"iPhone XS",         @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone XS Max",     @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3", @"1242", @"2688", @"3"],
-            @[@"iPhone SE (2)",     @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 11",         @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2", @"828",  @"1792", @"2"],
-            @[@"iPhone 11 Pro",    @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone 11 Pro Max", @"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3", @"1242", @"2688", @"3"],
-            @[@"iPhone 12 mini",   @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3", @"1080", @"2340", @"3"],
-            @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 12 Pro",    @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone 13 mini",   @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3"],
-            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 13 Pro",    @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone SE (3)",    @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 14 Plus",   @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone 14 Pro",    @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 15 Pro",    @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 16 Plus",   @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 16 Pro",    @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3"],
-            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3"],
+            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A6",        @"0x8950", @"0x00", @(1073741824), @(2),  @(7),  @(10), colorsClassic],
+            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A7",        @"0x8960", @"0x00", @(1073741824), @(2),  @(7),  @(12), colorsClassic],
+            @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A9",        @"0x8000", @"0x24", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
+            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A8",        @"0x7000", @"0x10", @(1073741824), @(2),  @(8),  @(12), colorsClassic],
+            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3", @"A8",        @"0x7000", @"0x10", @(1073741824), @(2),  @(8),  @(12), colorsClassic],
+            @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A9",        @"0x8000", @"0x10", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
+            @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3", @"A9",        @"0x8000", @"0x10", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
+            @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A10 Fusion",@"0x8010", @"0x10", @(2147483648), @(4),  @(10), @(15), @[@"Black", @"Jet Black", @"Silver", @"Gold", @"Rose Gold", @"Red"]],
+            @[@"iPhone 7 Plus",     @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3", @"1242", @"2208", @"3", @"A10 Fusion",@"0x8010", @"0x10", @(3221225472), @(4),  @(10), @(15), @[@"Black", @"Jet Black", @"Silver", @"Gold", @"Rose Gold", @"Red"]],
+            @[@"iPhone 8",          @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2", @"750",  @"1334", @"2", @"A11 Bionic",@"0x8015", @"0x04", @(2147483648), @(6),  @(11), @(16), @[@"Space Gray", @"Silver", @"Gold", @"Red"]],
+            @[@"iPhone 8 Plus",     @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3", @"1242", @"2208", @"3", @"A11 Bionic",@"0x8015", @"0x04", @(3221225472), @(6),  @(11), @(16), @[@"Space Gray", @"Silver", @"Gold", @"Red"]],
+            @[@"iPhone X",          @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3", @"1125", @"2436", @"3", @"A11 Bionic",@"0x8015", @"0x04", @(3221225472), @(6),  @(11), @(16), colorsX],
+            @[@"iPhone XR",         @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2", @"828",  @"1792", @"2", @"A12 Bionic",@"0x8020", @"0x0E", @(3221225472), @(6),  @(12), @(17), colorsXR],
+            @[@"iPhone XS",         @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3", @"1125", @"2436", @"3", @"A12 Bionic",@"0x8020", @"0x0E", @(4294967296), @(6),  @(12), @(16), @[@"Space Gray", @"Silver", @"Gold"]],
+            @[@"iPhone XS Max",     @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3", @"1242", @"2688", @"3", @"A12 Bionic",@"0x8020", @"0x0E", @(4294967296), @(6),  @(12), @(16), @[@"Space Gray", @"Silver", @"Gold"]],
+            @[@"iPhone SE (2)",     @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2", @"750",  @"1334", @"2", @"A13 Bionic",@"0x8030", @"0x0E", @(3221225472), @(6),  @(13), @(18), @[@"Black", @"White", @"Red"]],
+            @[@"iPhone 11",         @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2", @"828",  @"1792", @"2", @"A13 Bionic",@"0x8030", @"0x0E", @(4294967296), @(6),  @(13), @(18), colors11],
+            @[@"iPhone 11 Pro",     @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3", @"1125", @"2436", @"3", @"A13 Bionic",@"0x8030", @"0x0E", @(4294967296), @(6),  @(13), @(17), colors11Pro],
+            @[@"iPhone 11 Pro Max", @"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3", @"1242", @"2688", @"3", @"A13 Bionic",@"0x8030", @"0x0E", @(4294967296), @(6),  @(13), @(17), colors11Pro],
+            @[@"iPhone 12 mini",    @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3", @"1080", @"2340", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(4294967296), @(6),  @(14), @(18), colors12],
+            @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(4294967296), @(6),  @(14), @(18), colors12],
+            @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
+            @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
+            @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), colors13],
+            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), colors13],
+            @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(15), @(18), colors13Pro],
+            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(15), @(18), colors13Pro],
+            @[@"iPhone SE (3)",     @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), @[@"Midnight", @"Starlight", @"Red"]],
+            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(16), @(18), colors14],
+            @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(16), @(18), colors14],
+            @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(16), @(18), colors14Pro],
+            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(16), @(18), colors14Pro],
+            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(17), @(18), colors15],
+            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(17), @(18), colors15],
+            @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A17 Pro",   @"0x8130", @"0x0D", @(8589934592), @(6),  @(17), @(18), colors15Pro],
+            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A17 Pro",   @"0x8130", @"0x0D", @(8589934592), @(6),  @(17), @(18), colors15Pro],
+            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A18",       @"0x8140", @"0x0E", @(8589934592), @(6),  @(18), @(18), colors16],
+            @[@"iPhone 16 Plus",    @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A18",       @"0x8140", @"0x0E", @(8589934592), @(6),  @(18), @(18), colors16],
+            @[@"iPhone 16 Pro",     @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3", @"A18 Pro",   @"0x8150", @"0x0F", @(8589934592), @(6),  @(18), @(18), colors16Pro],
+            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3", @"A18 Pro",   @"0x8150", @"0x0F", @(8589934592), @(6),  @(18), @(18), colors16Pro],
         ];
     }
     return presets;
@@ -710,25 +747,39 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
     NSArray *iosPreset = iosList[(NSUInteger)iLo + arc4random_uniform((uint32_t)(iHi - iLo + 1))];
 
+    // Coherent column extraction — fields beyond index 8 are NEW (chip, board,
+    // RAM, CPU cores, supported iOS range, color list). All numeric fields
+    // are stored as NSNumber so hooks can call -unsigned*Value safely.
+    NSString *modelName  = preset[0];
+    NSString *productTyp = preset[1];
+    NSString *hwMachine  = preset[2];
+    NSString *chipIDHex  = preset.count > 10 ? preset[10] : @"0x8101";
+    NSString *boardIDHex = preset.count > 11 ? preset[11] : @"0x18";
+    NSNumber *ramBytes   = preset.count > 12 ? preset[12] : @(4294967296);
+    NSNumber *cpuCores   = preset.count > 13 ? preset[13] : @(6);
+    NSArray  *colors     = preset.count > 16 ? preset[16] : @[@"Black"];
+
     // Apply model preset
     // deviceModel = full consumer name ("iPhone 15 Pro Max") so UIDevice.model hook
     // returns something meaningful instead of generic "iPhone"
-    [cm setObject:preset[0] forKey:@"deviceModel"];
-    [cm setObject:preset[0] forKey:@"localizedModel"];
-    [cm setObject:@"iPhone" forKey:@"systemName"];
-    [cm setObject:preset[1] forKey:@"ProductType"];
-    [cm setObject:preset[2] forKey:@"hw_machine"];
-    [cm setObject:preset[2] forKey:@"HardwareModel"];  // MGCopyAnswer "HWModelStr" reads this
-    [cm setObject:preset[2] forKey:@"uname_machine"];
-    [cm setObject:preset[3] forKey:@"screenWidth"];
-    [cm setObject:preset[4] forKey:@"screenHeight"];
-    [cm setObject:preset[5] forKey:@"screenScale"];
-    [cm setObject:preset[6] forKey:@"nativeScreenWidth"];
-    [cm setObject:preset[7] forKey:@"nativeScreenHeight"];
-    [cm setObject:preset[8] forKey:@"nativeScale"];
-    [cm setObject:preset[0] forKey:@"__presetModelName"];
-    [cm setObject:@(YES) forKey:@"fake_uiddevice"];
-    [cm setObject:@(YES) forKey:@"fake_screen"];
+    [cm setObject:modelName  forKey:@"deviceModel"];
+    [cm setObject:modelName  forKey:@"localizedModel"];
+    [cm setObject:@"iPhone"  forKey:@"systemName"];
+    [cm setObject:productTyp forKey:@"ProductType"];
+    [cm setObject:hwMachine  forKey:@"hw_machine"];
+    [cm setObject:hwMachine  forKey:@"HardwareModel"];
+    [cm setObject:hwMachine  forKey:@"HWModelStr"];     // align legacy alias to current preset
+    [cm setObject:hwMachine  forKey:@"hw_model"];       // align legacy alias to current preset
+    [cm setObject:hwMachine  forKey:@"uname_machine"];
+    [cm setObject:preset[3]  forKey:@"screenWidth"];
+    [cm setObject:preset[4]  forKey:@"screenHeight"];
+    [cm setObject:preset[5]  forKey:@"screenScale"];
+    [cm setObject:preset[6]  forKey:@"nativeScreenWidth"];
+    [cm setObject:preset[7]  forKey:@"nativeScreenHeight"];
+    [cm setObject:preset[8]  forKey:@"nativeScale"];
+    [cm setObject:modelName  forKey:@"__presetModelName"];
+    [cm setObject:@(YES)     forKey:@"fake_uiddevice"];
+    [cm setObject:@(YES)     forKey:@"fake_screen"];
 
     // Apply iOS preset
     [cm setObject:iosPreset[1] forKey:@"systemVersion"];
@@ -742,24 +793,39 @@ static NSUInteger ci_randomizeIdentities(void) {
 
     // Additional keys for deep spoofing (AIDA64 reads these)
     [cm setObject:ci_randSerial() forKey:@"IOPlatformSerialNumber"];
-    [cm setObject:ci_randHex(40) forKey:@"IOPlatformUUID"];
+    // Real iOS uses canonical UUID format (8-4-4-4-12 with dashes). Apps
+    // calling [NSUUID UUID initWithUUIDString:] on a 40-char hex blob
+    // get nil back and may then crash when dereferencing.
+    [cm setObject:[[NSUUID UUID] UUIDString] forKey:@"IOPlatformUUID"];
     [cm setObject:[NSString stringWithFormat:@"iBoot-%d.%d.%d", arc4random_uniform(100)+7000, arc4random_uniform(99)+1, arc4random_uniform(9)+1] forKey:@"FirmwareVersion"];
     [cm setObject:[NSString stringWithFormat:@"%d.%d.%d", arc4random_uniform(9)+1, arc4random_uniform(99)+10, arc4random_uniform(9)] forKey:@"BasebandVersion"];
-    [cm setObject:@"16GB" forKey:@"ModelNumber"];
+    static NSArray *kModelNumbers = nil;
+    if (!kModelNumbers) kModelNumbers = @[@"MTGM2VC/A", @"MQ8L3VN/A", @"MN9P3VN/A", @"MQ7N3VN/A", @"MTU13VN/A", @"MGAH3VN/A"];
+    [cm setObject:kModelNumbers[arc4random_uniform((uint32_t)kModelNumbers.count)] forKey:@"ModelNumber"];
     [cm setObject:@"VN" forKey:@"RegionCode"];
     [cm setObject:@"VN/A" forKey:@"RegionInfo"];
-    [cm setObject:preset[1] forKey:@"BoardId"];
-    [cm setObject:[NSString stringWithFormat:@"0x81%02X", arc4random_uniform(256)] forKey:@"ChipID"];
-    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(400)+64) * 1073741824] forKey:@"TotalDiskCapacity"];
-    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(200)+10) * 1073741824] forKey:@"TotalSystemAvailable"];
-    [cm setObject:[NSString stringWithFormat:@"%llu", (unsigned long long)(arc4random_uniform(100)+5) * 1073741824] forKey:@"DiskUsage"];
-    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceName"];
-    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"DeviceNameMG"];
-    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"UserAssignedDeviceName"];
-    [cm setObject:[NSString stringWithFormat:@"iPhone %@", preset[0]] forKey:@"deviceName"];
-    [cm setObject:preset[0] forKey:@"MarketingName"];
-    [cm setObject:preset[1] forKey:@"DeviceColor"];
-    [cm setObject:preset[1] forKey:@"DeviceEnclosureColor"];
+    [cm setObject:boardIDHex forKey:@"BoardId"];
+    [cm setObject:chipIDHex  forKey:@"ChipID"];
+    // Numeric MG/sysctl values stored as NSNumber so hook -unsigned*Value
+    // converters never see a string.
+    [cm setObject:ramBytes  forKey:@"physicalMemory"];
+    [cm setObject:ramBytes  forKey:@"hw_memsize"];
+    [cm setObject:cpuCores  forKey:@"processorCount"];
+    [cm setObject:cpuCores  forKey:@"hw_physicalcpu"];
+    [cm setObject:cpuCores  forKey:@"hw_logicalcpu_max"];
+    unsigned long long capacity64 = (unsigned long long)(arc4random_uniform(4) + 1) * 64ULL * 1073741824ULL; // 64/128/192/256 GB
+    [cm setObject:@(capacity64) forKey:@"TotalDiskCapacity"];
+    [cm setObject:@(capacity64 - (unsigned long long)(arc4random_uniform(20)+5) * 1073741824ULL) forKey:@"TotalSystemAvailable"];
+    [cm setObject:@((unsigned long long)(arc4random_uniform(20)+5) * 1073741824ULL) forKey:@"DiskUsage"];
+    // No more "iPhone iPhone XS" — single-prefix consumer name.
+    [cm setObject:modelName forKey:@"DeviceName"];
+    [cm setObject:modelName forKey:@"DeviceNameMG"];
+    [cm setObject:modelName forKey:@"UserAssignedDeviceName"];
+    [cm setObject:modelName forKey:@"deviceName"];
+    [cm setObject:modelName forKey:@"MarketingName"];
+    NSString *colorPick = colors[arc4random_uniform((uint32_t)colors.count)];
+    [cm setObject:colorPick forKey:@"DeviceColor"];
+    [cm setObject:colorPick forKey:@"DeviceEnclosureColor"];
     [cm setObject:@"kCTSIMSupportSIMStatusReady" forKey:@"SIMTrayStatus"];
     [cm setObject:@(NO) forKey:@"AirplaneMode"];
     [cm setObject:@(arc4random_uniform(80)+20) forKey:@"BatteryCurrentCapacity"];
@@ -802,8 +868,7 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"advertisingIdentifier":                 ci_randUUID(),
         @"identifierForVendor":                   ci_randUUID(),
         @"UniqueDeviceID":                        ci_randHexLower(40),
-        @"UniqueChipID":                          [NSString stringWithFormat:@"%llu",
-                                                    ((unsigned long long)arc4random() << 32) | arc4random()],
+        @"UniqueChipID":                          @(((unsigned long long)arc4random() << 32) | arc4random()),
         @"InternationalMobileEquipmentIdentity":  ci_randIMEI(),
         @"InternationalMobileEquipmentIdentity2": ci_randIMEI(),
         @"MobileEquipmentIdentifier":             ci_randHex(14),
@@ -815,7 +880,7 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
     };
-    [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *_) {
+    [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
         [cm setObject:v forKey:k];
     }];
 

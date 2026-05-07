@@ -282,6 +282,20 @@ BOOL getConfigBool(NSString *key) {
     return [val respondsToSelector:@selector(boolValue)] ? [val boolValue] : NO;
 }
 
+// Type-safe unsigned converters. NSString does NOT implement
+// `unsignedIntegerValue` / `unsignedLongLongValue` — sending those selectors
+// to a string raises an NSInvalidArgumentException via __forwarding__ that
+// then explodes through `_copyDescription` during scene init (AIDA64 SIGABRT
+// post-Reset Data). Old config snapshots persist string forms of numeric
+// keys forever, so any hook reading them must coerce safely.
+static unsigned long long ci_toULL(id v) {
+    if (!v) return 0;
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v unsignedLongLongValue];
+    if ([v isKindOfClass:[NSString class]]) return (unsigned long long)[(NSString *)v longLongValue];
+    return 0;
+}
+static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
+
 /* Plist booleans fake_<name> — missing key defaults to ON.
    Short names: uiddevice, hardware, sysctl, ... */
 //
@@ -497,7 +511,8 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
             } else {
                 NSSet *mgIntKeys = [NSSet setWithObjects:
                     @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
-                    @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform", nil];
+                    @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform",
+                    @"UniqueChipID", nil];
                 if ([mgIntKeys containsObject:key]) {
                     int64_t v = configValueAsMGInteger(configKey);
                     result = (__bridge_retained CFTypeRef)@(v);
@@ -812,14 +827,14 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 - (NSUInteger)processorCount {
     if (!fakeLayer(@"processinfo")) return %orig;
     id val = getConfig(@"processorCount");
-    if (val) return [val unsignedIntegerValue];
+    if (val) return ci_toUInteger(val);
     return %orig;
 }
 
 - (unsigned long long)physicalMemory {
     if (!fakeLayer(@"processinfo")) return %orig;
     id val = getConfig(@"physicalMemory");
-    if (val) return [val unsignedLongLongValue];
+    if (val) return ci_toULL(val);
     return %orig;
 }
 
@@ -831,17 +846,24 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 }
 
 - (NSOperatingSystemVersion)operatingSystemVersion {
-    if (!fakeLayer(@"processinfo")) return %orig;
+    NSOperatingSystemVersion real = %orig;
+    if (!fakeLayer(@"processinfo")) return real;
     NSString *ver = getConfigStr(@"systemVersion");
-    if (ver) {
-        NSArray *parts = [ver componentsSeparatedByString:@"."];
-        NSOperatingSystemVersion v;
-        v.majorVersion = parts.count > 0 ? [parts[0] integerValue] : 16;
-        v.minorVersion = parts.count > 1 ? [parts[1] integerValue] : 0;
-        v.patchVersion = parts.count > 2 ? [parts[2] integerValue] : 0;
-        return v;
-    }
-    return %orig;
+    if (!ver) return real;
+    NSArray *parts = [ver componentsSeparatedByString:@"."];
+    if (parts.count == 0) return real;
+    NSInteger spoofedMajor = [parts[0] integerValue];
+    // Only spoof when MAJOR version matches the real OS. UIKit and
+    // FrontBoardServices on iOS 16 gate features behind
+    // operatingSystemVersion.majorVersion >= 16 — if we lie about being iOS
+    // 14 on a 16 device, those feature checks fail and scene init throws.
+    // The user-visible iOS string is still spoofed via UIDevice.systemVersion.
+    if (spoofedMajor != real.majorVersion) return real;
+    NSOperatingSystemVersion v;
+    v.majorVersion = spoofedMajor;
+    v.minorVersion = parts.count > 1 ? [parts[1] integerValue] : 0;
+    v.patchVersion = parts.count > 2 ? [parts[2] integerValue] : 0;
+    return v;
 }
 
 %end

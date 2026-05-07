@@ -42,6 +42,17 @@ extern "C" {
     extern BOOL configLoaded;
 }
 
+// Type-safe unsigned coerce. NSString lacks `unsignedLongLongValue` —
+// sending it to a string raises an unrecognized selector exception that
+// blows up scene init through __forwarding__ (AIDA64 SIGABRT after Reset
+// Data when legacy string-form numerics persist in the config plist).
+static inline uint64_t ci_safeULL(id v) {
+    if (!v) return 0;
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v unsignedLongLongValue];
+    if ([v isKindOfClass:[NSString class]]) return (uint64_t)[(NSString *)v longLongValue];
+    return 0;
+}
+
 // ============================================================
 // Process name guard - never hook in system critical processes
 // ============================================================
@@ -126,7 +137,7 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
     if (strcmp(name, "hw.memsize") == 0) {
         id val = getConfig(@"hw_memsize");
         if (val && oldlenp && *oldlenp >= sizeof(uint64_t)) {
-            uint64_t memsize = [val unsignedLongLongValue];
+            uint64_t memsize = ci_safeULL(val);
             memcpy(oldp, &memsize, sizeof(uint64_t));
             return 0;
         }
@@ -171,7 +182,7 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
     if (strcmp(name, "hw.cpufrequency") == 0 || strcmp(name, "hw.cpufrequency_max") == 0) {
         id val = getConfig(@"hw_cpufrequency");
         if (val && oldlenp && *oldlenp >= sizeof(uint64_t)) {
-            uint64_t freq = [val unsignedLongLongValue];
+            uint64_t freq = ci_safeULL(val);
             memcpy(oldp, &freq, sizeof(uint64_t));
             return 0;
         }
