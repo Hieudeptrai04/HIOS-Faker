@@ -1686,6 +1686,20 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @implementation CIFakeSettingsViewController {
     NSMutableArray<CIRow *> *_rows;
     NSMutableSet<NSString *> *_expandedRangeKeys;
+    CGFloat _lastLayoutWidth;
+}
+
+// Same root cause as CIFakeInfoReportViewController: cells compute label
+// frames from tv.bounds.size.width at cellForRow time, so the very first
+// dequeue (table bounds = 0) builds clipped subviews. Reload once the
+// table reaches its real width.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = self.tableView.bounds.size.width;
+    if (w > 0 && w != _lastLayoutWidth) {
+        _lastLayoutWidth = w;
+        [self.tableView reloadData];
+    }
 }
 
 + (CIRow *)toggle:(NSString *)title key:(NSString *)key indent:(CGFloat)pad {
@@ -2564,6 +2578,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSArray<CIFakeReportSection *> *_sections;
     NSInteger _okCount;
     NSInteger _totalCount;
+    CGFloat _lastLayoutWidth;
 }
 
 + (CIFakeReportRow *)row:(NSString *)label key:(NSString *)key {
@@ -2760,6 +2775,21 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     _table.backgroundColor = [CITheme bg];
     _table.separatorStyle = UITableViewCellSeparatorStyleNone;
     [self.view addSubview:_table];
+}
+
+// Cell layout in cellForRow uses tv.bounds.size.width to position the
+// trailing value label. On the FIRST appearance the table's bounds are
+// still 0×0 (set later by autoresize), so cells render with the value
+// label clipped — only swiping forces a re-dequeue with the correct
+// width. Force a reloadData once the table reaches its real width so
+// every cell is rebuilt correctly without user interaction.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = _table.bounds.size.width;
+    if (w > 0 && w != _lastLayoutWidth) {
+        _lastLayoutWidth = w;
+        [_table reloadData];
+    }
 }
 
 - (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
