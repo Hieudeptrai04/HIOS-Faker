@@ -1886,6 +1886,17 @@ static BOOL computeBundleTargeted(void) {
         [stamp writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
         chmod([marker fileSystemRepresentation], 0644);
 
+        // Sandbox-friendly fallback. App Store apps' tight sandbox blocks
+        // writes to /var/mobile/Library/Caches/<other-bundle>/, so the
+        // marker above silently fails for sandboxed targets like Zalo.
+        // /var/jb/etc/changeinfoios/ is verified writable from sandboxed
+        // tweak processes (postinst chmods it 0777). A second marker here
+        // lets the host app prove dylib loaded into a target by running
+        //   ls /var/jb/etc/changeinfoios/loaded_*.txt
+        NSString *sbDir = @"/var/jb/etc/changeinfoios";
+        NSString *sbMarker = [sbDir stringByAppendingFormat:@"/loaded_%@.txt", bid];
+        [stamp writeToFile:sbMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
         loadConfig();
         g_bundleTargeted = computeBundleTargeted();
 

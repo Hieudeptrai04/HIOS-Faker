@@ -240,74 +240,27 @@ jobs:
           # ONLY if that directory already exists. Symlinks (not copies) so
           # the same Mach-O is mmap'd once; no duplicate inject, no extra RAM.
           # prerm removes the symlinks cleanly.
-          # Pre-compute cdhashes for every Mach-O slice. codesign on macOS only
-          # prints the host arch's CDHash by default and has no flag to dump
-          # every slice in one go on older Xcode, so we use a tiny inline Node
-          # parser: walks the FAT/Mach-O headers, finds each LC_CODE_SIGNATURE,
-          # locates the CodeDirectory blob (slot 0 in the SuperBlob), and
-          # SHA256-truncates it to 20 bytes. This is identical to what Apple's
-          # cdhash code does for hashType=2.
-          # Ship the cdhash list outside /var/jb/Library/dpkg/info — that
-          # directory is dpkg's own metadata store and dpkg overwrites/clears
-          # custom files there on install.
+          # Pre-compute cdhashes via ldid -h. The previous inline-JS Mach-O
+          # parser computed sha256-truncated hashes that DID NOT match what
+          # Apple's runtime trustcache expects — confirmed live on a
+          # Dopamine 2 device 2026-05-07: packaged hashes 2a16e6e2... did
+          # not match dylib's actual cdhash 92fa0a84... per `ldid -h | grep
+          # CDHash`, so jbctl trustcache never matched the real binary,
+          # iOS rejected dylib load, and the tweak never injected into
+          # any target app. Result: every spoof attempt silently no-op'd.
+          #
+          # Use ldid (which is already in our build chain via Theos) and
+          # parse its `CDHash=...` line. ldid emits one CDHash per
+          # FAT slice; pipe through grep to keep all of them.
           mkdir -p combined/var/jb/etc/changeinfoios
           CDHASH_FILE="combined/var/jb/etc/changeinfoios/cdhashes"
-          node - <<'NODE_PARSE' "$CDHASH_FILE" \
-            combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
-            combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib
-          const fs = require('fs');
-          const crypto = require('crypto');
-          const out = process.argv[2];
-          const files = process.argv.slice(3);
-          function cdHashAt(buf, base) {
-            const ncmds = buf.readUInt32LE(base + 16);
-            let off = base + 32;
-            for (let i = 0; i < ncmds; i++) {
-              const cmd = buf.readUInt32LE(off);
-              const sz  = buf.readUInt32LE(off + 4);
-              if (cmd === 0x1d) {
-                const dataOff = base + buf.readUInt32LE(off + 8);
-                const cnt = buf.readUInt32BE(dataOff + 8);
-                const hashes = [];
-                for (let j = 0; j < cnt; j++) {
-                  const idx = dataOff + 12 + j * 8;
-                  const blobOff = buf.readUInt32BE(idx + 4);
-                  const cdAbs = dataOff + blobOff;
-                  if (buf.readUInt32BE(cdAbs) === 0xfade0c02) {
-                    const cdLen = buf.readUInt32BE(cdAbs + 4);
-                    const blob = buf.slice(cdAbs, cdAbs + cdLen);
-                    const ht = buf.readUInt8(cdAbs + 36);
-                    const h = ht === 1
-                      ? crypto.createHash('sha1').update(blob).digest('hex')
-                      : crypto.createHash('sha256').update(blob).digest('hex').slice(0, 40);
-                    hashes.push({ ht, h });
-                  }
-                }
-                const sha256 = hashes.find(x => x.ht === 2);
-                return (sha256 || hashes[0] || {}).h;
-              }
-              off += sz;
-            }
-          }
-          const lines = [];
-          for (const f of files) {
-            if (!fs.existsSync(f)) continue;
-            const buf = fs.readFileSync(f);
-            const m0 = buf.readUInt32BE(0);
-            if (m0 === 0xcafebabe) {
-              const n = buf.readUInt32BE(4);
-              for (let i = 0; i < n; i++) {
-                const archOff = 8 + i * 20;
-                const offset = buf.readUInt32BE(archOff + 8);
-                lines.push(cdHashAt(buf, offset));
-              }
-            } else if (m0 === 0xcffaedfe || buf.readUInt32LE(0) === 0xfeedfacf) {
-              lines.push(cdHashAt(buf, 0));
-            }
-          }
-          fs.writeFileSync(out, lines.filter(Boolean).join('\n') + '\n');
-          NODE_PARSE
-          echo "=== cdhashes packaged in deb ==="
+          : > "$CDHASH_FILE"
+          for dylib in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
+                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib; do
+            [ -f "$dylib" ] || continue
+            ldid -h "$dylib" 2>/dev/null | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+          done
+          echo "=== cdhashes packaged in deb (extracted via ldid -h) ==="
           cat "$CDHASH_FILE"
 
           cat > combined/DEBIAN/postinst <<'POSTINST'
