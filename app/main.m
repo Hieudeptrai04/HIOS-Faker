@@ -4350,28 +4350,55 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if ([fm fileExistsAtPath:bkConfigDir]) {
             NSArray *cfgList = [fm contentsOfDirectoryAtPath:bkConfigDir error:nil];
             configFiles = cfgList.count;
+
+            // Copy to /var/jb/etc/changeinfoios (where the tweak reads from
+            // sandboxed apps).
             NSString *cmd = [NSString stringWithFormat:
                 @"mkdir -p /var/jb/etc/changeinfoios; "
                 @"cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
                 @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null",
                 bkConfigDir];
             int rc = ci_run([cmd UTF8String]);
-            NSLog(@"[ChangeInfoIos] restore: config dir restored, %lu files, rc=%d",
+            NSLog(@"[ChangeInfoIos] restore: /var/jb/etc/changeinfoios restored, %lu files, rc=%d",
                   (unsigned long)configFiles, rc);
+
+            // CRITICAL: ALSO copy the restored config.plist to BOTH of the
+            // host app's other config paths — otherwise [cm load] right
+            // below reads STALE (current) values from app sandbox /
+            // /var/mobile/Library/Preferences and [cm save] would clobber
+            // the just-restored /var/jb file. Pre-fix: every restore wrote
+            // the OLD config back over the restored one and the user saw
+            // current (not restored) hardware IDs after the restore.
+            NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
+            if ([fm fileExistsAtPath:bkConfigPlist]) {
+                // Local sandbox path (Documents/config.plist) — readable
+                // without sudo because it's inside the host app's container.
+                NSError *cpErr = nil;
+                [fm removeItemAtPath:CILocalConfigPath() error:nil];
+                BOOL ok = [fm copyItemAtPath:bkConfigPlist toPath:CILocalConfigPath() error:&cpErr];
+                NSLog(@"[ChangeInfoIos] restore: local config copy ok=%d err=%@", ok, cpErr);
+
+                // Shared prefs path /var/mobile/Library/Preferences/com.changeinfoios.plist —
+                // sometimes mobile-writable depending on rootless variant.
+                NSString *sharedCmd = [NSString stringWithFormat:
+                    @"cp -f '%@' '%@' 2>/dev/null; chmod 0644 '%@' 2>/dev/null",
+                    bkConfigPlist, kSharedPrefPath, kSharedPrefPath];
+                ci_run([sharedCmd UTF8String]);
+            }
         } else {
             NSLog(@"[ChangeInfoIos] restore: WARNING — backup has no config snapshot. "
                   @"Created with old build before 3560b20? Hardware IDs won't match the saved env.");
         }
 
-        // Reload host-app's in-memory CIConfigManager from the restored
-        // plist so the user's settings UI matches what's been put back.
+        // Reload host-app's in-memory CIConfigManager from the JUST-RESTORED
+        // plist (now consistent across all 3 paths). Without the copy above,
+        // load would have picked up the stale local-sandbox plist with
+        // current (post-Reset) values.
         [[CIConfigManager shared] load];
 
-        // CRITICAL: disable keychainReset after restore. The
-        // SecItemCopyMatching hook in Hooks.mm blocks Zalo's keychain
-        // reads when keychainReset=YES — useful for fresh-account
-        // registration but lethal for restore. Setting NO + saving lets
-        // the hook fall through to %orig.
+        // Push keychainReset=NO so the SecItemCopyMatching hook lets Zalo
+        // read its keychain entries on next launch (instead of blocking
+        // them — that block is meant for fresh-account registration).
         [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
         [[CIConfigManager shared] save];
 
