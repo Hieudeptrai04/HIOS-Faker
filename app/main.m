@@ -3842,9 +3842,30 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Step-by-step with visible progress. Each step takes ~1-2s minimum
         // so the user can read what's happening on screen.
+        NSInteger totalSteps = backup ? 6 : 5;
+
+        // ============================================================
+        // STEP 0 (BACKUP MODE ONLY): snapshot the CURRENT environment
+        // ============================================================
+        // CRITICAL ORDER: backup MUST happen BEFORE Step 1 / Step 2 wipe
+        // anything. Pre-bug-fix flow had createRRSForBundles at Step 3,
+        // i.e. AFTER ci_randomizeIdentities had overwritten config + the
+        // container wipe had emptied every target's Documents/Library/etc.
+        // The resulting tar contained the NEW (already-spoofed) config and
+        // EMPTY containers — restoring it never brought back the account.
+        if (backup) {
+            [self updateHUD:hud step:1 total:totalSteps
+                      title:@"Backup môi trường hiện tại"
+                   subtitle:[NSString stringWithFormat:@"Lưu %lu app + config + DC tokens…",
+                             (unsigned long)rrsBids.count]];
+            [NSThread sleepForTimeInterval:1.2];
+            [self createRRSForBundles:rrsBids note:note];
+            NSLog(@"[ChangeInfoIos] Step 0 (backup) done BEFORE wipe");
+        }
 
         // Step 1: Generate new fake identities and persist to plist
-        [self updateHUD:hud step:1 total:5
+        NSInteger stepIdx = backup ? 2 : 1;
+        [self updateHUD:hud step:stepIdx total:totalSteps
                   title:@"Tạo thông tin giả mới"
                subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC mới…"];
         [NSThread sleepForTimeInterval:1.5];
@@ -3891,7 +3912,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (!a.containerPath.length) continue;
             NSString *sub = [NSString stringWithFormat:@"%lu/%lu — %@",
                 (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
-            [self updateHUD:hud step:2 total:5
+            [self updateHUD:hud step:(backup ? 3 : 2) total:totalSteps
                       title:@"Xoá dữ liệu app target"
                    subtitle:sub];
             [NSThread sleepForTimeInterval:0.8];
@@ -3912,7 +3933,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
-        [self updateHUD:hud step:3 total:5
+        [self updateHUD:hud step:(backup ? 4 : 3) total:totalSteps
                   title:@"Xoá cache phát hiện + Safari"
                subtitle:@"Safari history/cookies/WebKit + DeviceCheck/IDFA…"];
         [NSThread sleepForTimeInterval:1.5];
@@ -3949,7 +3970,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 p, p, p];
             ci_run([cmd UTF8String]);
         }
-        if (backup) [self createRRSForBundles:rrsBids note:note];
+        // (Backup snapshot was taken at Step 0 above, BEFORE the wipe.)
         CIConfigManager *cm = [CIConfigManager shared];
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
         [cm setTargetBundles:allBids];
@@ -3964,7 +3985,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // As mobile user we can't killall SpringBoard (root-owned). Try
         // sbreload/launchctl first (rootless-jb friendly), then fall back
         // to killall SpringBoard which only works if elevated.
-        [self updateHUD:hud step:4 total:5
+        [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
                   title:@"Restart SpringBoard"
                subtitle:@"Reload tweak với config mới…"];
         [NSThread sleepForTimeInterval:1.5];
@@ -3985,7 +4006,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // auto-resumes target apps from their launch snapshot. Kill them one
         // more time so that when the user next opens the app icon, it does a
         // FRESH cold-start and the tweak %ctor runs again with the new config.
-        [self updateHUD:hud step:5 total:5
+        [self updateHUD:hud step:(backup ? 6 : 5) total:totalSteps
                   title:@"Dọn lần cuối"
                subtitle:@"Đảm bảo lần mở tới là cold-start mới…"];
         [NSThread sleepForTimeInterval:1.0];
@@ -4077,6 +4098,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
     [[NSFileManager defaultManager] createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // Pre-flight: log what we're about to archive so a silent tar failure
+    // is identifiable. If `paths` is empty (no target's containerPath was
+    // resolved), tar would still run and produce a near-empty archive
+    // containing only /var/jb/etc/changeinfoios — and the user wouldn't
+    // see why their backup is useless.
+    NSLog(@"[ChangeInfoIos] RRS pre-archive: %lu containers + config dir",
+          (unsigned long)paths.count);
+    for (NSString *p in paths) NSLog(@"[ChangeInfoIos]   archiving %@", p);
+    if (paths.count == 0) {
+        NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up — RRS will only contain config snapshot");
+    }
+
     // Archive command: app data containers + tweak config + DC state files.
     // Without the config snapshot, restoring just brings the user data back
     // but the tweak still spoofs the CURRENT random hardware IDs — so a
@@ -4084,13 +4118,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // sees a different UDID/IDFA/IMEI and fails session validation.
     // Including /var/jb/etc/changeinfoios/ captures the spoof config + DC
     // tokens that were active at backup time, restoring the full env.
-    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -czf %@ /var/jb/etc/changeinfoios", tarPath];
+    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -czf '%@' /var/jb/etc/changeinfoios", tarPath];
     for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
     [tarCmd appendString:@" 2>/dev/null"];
-    ci_run([tarCmd UTF8String]);
+    int rc = ci_run([tarCmd UTF8String]);
+
+    // Verify archive size matches expectation. tar gz usually compresses 30-60%.
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath error:nil];
+    unsigned long long actualBytes = [attrs[NSFileSize] unsignedLongLongValue];
+    e.totalSize = actualBytes;  // store the actual archive size, not pre-compress estimate
+
     [[CIRRSStore shared] addEntry:e];
-    NSLog(@"[ChangeInfoIos] RRS created: %@ (%lu apps + config snapshot)",
-          e.uid, (unsigned long)e.bundleIDs.count);
+    NSLog(@"[ChangeInfoIos] RRS created: uid=%@ rc=%d archive=%llu bytes (apps=%lu)",
+          e.uid, rc, actualBytes, (unsigned long)e.bundleIDs.count);
 }
 
 // Full environment restore. iOS reassigns the data-container UUID for each
