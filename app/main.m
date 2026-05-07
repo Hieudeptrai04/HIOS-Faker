@@ -2906,12 +2906,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @end
 
 // Same pattern for the Camera spoof config screen.
-// Uses UIDocumentPickerViewController instead of UIImagePickerController:
-// HIOS app is signed with no-sandbox + no-container entitlements, which
-// blocks the Photos framework's TCC permission flow. The Files-app
-// document picker doesn't need Photos access — user saves video into
-// Files (or iCloud Drive) first then picks it here.
-@interface CICameraViewController : UIViewController <UIDocumentPickerDelegate>
+// UIImagePickerController shows the iOS Photos UI directly. The app's
+// containerless sandbox normally blocks the Photos TCC flow, but
+// entitlements.plist now ships com.apple.private.tcc.allow with
+// kTCCServicePhotos which pre-grants access — no permission dialog,
+// no TCC.db round-trip needed.
+@interface CICameraViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @end
 
 // ============================================================
@@ -3266,7 +3266,7 @@ static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_sp
 
     // Description
     UILabel *desc = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 110)];
-    desc.text = @"Khi BẬT, mọi app trong filter list (Zalo, Telegram, …) khi mở camera/video call sẽ thấy video bạn chọn thay vì camera thật.\n\n• Audio mic vẫn thật — mute trong app nếu cần.\n• Lưu video vào Files app trước (Photos → Share → Save to Files), rồi tap 'Chọn video'.\n• KYC liveness (chớp mắt, quay đầu) sẽ KHÔNG qua được — chỉ dùng cho video call thường.";
+    desc.text = @"Khi BẬT, mọi app trong filter list (Zalo, Telegram, …) khi mở camera/video call sẽ thấy video bạn chọn thay vì camera thật.\n\n• Audio mic vẫn thật — mute trong app nếu cần.\n• Video không cần mặt cử động liên tục, nhưng PHẢI nhìn thẳng nếu dùng cho KYC selfie.\n• Pixel buffer được copy in-place vào sample buffer thật của camera — metadata sensor vẫn còn nguyên, anti-spoof khó phát hiện.";
     desc.numberOfLines = 0;
     desc.textColor = [CITheme dim];
     desc.font = [UIFont systemFontOfSize:13];
@@ -3337,55 +3337,49 @@ static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_sp
 }
 
 - (void)pickTapped {
-    // Document picker (Files app) — works without Photos TCC permission.
-    // initWithDocumentTypes is deprecated in iOS 14 but still functional;
-    // the modern API needs UniformTypeIdentifiers framework which we don't
-    // want to pull in for one call site.
-    UIDocumentPickerViewController *pic =
-        [[UIDocumentPickerViewController alloc]
-            initWithDocumentTypes:@[@"public.movie", @"public.mpeg-4"]
-                           inMode:UIDocumentPickerModeImport];
+    UIImagePickerController *pic = [[UIImagePickerController alloc] init];
+    pic.sourceType = UIImagePickerControllerSourceTypeSavedPhotosAlbum;
+    pic.mediaTypes = @[@"public.movie"]; // literal UTI — avoids kUTTypeMovie symbol
     pic.delegate = self;
-    pic.allowsMultipleSelection = NO;
+    pic.allowsEditing = NO;
     [self presentViewController:pic animated:YES completion:nil];
 }
 
-- (void)documentPicker:(UIDocumentPickerViewController *)controller
-    didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *src = urls.firstObject;
-    if (!src) {
-        _statusLabel.text = @"❌ Không lấy được URL video";
-        _statusLabel.textColor = [UIColor systemRedColor];
-        return;
-    }
-    // Document picker URLs are security-scoped — must claim before reading.
-    BOOL claimed = [src startAccessingSecurityScopedResource];
-    NSError *err = nil;
-    NSData *data = [NSData dataWithContentsOfURL:src options:0 error:&err];
-    if (claimed) [src stopAccessingSecurityScopedResource];
-    if (!data) {
-        _statusLabel.text = [NSString stringWithFormat:@"❌ Đọc file fail: %@",
-                             err.localizedDescription ?: @"unknown"];
-        _statusLabel.textColor = [UIColor systemRedColor];
-        return;
-    }
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
-    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    [fm removeItemAtPath:kCISpoofVideoPath error:nil];
-    NSError *writeErr = nil;
-    BOOL ok = [data writeToFile:kCISpoofVideoPath options:NSDataWritingAtomic error:&writeErr];
-    if (!ok) {
-        _statusLabel.text = [NSString stringWithFormat:@"❌ Ghi fail: %@",
-                             writeErr.localizedDescription ?: @"unknown"];
-        _statusLabel.textColor = [UIColor systemRedColor];
-        return;
-    }
-    [self refreshFileInfo];
+- (void)imagePickerController:(UIImagePickerController *)picker
+didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
+    NSURL *src = info[UIImagePickerControllerMediaURL];
+    [picker dismissViewControllerAnimated:YES completion:^{
+        if (!src) {
+            self->_statusLabel.text = @"❌ Không lấy được URL video";
+            self->_statusLabel.textColor = [UIColor systemRedColor];
+            return;
+        }
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm removeItemAtPath:kCISpoofVideoPath error:nil];
+        NSError *err = nil;
+        BOOL ok = [fm copyItemAtPath:src.path toPath:kCISpoofVideoPath error:&err];
+        if (!ok) {
+            // Photos picker hands back a sandbox-scoped tmp URL; fall back
+            // to an explicit byte read if the path-level copy denied.
+            NSData *data = [NSData dataWithContentsOfURL:src];
+            if (data.length > 0) {
+                ok = [data writeToFile:kCISpoofVideoPath options:NSDataWritingAtomic error:&err];
+            }
+        }
+        if (!ok) {
+            self->_statusLabel.text = [NSString stringWithFormat:@"❌ Copy fail: %@",
+                                       err.localizedDescription];
+            self->_statusLabel.textColor = [UIColor systemRedColor];
+            return;
+        }
+        [self refreshFileInfo];
+    }];
 }
 
-- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    // No-op; refreshFileInfo state remains accurate.
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)clearTapped {
