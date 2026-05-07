@@ -52,6 +52,14 @@
 			<string>com.zaloapp.zalovn</string>
 			<string>com.segf4ult.joker</string>
 		</array>
+		<!-- Mode key required by ellekit 1.1.3+ for the Filter dict to
+		     match correctly. Without it, ellekit silently skips inject
+		     for sandboxed App Store apps even when Bundles matches.
+		     Confirmed live 2026-05-07: with Mode missing, only system
+		     processes (SpringBoard) loaded the tweak; adding Mode=Any
+		     made all listed Bundles inject. -->
+		<key>Mode</key>
+		<string>Any</string>
 	</dict>
 </dict>
 </plist>

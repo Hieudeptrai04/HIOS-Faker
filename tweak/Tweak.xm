@@ -1886,16 +1886,24 @@ static BOOL computeBundleTargeted(void) {
         [stamp writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
         chmod([marker fileSystemRepresentation], 0644);
 
-        // Sandbox-friendly fallback. App Store apps' tight sandbox blocks
-        // writes to /var/mobile/Library/Caches/<other-bundle>/, so the
-        // marker above silently fails for sandboxed targets like Zalo.
-        // /var/jb/etc/changeinfoios/ is verified writable from sandboxed
-        // tweak processes (postinst chmods it 0777). A second marker here
-        // lets the host app prove dylib loaded into a target by running
-        //   ls /var/jb/etc/changeinfoios/loaded_*.txt
+        // Sandbox-friendly markers — written to BOTH /var/jb/etc/* (works
+        // for system processes) AND NSTemporaryDirectory() (works for
+        // every sandboxed app, since the temp dir is inside the app's
+        // own data container). The /var/jb path turned out to be
+        // read-only from App Store app sandboxes — confirmed live
+        // 2026-05-07 when sandboxed Zalo's loaded_*.txt write silently
+        // failed even though ChangeInfoIos.dylib was confirmed loaded
+        // (HelloInject's hios_hello.txt did appear in Zalo's tmp/, while
+        // ChangeInfoIos's loaded_<bid>.txt under /var/jb did not).
         NSString *sbDir = @"/var/jb/etc/changeinfoios";
         NSString *sbMarker = [sbDir stringByAppendingFormat:@"/loaded_%@.txt", bid];
         [stamp writeToFile:sbMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (tmpDir.length) {
+            NSString *tmpMarker = [tmpDir stringByAppendingPathComponent:@"hios_changeinfo_loaded.txt"];
+            [stamp writeToFile:tmpMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
 
         loadConfig();
         g_bundleTargeted = computeBundleTargeted();
