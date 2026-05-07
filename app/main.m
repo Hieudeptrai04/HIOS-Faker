@@ -31,7 +31,7 @@
 @end
 
 @class CIHomeViewController, CIAppPickerViewController, CIFakeSettingsViewController,
-       CIRRSManagerViewController, CISideMenuViewController;
+       CIRRSManagerViewController, CISideMenuViewController, CIProxyViewController;
 
 // ============================================================
 // CONSTANTS
@@ -466,8 +466,75 @@ static NSDictionary *ci_countryMap(void) {
     return m;
 }
 
+// Parse a "host:port", "host:port:user:pass" string into components.
+// Returns nil if host/port missing. Port must be 1..65535.
+static NSDictionary *ci_parseProxyString(NSString *s) {
+    if (![s isKindOfClass:[NSString class]]) return nil;
+    NSString *trimmed = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return nil;
+    NSArray *parts = [trimmed componentsSeparatedByString:@":"];
+    if (parts.count < 2) return nil;
+    NSString *host = parts[0];
+    NSInteger port = [parts[1] integerValue];
+    if (host.length == 0 || port < 1 || port > 65535) return nil;
+    NSMutableDictionary *out = [@{@"host": host, @"port": @(port)} mutableCopy];
+    if (parts.count >= 3 && [parts[2] length] > 0) out[@"user"] = parts[2];
+    if (parts.count >= 4 && [parts[3] length] > 0) out[@"pass"] = parts[3];
+    return out;
+}
+
+// Build NSURLSessionConfiguration with the user's proxy applied (HTTP or
+// SOCKS5). Returns nil if proxy not enabled / not parseable — caller should
+// fall back to sharedSession in that case so external VPN still works.
+//
+// Proxy auth (user/pass) is injected by the URL loader's challenge handler;
+// we set kCFProxyUsername/Password on the proxy dict so URLSession picks it
+// up for both HTTP CONNECT auth and SOCKS5 auth without needing an extra
+// NSURLCredential wiring.
+static NSURLSessionConfiguration *ci_proxyConfigOrNil(void) {
+    CIConfigManager *cm = [CIConfigManager shared];
+    if (![cm boolForKey:@"proxyEnabled"]) return nil;
+    NSDictionary *p = ci_parseProxyString([cm stringForKey:@"proxyString"]);
+    if (!p) return nil;
+    NSString *type = [cm stringForKey:@"proxyType"];
+    BOOL socks = [type isEqualToString:@"socks5"];
+
+    NSMutableDictionary *proxyDict = [NSMutableDictionary dictionary];
+    NSString *host = p[@"host"];
+    NSNumber *port = p[@"port"];
+    NSString *u = p[@"user"];
+    NSString *pw = p[@"pass"];
+
+    if (socks) {
+        proxyDict[(NSString *)kCFStreamPropertySOCKSProxyHost] = host;
+        proxyDict[(NSString *)kCFStreamPropertySOCKSProxyPort] = port;
+        proxyDict[(NSString *)kCFStreamPropertySOCKSVersion] = (NSString *)kCFStreamSocketSOCKSVersion5;
+        if (u) proxyDict[(NSString *)kCFStreamPropertySOCKSUser]     = u;
+        if (pw) proxyDict[(NSString *)kCFStreamPropertySOCKSPassword] = pw;
+    } else {
+        // HTTP/HTTPS via CFNetwork keys recognised by NSURLSession.
+        proxyDict[@"HTTPEnable"]   = @YES;
+        proxyDict[@"HTTPProxy"]    = host;
+        proxyDict[@"HTTPPort"]     = port;
+        proxyDict[@"HTTPSEnable"]  = @YES;
+        proxyDict[@"HTTPSProxy"]   = host;
+        proxyDict[@"HTTPSPort"]    = port;
+        if (u) proxyDict[@"HTTPProxyUsername"]  = u;
+        if (pw) proxyDict[@"HTTPProxyPassword"] = pw;
+    }
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.connectionProxyDictionary = proxyDict;
+    cfg.timeoutIntervalForRequest = 8.0;
+    cfg.timeoutIntervalForResource = 10.0;
+    return cfg;
+}
+
 // Blocking HTTP GET to ip-api.com — returns parsed dict or nil on any failure.
 // Runs on background queue (caller is already off main), 5s timeout.
+//
+// If user has a proxy configured (Proxy section in side menu), the request
+// is routed through that proxy so ip-api sees the proxy's IP. Otherwise
+// falls back to sharedSession (uses any external VPN the user has on).
 static NSDictionary *ci_fetchProxyGeo(NSString *url) {
     if (!url.length) url = @"http://ip-api.com/json";
     NSURL *u = [NSURL URLWithString:url];
@@ -477,14 +544,23 @@ static NSDictionary *ci_fetchProxyGeo(NSString *url) {
     req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     [req setValue:@"close" forHTTPHeaderField:@"Connection"];
 
+    NSURLSession *session;
+    NSURLSessionConfiguration *proxyCfg = ci_proxyConfigOrNil();
+    if (proxyCfg) {
+        session = [NSURLSession sessionWithConfiguration:proxyCfg];
+    } else {
+        session = [NSURLSession sharedSession];
+    }
+
     __block NSData *data = nil; __block NSError *err = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
+    NSURLSessionDataTask *t = [session dataTaskWithRequest:req
         completionHandler:^(NSData *d, NSURLResponse *_r, NSError *e) {
             data = d; err = e; dispatch_semaphore_signal(sem);
         }];
     [t resume];
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)));
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+    if (proxyCfg) [session finishTasksAndInvalidate];
     if (err || !data) return nil;
 
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -2834,7 +2910,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    _items = @[@"Login", @"Liên Hệ", @"Add On", @"Cài đặt",
+    _items = @[@"Login", @"Liên Hệ", @"Add On", @"Proxy", @"Cài đặt",
                @"— Clear Temp", @"— ReApp", @"— Check IP",
                @"— Clear RRS", @"— Go Link IDFA", @"— Chỉ lưu RRS"];
     self.view.backgroundColor = [CITheme bg];
@@ -2866,10 +2942,258 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     NSString *cmd = _items[ip.row];
+    if ([cmd isEqualToString:@"Proxy"]) {
+        CIProxyViewController *vc = [[CIProxyViewController alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
     UIAlertController *a = [UIAlertController alertControllerWithTitle:cmd message:@"Chức năng đang phát triển." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
+@end
+
+// ============================================================
+// PROXY CONFIG VIEW CONTROLLER
+// ============================================================
+// User pastes "host:port[:user:pass]" + picks HTTP / SOCKS5 + toggles ON.
+//   Test         → blocking GET https://api.ipify.org?format=json through
+//                  the proxy; alert shows resolved IP or error.
+//   Auto-fill GPS → fetch ip-api geoip via the proxy and apply lat/long/
+//                  carrier/locale (same path as Reset Data, so the user
+//                  can dial in coordinates without doing a full reset).
+//   Save         → persist + Darwin notify the tweak so target apps
+//                  pick up the new proxy on next request.
+@interface CIProxyViewController : UIViewController <UITextFieldDelegate>
+@end
+
+@implementation CIProxyViewController {
+    UISwitch           *_enableSwitch;
+    UISegmentedControl *_typeSegment;
+    UITextField        *_proxyField;
+    UILabel            *_statusLabel;
+    UIButton           *_testBtn;
+    UIButton           *_geoBtn;
+    UIButton           *_saveBtn;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Proxy";
+    self.view.backgroundColor = [CITheme bg];
+
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    sv.alwaysBounceVertical = YES;
+    sv.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    [self.view addSubview:sv];
+
+    CGFloat W = self.view.bounds.size.width;
+    CGFloat M = 16;
+    CGFloat y = 16;
+
+    // Enable row
+    UILabel *enLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M - 60, 32)];
+    enLbl.text = @"Bật proxy"; enLbl.textColor = [CITheme text];
+    enLbl.font = [UIFont boldSystemFontOfSize:17];
+    [sv addSubview:enLbl];
+    _enableSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(W - M - 51, y, 51, 32)];
+    _enableSwitch.onTintColor = [CITheme orange];
+    [sv addSubview:_enableSwitch];
+    y += 50;
+
+    // Type segment
+    UILabel *tyLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
+    tyLbl.text = @"Loại"; tyLbl.textColor = [CITheme dim];
+    tyLbl.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:tyLbl]; y += 24;
+    _typeSegment = [[UISegmentedControl alloc] initWithItems:@[@"HTTP", @"SOCKS5"]];
+    _typeSegment.frame = CGRectMake(M, y, W - 2*M, 36);
+    _typeSegment.selectedSegmentIndex = 0;
+    [sv addSubview:_typeSegment];
+    y += 50;
+
+    // Proxy textfield
+    UILabel *pfLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
+    pfLbl.text = @"host:port:user:pass"; pfLbl.textColor = [CITheme dim];
+    pfLbl.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:pfLbl]; y += 24;
+    _proxyField = [[UITextField alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 44)];
+    _proxyField.placeholder = @"vd: 1.2.3.4:8080:user:pass";
+    _proxyField.font = [UIFont fontWithName:@"Menlo" size:14];
+    _proxyField.textColor = [CITheme text];
+    _proxyField.backgroundColor = [CITheme card];
+    _proxyField.layer.cornerRadius = 8;
+    _proxyField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _proxyField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _proxyField.spellCheckingType = UITextSpellCheckingTypeNo;
+    _proxyField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _proxyField.delegate = self;
+    UIView *pad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 1)];
+    _proxyField.leftView = pad; _proxyField.leftViewMode = UITextFieldViewModeAlways;
+    [sv addSubview:_proxyField];
+    y += 60;
+
+    // Status label
+    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 60)];
+    _statusLabel.numberOfLines = 0;
+    _statusLabel.textColor = [CITheme dim];
+    _statusLabel.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:_statusLabel];
+    y += 70;
+
+    // Test button
+    _testBtn = CIBoxButton(@"Test kết nối", [CITheme blue], [CITheme blue]);
+    _testBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_testBtn addTarget:self action:@selector(testTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_testBtn];
+    y += 64;
+
+    // Auto-fill GPS button
+    _geoBtn = CIBoxButton(@"Lấy GPS theo IP proxy", [CITheme orange], [CITheme orange]);
+    _geoBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_geoBtn addTarget:self action:@selector(geoTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_geoBtn];
+    y += 64;
+
+    // Save button
+    _saveBtn = CIBoxButton(@"Lưu", [UIColor whiteColor], [CITheme border]);
+    _saveBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_saveBtn];
+    y += 64;
+
+    sv.contentSize = CGSizeMake(W, y + 24);
+
+    // Load existing config
+    CIConfigManager *cm = [CIConfigManager shared];
+    _enableSwitch.on = [cm boolForKey:@"proxyEnabled"];
+    NSString *type = [cm stringForKey:@"proxyType"];
+    _typeSegment.selectedSegmentIndex = [type isEqualToString:@"socks5"] ? 1 : 0;
+    _proxyField.text = [cm stringForKey:@"proxyString"] ?: @"";
+    [self refreshStatus:nil error:NO];
+}
+
+- (void)refreshStatus:(NSString *)msg error:(BOOL)isError {
+    if (msg.length == 0) {
+        NSDictionary *p = ci_parseProxyString(_proxyField.text);
+        if (!p) { _statusLabel.text = @"⚠ Cấu hình proxy chưa hợp lệ"; _statusLabel.textColor = [CITheme dim]; return; }
+        NSString *type = _typeSegment.selectedSegmentIndex == 1 ? @"SOCKS5" : @"HTTP";
+        _statusLabel.text = [NSString stringWithFormat:@"%@ %@:%@%@",
+            type, p[@"host"], p[@"port"],
+            p[@"user"] ? @" (auth)" : @""];
+        _statusLabel.textColor = [CITheme dim];
+        return;
+    }
+    _statusLabel.text = msg;
+    _statusLabel.textColor = isError ? [UIColor systemRedColor] : [CITheme green];
+}
+
+// Snapshot UI → CIConfigManager so the helpers below see fresh values
+// before we kick the network request.
+- (void)stageConfigFromUI {
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:@(_enableSwitch.on) forKey:@"proxyEnabled"];
+    [cm setObject:(_typeSegment.selectedSegmentIndex == 1 ? @"socks5" : @"http")
+           forKey:@"proxyType"];
+    [cm setObject:(_proxyField.text ?: @"") forKey:@"proxyString"];
+}
+
+- (void)testTapped {
+    [self.view endEditing:YES];
+    [self stageConfigFromUI];
+    if (![_enableSwitch isOn]) {
+        [self refreshStatus:@"Bật switch trước rồi mới test." error:YES];
+        return;
+    }
+    if (!ci_parseProxyString(_proxyField.text)) {
+        [self refreshStatus:@"Format sai. Đúng: host:port:user:pass" error:YES];
+        return;
+    }
+    [self refreshStatus:@"⌛ Đang test…" error:NO];
+    _testBtn.enabled = NO;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSURLSessionConfiguration *cfg = ci_proxyConfigOrNil();
+        NSURLSession *session = cfg ? [NSURLSession sessionWithConfiguration:cfg]
+                                    : [NSURLSession sharedSession];
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
+            [NSURL URLWithString:@"https://api.ipify.org?format=json"]];
+        req.timeoutInterval = 8.0;
+        req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+        __block NSData *data = nil; __block NSError *err = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        [[session dataTaskWithRequest:req
+            completionHandler:^(NSData *d, NSURLResponse *_r, NSError *e) {
+                data = d; err = e; dispatch_semaphore_signal(sem);
+            }] resume];
+        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)));
+        if (cfg) [session finishTasksAndInvalidate];
+
+        NSString *resultMsg; BOOL isErr = NO;
+        if (err || !data) {
+            resultMsg = [NSString stringWithFormat:@"❌ Lỗi: %@",
+                         err.localizedDescription ?: @"không nhận được response"];
+            isErr = YES;
+        } else {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            NSString *ip = [json isKindOfClass:[NSDictionary class]] ? json[@"ip"] : nil;
+            if ([ip isKindOfClass:[NSString class]] && ip.length) {
+                resultMsg = [NSString stringWithFormat:@"✓ OK — IP qua proxy: %@", ip];
+            } else {
+                resultMsg = @"❌ Response lạ — proxy có thể chặn HTTPS";
+                isErr = YES;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_testBtn.enabled = YES;
+            [self refreshStatus:resultMsg error:isErr];
+        });
+    });
+}
+
+- (void)geoTapped {
+    [self.view endEditing:YES];
+    [self stageConfigFromUI];
+    if (![_enableSwitch isOn] || !ci_parseProxyString(_proxyField.text)) {
+        [self refreshStatus:@"Bật proxy + nhập đúng format trước." error:YES];
+        return;
+    }
+    [self refreshStatus:@"⌛ Đang lấy GPS từ ip-api.com qua proxy…" error:NO];
+    _geoBtn.enabled = NO;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary *geo = ci_fetchProxyGeo(nil);
+        BOOL ok = ci_applyGeoFromIPAPI(geo);
+        if (ok) [[CIConfigManager shared] save];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_geoBtn.enabled = YES;
+            if (!ok) {
+                [self refreshStatus:@"❌ Geo failed — proxy chặn ip-api.com hoặc offline" error:YES];
+                return;
+            }
+            CIConfigManager *cm = [CIConfigManager shared];
+            NSString *cc  = [cm stringForKey:@"localeCountryCode"] ?: @"?";
+            NSString *isp = [cm stringForKey:@"carrierName"] ?: @"?";
+            NSString *ip  = [cm stringForKey:@"lastResetIP"] ?: @"?";
+            [self refreshStatus:[NSString stringWithFormat:@"✓ %@ — %@ (%@)\nGPS + locale + carrier đã đồng bộ.", cc, isp, ip]
+                          error:NO];
+            [cm notifyReload];
+        });
+    });
+}
+
+- (void)saveTapped {
+    [self.view endEditing:YES];
+    [self stageConfigFromUI];
+    [[CIConfigManager shared] save];
+    [[CIConfigManager shared] notifyReload];
+    [self refreshStatus:@"✓ Lưu xong — tweak sẽ pick up proxy ngay." error:NO];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
+- (void)textFieldDidEndEditing:(UITextField *)tf { [self refreshStatus:nil error:NO]; }
+
 @end
 
 // ============================================================

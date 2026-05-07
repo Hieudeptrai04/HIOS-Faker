@@ -1490,11 +1490,71 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
+// Build an NSURLSession proxy dict from the user's saved Proxy section.
+// Same key set as the host app's ci_proxyConfigOrNil() so behaviour stays
+// consistent on both sides. Returns nil if proxy is off / format invalid —
+// caller should leave the config alone in that case.
+static NSDictionary *ci_buildProxyDictForTweak(void) {
+    if (!getConfigBool(@"proxyEnabled")) return nil;
+    NSString *raw = getConfigStr(@"proxyString");
+    if (raw.length == 0) return nil;
+    NSString *trimmed = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSArray *parts = [trimmed componentsSeparatedByString:@":"];
+    if (parts.count < 2) return nil;
+    NSString *host = parts[0];
+    NSInteger port = [parts[1] integerValue];
+    if (host.length == 0 || port < 1 || port > 65535) return nil;
+    NSString *user = (parts.count >= 3 && [parts[2] length] > 0) ? parts[2] : nil;
+    NSString *pass = (parts.count >= 4 && [parts[3] length] > 0) ? parts[3] : nil;
+    BOOL socks = [getConfigStr(@"proxyType") isEqualToString:@"socks5"];
+
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    if (socks) {
+        d[(NSString *)kCFStreamPropertySOCKSProxyHost] = host;
+        d[(NSString *)kCFStreamPropertySOCKSProxyPort] = @(port);
+        d[(NSString *)kCFStreamPropertySOCKSVersion]   = (NSString *)kCFStreamSocketSOCKSVersion5;
+        if (user) d[(NSString *)kCFStreamPropertySOCKSUser]     = user;
+        if (pass) d[(NSString *)kCFStreamPropertySOCKSPassword] = pass;
+    } else {
+        d[@"HTTPEnable"]  = @YES;
+        d[@"HTTPProxy"]   = host;
+        d[@"HTTPPort"]    = @(port);
+        d[@"HTTPSEnable"] = @YES;
+        d[@"HTTPSProxy"]  = host;
+        d[@"HTTPSPort"]   = @(port);
+        if (user) d[@"HTTPProxyUsername"]  = user;
+        if (pass) d[@"HTTPProxyPassword"] = pass;
+    }
+    return d;
+}
+
 // LAYER 16: NSURLSessionConfiguration default headers — NSURLSession
 // users set User-Agent via configuration.HTTPAdditionalHeaders BEFORE
 // any request is made, so the per-request -setValue:forHTTPHeaderField:
 // hook never sees them. Patch the property setter so the fake UA wins.
+//
+// Also: when the user has a Proxy enabled in HIOS, we inject the proxy
+// dict into every session config the target app builds. Done at the
+// class-method level (defaultSessionConfiguration / ephemeralSession
+// Configuration) — those return a fresh config each call, so mutating
+// the returned object before handing it back catches every NSURLSession
+// the app creates without races. Background sessions are intentionally
+// NOT proxied (they survive app death and can't be re-validated).
 %hook NSURLSessionConfiguration
+
++ (NSURLSessionConfiguration *)defaultSessionConfiguration {
+    NSURLSessionConfiguration *cfg = %orig;
+    NSDictionary *p = ci_buildProxyDictForTweak();
+    if (cfg && p) cfg.connectionProxyDictionary = p;
+    return cfg;
+}
+
++ (NSURLSessionConfiguration *)ephemeralSessionConfiguration {
+    NSURLSessionConfiguration *cfg = %orig;
+    NSDictionary *p = ci_buildProxyDictForTweak();
+    if (cfg && p) cfg.connectionProxyDictionary = p;
+    return cfg;
+}
 
 - (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
     if (!fakeLayer(@"browser") || !headers) { %orig(headers); return; }
