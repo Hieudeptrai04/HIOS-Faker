@@ -1600,21 +1600,26 @@ typedef id (*ci_wkInit_t)(id, SEL, CGRect, id);
 static id ci_WK_init(id self, SEL _cmd, CGRect frame, id configuration) {
     if (fakeLayer(@"browser") && configuration) {
         @try {
-            // Forward-declared WK types let us do this without linking WebKit.
-            // Runtime path: if WebKit isn't mapped, objc_getClass returns nil
-            // and we just skip. We're already inside fakeLayer'd code, so our
-            // process targets WebKit-using apps; but stay defensive.
-            if (objc_getClass("WKUserContentController") && objc_getClass("WKUserScript")) {
+            // Class lookups at runtime — calling [WKFoo alloc] directly would
+            // emit `_OBJC_CLASS_$_WKFoo` undefined symbol at link, killing
+            // the dylib in apps without WebKit. objc_getClass returns the
+            // Class object for already-loaded classes, nil otherwise.
+            Class kUCC     = objc_getClass("WKUserContentController");
+            Class kUScript = objc_getClass("WKUserScript");
+            if (kUCC && kUScript) {
                 WKWebViewConfiguration *cfg = (WKWebViewConfiguration *)configuration;
                 WKUserContentController *ucc = cfg.userContentController;
                 if (!ucc) {
-                    ucc = [[WKUserContentController alloc] init];
+                    ucc = (WKUserContentController *)[(id)[kUCC alloc] init];
                     cfg.userContentController = ucc;
                 }
                 NSString *js = ci_buildWebFingerprintJS();
-                WKUserScript *script = [[WKUserScript alloc]
+                // Typed cast lets the compiler emit the right objc_msgSend
+                // signature for (NSString*, NSInteger, BOOL) without
+                // requiring _OBJC_CLASS_$_WKUserScript at link time.
+                WKUserScript *script = (WKUserScript *)[(id)[kUScript alloc]
                     initWithSource:js
-                     injectionTime:0  // WKUserScriptInjectionTimeAtDocumentStart
+                     injectionTime:0  /* WKUserScriptInjectionTimeAtDocumentStart */
                   forMainFrameOnly:NO];
                 if (script) [ucc addUserScript:script];
             }
