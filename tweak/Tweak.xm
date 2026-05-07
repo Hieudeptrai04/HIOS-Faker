@@ -164,6 +164,13 @@ static BOOL isCurrentBundleTargeted(void) {
 static void ci_loadConfigViaCFPreferencesAsync(void);
 static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 
+// Thread-local bypass for our own SecItem* hooks. When we dump or restore
+// keychain entries from inside the tweak we don't want our READ-blocker or
+// WRITE-blocker hooks (in Hooks.mm) to interfere. Hook bodies check this
+// flag and pass through to %orig when non-zero. Declared up here so the
+// keychain helpers below + Hooks.mm extern reference both see it.
+__thread int g_ci_skipKeychainHook = 0;
+
 // ====== KEYCHAIN BACKUP / RESTORE ======
 // User flow we're solving: register Zalo acc A, take RRS backup, Reset Data,
 // register acc B (Zalo overwrites keychain session token), now restore A.
@@ -473,13 +480,6 @@ static unsigned long long ci_toULL(id v) {
     return 0;
 }
 static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
-
-// Thread-local bypass for our own SecItem* hooks. When we dump or restore
-// keychain entries from inside the tweak (calling SecItemCopyMatching /
-// SecItemAdd / SecItemDelete ourselves), we don't want our READ-blocker
-// or WRITE-blocker hooks to interfere. The hook bodies in Hooks.mm check
-// this flag and pass straight through to %orig when it's non-zero.
-__thread int g_ci_skipKeychainHook = 0;
 
 /* Plist booleans fake_<name> — missing key defaults to ON.
    Short names: uiddevice, hardware, sysctl, ... */
