@@ -1407,76 +1407,136 @@ static CLLocation *buildFakeLocation(void) {
 // App Attest is the iOS 14+ replacement: keypair stored in Secure Enclave,
 // keyId returned to app, attestation generated against a clientDataHash.
 // We return random keyIds and synthetic attestations — same idea.
-// !!! DISABLED — DCDevice hook caused targeted apps to crash with
-// std::terminate() on FrontBoardServices serial queue. AIDA64 in
-// particular SIGABRT'd on every launch the moment its bundleID was in
-// targetBundles. Likely root cause: %hook on a class that may not be
-// resolvable in every target process at dylib load time, plus our
-// dispatch_async-from-hook pattern that can re-enter into Apple's
-// completion path while the FrontBoard serial queue is mid-callout.
-// Re-enable when we can install the hook conditionally via
-// objc_getClass + MSHookMessageEx, and run the completion synchronously
-// (avoid dispatch_async).
-#if 0
-%hook DCDevice
-- (BOOL)isSupported {
-    if (!fakeLayer(@"hardware")) return %orig;
+// LAYER 12 / 13: DCDevice + DCAppAttestService + LAContext
+// ----------------------------------------------------------
+// Restored via runtime conditional install (commit bbddb1e disabled them
+// for crashing). Two key differences from the first attempt:
+//   1. NEVER use Logos `%hook DCDevice` — that registers a swizzle at
+//      link time for every process the dylib loads into, including ones
+//      where DeviceCheck.framework isn't mapped. Logos's late lookup of
+//      a missing class trips an assertion deep in the FBSSerialQueue
+//      callout, killing scene init. Instead, walk Class via
+//      objc_getClass and patch methods only when the class exists.
+//   2. Run completion SYNCHRONOUSLY. The original used
+//      dispatch_async(dispatch_get_main_queue(), ...) which re-entered
+//      Apple's completion delivery while FBS was mid-callout — same
+//      std::terminate path. Apps treat the completion as "may run on
+//      any thread"; firing inline is contractually valid.
+//
+// Targets:
+//   DCDevice.isSupported                            → YES
+//   DCDevice.generateTokenWithCompletionHandler:    → 32-byte random blob
+//   DCAppAttestService.isSupported                  → YES
+//   DCAppAttestService.generateKeyWithCompletion:   → fresh base64 keyId
+//   DCAppAttestService.attestKey:clientDataHash:    → 1600B random blob
+//   LAContext.canEvaluatePolicy:error:              → YES, error nil
+
+typedef void (*ci_dcDevice_isSupported_t)(id, SEL);
+typedef BOOL (*ci_imp_BOOL_t)(id, SEL);
+typedef BOOL (*ci_imp_BOOL_NSIntegerErr_t)(id, SEL, NSInteger, NSError **);
+typedef void (*ci_imp_void_completion_t)(id, SEL, id);
+typedef void (*ci_imp_void_attestKey_t)(id, SEL, NSString *, NSData *, id);
+
+static ci_imp_BOOL_t orig_DC_isSupported              = NULL;
+static ci_imp_void_completion_t orig_DC_generateToken = NULL;
+static ci_imp_BOOL_t orig_DCA_isSupported             = NULL;
+static ci_imp_void_completion_t orig_DCA_generateKey  = NULL;
+static ci_imp_void_attestKey_t orig_DCA_attestKey     = NULL;
+static ci_imp_BOOL_NSIntegerErr_t orig_LA_canEval     = NULL;
+
+static BOOL ci_DC_isSupported(id self, SEL _cmd) {
+    if (!fakeLayer(@"hardware")) return orig_DC_isSupported ? orig_DC_isSupported(self, _cmd) : YES;
     return YES;
 }
-- (void)generateTokenWithCompletionHandler:(void (^)(NSData *token, NSError *error))completion {
-    if (!fakeLayer(@"hardware")) { %orig; return; }
+static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, NSError *)) {
+    if (!fakeLayer(@"hardware")) {
+        if (orig_DC_generateToken) orig_DC_generateToken(self, _cmd, (id)completion);
+        return;
+    }
     if (!completion) return;
     uint8_t buf[32];
     arc4random_buf(buf, sizeof(buf));
     NSData *fake = [NSData dataWithBytes:buf length:sizeof(buf)];
-    dispatch_async(dispatch_get_main_queue(), ^{ completion(fake, nil); });
+    completion(fake, nil); // SYNC — see banner above
 }
-%end
-#endif
 
-// !!! DISABLED — same root cause as DCDevice above. Re-enable later.
-#if 0
-%hook DCAppAttestService
-- (BOOL)isSupported {
-    if (!fakeLayer(@"hardware")) return %orig;
+static BOOL ci_DCA_isSupported(id self, SEL _cmd) {
+    if (!fakeLayer(@"hardware")) return orig_DCA_isSupported ? orig_DCA_isSupported(self, _cmd) : YES;
     return YES;
 }
-- (void)generateKeyWithCompletionHandler:(void (^)(NSString *keyId, NSError *error))completion {
-    if (!fakeLayer(@"hardware")) { %orig; return; }
+static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *, NSError *)) {
+    if (!fakeLayer(@"hardware")) {
+        if (orig_DCA_generateKey) orig_DCA_generateKey(self, _cmd, (id)completion);
+        return;
+    }
     if (!completion) return;
     uint8_t buf[32];
     arc4random_buf(buf, sizeof(buf));
     NSData *raw = [NSData dataWithBytes:buf length:sizeof(buf)];
-    NSString *fakeId = [raw base64EncodedStringWithOptions:0];
-    dispatch_async(dispatch_get_main_queue(), ^{ completion(fakeId, nil); });
+    NSString *keyId = [raw base64EncodedStringWithOptions:0];
+    completion(keyId, nil);
 }
-- (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)hash
-    completionHandler:(void (^)(NSData *attestation, NSError *error))completion {
-    if (!fakeLayer(@"hardware")) { %orig; return; }
+static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
+    if (!fakeLayer(@"hardware")) {
+        if (orig_DCA_attestKey) orig_DCA_attestKey(self, _cmd, keyId, hash, (id)completion);
+        return;
+    }
     if (!completion) return;
     NSMutableData *fake = [NSMutableData dataWithLength:1600];
     arc4random_buf(fake.mutableBytes, fake.length);
-    dispatch_async(dispatch_get_main_queue(), ^{ completion(fake, nil); });
+    completion(fake, nil);
 }
-%end
-#endif
 
-// ============================================================
-// LAYER 13: LocalAuthentication — DISABLED for same crash reason.
-// %hook on a class that may not be in every target process at dylib
-// load time, plus LAContext.canEvaluatePolicy is called early during
-// scene init in some apps and our return-YES-without-checking-real-
-// biometrics breaks an internal invariant. Re-enable later.
-// ============================================================
-#if 0
-%hook LAContext
-- (BOOL)canEvaluatePolicy:(NSInteger)policy error:(NSError **)error {
-    if (!fakeLayer(@"hardware")) return %orig;
+static BOOL ci_LA_canEval(id self, SEL _cmd, NSInteger policy, NSError **error) {
+    if (!fakeLayer(@"hardware")) {
+        return orig_LA_canEval ? orig_LA_canEval(self, _cmd, policy, error) : YES;
+    }
     if (error) *error = nil;
     return YES;
 }
-%end
-#endif
+
+// Installs an instance-method hook only when the class + selector exist
+// at runtime. Safe in processes where the framework isn't mapped: simply
+// no-ops without raising or registering a swizzle.
+static void ci_swizzleInstance(const char *className, SEL sel, IMP newImp, IMP *origImpOut) {
+    Class cls = objc_getClass(className);
+    if (!cls) return;
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    if (origImpOut) *origImpOut = method_getImplementation(m);
+    method_setImplementation(m, newImp);
+}
+
+static void ci_installAttestHooks(void) {
+    @autoreleasepool {
+        // Only walk classes that already exist in the loaded image set.
+        // dlopen here is conditional: if the framework path is mapped via
+        // any other dylib, objc_getClass already returns it; otherwise we
+        // skip silently (apps that don't link DeviceCheck won't have the
+        // hooks install, which is the safe behavior).
+        if (objc_getClass("DCDevice")) {
+            ci_swizzleInstance("DCDevice", @selector(isSupported),
+                               (IMP)ci_DC_isSupported, (IMP *)&orig_DC_isSupported);
+            ci_swizzleInstance("DCDevice", @selector(generateTokenWithCompletionHandler:),
+                               (IMP)ci_DC_generateToken, (IMP *)&orig_DC_generateToken);
+            NSLog(@"[ChangeInfoIos] DCDevice hooked");
+        }
+        if (objc_getClass("DCAppAttestService")) {
+            ci_swizzleInstance("DCAppAttestService", @selector(isSupported),
+                               (IMP)ci_DCA_isSupported, (IMP *)&orig_DCA_isSupported);
+            ci_swizzleInstance("DCAppAttestService", @selector(generateKeyWithCompletionHandler:),
+                               (IMP)ci_DCA_generateKey, (IMP *)&orig_DCA_generateKey);
+            ci_swizzleInstance("DCAppAttestService", @selector(attestKey:clientDataHash:completionHandler:),
+                               (IMP)ci_DCA_attestKey, (IMP *)&orig_DCA_attestKey);
+            NSLog(@"[ChangeInfoIos] DCAppAttestService hooked");
+        }
+        if (objc_getClass("LAContext")) {
+            ci_swizzleInstance("LAContext", @selector(canEvaluatePolicy:error:),
+                               (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
+            NSLog(@"[ChangeInfoIos] LAContext hooked");
+        }
+    }
+}
 
 // ============================================================
 // C-LEVEL HOOKS - Implemented in Hooks.mm via MSHookFunction
@@ -1606,6 +1666,10 @@ static BOOL computeBundleTargeted(void) {
 
         // Initialize C-level hooks from Hooks.mm
         initCLvlHooks();
+
+        // Conditional attest/biometric hooks via objc_getClass — only when
+        // the framework is already mapped into the host process.
+        ci_installAttestHooks();
 
         NSLog(@"[ChangeInfoIos] Tweak loaded successfully! Config: %@", configLoaded ? @"YES" : @"NO");
     }
