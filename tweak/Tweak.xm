@@ -2150,6 +2150,56 @@ static BOOL computeBundleTargeted(void) {
     }
 }
 
+// In-place pixel swap: copy spoof video's planes into the REAL CVPixelBuffer
+// so all metadata (CMSampleBuffer attachments, format description extensions,
+// CVBuffer color attachments, IOSurface backing, exposure/ISO/lens metadata
+// dicts) stays exactly as the camera emitted it. Anti-spoof SDKs read those
+// attachments to verify the buffer came from a real sensor — synthetic
+// buffers built via CMSampleBufferCreate* lose them and look obviously fake.
+static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) {
+    if (!src || !dst) return NO;
+    if (CVPixelBufferLockBaseAddress(dst, 0) != kCVReturnSuccess) return NO;
+    if (CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(dst, 0);
+        return NO;
+    }
+    BOOL ok = YES;
+    size_t planes = CVPixelBufferGetPlaneCount(dst);
+    if (planes == 0) {
+        // Non-planar (BGRA etc.). One contiguous plane.
+        void *sb = CVPixelBufferGetBaseAddress(src);
+        void *db = CVPixelBufferGetBaseAddress(dst);
+        size_t srb = CVPixelBufferGetBytesPerRow(src);
+        size_t drb = CVPixelBufferGetBytesPerRow(dst);
+        size_t h   = CVPixelBufferGetHeight(dst);
+        if (!sb || !db) { ok = NO; }
+        else {
+            size_t copy = MIN(srb, drb);
+            for (size_t y = 0; y < h; y++) {
+                memcpy((char *)db + y*drb, (char *)sb + y*srb, copy);
+            }
+        }
+    } else {
+        size_t srcPlanes = CVPixelBufferGetPlaneCount(src);
+        if (srcPlanes != planes) { ok = NO; }
+        for (size_t p = 0; ok && p < planes; p++) {
+            void *sb = CVPixelBufferGetBaseAddressOfPlane(src, p);
+            void *db = CVPixelBufferGetBaseAddressOfPlane(dst, p);
+            size_t srb = CVPixelBufferGetBytesPerRowOfPlane(src, p);
+            size_t drb = CVPixelBufferGetBytesPerRowOfPlane(dst, p);
+            size_t h   = CVPixelBufferGetHeightOfPlane(dst, p);
+            if (!sb || !db) { ok = NO; break; }
+            size_t copy = MIN(srb, drb);
+            for (size_t y = 0; y < h; y++) {
+                memcpy((char *)db + y*drb, (char *)sb + y*srb, copy);
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferUnlockBaseAddress(dst, 0);
+    return ok;
+}
+
 - (void)captureOutput:(AVCaptureOutput *)output
     didOutputSampleBuffer:(CMSampleBufferRef)real
        fromConnection:(AVCaptureConnection *)conn {
@@ -2161,7 +2211,10 @@ static BOOL computeBundleTargeted(void) {
         return;
     }
 
-    // Lazy init on first frame — peek format / size from the real buffer.
+    // Lazy init on first frame — peek format / size from the real buffer so
+    // the AVAssetReader hands back frames in the EXACT format/dim the session
+    // is using. Avoids any conversion path (no scaling, no colorspace
+    // transform) and keeps the planes byte-compatible for the in-place copy.
     if (self.initState == 0) {
         CVImageBufferRef pb = CMSampleBufferGetImageBuffer(real);
         if (pb) {
@@ -2185,15 +2238,17 @@ static BOOL computeBundleTargeted(void) {
         return;
     }
 
-    // Pull next decoded frame; if reader is exhausted, restart from start to loop.
+    // Pull next decoded frame; loop video on EOF by re-init'ing the reader.
     CMSampleBufferRef spoof = [self.trackOutput copyNextSampleBuffer];
     if (!spoof) {
-        // Loop: cancel + re-setup. Lazy: avoid reseeking complexity.
         [self.reader cancelReading];
         self.reader = nil;
         self.trackOutput = nil;
-        if (![self setupReader]) { self.initState = 2; }
-        else { spoof = [self.trackOutput copyNextSampleBuffer]; }
+        if ([self setupReader]) {
+            spoof = [self.trackOutput copyNextSampleBuffer];
+        } else {
+            self.initState = 2;
+        }
     }
     if (!spoof) {
         if (self.realDelegate) {
@@ -2202,44 +2257,37 @@ static BOOL computeBundleTargeted(void) {
         return;
     }
 
-    // Re-time spoof buffer to match real PTS so app's encoder stays linear.
+    // The big idea: don't build a new CMSampleBuffer. Take the REAL one
+    // (which carries the sensor's full metadata) and copy our spoof pixel
+    // data into its CVPixelBuffer, leaving everything else untouched. Anti-
+    // spoof SDKs that grep CMSampleBufferGetSampleAttachmentsArray /
+    // CVBufferGetAttachments / CMSampleBufferGetFormatDescription's
+    // extensions for sensor-emitted keys still find them, because they
+    // were never removed. The only thing changed is the YCbCr / BGRA bytes.
+    CVImageBufferRef realPB  = CMSampleBufferGetImageBuffer(real);
     CVImageBufferRef spoofPB = CMSampleBufferGetImageBuffer(spoof);
-    if (!spoofPB) {
-        CFRelease(spoof);
-        if (self.realDelegate) {
-            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
-        }
-        return;
+    BOOL inPlaceOK = NO;
+    if (realPB && spoofPB) {
+        inPlaceOK = ci_copyPlanesIntoBuffer(spoofPB, realPB);
     }
-    CMSampleTimingInfo timing;
-    if (CMSampleBufferGetSampleTimingInfo(real, 0, &timing) != noErr) {
-        timing.duration = CMTimeMake(1, 30);
-        timing.presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(real);
-        timing.decodeTimeStamp = kCMTimeInvalid;
-    }
-    CMVideoFormatDescriptionRef fmtDesc = NULL;
-    CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, spoofPB, &fmtDesc);
-    if (!fmtDesc) {
-        CFRelease(spoof);
-        if (self.realDelegate) {
-            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
-        }
-        return;
-    }
-    CMSampleBufferRef out = NULL;
-    OSStatus s = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, spoofPB, fmtDesc, &timing, &out);
-    CFRelease(fmtDesc);
     CFRelease(spoof);
-    if (s != noErr || !out) {
+
+    if (!inPlaceOK) {
+        // Real buffer wasn't writable (read-only IOSurface from kernel?). Log
+        // once + pass through real frame so the call doesn't break.
+        static int s_warned = 0;
+        if (!s_warned) {
+            s_warned = 1;
+            NSLog(@"[ChangeInfoIos] cam spoof: in-place copy failed (real PB read-only?) — frames stay real");
+        }
         if (self.realDelegate) {
             [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
         }
         return;
     }
     if (self.realDelegate) {
-        [self.realDelegate captureOutput:output didOutputSampleBuffer:out fromConnection:conn];
+        [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
     }
-    CFRelease(out);
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
