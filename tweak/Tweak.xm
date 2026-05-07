@@ -1551,6 +1551,12 @@ static IMP orig_WK_init                = NULL;
 static IMP orig_WK_getCustomUA         = NULL;
 static IMP orig_WK_setCustomUA         = NULL;
 
+// JS templates kept as single-line adjacent-literal concatenations rather
+// than multi-line backslash continuations. Logos's preprocessor counts
+// braces eagerly and gets confused by `\`-continued lines that contain
+// JS object literals — it concludes %ctor is "inside a block" and refuses
+// to compile the file. Adjacent @"..." @"..." literals compile to the
+// same string but parse cleanly.
 static NSString *ci_buildWebFingerprintJS(void) {
     NSString *fakeUA    = getConfigStr(@"zalo_fakeWebViewUA")    ?: @"";
     NSString *vendor    = getConfigStr(@"web_glVendor")          ?: @"Apple Inc.";
@@ -1559,45 +1565,31 @@ static NSString *ci_buildWebFingerprintJS(void) {
     BOOL    canvasNoise = getConfigBool(@"web_canvasNoise");
     BOOL    blockWebRTC = getConfigBool(@"fake_webrtc");
 
-    NSString *uaJs = fakeUA.length
-        ? [NSString stringWithFormat:@"try{Object.defineProperty(navigator,'userAgent',{get:function(){return '%@';}});}catch(e){}", fakeUA]
-        : @"";
+    NSMutableString *js = [NSMutableString stringWithString:@"(function(){"];
 
-    NSString *coreJs = [NSString stringWithFormat:@"\
-        try{Object.defineProperty(navigator,'platform',{get:function(){return 'iPhone';}});}catch(e){}\
-        try{Object.defineProperty(navigator,'languages',{get:function(){return ['%@','en-US','en'];}});}catch(e){}\
-        try{Object.defineProperty(navigator,'language',{get:function(){return '%@';}});}catch(e){}\
-        try{const _gp=WebGLRenderingContext.prototype.getParameter;\
-        WebGLRenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp.call(this,p);};}catch(e){}\
-        try{const _gp2=WebGL2RenderingContext.prototype.getParameter;\
-        WebGL2RenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp2.call(this,p);};}catch(e){}",
-        language, language, vendor, renderer, vendor, renderer];
-
-    // Canvas noise: generate a fresh random watermark each page so identical
-    // canvas operations hash to different bytes. Only inject when toggled on.
-    NSString *canvasJs = @"";
-    if (canvasNoise) {
-        NSString *watermark = [NSString stringWithFormat:@"%08x%08x", arc4random(), arc4random()];
-        canvasJs = [NSString stringWithFormat:@"\
-            try{const _tdu=HTMLCanvasElement.prototype.toDataURL;\
-            HTMLCanvasElement.prototype.toDataURL=function(){var ctx=this.getContext('2d');\
-            if(ctx){ctx.fillStyle='rgba(255,255,255,0.005)';ctx.fillText('%@',1,1);}\
-            return _tdu.apply(this,arguments);};}catch(e){}\
-            try{const _gid=CanvasRenderingContext2D.prototype.getImageData;\
-            CanvasRenderingContext2D.prototype.getImageData=function(){var d=_gid.apply(this,arguments);\
-            if(d&&d.data&&d.data.length>4){d.data[0]^=1;d.data[1]^=1;}return d;};}catch(e){}",
-            watermark];
+    if (fakeUA.length) {
+        [js appendFormat:@"try{Object.defineProperty(navigator,'userAgent',{get:function(){return '%@';}});}catch(e){}", fakeUA];
     }
 
-    NSString *rtcJs = blockWebRTC ? @"\
-        try{if(window.RTCPeerConnection)window.RTCPeerConnection=function(){return {};};}catch(e){}\
-        try{if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){\
-        const _e=navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);\
-        navigator.mediaDevices.enumerateDevices=async function(){const d=await _e();\
-        return d.filter(function(x){return x.kind!=='audioinput'&&x.kind!=='videoinput';});};}catch(e){}"
-        : @"";
+    [js appendFormat:@"try{Object.defineProperty(navigator,'platform',{get:function(){return 'iPhone';}});}catch(e){}"];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'languages',{get:function(){return ['%@','en-US','en'];}});}catch(e){}", language];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'language',{get:function(){return '%@';}});}catch(e){}", language];
+    [js appendFormat:@"try{var _gp=WebGLRenderingContext.prototype.getParameter;WebGLRenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp.call(this,p);};}catch(e){}", vendor, renderer];
+    [js appendFormat:@"try{var _gp2=WebGL2RenderingContext.prototype.getParameter;WebGL2RenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp2.call(this,p);};}catch(e){}", vendor, renderer];
 
-    return [NSString stringWithFormat:@"(function(){%@%@%@%@})();", uaJs, coreJs, canvasJs, rtcJs];
+    if (canvasNoise) {
+        NSString *watermark = [NSString stringWithFormat:@"%08x%08x", arc4random(), arc4random()];
+        [js appendFormat:@"try{var _tdu=HTMLCanvasElement.prototype.toDataURL;HTMLCanvasElement.prototype.toDataURL=function(){var ctx=this.getContext('2d');if(ctx){ctx.fillStyle='rgba(255,255,255,0.005)';ctx.fillText('%@',1,1);}return _tdu.apply(this,arguments);};}catch(e){}", watermark];
+        [js appendFormat:@"try{var _gid=CanvasRenderingContext2D.prototype.getImageData;CanvasRenderingContext2D.prototype.getImageData=function(){var d=_gid.apply(this,arguments);if(d&&d.data&&d.data.length>4){d.data[0]^=1;d.data[1]^=1;}return d;};}catch(e){}"];
+    }
+
+    if (blockWebRTC) {
+        [js appendString:@"try{if(window.RTCPeerConnection)window.RTCPeerConnection=function(){return {};};}catch(e){}"];
+        [js appendString:@"try{if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){var _e=navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);navigator.mediaDevices.enumerateDevices=async function(){var d=await _e();return d.filter(function(x){return x.kind!=='audioinput'&&x.kind!=='videoinput';});};}}catch(e){}"];
+    }
+
+    [js appendString:@"})();"];
+    return js;
 }
 
 // initWithFrame:configuration: ABI on ARM64:
