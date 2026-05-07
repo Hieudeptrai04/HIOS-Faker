@@ -1017,6 +1017,95 @@ static void ci_wipeSafariDeep(void) {
           (unsigned long)paths.count);
 }
 
+// Aggressive cross-app residue wipe. After Reset Data we want every
+// trace of "previous device install" gone — apps fingerprint the device
+// not just by hardware IDs but by:
+//   - HTTP cookies persisted in NSHTTPCookieStorage
+//   - WKWebView website data (localStorage, IndexedDB, ServiceWorker cache)
+//   - App Group containers (shared storage between extensions; survives
+//     the per-app container wipe)
+//   - UserDefaults suiteName containers (com.apple.* and 3rd-party)
+//   - Pasteboard changeCount which apps cross-correlate ("first launch"
+//     detection)
+//
+// Some apps (Zalo specifically) check NSHTTPCookieStorage at launch and
+// match cookies against a server-side device-cookie pair, so even a fresh
+// container with stale cookies trips the "this device used to be account
+// X" alarm. We wipe per-app and global cookie storage paths.
+static void ci_wipeCrossAppResidue(NSArray<CIAppInfo *> *targets) {
+    // Global cookie + cache paths shared by NSHTTPCookieStorage and
+    // CFNetwork. Wiping these clears cookies for every app on the device,
+    // not just our targets — that's the desired behavior for a fresh-device
+    // simulation.
+    NSArray<NSString *> *globalPaths = @[
+        @"/var/mobile/Library/Cookies",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.WebContent",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.Networking",
+        @"/var/mobile/Library/Caches/com.apple.nsurlsessiond",
+        @"/var/mobile/Library/HTTPStorages",
+    ];
+    for (NSString *p in globalPaths) {
+        NSString *cmd = [NSString stringWithFormat:
+            @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; mkdir -p '%@' 2>/dev/null",
+            p, p, p];
+        ci_run([cmd UTF8String]);
+    }
+
+    // Per-app App Group containers — found at
+    // /var/mobile/Containers/Shared/AppGroup/<UUID>/. Each shared container's
+    // metadata.plist lists the bundle IDs that have access. Wipe any that
+    // mention our target bundles.
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *agRoot = @"/var/mobile/Containers/Shared/AppGroup";
+    NSArray *agUUIDs = [fm contentsOfDirectoryAtPath:agRoot error:nil];
+    NSUInteger groupsWiped = 0;
+    for (NSString *uuid in agUUIDs) {
+        NSString *full = [agRoot stringByAppendingPathComponent:uuid];
+        NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+        NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
+        if (!blob) continue;
+        BOOL match = NO;
+        for (CIAppInfo *a in targets) {
+            if (a.bundleID.length == 0) continue;
+            NSData *needle = [a.bundleID dataUsingEncoding:NSUTF8StringEncoding];
+            if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
+                match = YES;
+                break;
+            }
+        }
+        if (!match) continue;
+        // Wipe the contents but keep the directory + metadata (deleting
+        // metadata invalidates the container handle for other extensions).
+        NSArray *subs = @[@"Library", @"Documents", @"Library/Caches",
+                          @"Library/Preferences", @"Library/Cookies",
+                          @"Library/Application Support", @"tmp"];
+        for (NSString *sub in subs) {
+            NSString *target = [full stringByAppendingPathComponent:sub];
+            NSString *cmd = [NSString stringWithFormat:
+                @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; mkdir -p '%@' 2>/dev/null",
+                target, target, target];
+            ci_run([cmd UTF8String]);
+        }
+        groupsWiped++;
+    }
+
+    // Reset NSHTTPCookieStorage from our process — covers cookies cached in
+    // memory by other processes' cfprefsd-shared storage. Belt-and-braces.
+    NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+    NSArray<NSHTTPCookie *> *cookies = jar.cookies;
+    for (NSHTTPCookie *c in cookies) [jar deleteCookie:c];
+
+    // Pasteboard changeCount drives several "first-launch" heuristics. We
+    // can't reset it directly (read-only on iOS), but writing + clearing
+    // bumps it twice — server fingerprints that compare "changeCount mod N"
+    // see a fresh increment.
+    [UIPasteboard generalPasteboard].string = @"";
+    [UIPasteboard generalPasteboard].items = @[];
+
+    NSLog(@"[ChangeInfoIos] Cross-app residue wipe: %lu global paths, %lu app groups, cookies cleared",
+          (unsigned long)globalPaths.count, (unsigned long)groupsWiped);
+}
+
 static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     if (bundleID.length == 0) return nil;
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -3717,6 +3806,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // /var/mobile/Containers/Data/Application/<UUID>; the bulk of Safari's
         // state lives in /var/mobile/Library/Safari which is outside that.
         ci_wipeSafariDeep();
+
+        // Cross-app residue: HTTPStorages cookies, App Group shared containers,
+        // pasteboard changeCount. Apps fingerprint stale state across multiple
+        // signal sources; container wipe alone leaves the device clearly
+        // identifiable as "the same device that used account X yesterday".
+        ci_wipeCrossAppResidue(fullTargets);
 
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",

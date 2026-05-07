@@ -67,6 +67,8 @@
 - (void)generateKeyWithCompletionHandler:(void (^)(NSString *keyId, NSError *error))completion;
 - (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)hash
     completionHandler:(void (^)(NSData *attestation, NSError *error))completion;
+- (void)generateAssertion:(NSString *)keyId clientDataHash:(NSData *)clientDataHash
+        completionHandler:(void (^)(NSData *assertion, NSError *error))completion;
 @end
 
 // LocalAuthentication forward decl — same reasoning, avoid forced link.
@@ -1454,45 +1456,66 @@ typedef BOOL (*ci_imp_BOOL_NSIntegerErr_t)(id, SEL, NSInteger, NSError **);
 typedef void (*ci_imp_void_completion_t)(id, SEL, id);
 typedef void (*ci_imp_void_attestKey_t)(id, SEL, NSString *, NSData *, id);
 
-static ci_imp_BOOL_t orig_DC_isSupported              = NULL;
-static ci_imp_void_completion_t orig_DC_generateToken = NULL;
-static ci_imp_BOOL_t orig_DCA_isSupported             = NULL;
-static ci_imp_void_completion_t orig_DCA_generateKey  = NULL;
-static ci_imp_void_attestKey_t orig_DCA_attestKey     = NULL;
-static ci_imp_BOOL_NSIntegerErr_t orig_LA_canEval     = NULL;
+static ci_imp_BOOL_t orig_DC_isSupported               = NULL;
+static ci_imp_void_completion_t orig_DC_generateToken  = NULL;
+static ci_imp_BOOL_t orig_DCA_isSupported              = NULL;
+static ci_imp_void_completion_t orig_DCA_generateKey   = NULL;
+static ci_imp_void_attestKey_t orig_DCA_attestKey      = NULL;
+static ci_imp_void_attestKey_t orig_DCA_genAssertion   = NULL;
+static ci_imp_BOOL_NSIntegerErr_t orig_LA_canEval      = NULL;
+
+// State-machine cache. Apple's real DCDevice + DCAppAttestService return
+// the SAME token / keyId for the lifetime of a session. Random-per-call
+// breaks server-side session continuity — Zalo (and any sane backend)
+// stores token at sign-in, validates it on every subsequent request,
+// kicks the user out when t1 != t2. Cache once per process; Reset Data
+// kills the app process so the next launch generates fresh values.
+//
+// NOTE: cache values are ARC-strong, retained for process lifetime —
+// no need to invalidate. Process death = fresh device.
+static NSData     *cachedDCToken      = nil;
+static NSString   *cachedDCAKeyId     = nil;
+static dispatch_once_t cachedDCTokenOnce;
+static dispatch_once_t cachedDCAKeyOnce;
 
 static BOOL ci_DC_isSupported(id self, SEL _cmd) {
     if (!fakeLayer(@"hardware")) return orig_DC_isSupported ? orig_DC_isSupported(self, _cmd) : YES;
     return YES;
 }
+
 static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, NSError *)) {
     if (!fakeLayer(@"hardware")) {
         if (orig_DC_generateToken) orig_DC_generateToken(self, _cmd, (id)completion);
         return;
     }
     if (!completion) return;
-    uint8_t buf[32];
-    arc4random_buf(buf, sizeof(buf));
-    NSData *fake = [NSData dataWithBytes:buf length:sizeof(buf)];
-    completion(fake, nil); // SYNC — see banner above
+    dispatch_once(&cachedDCTokenOnce, ^{
+        uint8_t buf[32];
+        arc4random_buf(buf, sizeof(buf));
+        cachedDCToken = [NSData dataWithBytes:buf length:sizeof(buf)];
+    });
+    completion(cachedDCToken, nil);
 }
 
 static BOOL ci_DCA_isSupported(id self, SEL _cmd) {
     if (!fakeLayer(@"hardware")) return orig_DCA_isSupported ? orig_DCA_isSupported(self, _cmd) : YES;
     return YES;
 }
+
 static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *, NSError *)) {
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_generateKey) orig_DCA_generateKey(self, _cmd, (id)completion);
         return;
     }
     if (!completion) return;
-    uint8_t buf[32];
-    arc4random_buf(buf, sizeof(buf));
-    NSData *raw = [NSData dataWithBytes:buf length:sizeof(buf)];
-    NSString *keyId = [raw base64EncodedStringWithOptions:0];
-    completion(keyId, nil);
+    dispatch_once(&cachedDCAKeyOnce, ^{
+        uint8_t buf[32];
+        arc4random_buf(buf, sizeof(buf));
+        cachedDCAKeyId = [[NSData dataWithBytes:buf length:sizeof(buf)] base64EncodedStringWithOptions:0];
+    });
+    completion(cachedDCAKeyId, nil);
 }
+
 static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_attestKey) orig_DCA_attestKey(self, _cmd, keyId, hash, (id)completion);
@@ -1500,6 +1523,25 @@ static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, v
     }
     if (!completion) return;
     NSMutableData *fake = [NSMutableData dataWithLength:1600];
+    arc4random_buf(fake.mutableBytes, fake.length);
+    completion(fake, nil);
+}
+
+// generateAssertion is called for EVERY request after the initial reg.
+// Apps using App Attest send (keyId, clientDataHash) → SE generates a
+// signed assertion that the server validates against the stored attest.
+// Without a hook, real SE call fails (we never created a real key) and
+// the server kicks the session. Return random 96-byte blob so Zalo's
+// path-of-least-resistance just stores whatever and proceeds.
+//
+// Real assertion size is variable (~70-120 bytes). 96 splits the middle.
+static void ci_DCA_generateAssertion(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
+    if (!fakeLayer(@"hardware")) {
+        if (orig_DCA_genAssertion) orig_DCA_genAssertion(self, _cmd, keyId, hash, (id)completion);
+        return;
+    }
+    if (!completion) return;
+    NSMutableData *fake = [NSMutableData dataWithLength:96];
     arc4random_buf(fake.mutableBytes, fake.length);
     completion(fake, nil);
 }
@@ -1685,7 +1727,9 @@ static void ci_installAttestHooks(void) {
                                (IMP)ci_DCA_generateKey, (IMP *)&orig_DCA_generateKey);
             ci_swizzleInstance("DCAppAttestService", @selector(attestKey:clientDataHash:completionHandler:),
                                (IMP)ci_DCA_attestKey, (IMP *)&orig_DCA_attestKey);
-            NSLog(@"[ChangeInfoIos] DCAppAttestService hooked");
+            ci_swizzleInstance("DCAppAttestService", @selector(generateAssertion:clientDataHash:completionHandler:),
+                               (IMP)ci_DCA_generateAssertion, (IMP *)&orig_DCA_genAssertion);
+            NSLog(@"[ChangeInfoIos] DCAppAttestService hooked (incl. assertion)");
         }
         if (objc_getClass("LAContext")) {
             ci_swizzleInstance("LAContext", @selector(canEvaluatePolicy:error:),
