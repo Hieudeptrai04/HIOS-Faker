@@ -756,46 +756,52 @@ extern "C" void initCLvlHooks(void) {
     }
 #endif
 
-    // sysctl (KERN_PROC filter) — hides tweak/JB processes from process listing.
-    // dlsym name "sysctl" must come BEFORE we hook dlsym itself; otherwise we'd
-    // need RTLD_NEXT semantics which substrate doesn't expose.
-    void *sysctl2_sym = dlsym(RTLD_DEFAULT, "sysctl");
-    if (sysctl2_sym && !orig_sysctl) {
-        MSHookFunction(sysctl2_sym, (void *)hooked_sysctl, (void **)&orig_sysctl);
-        NSLog(@"[ChangeInfoIos] sysctl hooked");
+    // ============================================================
+    // The 5 hooks below (sysctl, ptrace, csops, connect, dlsym) are
+    // OFF BY DEFAULT — first deployment crashed AIDA + Zalo at launch.
+    // Each install is gated behind its own _ci_enable_<name> config
+    // flag so we can re-enable them one at a time via SSH and bisect
+    // the bad ABI without rebuilding the dylib.
+    //
+    // To turn one on for testing:
+    //   node ssh-set-key.js _ci_enable_sysctl true
+    // Then respring + open target app. If app opens → that hook is OK.
+    // If app crashes → that hook has bad ABI on this device's libsystem.
+    // ============================================================
+    if (getConfigBool(@"_ci_enable_sysctl")) {
+        void *sysctl2_sym = dlsym(RTLD_DEFAULT, "sysctl");
+        if (sysctl2_sym && !orig_sysctl) {
+            MSHookFunction(sysctl2_sym, (void *)hooked_sysctl, (void **)&orig_sysctl);
+            NSLog(@"[ChangeInfoIos] sysctl hooked");
+        }
     }
-
-    // ptrace — neutralizes PT_DENY_ATTACH (anti-debug); leaves all other
-    // ptrace operations untouched so legitimate use (Xcode debugger, crashed
-    // processes) still works.
-    void *ptrace_sym = dlsym(RTLD_DEFAULT, "ptrace");
-    if (ptrace_sym && !orig_ptrace) {
-        MSHookFunction(ptrace_sym, (void *)hooked_ptrace, (void **)&orig_ptrace);
-        NSLog(@"[ChangeInfoIos] ptrace hooked");
+    if (getConfigBool(@"_ci_enable_ptrace")) {
+        void *ptrace_sym = dlsym(RTLD_DEFAULT, "ptrace");
+        if (ptrace_sym && !orig_ptrace) {
+            MSHookFunction(ptrace_sym, (void *)hooked_ptrace, (void **)&orig_ptrace);
+            NSLog(@"[ChangeInfoIos] ptrace hooked");
+        }
     }
-
-    // csops — code-signing status probe. Apps inspect CS_DEBUGGED /
-    // CS_GET_TASK_ALLOW to detect debugger / non-platform-binary state.
-    void *csops_sym = dlsym(RTLD_DEFAULT, "csops");
-    if (csops_sym && !orig_csops) {
-        MSHookFunction(csops_sym, (void *)hooked_csops, (void **)&orig_csops);
-        NSLog(@"[ChangeInfoIos] csops hooked");
+    if (getConfigBool(@"_ci_enable_csops")) {
+        void *csops_sym = dlsym(RTLD_DEFAULT, "csops");
+        if (csops_sym && !orig_csops) {
+            MSHookFunction(csops_sym, (void *)hooked_csops, (void **)&orig_csops);
+            NSLog(@"[ChangeInfoIos] csops hooked");
+        }
     }
-
-    // connect — block Frida / Cycript loopback probes (port 27042/27043/32498).
-    void *connect_sym = dlsym(RTLD_DEFAULT, "connect");
-    if (connect_sym && !orig_connect) {
-        MSHookFunction(connect_sym, (void *)hooked_connect, (void **)&orig_connect);
-        NSLog(@"[ChangeInfoIos] connect hooked");
+    if (getConfigBool(@"_ci_enable_connect")) {
+        void *connect_sym = dlsym(RTLD_DEFAULT, "connect");
+        if (connect_sym && !orig_connect) {
+            MSHookFunction(connect_sym, (void *)hooked_connect, (void **)&orig_connect);
+            NSLog(@"[ChangeInfoIos] connect hooked");
+        }
     }
-
-    // dlsym hook MUST be installed LAST. Hooking it earlier would route our
-    // own subsequent dlsym lookups through the hook, possibly returning NULL
-    // for legit substrate symbols and breaking the rest of init.
-    void *dlsym_sym = dlsym(RTLD_DEFAULT, "dlsym");
-    if (dlsym_sym && !orig_dlsym) {
-        MSHookFunction(dlsym_sym, (void *)hooked_dlsym, (void **)&orig_dlsym);
-        NSLog(@"[ChangeInfoIos] dlsym hooked");
+    if (getConfigBool(@"_ci_enable_dlsym")) {
+        void *dlsym_sym = dlsym(RTLD_DEFAULT, "dlsym");
+        if (dlsym_sym && !orig_dlsym) {
+            MSHookFunction(dlsym_sym, (void *)hooked_dlsym, (void **)&orig_dlsym);
+            NSLog(@"[ChangeInfoIos] dlsym hooked");
+        }
     }
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
