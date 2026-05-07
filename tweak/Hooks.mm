@@ -17,6 +17,8 @@
 #import <net/if_dl.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
+#import <netdb.h>
+#import <sys/socket.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
@@ -705,9 +707,169 @@ static int hooked_csops(pid_t pid, unsigned int ops, void *useraddr, size_t user
     return ret;
 }
 
+// ============================================================
+// PROXY ROUTING — VPN-style deep interception via connect() hook.
+// ============================================================
+// Why this exists: NSURLSession-level proxy injection (in Tweak.xm) only
+// catches CFNetwork traffic. Apps like Zalo open raw BSD sockets for
+// chat / realtime / their proprietary login protocol — those bypass any
+// configuration set on session objects. To force ALL outgoing TCP through
+// the user's proxy we rewrite the connect() syscall: divert to the proxy
+// IP:port, perform SOCKS5 or HTTP-CONNECT handshake, hand the (now-tunneled)
+// socket back to the app. App sees connect succeed and reads/writes the
+// far end normally — same model that Shadowrocket / SUNNYNet use.
+
+static BOOL ci_writeAll(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0) { if (errno == EINTR) continue; return NO; }
+        if (n == 0) return NO;
+        p += n; len -= (size_t)n;
+    }
+    return YES;
+}
+
+static ssize_t ci_readAll(int fd, void *buf, size_t want) {
+    char *p = (char *)buf;
+    size_t got = 0;
+    while (got < want) {
+        ssize_t n = read(fd, p + got, want - got);
+        if (n < 0) { if (errno == EINTR) continue; return -1; }
+        if (n == 0) break;
+        got += (size_t)n;
+    }
+    return (ssize_t)got;
+}
+
+// SOCKS5 CONNECT handshake. fd is already connected to proxy. target is the
+// destination the app originally asked for. user/pass may be nil.
+static int ci_socks5Handshake(int fd, const struct sockaddr_in *target,
+                              NSString *user, NSString *pass) {
+    BOOL useAuth = user.length > 0;
+    uint8_t greet[] = { 0x05, 0x01, (uint8_t)(useAuth ? 0x02 : 0x00) };
+    if (!ci_writeAll(fd, greet, sizeof(greet))) return -1;
+
+    uint8_t resp[2];
+    if (ci_readAll(fd, resp, 2) != 2) return -1;
+    if (resp[0] != 0x05) { errno = EPROTO; return -1; }
+    if (resp[1] == 0xFF) { errno = EAUTH;  return -1; }
+
+    if (resp[1] == 0x02) {
+        const char *u = user.UTF8String ?: "";
+        const char *p = pass.UTF8String ?: "";
+        size_t ul = strlen(u), pl = strlen(p);
+        if (ul > 255 || pl > 255) { errno = EINVAL; return -1; }
+        uint8_t buf[3 + 255 + 255];
+        size_t n = 0;
+        buf[n++] = 0x01;
+        buf[n++] = (uint8_t)ul; memcpy(&buf[n], u, ul); n += ul;
+        buf[n++] = (uint8_t)pl; memcpy(&buf[n], p, pl); n += pl;
+        if (!ci_writeAll(fd, buf, n)) return -1;
+        if (ci_readAll(fd, resp, 2) != 2) return -1;
+        if (resp[0] != 0x01 || resp[1] != 0x00) { errno = EAUTH; return -1; }
+    }
+
+    uint8_t cmd[10];
+    cmd[0] = 0x05; cmd[1] = 0x01; cmd[2] = 0x00; cmd[3] = 0x01;
+    memcpy(&cmd[4], &target->sin_addr.s_addr, 4);
+    memcpy(&cmd[8], &target->sin_port, 2);
+    if (!ci_writeAll(fd, cmd, sizeof(cmd))) return -1;
+
+    uint8_t hdr[4];
+    if (ci_readAll(fd, hdr, 4) != 4) return -1;
+    if (hdr[0] != 0x05) { errno = EPROTO; return -1; }
+    if (hdr[1] != 0x00) { errno = EHOSTUNREACH; return -1; }
+
+    size_t skip = 2; // BND.PORT
+    if      (hdr[3] == 0x01) skip += 4;
+    else if (hdr[3] == 0x04) skip += 16;
+    else if (hdr[3] == 0x03) {
+        uint8_t dlen;
+        if (ci_readAll(fd, &dlen, 1) != 1) return -1;
+        skip += dlen;
+    } else { errno = EPROTO; return -1; }
+    uint8_t drain[260];
+    while (skip > 0) {
+        ssize_t n = ci_readAll(fd, drain, skip > sizeof(drain) ? sizeof(drain) : skip);
+        if (n <= 0) return -1;
+        skip -= (size_t)n;
+    }
+    return 0;
+}
+
+// HTTP CONNECT method handshake.
+static int ci_httpConnectHandshake(int fd, const struct sockaddr_in *target,
+                                   NSString *user, NSString *pass) {
+    char ipStr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &target->sin_addr.s_addr, ipStr, sizeof(ipStr));
+    uint16_t port = ntohs(target->sin_port);
+
+    NSMutableString *req = [NSMutableString stringWithFormat:
+        @"CONNECT %s:%u HTTP/1.1\r\nHost: %s:%u\r\n", ipStr, port, ipStr, port];
+    if (user.length) {
+        NSString *creds = [NSString stringWithFormat:@"%@:%@", user, pass ?: @""];
+        NSString *b64 = [[creds dataUsingEncoding:NSUTF8StringEncoding]
+                         base64EncodedStringWithOptions:0];
+        [req appendFormat:@"Proxy-Authorization: Basic %@\r\n", b64];
+    }
+    [req appendString:@"\r\n"];
+    NSData *reqData = [req dataUsingEncoding:NSUTF8StringEncoding];
+    if (!ci_writeAll(fd, reqData.bytes, reqData.length)) return -1;
+
+    char buf[1024];
+    size_t got = 0;
+    while (got < sizeof(buf) - 1) {
+        ssize_t n = read(fd, buf + got, sizeof(buf) - 1 - got);
+        if (n < 0) { if (errno == EINTR) continue; return -1; }
+        if (n == 0) break;
+        got += (size_t)n;
+        buf[got] = 0;
+        if (strstr(buf, "\r\n\r\n")) break;
+    }
+    if (got < 12 || strncmp(buf, "HTTP/", 5) != 0) { errno = EPROTO; return -1; }
+    char *sp = strchr(buf, ' ');
+    if (!sp) { errno = EPROTO; return -1; }
+    int status = atoi(sp + 1);
+    if (status != 200) { errno = EHOSTUNREACH; return -1; }
+    return 0;
+}
+
+// Resolve user-supplied proxy host. Fast path: literal IPv4 → inet_pton.
+// Hostname → getaddrinfo (one syscall, blocking). No cache: thread-safe
+// shared state across connect() callers is not worth the complexity, and
+// inet_pton is essentially free for IP-form strings (the common case
+// since residential-proxy providers ship raw IPv4 addresses).
+static BOOL ci_resolveProxyHost(NSString *host, struct in_addr *out) {
+    if (host.length == 0) return NO;
+    struct in_addr tmp;
+    if (inet_pton(AF_INET, host.UTF8String, &tmp) == 1) {
+        *out = tmp; return YES;
+    }
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host.UTF8String, NULL, &hints, &res) != 0 || !res) return NO;
+    struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
+    tmp = sin->sin_addr;
+    freeaddrinfo(res);
+    *out = tmp;
+    return YES;
+}
+
+// Reentrancy guard — our SOCKS5/getaddrinfo path itself calls connect()
+// (proxy connection) and possibly socket(); we must let those hit %orig.
+static __thread int g_ci_inProxyConnect = 0;
+
 // connect hook — block outbound connects to localhost on Frida/Cycript
 // debug ports. Apps probe these ports as a presence check; returning
 // ECONNREFUSED simulates "no debugger listening".
+//
+// Also: when the user has Proxy enabled in HIOS, divert AF_INET TCP
+// connections through the proxy via SOCKS5 / HTTP-CONNECT. localhost,
+// link-local, and broadcast traffic stays unproxied so DNS resolvers,
+// loopback IPC, and bonjour keep working.
 // ABI: int connect(int s, const struct sockaddr *name, socklen_t namelen) — 3 fixed args.
 typedef int (*connect_t)(int, const struct sockaddr *, socklen_t);
 static connect_t orig_connect = NULL;
@@ -725,7 +887,81 @@ static int hooked_connect(int s, const struct sockaddr *name, socklen_t namelen)
             }
         }
     }
-    return orig_connect(s, name, namelen);
+
+    // -------- Proxy redirection --------
+    if (g_ci_inProxyConnect) return orig_connect(s, name, namelen);
+    if (!name || name->sa_family != AF_INET) return orig_connect(s, name, namelen);
+    if (namelen < (socklen_t)sizeof(struct sockaddr_in)) return orig_connect(s, name, namelen);
+
+    const struct sockaddr_in *target = (const struct sockaddr_in *)name;
+    uint32_t ip = ntohl(target->sin_addr.s_addr);
+    uint8_t a = (ip >> 24) & 0xFF;
+    uint8_t b = (ip >> 16) & 0xFF;
+    if (a == 127) return orig_connect(s, name, namelen);              // 127.0.0.0/8
+    if (a == 169 && b == 254) return orig_connect(s, name, namelen);  // link-local
+    if (a == 0) return orig_connect(s, name, namelen);                // 0.0.0.0/8
+    if (a >= 224) return orig_connect(s, name, namelen);              // multicast/reserved
+
+    @autoreleasepool {
+        if (!getConfigBool(@"proxyEnabled")) return orig_connect(s, name, namelen);
+        NSString *raw = getConfigStr(@"proxyString");
+        if (raw.length == 0) return orig_connect(s, name, namelen);
+        NSArray *parts = [[raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@":"];
+        if (parts.count < 2) return orig_connect(s, name, namelen);
+        NSString *pHost = parts[0];
+        int pPort = [parts[1] intValue];
+        if (pHost.length == 0 || pPort < 1 || pPort > 65535) return orig_connect(s, name, namelen);
+        NSString *pUser = (parts.count >= 3 && [parts[2] length] > 0) ? parts[2] : nil;
+        NSString *pPass = (parts.count >= 4 && [parts[3] length] > 0) ? parts[3] : nil;
+        BOOL socks = [getConfigStr(@"proxyType") isEqualToString:@"socks5"];
+
+        struct in_addr proxyIP;
+        g_ci_inProxyConnect = 1;
+        BOOL gotIP = ci_resolveProxyHost(pHost, &proxyIP);
+        g_ci_inProxyConnect = 0;
+        if (!gotIP) return orig_connect(s, name, namelen);
+
+        // Don't proxy connections to the proxy itself (avoid loops if app
+        // explicitly tries to talk to the proxy IP for some reason).
+        if (target->sin_addr.s_addr == proxyIP.s_addr &&
+            ntohs(target->sin_port) == pPort) {
+            return orig_connect(s, name, namelen);
+        }
+
+        struct sockaddr_in proxySA;
+        memset(&proxySA, 0, sizeof(proxySA));
+        proxySA.sin_family = AF_INET;
+        proxySA.sin_port = htons((uint16_t)pPort);
+        proxySA.sin_addr = proxyIP;
+
+        // Force socket into blocking mode for the handshake; restore after.
+        int flags = fcntl(s, F_GETFL, 0);
+        BOOL wasNonBlock = (flags >= 0) && ((flags & O_NONBLOCK) != 0);
+        if (wasNonBlock) fcntl(s, F_SETFL, flags & ~O_NONBLOCK);
+
+        // 8s recv/send timeout so a dead proxy doesn't wedge the app forever.
+        struct timeval to = { .tv_sec = 8, .tv_usec = 0 };
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
+
+        g_ci_inProxyConnect = 1;
+        int rc = orig_connect(s, (struct sockaddr *)&proxySA, sizeof(proxySA));
+        g_ci_inProxyConnect = 0;
+        if (rc != 0) {
+            if (wasNonBlock) fcntl(s, F_SETFL, flags);
+            return rc;
+        }
+        int hr = socks
+            ? ci_socks5Handshake(s, target, pUser, pPass)
+            : ci_httpConnectHandshake(s, target, pUser, pPass);
+        if (wasNonBlock) fcntl(s, F_SETFL, flags);
+        if (hr != 0) {
+            // Handshake failed; close-time reads will surface the error to the
+            // caller. Set errno so connect() return value stays consistent.
+            return -1;
+        }
+        return 0;
+    }
 }
 
 extern "C" void initCLvlHooks(void) {
@@ -895,11 +1131,17 @@ extern "C" void initCLvlHooks(void) {
             NSLog(@"[ChangeInfoIos] csops hooked");
         }
     }
-    if (getConfigBool(@"_ci_enable_connect")) {
+    // connect() is hooked when EITHER the legacy Frida-block flag is on
+    // OR the user has Proxy enabled in HIOS — proxy routing requires the
+    // hook regardless of the jbHide debug-port block. Without this, raw
+    // sockets in apps like Zalo skip our proxy entirely.
+    if (getConfigBool(@"_ci_enable_connect") || getConfigBool(@"proxyEnabled")) {
         void *connect_sym = dlsym(RTLD_DEFAULT, "connect");
         if (connect_sym && !orig_connect) {
             MSHookFunction(connect_sym, (void *)hooked_connect, (void **)&orig_connect);
-            NSLog(@"[ChangeInfoIos] connect hooked");
+            NSLog(@"[ChangeInfoIos] connect hooked (proxy=%@ frida-block=%@)",
+                  getConfigBool(@"proxyEnabled") ? @"on" : @"off",
+                  getConfigBool(@"_ci_enable_connect") ? @"on" : @"off");
         }
     }
     if (getConfigBool(@"_ci_enable_dlsym")) {

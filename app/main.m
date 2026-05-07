@@ -2915,9 +2915,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    _items = @[@"Login", @"Liên Hệ", @"Add On", @"Proxy", @"Cài đặt",
-               @"— Clear Temp", @"— ReApp", @"— Check IP",
-               @"— Clear RRS", @"— Go Link IDFA", @"— Chỉ lưu RRS"];
+    // Trimmed to only working entries — placeholders ("Chức năng đang phát
+    // triển") were cluttering the menu. Add new items here as they get real
+    // handlers in didSelectRowAtIndexPath.
+    _items = @[@"Proxy"];
     self.view.backgroundColor = [CITheme bg];
     self.tableView.rowHeight = 52;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 110)];
