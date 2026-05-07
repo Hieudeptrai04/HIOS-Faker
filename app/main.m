@@ -3224,8 +3224,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // Photos access requires NSPhotoLibraryUsageDescription in Info.plist —
 // added alongside this controller.
 
-#import <MobileCoreServices/MobileCoreServices.h>
-
 static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_spoof.mp4";
 
 @implementation CICameraViewController {
@@ -3336,7 +3334,10 @@ static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_sp
 - (void)pickTapped {
     UIImagePickerController *pic = [[UIImagePickerController alloc] init];
     pic.sourceType = UIImagePickerControllerSourceTypeSavedPhotosAlbum;
-    pic.mediaTypes = @[(NSString *)kUTTypeMovie];
+    // Literal UTI to avoid header dependency on MobileCoreServices/UTCoreTypes
+    // (kUTTypeMovie symbol is gated behind MOBILECORESERVICES_HAS_UTTYPE in
+     // some SDK variants). "public.movie" is the same identifier.
+    pic.mediaTypes = @[@"public.movie"];
     pic.delegate = self;
     pic.allowsEditing = NO;
     [self presentViewController:pic animated:YES completion:nil];
