@@ -2900,6 +2900,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 @end
 
+// Forward-declare full CIProxyViewController @interface so CISideMenu's
+// didSelect can alloc + push it. Implementation lives below.
+@interface CIProxyViewController : UIViewController <UITextFieldDelegate>
+@end
+
 // ============================================================
 // SIDE MENU (hamburger)
 // ============================================================
@@ -2964,8 +2969,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 //                  can dial in coordinates without doing a full reset).
 //   Save         → persist + Darwin notify the tweak so target apps
 //                  pick up the new proxy on next request.
-@interface CIProxyViewController : UIViewController <UITextFieldDelegate>
-@end
+// (@interface is declared above CISideMenuViewController so the side
+//  menu's didSelect can construct it; implementation stays here.)
 
 @implementation CIProxyViewController {
     UISwitch           *_enableSwitch;
