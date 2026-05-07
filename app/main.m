@@ -833,6 +833,13 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
     [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
 
+    // ALWAYS re-arm keychain reset on Reset Data. After an RRS restore the
+    // flag was set to NO so Zalo could read its keychain entries; if the
+    // user then runs Reset Data without re-arming, fresh-account registration
+    // would fall through to the OLD keychain and Zalo would resume the
+    // restored session instead of starting clean.
+    [cm setObject:@(YES) forKey:@"keychainReset"];
+
     // WebKit / Metal fingerprint values — coherent with chip + iOS choice.
     NSString *chipName = preset.count > 9 ? preset[9] : @"A17 Pro";
     NSString *gpuName  = [NSString stringWithFormat:@"Apple %@ GPU", chipName];
@@ -3162,6 +3169,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [[UIBarButtonItem alloc] initWithImage:[self menuIcon] style:UIBarButtonItemStylePlain
                                         target:self action:@selector(openMenu)];
 
+    // Tap outside the keyboard to dismiss it. Required when the user types
+    // an account label in _noteField and wants to tap a button — without
+    // this gesture the keyboard sits on top of the buttons.
+    UITapGestureRecognizer *dismiss = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(dismissKeyboard)];
+    dismiss.cancelsTouchesInView = NO; // don't swallow taps on buttons
+    [self.view addGestureRecognizer:dismiss];
+
     UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
     sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     sv.alwaysBounceVertical = YES;
@@ -3332,6 +3347,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)textFieldDidEndEditing:(UITextField *)tf {
     [[CIConfigManager shared] setObject:(tf.text.length ? tf.text : nil) forKey:@"rrsNote"];
     [[CIConfigManager shared] save];
+}
+
+// Tap-anywhere-outside-keyboard handler for the gesture installed in viewDidLoad.
+- (void)dismissKeyboard {
+    [self.view endEditing:YES];
+}
+
+// "Nhập" / Return key on the keyboard also dismisses.
+- (BOOL)textFieldShouldReturn:(UITextField *)tf {
+    [tf resignFirstResponder];
+    return YES;
 }
 
 - (void)openMenu {
@@ -4167,6 +4193,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // 5. Reload host-app's in-memory CIConfigManager from the restored
         //    plist so the user's settings UI matches what's been put back.
         [[CIConfigManager shared] load];
+
+        // 5a. CRITICAL: disable keychainReset after restore. The
+        //     SecItemCopyMatching hook in Hooks.mm blocks Zalo's keychain
+        //     reads when keychainReset=YES — useful for fresh-account
+        //     registration but lethal for restore: Zalo's session token
+        //     LIVES in the keychain (which is shared at /var/Keychains/
+        //     keychain-2.db, NOT inside the per-app data container, so it
+        //     survives Reset Data). With reads blocked, the just-restored
+        //     container says "logged in as user X" but Zalo can't read
+        //     the matching keychain token → forces full re-login.
+        //
+        //     Setting keychainReset=NO + saving lets the hook fall
+        //     straight through to %orig and Zalo sees the keychain
+        //     entries that have been there all along.
+        [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
+        [[CIConfigManager shared] save];
 
         // 6. Cleanup + respring.
         ci_run([[NSString stringWithFormat:@"rm -rf %@", tmp] UTF8String]);
