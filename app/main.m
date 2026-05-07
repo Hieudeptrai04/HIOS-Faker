@@ -2528,52 +2528,32 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UITableView *_table;
     UISearchBar *_search;
     NSArray<CIRRSEntry *> *_view;
-    NSMutableSet *_selected;
+    CGFloat _lastLayoutWidth;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
-    _selected = [NSMutableSet set];
 
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 54)];
-
-    UIButton *selAll = [UIButton buttonWithType:UIButtonTypeSystem];
-    selAll.frame = CGRectMake(8, 12, 32, 32);
-    selAll.backgroundColor = [CITheme blue];
-    [selAll addTarget:self action:@selector(toggleAll) forControlEvents:UIControlEventTouchUpInside];
-    [header addSubview:selAll];
-
-    _search = [[UISearchBar alloc] initWithFrame:CGRectMake(48, 8, self.view.bounds.size.width-48-76-16, 38)];
-    _search.placeholder = @"Lọc RRS";
+    // Single search bar header — no more checkbox + Xóa button. Tap a row
+    // to restore that snapshot, swipe-left to delete (iOS-standard pattern).
+    _search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 56)];
+    _search.placeholder = @"Lọc RRS theo IDFA / IP / app";
     _search.searchBarStyle = UISearchBarStyleMinimal;
     _search.delegate = self;
     _search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [header addSubview:_search];
 
-    UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-    del.frame = CGRectMake(self.view.bounds.size.width-76-8, 8, 76, 38);
-    del.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [del setTitle:@"Xóa" forState:UIControlStateNormal];
-    [del setTitleColor:[CITheme orange] forState:UIControlStateNormal];
-    del.titleLabel.font = [CITheme h2];
-    del.layer.borderColor = [CITheme orange].CGColor;
-    del.layer.borderWidth = 1.5;
-    del.layer.cornerRadius = 4;
-    [del addTarget:self action:@selector(deleteSelected) forControlEvents:UIControlEventTouchUpInside];
-    [header addSubview:del];
-
-    _table = [[UITableView alloc] initWithFrame:self.view.bounds];
+    _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
     _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _table.delegate = self; _table.dataSource = self;
-    _table.tableHeaderView = header;
-    _table.rowHeight = 110;
+    _table.tableHeaderView = _search;
+    _table.rowHeight = 116;
     _table.backgroundColor = [CITheme bg];
-    _table.separatorColor = [CITheme separator];
+    _table.separatorStyle = UITableViewCellSeparatorStyleNone;
     [self.view addSubview:_table];
 
     _view = [[CIRRSStore shared] entries];
-    self.title = [NSString stringWithFormat:@"%lu RRS", (unsigned long)_view.count];
+    [self refreshTitle];
 
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
@@ -2581,25 +2561,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 - (void)closeBtn { [self dismissViewControllerAnimated:YES completion:nil]; }
 
-- (void)toggleAll {
-    if (_selected.count == _view.count) [_selected removeAllObjects];
-    else { [_selected removeAllObjects]; for (CIRRSEntry *e in _view) [_selected addObject:e.uid]; }
-    [_table reloadData];
+- (void)refreshTitle {
+    self.title = _view.count > 0
+        ? [NSString stringWithFormat:@"%lu RRS — chạm để restore", (unsigned long)_view.count]
+        : @"RRS (chưa có)";
 }
 
-- (void)deleteSelected {
-    if (_selected.count == 0) return;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Xoá?" message:[NSString stringWithFormat:@"Xoá %lu RRS?", (unsigned long)_selected.count] preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Xoá" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *_) {
-        NSArray *toDel = [_view filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(CIRRSEntry *e, NSDictionary *_Nullable _) { return [_selected containsObject:e.uid]; }]];
-        for (CIRRSEntry *e in toDel) [[CIRRSStore shared] deleteEntry:e];
-        [_selected removeAllObjects];
-        _view = [[CIRRSStore shared] entries];
-        self.title = [NSString stringWithFormat:@"%lu RRS", (unsigned long)_view.count];
+// Cells are built with frames computed from tv.bounds.size.width at
+// dequeue time. On first appearance the table's bounds are still 0×0,
+// so every cell renders with clipped value cards. Force a single
+// reloadData when the table reaches its real width.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = _table.bounds.size.width;
+    if (w > 0 && w != _lastLayoutWidth) {
+        _lastLayoutWidth = w;
         [_table reloadData];
-    }]];
-    [self presentViewController:a animated:YES completion:nil];
+    }
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)text {
@@ -2621,50 +2599,148 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:cid];
     if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:cid];
     for (UIView *v in c.contentView.subviews) [v removeFromSuperview];
+    c.selectionStyle = UITableViewCellSelectionStyleNone;
+    c.backgroundColor = [UIColor clearColor];
+    c.contentView.backgroundColor = [UIColor clearColor];
+
     CIRRSEntry *e = _view[ip.row];
+
+    // Single card spanning the cell width with structured rows inside —
+    // no more two-card split that was getting clipped on narrow layouts.
+    CGFloat margin = 12;
     CGFloat W = tv.bounds.size.width;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(margin, 4, W - margin*2, 108)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    card.backgroundColor = [CITheme card];
+    card.layer.cornerRadius = 12;
+    card.layer.borderWidth = 1;
+    card.layer.borderColor = [[CITheme blue] colorWithAlphaComponent:0.4].CGColor;
+    [c.contentView addSubview:card];
 
-    UILabel *idx = [[UILabel alloc] initWithFrame:CGRectMake(4, 36, 36, 20)];
-    idx.text = [NSString stringWithFormat:@"%ld", (long)(ip.row + 1)];
-    idx.textAlignment = NSTextAlignmentCenter;
-    [c.contentView addSubview:idx];
+    // Index badge top-left
+    UILabel *idxBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 10, 26, 26)];
+    idxBadge.text = [NSString stringWithFormat:@"%ld", (long)(ip.row + 1)];
+    idxBadge.textAlignment = NSTextAlignmentCenter;
+    idxBadge.textColor = [CITheme orange];
+    idxBadge.font = [UIFont boldSystemFontOfSize:14];
+    idxBadge.layer.cornerRadius = 13;
+    idxBadge.layer.borderColor = [CITheme orange].CGColor;
+    idxBadge.layer.borderWidth = 1;
+    [card addSubview:idxBadge];
 
-    UIView *box1 = [[UIView alloc] initWithFrame:CGRectMake(44, 8, W*0.55, 94)];
-    box1.layer.borderColor = [CITheme blue].CGColor; box1.layer.borderWidth = 1; box1.layer.cornerRadius = 6;
-    [c.contentView addSubview:box1];
-    UILabel *info = [[UILabel alloc] initWithFrame:CGRectMake(6, 4, box1.bounds.size.width-12, 86)];
-    info.numberOfLines = 0; info.font = [CITheme small];
-    NSString *names = [e.appNames componentsJoinedByString:@"\n"] ?: @"";
-    info.text = [NSString stringWithFormat:@"%@\nip reset: %@\n%@",
-                 e.idfa ?: @"-", e.ipReset ?: @"-", names];
-    [box1 addSubview:info];
+    // App names as a chip row
+    NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@" • "] : @"-";
+    UILabel *appLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 10, card.bounds.size.width - 56 - 100, 22)];
+    appLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    appLbl.text = names;
+    appLbl.font = [UIFont boldSystemFontOfSize:14];
+    appLbl.textColor = [CITheme text];
+    appLbl.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:appLbl];
 
-    UIView *box2 = [[UIView alloc] initWithFrame:CGRectMake(W*0.60+4, 8, W*0.40-16, 94)];
-    box2.layer.borderColor = [CITheme orange].CGColor; box2.layer.borderWidth = 1; box2.layer.cornerRadius = 6;
-    box2.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [c.contentView addSubview:box2];
-    UILabel *sz = [[UILabel alloc] initWithFrame:CGRectMake(4, 6, box2.bounds.size.width-8, 20)];
-    sz.text = CIBytesString(e.totalSize); sz.textColor = [UIColor redColor]; sz.textAlignment = NSTextAlignmentCenter;
-    [box2 addSubview:sz];
-    UILabel *date = [[UILabel alloc] initWithFrame:CGRectMake(4, 30, box2.bounds.size.width-8, 20)];
-    NSDateFormatter *df = [[NSDateFormatter alloc] init]; df.dateFormat = @"dd MMMM yyyy";
-    date.text = [df stringFromDate:e.date]; date.textColor = [CITheme blue]; date.textAlignment = NSTextAlignmentCenter;
-    [box2 addSubview:date];
-    UILabel *tm = [[UILabel alloc] initWithFrame:CGRectMake(4, 54, box2.bounds.size.width-8, 20)];
-    df.dateFormat = @"HH:mm:ss"; tm.text = [df stringFromDate:e.date];
-    tm.textColor = [CITheme blue]; tm.textAlignment = NSTextAlignmentCenter;
-    [box2 addSubview:tm];
+    // Date+time chip top-right
+    NSDateFormatter *dft = [[NSDateFormatter alloc] init];
+    dft.dateFormat = @"dd/MM/yyyy HH:mm";
+    UILabel *dateLbl = [[UILabel alloc] initWithFrame:CGRectMake(card.bounds.size.width - 110, 10, 100, 22)];
+    dateLbl.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    dateLbl.text = [dft stringFromDate:e.date];
+    dateLbl.font = [UIFont systemFontOfSize:11];
+    dateLbl.textColor = [CITheme dim];
+    dateLbl.textAlignment = NSTextAlignmentRight;
+    [card addSubview:dateLbl];
 
-    c.accessoryType = [_selected containsObject:e.uid] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    // IDFA row
+    UILabel *idfaLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 38, card.bounds.size.width - 56, 18)];
+    idfaLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    idfaLbl.text = [NSString stringWithFormat:@"IDFA  %@", e.idfa ?: @"-"];
+    idfaLbl.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    idfaLbl.textColor = [CITheme dim];
+    [card addSubview:idfaLbl];
+
+    // IP row
+    UILabel *ipLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 58, card.bounds.size.width - 56, 18)];
+    ipLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    ipLbl.text = [NSString stringWithFormat:@"IP    %@", e.ipReset ?: @"-"];
+    ipLbl.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    ipLbl.textColor = [CITheme dim];
+    [card addSubview:ipLbl];
+
+    // Size + restore CTA bottom row
+    UILabel *szLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 80, 80, 20)];
+    szLbl.text = CIBytesString(e.totalSize);
+    szLbl.font = [UIFont systemFontOfSize:11];
+    szLbl.textColor = [CITheme orange];
+    [card addSubview:szLbl];
+
+    UILabel *cta = [[UILabel alloc] initWithFrame:CGRectMake(card.bounds.size.width - 130, 80, 120, 20)];
+    cta.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    cta.text = @"chạm để restore →";
+    cta.font = [UIFont italicSystemFontOfSize:11];
+    cta.textColor = [CITheme green];
+    cta.textAlignment = NSTextAlignmentRight;
+    [card addSubview:cta];
+
     return c;
 }
 
+// Tap a row → confirm dialog → restore.
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     CIRRSEntry *e = _view[ip.row];
-    if ([_selected containsObject:e.uid]) [_selected removeObject:e.uid];
-    else [_selected addObject:e.uid];
-    [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"dd/MM/yyyy HH:mm:ss";
+
+    NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-";
+    NSString *body = [NSString stringWithFormat:
+        @"Khôi phục môi trường này?\n\n"
+        @"Apps: %@\n"
+        @"IDFA: %@\n"
+        @"IP: %@\n"
+        @"Backup lúc: %@\n\n"
+        @"Sau khi restore, account đã đăng ký trong môi trường này (Zalo, …) sẽ vẫn login được.",
+        names,
+        e.idfa ?: @"-",
+        e.ipReset ?: @"-",
+        [df stringFromDate:e.date]];
+
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Restore môi trường"
+                                                               message:body
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) {
+        // Defer to the host VC that owns RRS creation (CIHomeViewController
+        // exposes -restoreEntry:). The presenting VC chain reaches it via
+        // presentingViewController.
+        UIViewController *presenter = self.presentingViewController;
+        if ([presenter isKindOfClass:[UINavigationController class]]) {
+            presenter = [(UINavigationController *)presenter topViewController];
+        }
+        // Dismiss ourselves first so the HUD shows on the home screen.
+        [self dismissViewControllerAnimated:YES completion:^{
+            if ([presenter respondsToSelector:@selector(restoreEntry:)]) {
+                [presenter performSelector:@selector(restoreEntry:) withObject:e];
+            }
+        }];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+// Swipe-left → Delete (iOS-standard pattern; no more multi-select header).
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
+        trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    UIContextualAction *del = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleDestructive
+                            title:@"Xóa"
+                          handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
+        CIRRSEntry *e = self->_view[ip.row];
+        [[CIRRSStore shared] deleteEntry:e];
+        self->_view = [[CIRRSStore shared] entries];
+        [self refreshTitle];
+        [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
+        doneHandler(YES);
+    }];
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
 }
 @end
 
@@ -3965,25 +4041,147 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
     [[NSFileManager defaultManager] createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -czf %@", tarPath];
-    for (NSString *p in paths) [tarCmd appendFormat:@" %@", p];
+    // Archive command: app data containers + tweak config + DC state files.
+    // Without the config snapshot, restoring just brings the user data back
+    // but the tweak still spoofs the CURRENT random hardware IDs — so a
+    // Zalo account that was registered against the old fake-device profile
+    // sees a different UDID/IDFA/IMEI and fails session validation.
+    // Including /var/jb/etc/changeinfoios/ captures the spoof config + DC
+    // tokens that were active at backup time, restoring the full env.
+    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -czf %@ /var/jb/etc/changeinfoios", tarPath];
+    for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
+    [tarCmd appendString:@" 2>/dev/null"];
     ci_run([tarCmd UTF8String]);
     [[CIRRSStore shared] addEntry:e];
+    NSLog(@"[ChangeInfoIos] RRS created: %@ (%lu apps + config snapshot)",
+          e.uid, (unsigned long)e.bundleIDs.count);
+}
+
+// Full environment restore. iOS reassigns the data-container UUID for each
+// app on every (re)install or container-rebuild, so the archived tarball's
+// UUID directory likely doesn't match the current live container path.
+// Strategy:
+//   1. Untar to /tmp/restore_<uid>/ instead of straight to /
+//   2. Walk each archived UUID dir, read its metadata.plist to discover the
+//      bundleID it belongs to
+//   3. Resolve the CURRENT container for that bundleID via
+//      ci_findDataContainerForBundle, then copy contents over (rebind UUID)
+//   4. Restore /var/jb/etc/changeinfoios/* (config + DC state) so the tweak
+//      reloads with the same fake hardware profile that was active at backup
+//   5. Kill cfprefsd + sbreload so the tweak's cached config is invalidated
+//   6. Kill target apps so next launch is a cold-start with restored data
+- (void)restoreEntry:(CIRRSEntry *)e {
+    NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:tar]) {
+        [self alert:@"Lỗi" msg:@"File backup không tồn tại trên máy."];
+        return;
+    }
+
+    UIView *hud = [self showHUDWithTitle:@"Đang restore môi trường..."];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 1. Kill target apps so files aren't held open during the swap.
+        for (NSString *bid in e.bundleIDs) {
+            NSString *kc = [NSString stringWithFormat:
+                @"pkill -9 -f '/var/containers/Bundle/Application/'*'/%@' 2>/dev/null", bid];
+            ci_run([kc UTF8String]);
+        }
+
+        // 2. Untar to a private temp dir (NOT to /), so we can rebind UUIDs.
+        NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_restore_%@", e.uid];
+        ci_run([[NSString stringWithFormat:@"rm -rf %@; mkdir -p %@", tmp, tmp] UTF8String]);
+        NSString *untar = [NSString stringWithFormat:@"tar -xzf '%@' -C '%@' 2>/dev/null", tar, tmp];
+        ci_run([untar UTF8String]);
+
+        // 3. Rebind each archived UUID-container to the current live container
+        //    for that bundleID.
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *bkRoot = [tmp stringByAppendingPathComponent:@"var/mobile/Containers/Data/Application"];
+        NSArray *bkUUIDs = [fm contentsOfDirectoryAtPath:bkRoot error:nil];
+        NSUInteger restored = 0;
+        for (NSString *uuid in bkUUIDs) {
+            NSString *bkDir = [bkRoot stringByAppendingPathComponent:uuid];
+            NSString *bkMeta = [bkDir stringByAppendingPathComponent:
+                @".com.apple.mobile_container_manager.metadata.plist"];
+            NSData *blob = [NSData dataWithContentsOfFile:bkMeta];
+            if (!blob) continue;
+
+            // Match the archived metadata to one of the bundleIDs in this entry.
+            NSString *matchedBid = nil;
+            for (NSString *bid in e.bundleIDs) {
+                NSData *needle = [bid dataUsingEncoding:NSUTF8StringEncoding];
+                if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
+                    matchedBid = bid;
+                    break;
+                }
+            }
+            if (!matchedBid) continue;
+
+            NSString *curContainer = ci_findDataContainerForBundle(matchedBid);
+            if (curContainer.length == 0) {
+                NSLog(@"[ChangeInfoIos] restore: no live container for %@", matchedBid);
+                continue;
+            }
+
+            // Copy each user-data subdir from backup over the live container.
+            // Don't touch the live container's metadata.plist — that's the
+            // UUID binding iOS itself manages.
+            NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
+            for (NSString *sub in subs) {
+                NSString *bkSub = [bkDir stringByAppendingPathComponent:sub];
+                if (![fm fileExistsAtPath:bkSub]) continue;
+                NSString *curSub = [curContainer stringByAppendingPathComponent:sub];
+                NSString *cmd = [NSString stringWithFormat:
+                    @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; "
+                    @"mkdir -p '%@' 2>/dev/null; "
+                    @"cp -a '%@/.' '%@/' 2>/dev/null",
+                    curSub, curSub, curSub, bkSub, curSub];
+                ci_run([cmd UTF8String]);
+            }
+            restored++;
+        }
+
+        // 4. Restore tweak config + DC state. Critical: without this, the
+        //    tweak still spoofs CURRENT random IDs, so a Zalo account that
+        //    was registered against the snapshot's UDID/IDFA fails session
+        //    validation and signs out.
+        NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
+        if ([fm fileExistsAtPath:bkConfigDir]) {
+            NSString *cmd = [NSString stringWithFormat:
+                @"mkdir -p /var/jb/etc/changeinfoios; "
+                @"cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
+                @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null",
+                bkConfigDir];
+            ci_run([cmd UTF8String]);
+        }
+
+        // 5. Reload host-app's in-memory CIConfigManager from the restored
+        //    plist so the user's settings UI matches what's been put back.
+        [[CIConfigManager shared] load];
+
+        // 6. Cleanup + respring.
+        ci_run([[NSString stringWithFormat:@"rm -rf %@", tmp] UTF8String]);
+        ci_run("killall -9 cfprefsd 2>/dev/null");
+        ci_run("/var/jb/usr/bin/sbreload 2>/dev/null"
+               " || sbreload 2>/dev/null"
+               " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+               " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null");
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self dismissHUD:hud completion:^{
+                NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-";
+                NSString *msg = [NSString stringWithFormat:
+                    @"Đã restore %lu app: %@\n\nMáy đang respring. Mở lại app để tiếp tục với account cũ.",
+                    (unsigned long)restored, names];
+                [self alert:@"✅ Restore thành công" msg:msg];
+            }];
+        });
+    });
 }
 
 - (void)quickRestore {
     NSArray *items = [[CIRRSStore shared] entries];
     if (items.count == 0) { [self alert:@"Không có RRS" msg:@"Chưa có snapshot nào để restore."]; return; }
-    CIRRSEntry *e = items.firstObject;
-    NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
-    UIView *hud = [self showHUDWithTitle:@"Đang Restore RRS..."];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *cmd = [NSString stringWithFormat:@"tar -xzf %@ -C /", tar];
-        int rc = ci_run([cmd UTF8String]);
-        [self dismissHUD:hud completion:^{
-            [self alert:(rc == 0 ? @"Đã restore" : @"Restore fail") msg:[NSString stringWithFormat:@"rc=%d", rc]];
-        }];
-    });
+    [self restoreEntry:items.firstObject];
 }
 
 - (void)alert:(NSString *)t msg:(NSString *)m {
