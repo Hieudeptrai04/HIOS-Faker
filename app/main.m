@@ -1032,7 +1032,10 @@ static void ci_wipeSafariDeep(void) {
 // match cookies against a server-side device-cookie pair, so even a fresh
 // container with stale cookies trips the "this device used to be account
 // X" alarm. We wipe per-app and global cookie storage paths.
-static void ci_wipeCrossAppResidue(NSArray<CIAppInfo *> *targets) {
+// Takes NSArray of CIAppInfo (typed loosely as id) — the class is defined
+// further down in the file and we can't forward-typedef it without
+// duplicating the @interface here. KVC -valueForKey: gives us bundleID.
+static void ci_wipeCrossAppResidue(NSArray *targets) {
     // Global cookie + cache paths shared by NSHTTPCookieStorage and
     // CFNetwork. Wiping these clears cookies for every app on the device,
     // not just our targets — that's the desired behavior for a fresh-device
@@ -1065,9 +1068,10 @@ static void ci_wipeCrossAppResidue(NSArray<CIAppInfo *> *targets) {
         NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
         if (!blob) continue;
         BOOL match = NO;
-        for (CIAppInfo *a in targets) {
-            if (a.bundleID.length == 0) continue;
-            NSData *needle = [a.bundleID dataUsingEncoding:NSUTF8StringEncoding];
+        for (id a in targets) {
+            NSString *bid = [a valueForKey:@"bundleID"];
+            if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+            NSData *needle = [bid dataUsingEncoding:NSUTF8StringEncoding];
             if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
                 match = YES;
                 break;
