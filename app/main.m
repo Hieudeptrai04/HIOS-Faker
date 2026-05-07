@@ -1405,7 +1405,12 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 
 - (void)addEntry:(CIRRSEntry *)e { [_items insertObject:e atIndex:0]; [self saveIndex]; }
 - (void)deleteEntry:(CIRRSEntry *)e {
-    NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    // Try both legacy .tar.gz and current .tar extensions when deleting,
+    // since pre-9a9f9ae builds created broken gzip archives that won't
+    // open but still take disk space.
+    NSString *tarGz = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+    [[NSFileManager defaultManager] removeItemAtPath:tarGz error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:tar error:nil];
     [_items removeObject:e];
     [self saveIndex];
@@ -4096,14 +4101,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     e.appNames = n; e.bundleIDs = b; e.totalSize = total;
 
-    NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    // Use uncompressed .tar (no gzip): Dopamine 2's rootless prefix ships
+    // tar (GNU tar 1.35) but does NOT include gzip — `tar -czf` invokes
+    // gzip via execvp and silently produces a 0-byte archive when gzip
+    // isn't found. Discovered via ssh-probe-gzip.js after every Backup +
+    // Reset run was leaving the user's account list at "0 bytes". Plain
+    // tar without compression works fine; archives are larger (3-5×) but
+    // disk space isn't constrained on a 256GB iPhone, and the resulting
+    // archive is actually openable by the restore code.
+    NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+    NSString *errLog  = [NSString stringWithFormat:@"/tmp/ci_rrs_tar_%@.err", e.uid];
     [[NSFileManager defaultManager] createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // Pre-flight: log what we're about to archive so a silent tar failure
-    // is identifiable. If `paths` is empty (no target's containerPath was
-    // resolved), tar would still run and produce a near-empty archive
-    // containing only /var/jb/etc/changeinfoios — and the user wouldn't
-    // see why their backup is useless.
+    // Pre-flight: log what we're about to archive. If `paths` is empty
+    // (CIAppLister couldn't resolve a containerPath for any of the user's
+    // RRS picks), tar would still run and produce an archive containing
+    // only /var/jb/etc/changeinfoios — useless for restoring an account.
     NSLog(@"[ChangeInfoIos] RRS pre-archive: %lu containers + config dir",
           (unsigned long)paths.count);
     for (NSString *p in paths) NSLog(@"[ChangeInfoIos]   archiving %@", p);
@@ -4111,26 +4124,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up — RRS will only contain config snapshot");
     }
 
-    // Archive command: app data containers + tweak config + DC state files.
-    // Without the config snapshot, restoring just brings the user data back
-    // but the tweak still spoofs the CURRENT random hardware IDs — so a
-    // Zalo account that was registered against the old fake-device profile
-    // sees a different UDID/IDFA/IMEI and fails session validation.
-    // Including /var/jb/etc/changeinfoios/ captures the spoof config + DC
-    // tokens that were active at backup time, restoring the full env.
-    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -czf '%@' /var/jb/etc/changeinfoios", tarPath];
+    // Build tar command. Capture stderr to a file so a silent failure
+    // becomes visible in syslog instead of vanishing to /dev/null.
+    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -cf '%@' /var/jb/etc/changeinfoios", tarPath];
     for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
-    [tarCmd appendString:@" 2>/dev/null"];
+    [tarCmd appendFormat:@" 2>%@", errLog];
     int rc = ci_run([tarCmd UTF8String]);
 
-    // Verify archive size matches expectation. tar gz usually compresses 30-60%.
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath error:nil];
     unsigned long long actualBytes = [attrs[NSFileSize] unsignedLongLongValue];
-    e.totalSize = actualBytes;  // store the actual archive size, not pre-compress estimate
+    e.totalSize = actualBytes;
+
+    NSString *errs = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:errLog error:nil];
 
     [[CIRRSStore shared] addEntry:e];
-    NSLog(@"[ChangeInfoIos] RRS created: uid=%@ rc=%d archive=%llu bytes (apps=%lu)",
-          e.uid, rc, actualBytes, (unsigned long)e.bundleIDs.count);
+    NSLog(@"[ChangeInfoIos] RRS created: uid=%@ rc=%d archive=%llu bytes (apps=%lu)%@",
+          e.uid, rc, actualBytes, (unsigned long)e.bundleIDs.count,
+          errs.length ? [NSString stringWithFormat:@"\nstderr: %@", errs] : @"");
 }
 
 // Full environment restore. iOS reassigns the data-container UUID for each
@@ -4147,8 +4158,26 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 //   5. Kill cfprefsd + sbreload so the tweak's cached config is invalidated
 //   6. Kill target apps so next launch is a cold-start with restored data
 - (void)restoreEntry:(CIRRSEntry *)e {
-    NSString *tar = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:tar]) {
+    // Locate the archive — current builds write .tar (uncompressed) since
+    // gzip isn't shipped on rootless. Pre-9a9f9ae backups are .tar.gz but
+    // are 0-byte broken archives (the gzip child failed silently); detect
+    // and warn instead of trying to restore.
+    NSString *tarUncomp = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+    NSString *tarLegacy = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    NSFileManager *fm0 = [NSFileManager defaultManager];
+    NSString *tar = nil;
+    if ([fm0 fileExistsAtPath:tarUncomp]) {
+        tar = tarUncomp;
+    } else if ([fm0 fileExistsAtPath:tarLegacy]) {
+        unsigned long long sz = [[fm0 attributesOfItemAtPath:tarLegacy error:nil][NSFileSize] unsignedLongLongValue];
+        if (sz < 100) {
+            [self alert:@"Backup hỏng"
+                    msg:@"Backup này được tạo bởi version cũ trước khi fix bug gzip — file rỗng, không restore được. Vui lòng tạo backup mới (Backup + Reset Data) rồi xóa backup cũ."];
+            return;
+        }
+        tar = tarLegacy;
+    }
+    if (!tar) {
         [self alert:@"Lỗi" msg:@"File backup không tồn tại trên máy."];
         return;
     }
@@ -4178,9 +4207,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                          CIBytesString(tarSize)]];
         NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_restore_%@", e.uid];
         ci_run([[NSString stringWithFormat:@"rm -rf %@; mkdir -p %@", tmp, tmp] UTF8String]);
-        NSString *untar = [NSString stringWithFormat:@"tar -xzf '%@' -C '%@' 2>/dev/null", tar, tmp];
+        // tar -xf auto-detects format (handles plain .tar AND .tar.gz when
+        // gzip is present). Without -z, plain tar reads uncompressed
+        // archives directly — works on Dopamine where gzip isn't installed.
+        NSString *untar = [NSString stringWithFormat:@"tar -xf '%@' -C '%@' 2>/dev/null", tar, tmp];
         int untarRc = ci_run([untar UTF8String]);
-        NSLog(@"[ChangeInfoIos] restore: untar rc=%d to %@", untarRc, tmp);
+        NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@", untarRc, tar, tmp);
 
         // ---- Step 3: Rebind each archived UUID-container to the current live container ----
         NSFileManager *fm = [NSFileManager defaultManager];
