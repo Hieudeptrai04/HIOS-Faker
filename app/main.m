@@ -4478,16 +4478,37 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // just untarred. Without this step, container is restored
         // but session token still belongs to whatever account was
         // logged in last → Zalo asks for login again.
-        NSString *kcFlagDir = @"/var/jb/etc/changeinfoios";
+        //
+        // CRITICAL: flag must land in <target container>/tmp/, not
+        // /var/jb/etc/changeinfoios. The tweak runs inside the target
+        // app's sandbox and can only RELIABLY write to its own tmp/,
+        // so it also looks for the flag there (matches the keychain
+        // dump path we changed in 2026-05-07). Use ci_findDataContainer
+        // ForBundle to locate the live container (UUID changes after
+        // every Reset Data, so we can't hardcode).
+        NSUInteger flagsDropped = 0;
         for (NSString *bid in e.bundleIDs) {
-            NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-            NSString *flagPath = [kcFlagDir stringByAppendingPathComponent:
-                [NSString stringWithFormat:@"restore_kc_%@.flag", safe]];
-            [@"1" writeToFile:flagPath atomically:YES
-                     encoding:NSUTF8StringEncoding error:nil];
+            NSString *container = ci_findDataContainerForBundle(bid);
+            if (container.length == 0) {
+                NSLog(@"[ChangeInfoIos] restore: cannot locate container for %@ — flag NOT dropped", bid);
+                continue;
+            }
+            NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir
+                                      withIntermediateDirectories:YES
+                                                       attributes:nil error:nil];
+            NSString *flagPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
+            NSError *err = nil;
+            BOOL ok = [@"1" writeToFile:flagPath atomically:YES
+                               encoding:NSUTF8StringEncoding error:&err];
+            if (ok) {
+                flagsDropped++;
+            } else {
+                NSLog(@"[ChangeInfoIos] restore: flag write FAILED for %@: %@", bid, err);
+            }
         }
-        NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu bundles",
-              (unsigned long)e.bundleIDs.count);
+        NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles",
+              (unsigned long)flagsDropped, (unsigned long)e.bundleIDs.count);
 
         // ---- Step 5: Cleanup + respring ----
         [self updateHUD:hud step:5 total:5

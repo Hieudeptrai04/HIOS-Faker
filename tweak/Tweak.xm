@@ -186,13 +186,24 @@ __thread int g_ci_skipKeychainHook = 0;
 
 #import <Security/Security.h>
 
+// IMPORTANT: must live in NSTemporaryDirectory() (the calling bundle's
+// own /<container>/tmp/), NOT under /var/jb/etc/changeinfoios. Confirmed
+// 2026-05-07 that App Store app sandboxes (Zalo et al) can READ /var/jb
+// but cannot WRITE there — earlier loaded_<bid>.txt drop into that same
+// dir silently failed for the exact same reason. NSTemporaryDirectory()
+// is per-bundle scoped by iOS itself, so we don't need bid in the name;
+// the host app's tar archives the whole container (incl. tmp/) so the
+// dump rides along into RRS, and restore's UUID-rebind copy lands it in
+// the new container's tmp/ automatically.
 static NSString *ci_keychainBackupPath(NSString *bid) {
-    NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-    return [NSString stringWithFormat:@"/var/jb/etc/changeinfoios/keychain_%@.plist", safe];
+    NSString *tmp = NSTemporaryDirectory();
+    if (tmp.length == 0) return nil;
+    return [tmp stringByAppendingPathComponent:@"hios_keychain.plist"];
 }
 static NSString *ci_keychainRestoreFlag(NSString *bid) {
-    NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-    return [NSString stringWithFormat:@"/var/jb/etc/changeinfoios/restore_kc_%@.flag", safe];
+    NSString *tmp = NSTemporaryDirectory();
+    if (tmp.length == 0) return nil;
+    return [tmp stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
 }
 
 static NSDictionary *ci_encodeKCEntry(NSDictionary *attr) {
@@ -258,8 +269,10 @@ static void ci_dumpKeychain(void) {
         }
         g_ci_skipKeychainHook--;
         NSString *path = ci_keychainBackupPath(bid);
-        [all writeToFile:path atomically:YES];
-        NSLog(@"[ChangeInfoIos] keychain dump: %lu entries → %@", (unsigned long)all.count, path);
+        if (path.length == 0) return;
+        BOOL ok = [all writeToFile:path atomically:YES];
+        NSLog(@"[ChangeInfoIos] keychain dump: %lu entries %@ %@",
+              (unsigned long)all.count, ok ? @"→" : @"FAILED writing", path);
     }
 }
 
