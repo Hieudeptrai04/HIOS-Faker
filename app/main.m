@@ -3817,6 +3817,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // identifiable as "the same device that used account X yesterday".
         ci_wipeCrossAppResidue(fullTargets);
 
+        // DC state — persistent DC token + AppAttest keyId per bundle. The
+        // tweak persists these so iOS app suspension + relaunch returns the
+        // same token (otherwise dispatch_once re-rolls and Zalo's server sees
+        // token drift on every relaunch). Reset Data must wipe them so the
+        // next launch generates a brand-new device identity.
+        ci_run("rm -f /var/jb/etc/changeinfoios/dc_state_*.plist 2>/dev/null");
+        NSLog(@"[ChangeInfoIos] DC state files wiped");
+
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
             @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",

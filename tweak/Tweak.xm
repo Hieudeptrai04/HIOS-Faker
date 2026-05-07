@@ -1488,19 +1488,45 @@ static ci_imp_void_attestKey_t orig_DCA_attestKey      = NULL;
 static ci_imp_void_attestKey_t orig_DCA_genAssertion   = NULL;
 static ci_imp_BOOL_NSIntegerErr_t orig_LA_canEval      = NULL;
 
-// State-machine cache. Apple's real DCDevice + DCAppAttestService return
-// the SAME token / keyId for the lifetime of a session. Random-per-call
-// breaks server-side session continuity — Zalo (and any sane backend)
-// stores token at sign-in, validates it on every subsequent request,
-// kicks the user out when t1 != t2. Cache once per process; Reset Data
-// kills the app process so the next launch generates fresh values.
+// State-machine cache for DCDevice + DCAppAttestService. Apple's real impl
+// returns the SAME token / keyId across an entire device lifecycle (rotated
+// only on user actions like erase-all). Random-per-call breaks server-side
+// session continuity: Zalo stores token@signin, validates token@every-req,
+// kicks user when t1 != t2.
 //
-// NOTE: cache values are ARC-strong, retained for process lifetime —
-// no need to invalidate. Process death = fresh device.
+// PERSISTENT cache: previously dispatch_once kept the token consistent only
+// for the current process. iOS aggressively suspends + relaunches apps
+// (memory pressure, BG → FG transition, app switcher), and each relaunch
+// would re-roll the token via dispatch_once → server sees new token →
+// session invalidated even though hardware ID is stable.
+//
+// Persist tokens at /var/jb/etc/changeinfoios/dc_state_<bid>.plist so
+// the same process bundle returns the same token across restarts. Reset
+// Data deletes these files (host app handles cleanup).
 static NSData     *cachedDCToken      = nil;
 static NSString   *cachedDCAKeyId     = nil;
 static dispatch_once_t cachedDCTokenOnce;
 static dispatch_once_t cachedDCAKeyOnce;
+
+static NSString *ci_dcStatePath(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
+    // Sanitize bid for filename — replace / and . problematic chars.
+    NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    return [NSString stringWithFormat:@"/var/jb/etc/changeinfoios/dc_state_%@.plist", safe];
+}
+
+static NSDictionary *ci_loadDCState(void) {
+    NSString *path = ci_dcStatePath();
+    return [NSDictionary dictionaryWithContentsOfFile:path];
+}
+
+static void ci_saveDCState(NSDictionary *state) {
+    NSString *path = ci_dcStatePath();
+    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+                              withIntermediateDirectories:YES
+                                               attributes:nil error:nil];
+    [state writeToFile:path atomically:YES];
+}
 
 static BOOL ci_DC_isSupported(id self, SEL _cmd) {
     if (!fakeLayer(@"hardware")) return orig_DC_isSupported ? orig_DC_isSupported(self, _cmd) : YES;
@@ -1514,9 +1540,22 @@ static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, 
     }
     if (!completion) return;
     dispatch_once(&cachedDCTokenOnce, ^{
+        // First try to load persisted token. iOS suspends + relaunches apps
+        // aggressively; without persistence each relaunch re-rolls the
+        // token and server-side validation fails.
+        NSDictionary *saved = ci_loadDCState();
+        NSData *persisted = saved[@"dcToken"];
+        if ([persisted isKindOfClass:[NSData class]] && persisted.length == 32) {
+            cachedDCToken = persisted;
+            return;
+        }
         uint8_t buf[32];
         arc4random_buf(buf, sizeof(buf));
         cachedDCToken = [NSData dataWithBytes:buf length:sizeof(buf)];
+        // Merge with existing state so we don't clobber a sibling keyId.
+        NSMutableDictionary *state = saved ? [saved mutableCopy] : [NSMutableDictionary dictionary];
+        state[@"dcToken"] = cachedDCToken;
+        ci_saveDCState(state);
     });
     completion(cachedDCToken, nil);
 }
@@ -1533,9 +1572,18 @@ static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *,
     }
     if (!completion) return;
     dispatch_once(&cachedDCAKeyOnce, ^{
+        NSDictionary *saved = ci_loadDCState();
+        NSString *persisted = saved[@"dcaKeyId"];
+        if ([persisted isKindOfClass:[NSString class]] && persisted.length > 0) {
+            cachedDCAKeyId = persisted;
+            return;
+        }
         uint8_t buf[32];
         arc4random_buf(buf, sizeof(buf));
         cachedDCAKeyId = [[NSData dataWithBytes:buf length:sizeof(buf)] base64EncodedStringWithOptions:0];
+        NSMutableDictionary *state = saved ? [saved mutableCopy] : [NSMutableDictionary dictionary];
+        state[@"dcaKeyId"] = cachedDCAKeyId;
+        ci_saveDCState(state);
     });
     completion(cachedDCAKeyId, nil);
 }
