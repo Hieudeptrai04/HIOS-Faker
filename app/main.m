@@ -833,6 +833,22 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
     [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
 
+    // WebKit / Metal fingerprint values — coherent with chip + iOS choice.
+    NSString *chipName = preset.count > 9 ? preset[9] : @"A17 Pro";
+    NSString *gpuName  = [NSString stringWithFormat:@"Apple %@ GPU", chipName];
+    [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
+    [cm setObject:gpuName       forKey:@"web_glRenderer"];
+    [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
+    [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
+
+    // WKWebView UA string — Apple's actual format. Build version uses
+    // underscores not dots ("18_5" not "18.5").
+    NSString *uaIOSVer = [iosPreset[1] stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *fakeUA = [NSString stringWithFormat:
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1",
+        uaIOSVer];
+    [cm setObject:fakeUA forKey:@"zalo_fakeWebViewUA"];
+
     // Ensure all fake layers on
     NSArray *allFakeLayers = @[
         @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",

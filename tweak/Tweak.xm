@@ -75,6 +75,23 @@
 @property (nonatomic, readonly) NSData *evaluatedPolicyDomainState;
 @end
 
+// WebKit forward decls. Importing <WebKit/WebKit.h> would pull WebKit
+// into the dylib's link list, and substrate then rejects the dylib in
+// any process where WebKit isn't in the dyld shared cache (banking apps
+// without an embedded browser, etc.). With these light @interface stubs
+// we get full Obj-C method-call sugar without a single linkage edge.
+@interface WKUserContentController : NSObject
+- (void)addUserScript:(id)userScript;
+@end
+@interface WKUserScript : NSObject
+- (instancetype)initWithSource:(NSString *)source
+                 injectionTime:(NSInteger)injectionTime
+              forMainFrameOnly:(BOOL)forMainFrameOnly;
+@end
+@interface WKWebViewConfiguration : NSObject
+@property (nonatomic, strong) WKUserContentController *userContentController;
+@end
+
 // ============================================================
 // SHARED C LINKAGE FOR Tweak.xm <-> Hooks.mm
 // ============================================================
@@ -1507,6 +1524,149 @@ static void ci_swizzleInstance(const char *className, SEL sel, IMP newImp, IMP *
     method_setImplementation(m, newImp);
 }
 
+// LAYER 14: WKWebView fingerprint spoof
+// ---------------------------------------
+// Restored via runtime swizzle (was disabled because `%hook WKWebView`
+// required linking WebKit — the dylib then failed to load in apps that
+// don't link WebKit). objc_getClass + method_setImplementation lets us
+// install only when WKWebView is already mapped into the host process.
+//
+// What we spoof:
+//   - WKWebView.customUserAgent / setCustomUserAgent: → zalo_fakeWebViewUA
+//   - initWithFrame:configuration: → injects a WKUserScript at document
+//     start that monkey-patches the JS fingerprint surface BEFORE the
+//     page's own scripts run:
+//       * navigator.userAgent          → fake UA
+//       * navigator.platform           → "iPhone"
+//       * WebGL VENDOR / RENDERER      → web_glVendor / web_glRenderer
+//       * HTMLCanvasElement.toDataURL  → adds a 1px noise pixel each call
+//       * RTCPeerConnection            → returns a stub (blocks STUN leak)
+//       * navigator.mediaDevices.enumerateDevices → strip audioinput/videoinput
+//       * navigator.languages          → from localeLanguageCode
+//
+// Gated by fake_browser. JS is built once per cell of values; rebuilt only
+// when config changes (cheap regen since strings are tiny).
+
+static IMP orig_WK_init                = NULL;
+static IMP orig_WK_getCustomUA         = NULL;
+static IMP orig_WK_setCustomUA         = NULL;
+
+static NSString *ci_buildWebFingerprintJS(void) {
+    NSString *fakeUA    = getConfigStr(@"zalo_fakeWebViewUA")    ?: @"";
+    NSString *vendor    = getConfigStr(@"web_glVendor")          ?: @"Apple Inc.";
+    NSString *renderer  = getConfigStr(@"web_glRenderer")        ?: @"Apple GPU";
+    NSString *language  = getConfigStr(@"localeLanguageCode")    ?: @"en";
+    BOOL    canvasNoise = getConfigBool(@"web_canvasNoise");
+    BOOL    blockWebRTC = getConfigBool(@"fake_webrtc");
+
+    NSString *uaJs = fakeUA.length
+        ? [NSString stringWithFormat:@"try{Object.defineProperty(navigator,'userAgent',{get:function(){return '%@';}});}catch(e){}", fakeUA]
+        : @"";
+
+    NSString *coreJs = [NSString stringWithFormat:@"\
+        try{Object.defineProperty(navigator,'platform',{get:function(){return 'iPhone';}});}catch(e){}\
+        try{Object.defineProperty(navigator,'languages',{get:function(){return ['%@','en-US','en'];}});}catch(e){}\
+        try{Object.defineProperty(navigator,'language',{get:function(){return '%@';}});}catch(e){}\
+        try{const _gp=WebGLRenderingContext.prototype.getParameter;\
+        WebGLRenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp.call(this,p);};}catch(e){}\
+        try{const _gp2=WebGL2RenderingContext.prototype.getParameter;\
+        WebGL2RenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp2.call(this,p);};}catch(e){}",
+        language, language, vendor, renderer, vendor, renderer];
+
+    // Canvas noise: generate a fresh random watermark each page so identical
+    // canvas operations hash to different bytes. Only inject when toggled on.
+    NSString *canvasJs = @"";
+    if (canvasNoise) {
+        NSString *watermark = [NSString stringWithFormat:@"%08x%08x", arc4random(), arc4random()];
+        canvasJs = [NSString stringWithFormat:@"\
+            try{const _tdu=HTMLCanvasElement.prototype.toDataURL;\
+            HTMLCanvasElement.prototype.toDataURL=function(){var ctx=this.getContext('2d');\
+            if(ctx){ctx.fillStyle='rgba(255,255,255,0.005)';ctx.fillText('%@',1,1);}\
+            return _tdu.apply(this,arguments);};}catch(e){}\
+            try{const _gid=CanvasRenderingContext2D.prototype.getImageData;\
+            CanvasRenderingContext2D.prototype.getImageData=function(){var d=_gid.apply(this,arguments);\
+            if(d&&d.data&&d.data.length>4){d.data[0]^=1;d.data[1]^=1;}return d;};}catch(e){}",
+            watermark];
+    }
+
+    NSString *rtcJs = blockWebRTC ? @"\
+        try{if(window.RTCPeerConnection)window.RTCPeerConnection=function(){return {};};}catch(e){}\
+        try{if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){\
+        const _e=navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);\
+        navigator.mediaDevices.enumerateDevices=async function(){const d=await _e();\
+        return d.filter(function(x){return x.kind!=='audioinput'&&x.kind!=='videoinput';});};}catch(e){}"
+        : @"";
+
+    return [NSString stringWithFormat:@"(function(){%@%@%@%@})();", uaJs, coreJs, canvasJs, rtcJs];
+}
+
+// initWithFrame:configuration: ABI on ARM64:
+//   x0=self, x1=_cmd, q0..q3=CGRect{x,y,w,h}, x2=configuration
+// We just call the original via the same signature — the compiler handles
+// the float-register passing for CGRect.
+typedef id (*ci_wkInit_t)(id, SEL, CGRect, id);
+static id ci_WK_init(id self, SEL _cmd, CGRect frame, id configuration) {
+    if (fakeLayer(@"browser") && configuration) {
+        @try {
+            // Forward-declared WK types let us do this without linking WebKit.
+            // Runtime path: if WebKit isn't mapped, objc_getClass returns nil
+            // and we just skip. We're already inside fakeLayer'd code, so our
+            // process targets WebKit-using apps; but stay defensive.
+            if (objc_getClass("WKUserContentController") && objc_getClass("WKUserScript")) {
+                WKWebViewConfiguration *cfg = (WKWebViewConfiguration *)configuration;
+                WKUserContentController *ucc = cfg.userContentController;
+                if (!ucc) {
+                    ucc = [[WKUserContentController alloc] init];
+                    cfg.userContentController = ucc;
+                }
+                NSString *js = ci_buildWebFingerprintJS();
+                WKUserScript *script = [[WKUserScript alloc]
+                    initWithSource:js
+                     injectionTime:0  // WKUserScriptInjectionTimeAtDocumentStart
+                  forMainFrameOnly:NO];
+                if (script) [ucc addUserScript:script];
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[ChangeInfoIos] WK init JS inject exception: %@", e);
+        }
+    }
+    return ((ci_wkInit_t)orig_WK_init)(self, _cmd, frame, configuration);
+}
+
+typedef NSString *(*ci_wkUAget_t)(id, SEL);
+static NSString *ci_WK_getCustomUA(id self, SEL _cmd) {
+    if (!fakeLayer(@"browser")) {
+        return ((ci_wkUAget_t)orig_WK_getCustomUA)(self, _cmd);
+    }
+    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
+    if (ua.length) return ua;
+    return ((ci_wkUAget_t)orig_WK_getCustomUA)(self, _cmd);
+}
+
+typedef void (*ci_wkUAset_t)(id, SEL, NSString *);
+static void ci_WK_setCustomUA(id self, SEL _cmd, NSString *ua) {
+    if (!fakeLayer(@"browser")) {
+        ((ci_wkUAset_t)orig_WK_setCustomUA)(self, _cmd, ua);
+        return;
+    }
+    NSString *fake = getConfigStr(@"zalo_fakeWebViewUA");
+    ((ci_wkUAset_t)orig_WK_setCustomUA)(self, _cmd, fake.length ? fake : ua);
+}
+
+static void ci_installWKWebViewHooks(void) {
+    @autoreleasepool {
+        Class wk = objc_getClass("WKWebView");
+        if (!wk) return; // app does not link WebKit; skip silently
+        ci_swizzleInstance("WKWebView", @selector(initWithFrame:configuration:),
+                           (IMP)ci_WK_init, &orig_WK_init);
+        ci_swizzleInstance("WKWebView", @selector(customUserAgent),
+                           (IMP)ci_WK_getCustomUA, &orig_WK_getCustomUA);
+        ci_swizzleInstance("WKWebView", @selector(setCustomUserAgent:),
+                           (IMP)ci_WK_setCustomUA, &orig_WK_setCustomUA);
+        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA + JS fingerprint inject)");
+    }
+}
+
 static void ci_installAttestHooks(void) {
     @autoreleasepool {
         // Only walk classes that already exist in the loaded image set.
@@ -1670,6 +1830,10 @@ static BOOL computeBundleTargeted(void) {
         // Conditional attest/biometric hooks via objc_getClass — only when
         // the framework is already mapped into the host process.
         ci_installAttestHooks();
+
+        // WKWebView fingerprint spoof (UA + JS canvas/WebGL/WebRTC noise).
+        // Same runtime-only swizzle pattern; skipped in apps without WebKit.
+        ci_installWKWebViewHooks();
 
         NSLog(@"[ChangeInfoIos] Tweak loaded successfully! Config: %@", configLoaded ? @"YES" : @"NO");
     }
