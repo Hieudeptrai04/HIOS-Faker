@@ -255,10 +255,16 @@ jobs:
           mkdir -p combined/var/jb/etc/changeinfoios
           CDHASH_FILE="combined/var/jb/etc/changeinfoios/cdhashes"
           : > "$CDHASH_FILE"
-          for dylib in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
-                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib; do
-            [ -f "$dylib" ] || continue
-            ldid -h "$dylib" 2>/dev/null | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+          # Include both dylibs AND the app binary. The app binary's cdhash
+          # MUST be in trustcache for restricted entitlements to be honored
+          # — com.apple.private.tcc.allow gets stripped by AMFI at launch
+          # otherwise. Without this, the Photos picker / Camera / Mic TCC
+          # pre-grants in entitlements.plist do nothing.
+          for binary in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
+                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib \
+                       combined/var/jb/Applications/ChangeInfoIosApp.app/ChangeInfoIosApp; do
+            [ -f "$binary" ] || continue
+            ldid -h "$binary" 2>/dev/null | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
           done
           echo "=== cdhashes packaged in deb (extracted via ldid -h) ==="
           cat "$CDHASH_FILE"
