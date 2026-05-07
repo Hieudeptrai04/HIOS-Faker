@@ -42,6 +42,9 @@
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreMotion/CoreMotion.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
 // Metal import removed v2.3.23 — %hook NSObject MTLDevice protocol is disabled.
 
 // ATTrackingManager forward declaration (iOS 14+)
@@ -2084,6 +2087,198 @@ static BOOL computeBundleTargeted(void) {
     }
     return NO;
 }
+
+// ============================================================
+// CAMERA SPOOF — replace AVCaptureVideoDataOutput frames with a video
+// the user picked in HIOS app's Camera section.
+// ============================================================
+// Strategy: hook -[AVCaptureVideoDataOutput setSampleBufferDelegate:queue:]
+// and wrap the app's real delegate with our proxy. When the session
+// pushes a real frame, the proxy decodes the next frame from the user's
+// video file (via AVAssetReaderTrackOutput configured to match the real
+// frame's pixel format + dimensions) and rebuilds a CMSampleBuffer that
+// keeps the real timing info — apps' encoders see consistent PTS so
+// nothing detects "synthetic" timing. Audio mic stays untouched.
+//
+// Format-coercion correctness: AVAssetReaderTrackOutput accepts pixel-
+// format + width + height in outputSettings, so the file's frames come
+// out already in the session's expected format. No manual scaling /
+// colorspace conversion needed.
+//
+// Reader is lazy-initialised on the first frame so we know the exact
+// target dimensions before opening the file (different sessions ask for
+// 720p vs 1080p, front vs back, etc.).
+
+@interface CISpoofProxyDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@property (nonatomic, weak) id<AVCaptureVideoDataOutputSampleBufferDelegate> realDelegate;
+@property (nonatomic, copy) NSString *videoPath;
+@property (nonatomic, strong) AVAssetReader *reader;
+@property (nonatomic, strong) AVAssetReaderTrackOutput *trackOutput;
+@property (nonatomic, assign) int initState; // 0 not yet, 1 ready, 2 failed
+@property (nonatomic, assign) size_t targetW;
+@property (nonatomic, assign) size_t targetH;
+@property (nonatomic, assign) OSType targetPixelFormat;
+@end
+
+@implementation CISpoofProxyDelegate
+
+- (BOOL)setupReader {
+    @autoreleasepool {
+        AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:self.videoPath]];
+        if (!asset) return NO;
+        NSArray *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+        if (tracks.count == 0) return NO;
+        NSError *err = nil;
+        AVAssetReader *r = [AVAssetReader assetReaderWithAsset:asset error:&err];
+        if (!r) return NO;
+        NSDictionary *outSettings = @{
+            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(self.targetPixelFormat),
+            (NSString *)kCVPixelBufferWidthKey:  @(self.targetW),
+            (NSString *)kCVPixelBufferHeightKey: @(self.targetH),
+            (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        AVAssetReaderTrackOutput *to = [AVAssetReaderTrackOutput
+            assetReaderTrackOutputWithTrack:tracks[0]
+                             outputSettings:outSettings];
+        if (!to) return NO;
+        if (![r canAddOutput:to]) return NO;
+        [r addOutput:to];
+        if (![r startReading]) return NO;
+        self.reader = r;
+        self.trackOutput = to;
+        return YES;
+    }
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputSampleBuffer:(CMSampleBufferRef)real
+       fromConnection:(AVCaptureConnection *)conn {
+
+    if (!getConfigBool(@"cameraSpoofEnabled") || self.videoPath.length == 0) {
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+
+    // Lazy init on first frame — peek format / size from the real buffer.
+    if (self.initState == 0) {
+        CVImageBufferRef pb = CMSampleBufferGetImageBuffer(real);
+        if (pb) {
+            self.targetW = CVPixelBufferGetWidth(pb);
+            self.targetH = CVPixelBufferGetHeight(pb);
+            self.targetPixelFormat = CVPixelBufferGetPixelFormatType(pb);
+            self.initState = [self setupReader] ? 1 : 2;
+            if (self.initState == 1) {
+                NSLog(@"[ChangeInfoIos] cam spoof reader ready (%lux%lu fmt=0x%08x video=%@)",
+                      self.targetW, self.targetH, self.targetPixelFormat, self.videoPath);
+            } else {
+                NSLog(@"[ChangeInfoIos] cam spoof reader init FAILED — fall back to real frames");
+            }
+        }
+    }
+
+    if (self.initState != 1) {
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+
+    // Pull next decoded frame; if reader is exhausted, restart from start to loop.
+    CMSampleBufferRef spoof = [self.trackOutput copyNextSampleBuffer];
+    if (!spoof) {
+        // Loop: cancel + re-setup. Lazy: avoid reseeking complexity.
+        [self.reader cancelReading];
+        self.reader = nil;
+        self.trackOutput = nil;
+        if (![self setupReader]) { self.initState = 2; }
+        else { spoof = [self.trackOutput copyNextSampleBuffer]; }
+    }
+    if (!spoof) {
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+
+    // Re-time spoof buffer to match real PTS so app's encoder stays linear.
+    CVImageBufferRef spoofPB = CMSampleBufferGetImageBuffer(spoof);
+    if (!spoofPB) {
+        CFRelease(spoof);
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+    CMSampleTimingInfo timing;
+    if (CMSampleBufferGetSampleTimingInfo(real, 0, &timing) != noErr) {
+        timing.duration = CMTimeMake(1, 30);
+        timing.presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(real);
+        timing.decodeTimeStamp = kCMTimeInvalid;
+    }
+    CMVideoFormatDescriptionRef fmtDesc = NULL;
+    CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, spoofPB, &fmtDesc);
+    if (!fmtDesc) {
+        CFRelease(spoof);
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+    CMSampleBufferRef out = NULL;
+    OSStatus s = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, spoofPB, fmtDesc, &timing, &out);
+    CFRelease(fmtDesc);
+    CFRelease(spoof);
+    if (s != noErr || !out) {
+        if (self.realDelegate) {
+            [self.realDelegate captureOutput:output didOutputSampleBuffer:real fromConnection:conn];
+        }
+        return;
+    }
+    if (self.realDelegate) {
+        [self.realDelegate captureOutput:output didOutputSampleBuffer:out fromConnection:conn];
+    }
+    CFRelease(out);
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+    didDropSampleBuffer:(CMSampleBufferRef)sb
+       fromConnection:(AVCaptureConnection *)conn {
+    if ([self.realDelegate respondsToSelector:@selector(captureOutput:didDropSampleBuffer:fromConnection:)]) {
+        [self.realDelegate captureOutput:output didDropSampleBuffer:sb fromConnection:conn];
+    }
+}
+
+@end
+
+%hook AVCaptureVideoDataOutput
+
+- (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
+                          queue:(dispatch_queue_t)queue {
+    if (!getConfigBool(@"cameraSpoofEnabled") || delegate == nil) {
+        %orig(delegate, queue);
+        return;
+    }
+    NSString *path = getConfigStr(@"cameraSpoofVideoPath");
+    if (path.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        %orig(delegate, queue);
+        return;
+    }
+    // Don't double-wrap when app re-sets its own delegate (or sets nil mid-session).
+    if ([delegate isKindOfClass:[CISpoofProxyDelegate class]]) {
+        %orig(delegate, queue);
+        return;
+    }
+    CISpoofProxyDelegate *proxy = [CISpoofProxyDelegate new];
+    proxy.realDelegate = delegate;
+    proxy.videoPath = path;
+    objc_setAssociatedObject(self, "ci_spoofProxy", proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[ChangeInfoIos] cam spoof installed (real=%@ path=%@)", NSStringFromClass([delegate class]), path);
+    %orig(proxy, queue);
+}
+
+%end
 
 %ctor {
     @autoreleasepool {

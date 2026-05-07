@@ -24,7 +24,8 @@ ChangeInfoIos_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 ChangeInfoIos_FRAMEWORKS = UIKit Foundation CoreFoundation CoreGraphics \
                           CoreTelephony CoreLocation CoreMotion \
                           AdSupport SystemConfiguration \
-                          Security
+                          Security \
+                          AVFoundation CoreMedia CoreVideo
 # MobileGestalt intentionally not linked — MGCopyAnswer is resolved at runtime
 # via dlopen/dlsym in %ctor so we don't force-link the private dylib.
 

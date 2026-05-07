@@ -2905,6 +2905,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @interface CIProxyViewController : UIViewController <UITextFieldDelegate>
 @end
 
+// Same pattern for the Camera spoof config screen.
+@interface CICameraViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@end
+
 // ============================================================
 // SIDE MENU (hamburger)
 // ============================================================
@@ -2918,7 +2922,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // Trimmed to only working entries — placeholders ("Chức năng đang phát
     // triển") were cluttering the menu. Add new items here as they get real
     // handlers in didSelectRowAtIndexPath.
-    _items = @[@"Proxy"];
+    _items = @[@"Proxy", @"Camera"];
     self.view.backgroundColor = [CITheme bg];
     self.tableView.rowHeight = 52;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 110)];
@@ -2950,6 +2954,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *cmd = _items[ip.row];
     if ([cmd isEqualToString:@"Proxy"]) {
         CIProxyViewController *vc = [[CIProxyViewController alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
+    if ([cmd isEqualToString:@"Camera"]) {
+        CICameraViewController *vc = [[CICameraViewController alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
         return;
     }
@@ -3199,6 +3208,189 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
 - (void)textFieldDidEndEditing:(UITextField *)tf { [self refreshStatus:nil error:NO]; }
+
+@end
+
+// ============================================================
+// CAMERA SPOOF CONFIG VIEW CONTROLLER
+// ============================================================
+// User picks a video from Photos; we copy it to a path the tweak can read
+// (/var/jb/etc/changeinfoios/camera_spoof.mp4 — same dir we already use
+// for tweak↔app shared state, sandboxed apps have read access there).
+// The tweak's AVCaptureVideoDataOutput delegate hook decodes that file
+// and emits its frames in place of real camera output. Affects every
+// app in the filter list; per-app gating not exposed yet.
+//
+// Photos access requires NSPhotoLibraryUsageDescription in Info.plist —
+// added alongside this controller.
+
+#import <MobileCoreServices/MobileCoreServices.h>
+
+static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_spoof.mp4";
+
+@implementation CICameraViewController {
+    UISwitch *_enableSwitch;
+    UILabel  *_pathLabel;
+    UILabel  *_statusLabel;
+    UIButton *_pickBtn;
+    UIButton *_clearBtn;
+    UIButton *_saveBtn;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Camera giả";
+    self.view.backgroundColor = [CITheme bg];
+
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    sv.alwaysBounceVertical = YES;
+    [self.view addSubview:sv];
+
+    CGFloat W = self.view.bounds.size.width;
+    CGFloat M = 16;
+    CGFloat y = 16;
+
+    // Enable switch
+    UILabel *enLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M - 60, 32)];
+    enLbl.text = @"Bật camera giả"; enLbl.textColor = [CITheme text];
+    enLbl.font = [UIFont boldSystemFontOfSize:17];
+    [sv addSubview:enLbl];
+    _enableSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(W - M - 51, y, 51, 32)];
+    _enableSwitch.onTintColor = [CITheme orange];
+    [sv addSubview:_enableSwitch];
+    y += 50;
+
+    // Description
+    UILabel *desc = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 60)];
+    desc.text = @"Khi BẬT, mọi app trong filter list (Zalo, Telegram, …) khi mở camera/video call sẽ thấy video bạn chọn thay vì camera thật. Audio mic vẫn thật — tự mute trong app nếu không muốn lộ tiếng.";
+    desc.numberOfLines = 0;
+    desc.textColor = [CITheme dim];
+    desc.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:desc];
+    y += 70;
+
+    // Current file path label
+    UILabel *pathHdr = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
+    pathHdr.text = @"Video đang chọn:"; pathHdr.textColor = [CITheme dim];
+    pathHdr.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:pathHdr]; y += 24;
+
+    _pathLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 44)];
+    _pathLabel.numberOfLines = 2;
+    _pathLabel.textColor = [CITheme text];
+    _pathLabel.font = [UIFont fontWithName:@"Menlo" size:12];
+    _pathLabel.backgroundColor = [CITheme card];
+    _pathLabel.layer.cornerRadius = 8;
+    _pathLabel.layer.masksToBounds = YES;
+    _pathLabel.textAlignment = NSTextAlignmentCenter;
+    [sv addSubview:_pathLabel];
+    y += 56;
+
+    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 40)];
+    _statusLabel.numberOfLines = 0;
+    _statusLabel.textColor = [CITheme dim];
+    _statusLabel.font = [UIFont systemFontOfSize:13];
+    [sv addSubview:_statusLabel];
+    y += 50;
+
+    _pickBtn = CIBoxButton(@"Chọn video từ Photos", [CITheme blue], [CITheme blue]);
+    _pickBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_pickBtn addTarget:self action:@selector(pickTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_pickBtn];
+    y += 64;
+
+    _clearBtn = CIBoxButton(@"Xoá video đã chọn", [CITheme dim], [CITheme separator]);
+    _clearBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_clearBtn addTarget:self action:@selector(clearTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_clearBtn];
+    y += 64;
+
+    _saveBtn = CIBoxButton(@"Lưu", [UIColor whiteColor], [CITheme border]);
+    _saveBtn.frame = CGRectMake(M, y, W - 2*M, 52);
+    [_saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_saveBtn];
+    y += 64;
+
+    sv.contentSize = CGSizeMake(W, y + 24);
+
+    _enableSwitch.on = [[CIConfigManager shared] boolForKey:@"cameraSpoofEnabled"];
+    [self refreshFileInfo];
+}
+
+- (void)refreshFileInfo {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:kCISpoofVideoPath]) {
+        NSDictionary *attrs = [fm attributesOfItemAtPath:kCISpoofVideoPath error:nil];
+        unsigned long long size = [attrs[NSFileSize] unsignedLongLongValue];
+        _pathLabel.text = [NSString stringWithFormat:@"%@\n(%@)", kCISpoofVideoPath, CIBytesString(size)];
+        _statusLabel.text = @"✓ Video sẵn sàng. Bật switch + Lưu để kích hoạt.";
+        _statusLabel.textColor = [CITheme green];
+    } else {
+        _pathLabel.text = @"(chưa có)";
+        _statusLabel.text = @"Chưa chọn video — tap 'Chọn video từ Photos' để bắt đầu.";
+        _statusLabel.textColor = [CITheme dim];
+    }
+}
+
+- (void)pickTapped {
+    UIImagePickerController *pic = [[UIImagePickerController alloc] init];
+    pic.sourceType = UIImagePickerControllerSourceTypeSavedPhotosAlbum;
+    pic.mediaTypes = @[(NSString *)kUTTypeMovie];
+    pic.delegate = self;
+    pic.allowsEditing = NO;
+    [self presentViewController:pic animated:YES completion:nil];
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker
+didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
+    NSURL *src = info[UIImagePickerControllerMediaURL];
+    [picker dismissViewControllerAnimated:YES completion:^{
+        if (!src) {
+            self->_statusLabel.text = @"❌ Không lấy được URL video";
+            self->_statusLabel.textColor = [UIColor systemRedColor];
+            return;
+        }
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm removeItemAtPath:kCISpoofVideoPath error:nil];
+        NSError *err = nil;
+        BOOL ok = [fm copyItemAtPath:src.path toPath:kCISpoofVideoPath error:&err];
+        if (!ok) {
+            self->_statusLabel.text = [NSString stringWithFormat:@"❌ Copy fail: %@", err.localizedDescription];
+            self->_statusLabel.textColor = [UIColor systemRedColor];
+            return;
+        }
+        [self refreshFileInfo];
+    }];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)clearTapped {
+    [[NSFileManager defaultManager] removeItemAtPath:kCISpoofVideoPath error:nil];
+    [self refreshFileInfo];
+}
+
+- (void)saveTapped {
+    [self.view endEditing:YES];
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:@(_enableSwitch.on) forKey:@"cameraSpoofEnabled"];
+    [cm setObject:kCISpoofVideoPath  forKey:@"cameraSpoofVideoPath"];
+    [cm save];
+    [cm notifyReload];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (_enableSwitch.on && ![fm fileExistsAtPath:kCISpoofVideoPath]) {
+        _statusLabel.text = @"⚠ Bật ON nhưng chưa chọn video — chọn trước, sẽ không spoof.";
+        _statusLabel.textColor = [UIColor systemOrangeColor];
+    } else {
+        _statusLabel.text = @"✓ Lưu xong. Force-kill target app + mở lại để áp dụng.";
+        _statusLabel.textColor = [CITheme green];
+    }
+}
 
 @end
 
