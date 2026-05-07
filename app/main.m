@@ -2583,6 +2583,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)text {
     if (!text.length) { _view = [[CIRRSStore shared] entries]; [_table reloadData]; return; }
     NSPredicate *p = [NSPredicate predicateWithBlock:^BOOL(CIRRSEntry *e, NSDictionary *_Nullable _) {
+        if ([e.note localizedCaseInsensitiveContainsString:text]) return YES;  // search by label first
         if ([e.idfa localizedCaseInsensitiveContainsString:text]) return YES;
         if ([e.ipReset localizedCaseInsensitiveContainsString:text]) return YES;
         for (NSString *n in e.appNames) if ([n localizedCaseInsensitiveContainsString:text]) return YES;
@@ -2628,11 +2629,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     idxBadge.layer.borderWidth = 1;
     [card addSubview:idxBadge];
 
-    // App names as a chip row
+    // Top row: account label (preferred) OR app names if no label was set.
     NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@" • "] : @"-";
+    NSString *titleText = e.note.length > 0
+        ? [NSString stringWithFormat:@"%@ — %@", e.note, names]
+        : names;
     UILabel *appLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 10, card.bounds.size.width - 56 - 100, 22)];
     appLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    appLbl.text = names;
+    appLbl.text = titleText;
     appLbl.font = [UIFont boldSystemFontOfSize:14];
     appLbl.textColor = [CITheme text];
     appLbl.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -2691,13 +2695,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     df.dateFormat = @"dd/MM/yyyy HH:mm:ss";
 
     NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-";
+    NSString *header = e.note.length > 0
+        ? [NSString stringWithFormat:@"\"%@\"\n\n", e.note]
+        : @"";
     NSString *body = [NSString stringWithFormat:
-        @"Khôi phục môi trường này?\n\n"
+        @"%@Khôi phục môi trường này?\n\n"
         @"Apps: %@\n"
         @"IDFA: %@\n"
         @"IP: %@\n"
         @"Backup lúc: %@\n\n"
         @"Sau khi restore, account đã đăng ký trong môi trường này (Zalo, …) sẽ vẫn login được.",
+        header,
         names,
         e.idfa ?: @"-",
         e.ipReset ?: @"-",
@@ -3242,7 +3250,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     y += 72;
 
     _noteField = [[UITextField alloc] initWithFrame:CGRectMake(P, y, W-2*P, 48)];
-    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Ghi chú khi lưu retention (RRS)"
+    // Renamed 2026-05-07: this is now the per-account RRS label (e.g.
+    // "Acc Hung 0001"). Used to identify which environment to restore.
+    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Tên môi trường / acc (vd: Acc Zalo 001)"
         attributes:@{NSForegroundColorAttributeName: [CITheme dim]}];
     _noteField.borderStyle = UITextBorderStyleNone;
     _noteField.backgroundColor = [CITheme card];

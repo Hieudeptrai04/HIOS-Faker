@@ -503,6 +503,87 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 
     return orig_SecItemCopyMatching(query, result);
 }
+
+// ====== ROLLBACK START: Batch E — SecItemAdd / SecItemUpdate write blocker ======
+// Added 2026-05-07. If this batch causes crashes, set
+//    _ci_enable_secwrite=false via SSH (default OFF)
+// or delete this block + the matching install call in initCLvlHooks.
+// The existing -CopyMatching hook above is NOT affected.
+//
+// Why: -SecItemCopyMatching only blocks READS. Apps write device IDs via
+// -SecItemAdd / -SecItemUpdate (e.g. Zalo's kZaloDeviceId, com.vng.zalo
+// install_id) at sign-up. After Reset Data wipes the keychain, the app's
+// next launch ADDS a fresh ID — but that ID is again unique per device,
+// so Zalo's server records it as a new install of the SAME device. Server
+// fingerprints across reg attempts and starts banning.
+//
+// Strategy: when the app tries to ADD or UPDATE an entry whose service
+// or account string looks like a device identifier, return errSecSuccess
+// without actually persisting. The app gets a "yes, stored" response; the
+// next CopyMatching call returns errSecItemNotFound (because nothing was
+// written), and the app generates a fresh ID for that session. Each
+// session (process lifetime) gets a different ID — server sees a churn
+// of "new devices", harder to fingerprint to a single hardware.
+
+static BOOL ci_isDeviceIDKey(NSString *s) {
+    if (s.length == 0) return NO;
+    static NSArray *patterns = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        patterns = @[
+            // Generic
+            @"device_id", @"deviceid", @"device_uuid", @"deviceuuid",
+            @"install_id", @"installid", @"installation_id",
+            @"client_id", @"clientid", @"client_uuid",
+            @"fingerprint", @"hardware_id", @"hardwareid",
+            @"persistent_id", @"persistentid", @"persistent_device",
+            @"udid", @"unique_device", @"uniqueid", @"unique_id",
+            @"advertising_id", @"advertisingid", @"idfa", @"idfv",
+            // Zalo specific
+            @"kzalo", @"zl_device", @"zalo_device", @"zalodevice", @"vng_device",
+            // Facebook
+            @"fb_device", @"fbdevice", @"fbnsdevicetoken",
+            // TikTok
+            @"tt_device", @"musicaly_device", @"aweme_device",
+        ];
+    });
+    NSString *low = s.lowercaseString;
+    for (NSString *p in patterns) if ([low containsString:p]) return YES;
+    return NO;
+}
+
+typedef OSStatus (*SecItemAdd_t)(CFDictionaryRef attributes, CFTypeRef *result);
+typedef OSStatus (*SecItemUpdate_t)(CFDictionaryRef query, CFDictionaryRef attributes);
+static SecItemAdd_t    orig_SecItemAdd    = NULL;
+static SecItemUpdate_t orig_SecItemUpdate = NULL;
+
+static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    if (!fakeLayer(@"keychain") || !attributes) return orig_SecItemAdd(attributes, result);
+    if (!getConfigBool(@"keychainReset"))       return orig_SecItemAdd(attributes, result);
+    NSDictionary *attr = (__bridge NSDictionary *)attributes;
+    NSString *service = attr[(__bridge NSString *)kSecAttrService];
+    NSString *account = attr[(__bridge NSString *)kSecAttrAccount];
+    if (ci_isDeviceIDKey(service) || ci_isDeviceIDKey(account)) {
+        // Pretend success without persisting. Caller proceeds normally.
+        if (result) *result = NULL;
+        return errSecSuccess;
+    }
+    return orig_SecItemAdd(attributes, result);
+}
+
+static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
+    if (!fakeLayer(@"keychain") || !query) return orig_SecItemUpdate(query, attributesToUpdate);
+    if (!getConfigBool(@"keychainReset"))   return orig_SecItemUpdate(query, attributesToUpdate);
+    NSDictionary *q = (__bridge NSDictionary *)query;
+    NSString *service = q[(__bridge NSString *)kSecAttrService];
+    NSString *account = q[(__bridge NSString *)kSecAttrAccount];
+    if (ci_isDeviceIDKey(service) || ci_isDeviceIDKey(account)) {
+        return errSecSuccess;
+    }
+    return orig_SecItemUpdate(query, attributesToUpdate);
+}
+// ====== ROLLBACK END: Batch E ======
+
 #endif
 
 // ============================================================
@@ -754,6 +835,23 @@ extern "C" void initCLvlHooks(void) {
         MSHookFunction(sec_sym, (void *)hooked_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching);
         NSLog(@"[ChangeInfoIos] SecItemCopyMatching hooked");
     }
+
+    // ====== ROLLBACK START: Batch E install ======
+    // SecItemAdd / SecItemUpdate write blockers — gated OFF by default.
+    // Enable per device via:  node ssh-set-key.js _ci_enable_secwrite true
+    if (getConfigBool(@"_ci_enable_secwrite")) {
+        void *secAdd_sym = dlsym(RTLD_DEFAULT, "SecItemAdd");
+        if (secAdd_sym && !orig_SecItemAdd) {
+            MSHookFunction(secAdd_sym, (void *)hooked_SecItemAdd, (void **)&orig_SecItemAdd);
+            NSLog(@"[ChangeInfoIos] SecItemAdd hooked");
+        }
+        void *secUpd_sym = dlsym(RTLD_DEFAULT, "SecItemUpdate");
+        if (secUpd_sym && !orig_SecItemUpdate) {
+            MSHookFunction(secUpd_sym, (void *)hooked_SecItemUpdate, (void **)&orig_SecItemUpdate);
+            NSLog(@"[ChangeInfoIos] SecItemUpdate hooked");
+        }
+    }
+    // ====== ROLLBACK END: Batch E install ======
 #endif
 
     // ============================================================
