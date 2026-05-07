@@ -833,6 +833,66 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
     [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
 
+    // Battery level (0.0–1.0) + state (0=Unknown, 1=Unplugged, 2=Charging,
+    // 3=Full). Randomize so two consecutive registrations don't show
+    // identical battery telemetry — anti-fraud servers fingerprint this.
+    [cm setObject:[NSString stringWithFormat:@"%.2f", 0.30 + (arc4random_uniform(70) / 100.0)]
+            forKey:@"batteryLevel"];                                 // 0.30 – 0.99
+    [cm setObject:[NSString stringWithFormat:@"%u", arc4random_uniform(3) + 1]
+            forKey:@"batteryState"];                                  // 1 / 2 / 3
+
+    // Zalo timing offset — adds jitter to mach_absolute_time / CFAbsoluteTime
+    // so two devices with identical hardware fingerprint show different
+    // launch-to-event timings. Range chosen to look like a device that's
+    // been booted hours-to-days ago.
+    [cm setObject:[NSString stringWithFormat:@"%u",
+        (unsigned)(arc4random_uniform(900000) + 100000)]              // 100k – 1M ms
+            forKey:@"zalo_timingOffset"];
+
+    // Vietnamese mobile prefix pool. Generates a fresh +84 9xx xxx xxx
+    // every Reset so PhoneNumber doesn't carry over an old account's SĐT.
+    static NSArray *kVNPrefixes = nil;
+    if (!kVNPrefixes) kVNPrefixes = @[
+        @"32", @"33", @"34", @"35", @"36", @"37", @"38", @"39",     // Viettel
+        @"81", @"82", @"83", @"84", @"85", @"88",                     // Vinaphone
+        @"70", @"76", @"77", @"78", @"79", @"89",                     // MobiFone
+        @"56", @"58", @"92",                                           // Vietnamobile
+        @"59", @"99",                                                  // Gmobile
+    ];
+    NSString *vnPrefix = kVNPrefixes[arc4random_uniform((uint32_t)kVNPrefixes.count)];
+    [cm setObject:[NSString stringWithFormat:@"+849%@%@", vnPrefix, ci_randDigits(7)]
+            forKey:@"PhoneNumber"];
+
+    // Local IP — keeps the wifiSSID story coherent. Pick from a private
+    // RFC1918 range that an iPhone actually gets on home WiFi.
+    static NSArray *kLocalIPPrefixes = nil;
+    if (!kLocalIPPrefixes) kLocalIPPrefixes = @[
+        @"192.168.0.", @"192.168.1.", @"192.168.31.",
+        @"192.168.100.", @"192.168.137.", @"10.0.0.", @"10.0.1.",
+        @"172.16.0.",
+    ];
+    NSString *ipPrefix = kLocalIPPrefixes[arc4random_uniform((uint32_t)kLocalIPPrefixes.count)];
+    [cm setObject:[NSString stringWithFormat:@"%@%u", ipPrefix, arc4random_uniform(253) + 2]
+            forKey:@"localIP"];
+
+    // Pasteboard reset toggle (cleared on next Zalo launch).
+    [cm setObject:@(YES) forKey:@"clearPasteboard"];
+
+    // Cellular radio tech — pick from realistic mix. iPhone XS+/iOS 14+
+    // typically reports LTE indoors, NRNSA outdoors-on-5G-network. Random
+    // pick avoids per-account fingerprint stability on this field.
+    static NSArray *kRadioTech = nil;
+    if (!kRadioTech) kRadioTech = @[
+        @"CTRadioAccessTechnologyLTE",
+        @"CTRadioAccessTechnologyLTE",
+        @"CTRadioAccessTechnologyLTE",       // weighted toward LTE (most common)
+        @"CTRadioAccessTechnologyNRNSA",     // 5G NSA
+        @"CTRadioAccessTechnologyHSDPA",
+        @"CTRadioAccessTechnologyWCDMA",
+    ];
+    [cm setObject:kRadioTech[arc4random_uniform((uint32_t)kRadioTech.count)]
+            forKey:@"carrierRadioAccess"];
+
     // ALWAYS re-arm keychain reset on Reset Data. After an RRS restore the
     // flag was set to NO so Zalo could read its keychain entries; if the
     // user then runs Reset Data without re-arming, fresh-account registration
