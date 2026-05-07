@@ -890,7 +890,30 @@ static int hooked_connect(int s, const struct sockaddr *name, socklen_t namelen)
 
     // -------- Proxy redirection --------
     if (g_ci_inProxyConnect) return orig_connect(s, name, namelen);
-    if (!name || name->sa_family != AF_INET) return orig_connect(s, name, namelen);
+    if (!name) return orig_connect(s, name, namelen);
+
+    // IPv6 leak prevention. iOS happy-eyeballs prefers AF_INET6 when the
+    // carrier offers it; SOCKS5 / HTTP-CONNECT proxies are IPv4-only in
+    // practice, so an unguarded v6 connect() goes direct and exposes the
+    // device's real IPv6. Server-side anti-fraud sees: HTTPS request from
+    // proxy IPv4 + raw socket from device IPv6 → flag/lock. Force v6 to
+    // fail with EHOSTUNREACH so the app's getaddrinfo loop falls back to
+    // IPv4 (which we proxy).
+    if (name->sa_family == AF_INET6) {
+        @autoreleasepool {
+            if (getConfigBool(@"proxyEnabled")) {
+                static int s_ipv6BlockCount = 0;
+                if (++s_ipv6BlockCount <= 20 || (s_ipv6BlockCount & 0xFF) == 0) {
+                    NSLog(@"[ChangeInfoIos] proxy block IPv6 (#%d) — forcing v4 fallback", s_ipv6BlockCount);
+                }
+                errno = EHOSTUNREACH;
+                return -1;
+            }
+        }
+        return orig_connect(s, name, namelen);
+    }
+
+    if (name->sa_family != AF_INET) return orig_connect(s, name, namelen);
     if (namelen < (socklen_t)sizeof(struct sockaddr_in)) return orig_connect(s, name, namelen);
 
     const struct sockaddr_in *target = (const struct sockaddr_in *)name;
@@ -955,11 +978,17 @@ static int hooked_connect(int s, const struct sockaddr *name, socklen_t namelen)
             ? ci_socks5Handshake(s, target, pUser, pPass)
             : ci_httpConnectHandshake(s, target, pUser, pPass);
         if (wasNonBlock) fcntl(s, F_SETFL, flags);
-        if (hr != 0) {
-            // Handshake failed; close-time reads will surface the error to the
-            // caller. Set errno so connect() return value stays consistent.
-            return -1;
-        }
+
+        // Diagnostic — only when proxy is actually applied. Tail syslog with
+        // `[ChangeInfoIos] proxy` to see what target each connect() reached.
+        char dstStr[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &target->sin_addr.s_addr, dstStr, sizeof(dstStr));
+        NSLog(@"[ChangeInfoIos] proxy %@ → %s:%u %@",
+              socks ? @"SOCKS5" : @"HTTP",
+              dstStr, ntohs(target->sin_port),
+              hr == 0 ? @"OK" : [NSString stringWithFormat:@"FAIL errno=%d", errno]);
+
+        if (hr != 0) return -1;
         return 0;
     }
 }
