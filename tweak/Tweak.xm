@@ -164,6 +164,165 @@ static BOOL isCurrentBundleTargeted(void) {
 static void ci_loadConfigViaCFPreferencesAsync(void);
 static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 
+// ====== KEYCHAIN BACKUP / RESTORE ======
+// User flow we're solving: register Zalo acc A, take RRS backup, Reset Data,
+// register acc B (Zalo overwrites keychain session token), now restore A.
+// Container restore brings A's preferences back, but the SHARED keychain at
+// /var/Keychains/keychain-2.db has B's session token (not A's). Zalo's launch
+// reads the keychain → sees token for B (or no match for A) → forces login.
+//
+// Fix: dump the host-app's per-bundle keychain entries to a plist on every
+// launch (overwritten with current state), include that file in RRS backups
+// (already covered by tar of /var/jb/etc/changeinfoios/), and on restore,
+// drop a flag file that tells the next launch's tweak %ctor to wipe the
+// current entries + reapply the snapshot.
+
+#import <Security/Security.h>
+
+static NSString *ci_keychainBackupPath(NSString *bid) {
+    NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    return [NSString stringWithFormat:@"/var/jb/etc/changeinfoios/keychain_%@.plist", safe];
+}
+static NSString *ci_keychainRestoreFlag(NSString *bid) {
+    NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    return [NSString stringWithFormat:@"/var/jb/etc/changeinfoios/restore_kc_%@.flag", safe];
+}
+
+static NSDictionary *ci_encodeKCEntry(NSDictionary *attr) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (id key in attr) {
+        id val = attr[key];
+        if ([val isKindOfClass:[NSData class]]) {
+            out[key] = @{@"__t": @"D", @"__b": [val base64EncodedStringWithOptions:0]};
+        } else if ([val isKindOfClass:[NSDate class]]) {
+            out[key] = @{@"__t": @"T", @"__e": @([(NSDate *)val timeIntervalSince1970])};
+        } else if ([val isKindOfClass:[NSString class]] || [val isKindOfClass:[NSNumber class]]) {
+            out[key] = val;
+        }
+        // Skip CFTypeRef wrappers / unknown types — SecItemAdd would reject them anyway.
+    }
+    return out;
+}
+static NSMutableDictionary *ci_decodeKCEntry(NSDictionary *enc) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (id key in enc) {
+        id v = enc[key];
+        if ([v isKindOfClass:[NSDictionary class]] && v[@"__t"]) {
+            NSString *t = v[@"__t"];
+            if ([t isEqualToString:@"D"]) {
+                NSData *d = [[NSData alloc] initWithBase64EncodedString:v[@"__b"] options:0];
+                if (d) out[key] = d;
+            } else if ([t isEqualToString:@"T"]) {
+                out[key] = [NSDate dateWithTimeIntervalSince1970:[v[@"__e"] doubleValue]];
+            }
+        } else {
+            out[key] = v;
+        }
+    }
+    return out;
+}
+
+static void ci_dumpKeychain(void) {
+    @autoreleasepool {
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+        if (bid.length == 0) return;
+        g_ci_skipKeychainHook++;
+        NSMutableArray *all = [NSMutableArray array];
+        NSArray *classes = @[
+            (__bridge NSString *)kSecClassGenericPassword,
+            (__bridge NSString *)kSecClassInternetPassword,
+        ];
+        for (NSString *cls in classes) {
+            NSDictionary *q = @{
+                (__bridge NSString *)kSecClass:           cls,
+                (__bridge NSString *)kSecMatchLimit:      (__bridge NSString *)kSecMatchLimitAll,
+                (__bridge NSString *)kSecReturnAttributes:@YES,
+                (__bridge NSString *)kSecReturnData:      @YES,
+            };
+            CFTypeRef result = NULL;
+            OSStatus s = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+            if (s != errSecSuccess) continue;
+            NSArray *items = (__bridge_transfer NSArray *)result;
+            for (NSDictionary *item in items) {
+                NSMutableDictionary *e = [item mutableCopy];
+                e[@"__class"] = cls;
+                [all addObject:ci_encodeKCEntry(e)];
+            }
+        }
+        g_ci_skipKeychainHook--;
+        NSString *path = ci_keychainBackupPath(bid);
+        [all writeToFile:path atomically:YES];
+        NSLog(@"[ChangeInfoIos] keychain dump: %lu entries → %@", (unsigned long)all.count, path);
+    }
+}
+
+// Returns YES if a restore was performed (caller should suppress the next
+// dump so we don't immediately overwrite the just-restored snapshot).
+static BOOL ci_restoreKeychainIfFlagged(void) {
+    @autoreleasepool {
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+        if (bid.length == 0) return NO;
+        NSString *flag = ci_keychainRestoreFlag(bid);
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:flag]) return NO;
+
+        NSString *path = ci_keychainBackupPath(bid);
+        NSArray *all = [NSArray arrayWithContentsOfFile:path];
+        if (![all isKindOfClass:[NSArray class]]) {
+            [fm removeItemAtPath:flag error:nil];
+            return NO;
+        }
+
+        g_ci_skipKeychainHook++;
+
+        // Wipe current bundle's existing entries — for each class, delete
+        // EVERY entry. Per-bundle scoping is implicit: the keychain access
+        // group is set by Apple based on the calling app's entitlements,
+        // so SecItemDelete only sees this bundle's rows.
+        for (NSString *cls in @[(__bridge NSString *)kSecClassGenericPassword,
+                                (__bridge NSString *)kSecClassInternetPassword]) {
+            NSDictionary *q = @{ (__bridge NSString *)kSecClass: cls };
+            SecItemDelete((__bridge CFDictionaryRef)q);
+        }
+
+        // Read-only / system-managed attrs that SecItemAdd rejects.
+        NSArray *stripKeys = @[
+            (__bridge NSString *)kSecAttrCreationDate,
+            (__bridge NSString *)kSecAttrModificationDate,
+            (__bridge NSString *)kSecAttrAccessGroup,
+            @"persistref", @"agrp", @"musr", @"sha1", @"cdat", @"mdat", @"pdmn",
+        ];
+
+        NSUInteger added = 0;
+        for (NSDictionary *enc in all) {
+            if (![enc isKindOfClass:[NSDictionary class]]) continue;
+            NSMutableDictionary *e = ci_decodeKCEntry(enc);
+            NSString *cls = e[@"__class"];
+            if (!cls) continue;
+            [e removeObjectForKey:@"__class"];
+            for (NSString *k in stripKeys) [e removeObjectForKey:k];
+            e[(__bridge NSString *)kSecClass] = cls;
+            OSStatus s = SecItemAdd((__bridge CFDictionaryRef)e, NULL);
+            if (s == errSecSuccess) added++;
+        }
+
+        g_ci_skipKeychainHook--;
+
+        [fm removeItemAtPath:flag error:nil];
+        NSLog(@"[ChangeInfoIos] keychain restore: %lu/%lu entries reapplied",
+              (unsigned long)added, (unsigned long)all.count);
+        return YES;
+    }
+}
+
+static void ci_onDumpKeychainNotification(CFNotificationCenterRef center,
+                                          void *observer,
+                                          CFStringRef name,
+                                          const void *object,
+                                          CFDictionaryRef userInfo) {
+    ci_dumpKeychain();
+}
+
 void reloadConfigFromDisk(void) {
     @autoreleasepool {
         // Strategy 0 — sandbox-friendly shared path. Verified live via probe
@@ -314,6 +473,13 @@ static unsigned long long ci_toULL(id v) {
     return 0;
 }
 static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
+
+// Thread-local bypass for our own SecItem* hooks. When we dump or restore
+// keychain entries from inside the tweak (calling SecItemCopyMatching /
+// SecItemAdd / SecItemDelete ourselves), we don't want our READ-blocker
+// or WRITE-blocker hooks to interfere. The hook bodies in Hooks.mm check
+// this flag and pass straight through to %orig when it's non-zero.
+__thread int g_ci_skipKeychainHook = 0;
 
 /* Plist booleans fake_<name> — missing key defaults to ON.
    Short names: uiddevice, hardware, sysctl, ... */
@@ -1927,6 +2093,26 @@ static BOOL computeBundleTargeted(void) {
 
         NSLog(@"[ChangeInfoIos] Tweak loading for %@...", bid);
         ci_wipeContainerIfScheduled();
+
+        // Keychain restore: if host app dropped a restore flag (via RRS
+        // restore), apply the snapshot BEFORE the host app reads any
+        // keychain entries. Suppress the auto-dump 5s later so we don't
+        // overwrite the just-restored data with… the same data. Otherwise
+        // schedule a background dump to keep the snapshot fresh per launch.
+        BOOL didRestore = ci_restoreKeychainIfFlagged();
+        if (!didRestore) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
+                ci_dumpKeychain();
+            });
+        }
+        // On-demand dump trigger from host app (sent via notify_post just
+        // before tar). Listener stays installed for the lifetime of the
+        // process so RRS backups always hit a current snapshot.
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+            ci_onDumpKeychainNotification,
+            CFSTR("com.changeinfoios/dump_keychain"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
 

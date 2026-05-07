@@ -40,6 +40,11 @@ extern "C" {
     BOOL jbHideActive(void);
     void reloadConfigFromDisk(void);
     extern BOOL configLoaded;
+    // Set by Tweak.xm during ci_dumpKeychain / ci_restoreKeychainIfFlagged.
+    // Our own SecItem* hooks below check this and pass straight through to
+    // %orig when non-zero so the dump/restore doesn't see filtered results
+    // or have writes silently dropped.
+    extern __thread int g_ci_skipKeychainHook;
 }
 
 // Type-safe unsigned coerce. NSString lacks `unsignedLongLongValue` —
@@ -468,6 +473,7 @@ typedef OSStatus (*SecItemCopyMatching_t)(CFDictionaryRef query, CFTypeRef *resu
 static SecItemCopyMatching_t orig_SecItemCopyMatching = NULL;
 
 static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    if (g_ci_skipKeychainHook) return orig_SecItemCopyMatching(query, result);
     if (!fakeLayer(@"keychain")) return orig_SecItemCopyMatching(query, result);
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !getConfigBool(@"keychainReset")) return orig_SecItemCopyMatching(query, result);
@@ -558,6 +564,7 @@ static SecItemAdd_t    orig_SecItemAdd    = NULL;
 static SecItemUpdate_t orig_SecItemUpdate = NULL;
 
 static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    if (g_ci_skipKeychainHook) return orig_SecItemAdd(attributes, result);
     if (!fakeLayer(@"keychain") || !attributes) return orig_SecItemAdd(attributes, result);
     if (!getConfigBool(@"keychainReset"))       return orig_SecItemAdd(attributes, result);
     NSDictionary *attr = (__bridge NSDictionary *)attributes;
@@ -572,6 +579,7 @@ static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
 }
 
 static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
+    if (g_ci_skipKeychainHook) return orig_SecItemUpdate(query, attributesToUpdate);
     if (!fakeLayer(@"keychain") || !query) return orig_SecItemUpdate(query, attributesToUpdate);
     if (!getConfigBool(@"keychainReset"))   return orig_SecItemUpdate(query, attributesToUpdate);
     NSDictionary *q = (__bridge NSDictionary *)query;

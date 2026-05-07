@@ -4184,6 +4184,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up — RRS will only contain config snapshot");
     }
 
+    // Trigger keychain dump in every running target. The tweak listens on
+    // this Darwin notification and writes /var/jb/etc/changeinfoios/
+    // keychain_<bid>.plist with the bundle's current SecItem entries
+    // (session tokens, deviceID, etc.). The file then gets pulled into
+    // the tar a few lines below — without this, RRS only captures the
+    // app's container Documents/Library, which is missing the keychain
+    // session that controls "logged in vs not".
+    notify_post("com.changeinfoios/dump_keychain");
+    [NSThread sleepForTimeInterval:1.5]; // let target process write the snapshot
+
     // Build tar command. Capture stderr to a file so a silent failure
     // becomes visible in syslog instead of vanishing to /dev/null.
     NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -cf '%@' /var/jb/etc/changeinfoios", tarPath];
@@ -4461,6 +4471,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // them — that block is meant for fresh-account registration).
         [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
         [[CIConfigManager shared] save];
+
+        // Drop a per-bundle keychain-restore flag file. The tweak's
+        // %ctor on next launch sees the flag, deletes the bundle's
+        // current keychain entries, and re-applies the snapshot we
+        // just untarred. Without this step, container is restored
+        // but session token still belongs to whatever account was
+        // logged in last → Zalo asks for login again.
+        NSString *kcFlagDir = @"/var/jb/etc/changeinfoios";
+        for (NSString *bid in e.bundleIDs) {
+            NSString *safe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+            NSString *flagPath = [kcFlagDir stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"restore_kc_%@.flag", safe]];
+            [@"1" writeToFile:flagPath atomically:YES
+                     encoding:NSUTF8StringEncoding error:nil];
+        }
+        NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu bundles",
+              (unsigned long)e.bundleIDs.count);
 
         // ---- Step 5: Cleanup + respring ----
         [self updateHUD:hud step:5 total:5
