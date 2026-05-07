@@ -1930,29 +1930,43 @@ static BOOL computeBundleTargeted(void) {
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
 
-        void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
-        if (mgHandle) {
-            orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
-            if (!orig_MGCopyAnswer)
-                orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer_internal");
-            if (orig_MGCopyAnswer) {
-                MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer, (void **)&orig_MGCopyAnswer);
-                NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked");
-            } else {
-                NSLog(@"[ChangeInfoIos] MGCopyAnswer symbol not found");
-            }
+        // EMERGENCY KILL-SWITCH: skip the whole MG hook install when
+        // _ci_skip_mg=YES. The hook BODY's runtime gate doesn't help
+        // for this class of crash — MSHookFunction patches MG's entry
+        // bytes regardless of whether our hook function returns early.
+        // When the trampoline corrupts memory or the patched bytes
+        // interact badly with iOS 16.7's libMobileGestalt internals,
+        // even an immediately-bypassing hook still triggers the
+        // ellekit.portLoop infinite-recursion fault that crashes Zalo
+        // post-registration. Skip the install entirely so the original
+        // MG entry bytes stay untouched.
+        if (!getConfigBool(@"_ci_skip_mg")) {
+            void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+            if (mgHandle) {
+                orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
+                if (!orig_MGCopyAnswer)
+                    orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer_internal");
+                if (orig_MGCopyAnswer) {
+                    MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer, (void **)&orig_MGCopyAnswer);
+                    NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked");
+                } else {
+                    NSLog(@"[ChangeInfoIos] MGCopyAnswer symbol not found");
+                }
 
-            orig_MGGetBoolAnswer = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
-            if (orig_MGGetBoolAnswer) {
-                MSHookFunction((void *)orig_MGGetBoolAnswer, (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer);
-                NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked");
-            }
+                orig_MGGetBoolAnswer = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
+                if (orig_MGGetBoolAnswer) {
+                    MSHookFunction((void *)orig_MGGetBoolAnswer, (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer);
+                    NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked");
+                }
 
-            orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
-            if (orig_MGGetStringAnswer) {
-                MSHookFunction((void *)orig_MGGetStringAnswer, (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer);
-                NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked");
+                orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
+                if (orig_MGGetStringAnswer) {
+                    MSHookFunction((void *)orig_MGGetStringAnswer, (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer);
+                    NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked");
+                }
             }
+        } else {
+            NSLog(@"[ChangeInfoIos] _ci_skip_mg=YES — skipping MG hook install entirely");
         }
 
         void *iokitHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
