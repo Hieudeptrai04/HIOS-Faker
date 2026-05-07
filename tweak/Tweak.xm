@@ -2116,17 +2116,24 @@ static BOOL computeBundleTargeted(void) {
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
 
-        // EMERGENCY KILL-SWITCH: skip the whole MG hook install when
-        // _ci_skip_mg=YES. The hook BODY's runtime gate doesn't help
-        // for this class of crash — MSHookFunction patches MG's entry
-        // bytes regardless of whether our hook function returns early.
-        // When the trampoline corrupts memory or the patched bytes
-        // interact badly with iOS 16.7's libMobileGestalt internals,
-        // even an immediately-bypassing hook still triggers the
-        // ellekit.portLoop infinite-recursion fault that crashes Zalo
-        // post-registration. Skip the install entirely so the original
-        // MG entry bytes stay untouched.
-        if (!getConfigBool(@"_ci_skip_mg")) {
+        // EMERGENCY KILL-SWITCH: MG install hardcoded OFF until we
+        // diagnose the trampoline / libMobileGestalt iOS 16.7 interaction
+        // that gave us the recursive ellekit.portLoop SIGBUS at
+        // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic during Zalo
+        // scene init (3+ confirmed crashes today). The user's keychain
+        // backup test re-hit the same crash because Reset Data overwrites
+        // /var/jb/etc/changeinfoios/config.plist from in-memory _cfg, and
+        // the SSH-set _ci_skip_mg flag wasn't persisted on the host-app
+        // side — so on next reset the gate flipped back, MG hooks
+        // installed, Zalo crashed again.
+        // Until we have a real fix, force-skip via condition that's
+        // always true: read both the SSH override (still wired so we can
+        // re-test selectively) AND a hardcoded default-true. UIDevice /
+        // IOReg / sysctl / DC / WK / location hooks remain active, so
+        // spoof depth is good — only ProductType / HardwareModel /
+        // UniqueChipID through MGCopyAnswer falls through to real values.
+        BOOL kSkipMG_HARDCODED = YES;
+        if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {
                 orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
