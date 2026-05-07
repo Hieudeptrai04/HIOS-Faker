@@ -3193,7 +3193,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [sv addSubview:_bannerLabel];
     y += 30;
 
-    UIButton *b1 = CIBoxButton(@"Lưu RRS\n+\nReset Data", [CITheme orange], [CITheme border]);
+    UIButton *b1 = CIBoxButton(@"Backup\n+\nReset Data", [CITheme orange], [CITheme border]);
     b1.frame = CGRectMake(P, y, (W-3*P)/2, 96);
     [b1 addTarget:self action:@selector(saveAndReset) forControlEvents:UIControlEventTouchUpInside];
     [sv addSubview:b1];
@@ -4113,33 +4113,55 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         return;
     }
 
-    UIView *hud = [self showHUDWithTitle:@"Đang restore môi trường..."];
+    NSDictionary *tarAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tar error:nil];
+    unsigned long long tarSize = [tarAttrs[NSFileSize] unsignedLongLongValue];
+
+    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore..."];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // 1. Kill target apps so files aren't held open during the swap.
+        // ---- Step 1: Kill running instances of every target ----
+        [self updateHUD:hud step:1 total:5
+                  title:@"Tắt apps đang chạy"
+               subtitle:[NSString stringWithFormat:@"%lu app sẽ bị restart sau respring",
+                         (unsigned long)e.bundleIDs.count]];
+        [NSThread sleepForTimeInterval:0.8];
         for (NSString *bid in e.bundleIDs) {
             NSString *kc = [NSString stringWithFormat:
-                @"pkill -9 -f '/var/containers/Bundle/Application/'*'/%@' 2>/dev/null", bid];
+                @"pkill -9 -f '/var/containers/Bundle/Application/'*'/%@' 2>/dev/null; "
+                @"pkill -9 -f '%@' 2>/dev/null", bid, bid];
             ci_run([kc UTF8String]);
         }
 
-        // 2. Untar to a private temp dir (NOT to /), so we can rebind UUIDs.
+        // ---- Step 2: Untar to private temp dir ----
+        [self updateHUD:hud step:2 total:5
+                  title:@"Giải nén backup"
+               subtitle:[NSString stringWithFormat:@"%@ đang đọc...",
+                         CIBytesString(tarSize)]];
         NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_restore_%@", e.uid];
         ci_run([[NSString stringWithFormat:@"rm -rf %@; mkdir -p %@", tmp, tmp] UTF8String]);
         NSString *untar = [NSString stringWithFormat:@"tar -xzf '%@' -C '%@' 2>/dev/null", tar, tmp];
-        ci_run([untar UTF8String]);
+        int untarRc = ci_run([untar UTF8String]);
+        NSLog(@"[ChangeInfoIos] restore: untar rc=%d to %@", untarRc, tmp);
 
-        // 3. Rebind each archived UUID-container to the current live container
-        //    for that bundleID.
+        // ---- Step 3: Rebind each archived UUID-container to the current live container ----
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *bkRoot = [tmp stringByAppendingPathComponent:@"var/mobile/Containers/Data/Application"];
         NSArray *bkUUIDs = [fm contentsOfDirectoryAtPath:bkRoot error:nil];
-        NSUInteger restored = 0;
+        NSLog(@"[ChangeInfoIos] restore: bkRoot=%@ has %lu archived containers",
+              bkRoot, (unsigned long)bkUUIDs.count);
+
+        NSUInteger restoredApps = 0;
+        NSUInteger filesCopied = 0;
+        unsigned long long bytesCopied = 0;
+
         for (NSString *uuid in bkUUIDs) {
             NSString *bkDir = [bkRoot stringByAppendingPathComponent:uuid];
             NSString *bkMeta = [bkDir stringByAppendingPathComponent:
                 @".com.apple.mobile_container_manager.metadata.plist"];
             NSData *blob = [NSData dataWithContentsOfFile:bkMeta];
-            if (!blob) continue;
+            if (!blob) {
+                NSLog(@"[ChangeInfoIos] restore: missing metadata.plist in %@", uuid);
+                continue;
+            }
 
             // Match the archived metadata to one of the bundleIDs in this entry.
             NSString *matchedBid = nil;
@@ -4150,81 +4172,137 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     break;
                 }
             }
-            if (!matchedBid) continue;
+            if (!matchedBid) {
+                NSLog(@"[ChangeInfoIos] restore: archived UUID %@ doesn't match any backed-up bid", uuid);
+                continue;
+            }
 
             NSString *curContainer = ci_findDataContainerForBundle(matchedBid);
             if (curContainer.length == 0) {
-                NSLog(@"[ChangeInfoIos] restore: no live container for %@", matchedBid);
+                NSLog(@"[ChangeInfoIos] restore: NO live container for %@ — app may need to be launched once first", matchedBid);
                 continue;
             }
+
+            [self updateHUD:hud step:3 total:5
+                      title:@"Khôi phục dữ liệu app"
+                   subtitle:[NSString stringWithFormat:@"%lu/%lu — %@",
+                             (unsigned long)restoredApps + 1,
+                             (unsigned long)bkUUIDs.count,
+                             matchedBid]];
+            [NSThread sleepForTimeInterval:0.6];
 
             // Copy each user-data subdir from backup over the live container.
             // Don't touch the live container's metadata.plist — that's the
             // UUID binding iOS itself manages.
             NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
+            NSUInteger appFiles = 0;
+            unsigned long long appBytes = 0;
             for (NSString *sub in subs) {
                 NSString *bkSub = [bkDir stringByAppendingPathComponent:sub];
                 if (![fm fileExistsAtPath:bkSub]) continue;
+
+                // Count source files + bytes for the diagnostic alert.
+                NSDirectoryEnumerator *en = [fm enumeratorAtPath:bkSub];
+                NSString *file;
+                while ((file = [en nextObject])) {
+                    NSDictionary *a = [en fileAttributes];
+                    if ([a[NSFileType] isEqualToString:NSFileTypeRegular]) {
+                        appFiles++;
+                        appBytes += [a[NSFileSize] unsignedLongLongValue];
+                    }
+                }
+
                 NSString *curSub = [curContainer stringByAppendingPathComponent:sub];
                 NSString *cmd = [NSString stringWithFormat:
                     @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; "
                     @"mkdir -p '%@' 2>/dev/null; "
                     @"cp -a '%@/.' '%@/' 2>/dev/null",
                     curSub, curSub, curSub, bkSub, curSub];
-                ci_run([cmd UTF8String]);
+                int rc = ci_run([cmd UTF8String]);
+                if (rc != 0) {
+                    NSLog(@"[ChangeInfoIos] restore: cp failed rc=%d for %@/%@", rc, matchedBid, sub);
+                }
             }
-            restored++;
+            NSLog(@"[ChangeInfoIos] restore: %@ → %lu files, %@",
+                  matchedBid, (unsigned long)appFiles, CIBytesString(appBytes));
+            filesCopied += appFiles;
+            bytesCopied += appBytes;
+            restoredApps++;
         }
 
-        // 4. Restore tweak config + DC state. Critical: without this, the
-        //    tweak still spoofs CURRENT random IDs, so a Zalo account that
-        //    was registered against the snapshot's UDID/IDFA fails session
-        //    validation and signs out.
+        // ---- Step 4: Restore tweak config + DC state ----
+        [self updateHUD:hud step:4 total:5
+                  title:@"Khôi phục thông tin máy fake"
+               subtitle:@"config.plist + DC tokens..."];
+        [NSThread sleepForTimeInterval:0.8];
         NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
+        NSUInteger configFiles = 0;
         if ([fm fileExistsAtPath:bkConfigDir]) {
+            NSArray *cfgList = [fm contentsOfDirectoryAtPath:bkConfigDir error:nil];
+            configFiles = cfgList.count;
             NSString *cmd = [NSString stringWithFormat:
                 @"mkdir -p /var/jb/etc/changeinfoios; "
                 @"cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
                 @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null",
                 bkConfigDir];
-            ci_run([cmd UTF8String]);
+            int rc = ci_run([cmd UTF8String]);
+            NSLog(@"[ChangeInfoIos] restore: config dir restored, %lu files, rc=%d",
+                  (unsigned long)configFiles, rc);
+        } else {
+            NSLog(@"[ChangeInfoIos] restore: WARNING — backup has no config snapshot. "
+                  @"Created with old build before 3560b20? Hardware IDs won't match the saved env.");
         }
 
-        // 5. Reload host-app's in-memory CIConfigManager from the restored
-        //    plist so the user's settings UI matches what's been put back.
+        // Reload host-app's in-memory CIConfigManager from the restored
+        // plist so the user's settings UI matches what's been put back.
         [[CIConfigManager shared] load];
 
-        // 5a. CRITICAL: disable keychainReset after restore. The
-        //     SecItemCopyMatching hook in Hooks.mm blocks Zalo's keychain
-        //     reads when keychainReset=YES — useful for fresh-account
-        //     registration but lethal for restore: Zalo's session token
-        //     LIVES in the keychain (which is shared at /var/Keychains/
-        //     keychain-2.db, NOT inside the per-app data container, so it
-        //     survives Reset Data). With reads blocked, the just-restored
-        //     container says "logged in as user X" but Zalo can't read
-        //     the matching keychain token → forces full re-login.
-        //
-        //     Setting keychainReset=NO + saving lets the hook fall
-        //     straight through to %orig and Zalo sees the keychain
-        //     entries that have been there all along.
+        // CRITICAL: disable keychainReset after restore. The
+        // SecItemCopyMatching hook in Hooks.mm blocks Zalo's keychain
+        // reads when keychainReset=YES — useful for fresh-account
+        // registration but lethal for restore. Setting NO + saving lets
+        // the hook fall through to %orig.
         [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
         [[CIConfigManager shared] save];
 
-        // 6. Cleanup + respring.
+        // ---- Step 5: Cleanup + respring ----
+        [self updateHUD:hud step:5 total:5
+                  title:@"Restart SpringBoard"
+               subtitle:@"Reload tweak với config đã restore..."];
+        [NSThread sleepForTimeInterval:1.0];
         ci_run([[NSString stringWithFormat:@"rm -rf %@", tmp] UTF8String]);
         ci_run("killall -9 cfprefsd 2>/dev/null");
-        ci_run("/var/jb/usr/bin/sbreload 2>/dev/null"
-               " || sbreload 2>/dev/null"
-               " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-               " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null");
+        int respringRc = ci_run("/var/jb/usr/bin/sbreload 2>/dev/null"
+                                " || sbreload 2>/dev/null"
+                                " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                                " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null");
+        NSLog(@"[ChangeInfoIos] restore: respring rc=%d", respringRc);
+        [NSThread sleepForTimeInterval:3.0];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self dismissHUD:hud completion:^{
                 NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-";
-                NSString *msg = [NSString stringWithFormat:
-                    @"Đã restore %lu app: %@\n\nMáy đang respring. Mở lại app để tiếp tục với account cũ.",
-                    (unsigned long)restored, names];
-                [self alert:@"✅ Restore thành công" msg:msg];
+                NSString *msg;
+                if (restoredApps == 0) {
+                    msg = [NSString stringWithFormat:
+                        @"⚠️ KHÔNG có app nào được restore.\n\n"
+                        @"Lý do có thể: app đã bị uninstall, hoặc UUID container đã đổi quá nhiều.\n"
+                        @"Hãy mở app target ít nhất 1 lần TRƯỚC khi restore để iOS tạo container.\n\n"
+                        @"Backup: %@", names];
+                } else {
+                    msg = [NSString stringWithFormat:
+                        @"%lu app: %@\n"
+                        @"%lu file (%@) đã copy\n"
+                        @"%lu file config được khôi phục\n\n"
+                        @"Mở app target để vào lại account cũ.",
+                        (unsigned long)restoredApps,
+                        names,
+                        (unsigned long)filesCopied,
+                        CIBytesString(bytesCopied),
+                        (unsigned long)configFiles];
+                }
+                NSString *title = (restoredApps == 0) ? @"⚠️ Restore không hoàn tất" : @"✅ Đã restore";
+                [self alert:title msg:msg];
             }];
         });
     });
