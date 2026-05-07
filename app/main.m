@@ -4210,9 +4210,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // tar -xf auto-detects format (handles plain .tar AND .tar.gz when
         // gzip is present). Without -z, plain tar reads uncompressed
         // archives directly — works on Dopamine where gzip isn't installed.
-        NSString *untar = [NSString stringWithFormat:@"tar -xf '%@' -C '%@' 2>/dev/null", tar, tmp];
+        // Capture stderr so a silent failure surfaces in syslog.
+        NSString *untarErr = [NSString stringWithFormat:@"/tmp/ci_restore_%@.untar.err", e.uid];
+        NSString *untar = [NSString stringWithFormat:@"tar -xf '%@' -C '%@' 2>%@", tar, tmp, untarErr];
         int untarRc = ci_run([untar UTF8String]);
-        NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@", untarRc, tar, tmp);
+        NSString *untarErrText = [NSString stringWithContentsOfFile:untarErr encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:untarErr error:nil];
+        NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@%@",
+              untarRc, tar, tmp,
+              untarErrText.length ? [@"\nstderr: " stringByAppendingString:untarErrText] : @"");
+
+        // Sanity check — list what actually landed in /tmp.
+        NSArray *tmpEntries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmp error:nil];
+        NSLog(@"[ChangeInfoIos] restore: /tmp dir entries after untar = %@", tmpEntries);
+
+        [NSThread sleepForTimeInterval:1.5]; // let user see "đang giải nén" before step 3 takes over
 
         // ---- Step 3: Rebind each archived UUID-container to the current live container ----
         // /var on iOS is a symlink to /private/var, and GNU tar resolves
@@ -4299,14 +4311,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 }
 
                 NSString *curSub = [curContainer stringByAppendingPathComponent:sub];
+                NSString *errLog = [NSString stringWithFormat:@"/tmp/ci_restore_cp_%@_%@.err", matchedBid, sub];
+                // Replace path separators in errLog filename
+                errLog = [errLog stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+                errLog = [@"/tmp/" stringByAppendingPathComponent:[errLog lastPathComponent]];
                 NSString *cmd = [NSString stringWithFormat:
                     @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; "
                     @"mkdir -p '%@' 2>/dev/null; "
-                    @"cp -a '%@/.' '%@/' 2>/dev/null",
-                    curSub, curSub, curSub, bkSub, curSub];
+                    @"cp -a '%@/.' '%@/' 2>%@",
+                    curSub, curSub, curSub, bkSub, curSub, errLog];
                 int rc = ci_run([cmd UTF8String]);
-                if (rc != 0) {
-                    NSLog(@"[ChangeInfoIos] restore: cp failed rc=%d for %@/%@", rc, matchedBid, sub);
+                NSString *errText = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
+                [[NSFileManager defaultManager] removeItemAtPath:errLog error:nil];
+                if (rc != 0 || errText.length) {
+                    NSLog(@"[ChangeInfoIos] restore: cp rc=%d %@/%@%@", rc, matchedBid, sub,
+                          errText.length ? [@"\n  stderr: " stringByAppendingString:errText] : @"");
                 }
             }
             NSLog(@"[ChangeInfoIos] restore: %@ → %lu files, %@",
