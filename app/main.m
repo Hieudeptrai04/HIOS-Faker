@@ -941,6 +941,66 @@ static NSUInteger ci_randomizeIdentities(void) {
 // metadata.plist is binary plist; the bundle ID appears as a UTF-8 string
 // inside it, so a simple grep is enough to identify the right container
 // without depending on PlistBuddy or any rootless-only CLI.
+// Mobile Safari is a system app — its data does NOT live entirely in the
+// data container (~/Containers/Data/Application/<UUID>). The user-visible
+// browsing state — bookmarks, history, cookies, cache, WebKit data — sits
+// in /var/mobile/Library/Safari + /var/mobile/Library/WebKit + WebKit
+// caches that the data-container wipe doesn't reach. Without this deep
+// wipe, every "Reset Data" leaves Safari with the previous session's
+// cookies / IDFA / canvas fingerprint visible to the next account.
+//
+// Killing the WebKit content/networking/GPU daemons mid-wipe is fine —
+// they auto-respawn when next requested. They are SHARED across every WK
+// client process, but no client holds long-running state across that
+// boundary, so a kill at idle is recoverable.
+// (ci_run forward decl already at top of file, line 45)
+static void ci_wipeSafariDeep(void) {
+    // 1. Kill the user-visible Safari/SafariViewService apps. Intentionally
+    //    NOT killing WebKit.WebContent / .Networking / .GPU here — those
+    //    are SHARED daemons used by every WK client (in-app browsers in
+    //    other apps, Mail, etc.). v2.4.0-a5256fe took down AIDA64 by
+    //    wiping them via `pkill -f com.apple.mobilesafari` which also
+    //    matched the substring inside backboardd / runningboardd cmdlines.
+    //    POSIX unlink semantics: rm succeeds even with daemons holding
+    //    open handles — they just see stale cache until next reload.
+    NSArray<NSString *> *killCmds = @[
+        @"killall -9 MobileSafari 2>/dev/null",
+        @"killall -9 SafariViewService 2>/dev/null",
+        @"killall -9 SafariBookmarksSyncAgent 2>/dev/null",
+    ];
+    for (NSString *c in killCmds) ci_run([c UTF8String]);
+
+    // 2. Wipe every Safari + WebKit on-disk state we know about. Both
+    //    rooted and rootless paths are tried — Dopamine 2 keeps
+    //    /var/mobile/Library/* at the canonical location, but sandbox
+    //    redirection can occasionally shadow them under /var/jb/.
+    NSArray<NSString *> *paths = @[
+        // Safari user data
+        @"/var/mobile/Library/Safari",
+        @"/var/mobile/Library/Caches/com.apple.mobilesafari",
+        @"/var/mobile/Library/Caches/com.apple.SafariViewService",
+        @"/var/mobile/Library/Cookies/com.apple.mobilesafari.binarycookies",
+        @"/var/mobile/Library/Cookies/com.apple.WebKit.binarycookies",
+        @"/var/mobile/Library/SafariViewService",
+        @"/var/mobile/Library/Saved Application State/com.apple.mobilesafari.savedState",
+        // WebKit shared store + caches (shared across every WK client app)
+        @"/var/mobile/Library/WebKit",
+        @"/var/mobile/Library/Caches/WebKit",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.WebContent",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.Networking",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.GPU",
+        @"/var/mobile/Library/Caches/com.apple.WebKit.PluginAgent",
+    ];
+    for (NSString *p in paths) {
+        NSString *cmd = [NSString stringWithFormat:
+            @"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null",
+            p, p, p];
+        ci_run([cmd UTF8String]);
+    }
+    NSLog(@"[ChangeInfoIos] Safari/WebKit deep wipe: killed + %lu paths cleared",
+          (unsigned long)paths.count);
+}
+
 static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     if (bundleID.length == 0) return nil;
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -3630,11 +3690,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
-        // Step 3: Clean detection caches + save counters
+        // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
         [self updateHUD:hud step:3 total:5
-                  title:@"Xoá cache phát hiện"
-               subtitle:@"DeviceCheck, APNS, IDFA, AIDA cache, keychain…"];
+                  title:@"Xoá cache phát hiện + Safari"
+               subtitle:@"Safari history/cookies/WebKit + DeviceCheck/IDFA…"];
         [NSThread sleepForTimeInterval:1.5];
+
+        // Safari + WebKit complete wipe — cookies, history, cache, bookmarks,
+        // WebKit shared data store. Container wipe in Step 2 only handles
+        // /var/mobile/Containers/Data/Application/<UUID>; the bulk of Safari's
+        // state lives in /var/mobile/Library/Safari which is outside that.
+        ci_wipeSafariDeep();
+
         NSArray *detectPaths = @[
             @"/var/mobile/Library/Caches/com.finalwire.aida64",
             @"/var/mobile/Library/Caches/com.finalwire.aida64-ios",
