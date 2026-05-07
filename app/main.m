@@ -4215,9 +4215,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@", untarRc, tar, tmp);
 
         // ---- Step 3: Rebind each archived UUID-container to the current live container ----
+        // /var on iOS is a symlink to /private/var, and GNU tar resolves
+        // that symlink when archiving — entries appear as
+        // "private/var/mobile/Containers/Data/Application/<UUID>/...".
+        // The first restore implementation looked under "var/..." and got
+        // an empty list every time, so 0 apps were restored even from a
+        // 14 MB archive. Try BOTH layouts.
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *bkRoot = [tmp stringByAppendingPathComponent:@"var/mobile/Containers/Data/Application"];
+        NSString *bkRoot = [tmp stringByAppendingPathComponent:@"private/var/mobile/Containers/Data/Application"];
         NSArray *bkUUIDs = [fm contentsOfDirectoryAtPath:bkRoot error:nil];
+        if (bkUUIDs.count == 0) {
+            NSString *altRoot = [tmp stringByAppendingPathComponent:@"var/mobile/Containers/Data/Application"];
+            NSArray *altUUIDs = [fm contentsOfDirectoryAtPath:altRoot error:nil];
+            if (altUUIDs.count > 0) {
+                bkRoot = altRoot;
+                bkUUIDs = altUUIDs;
+            }
+        }
         NSLog(@"[ChangeInfoIos] restore: bkRoot=%@ has %lu archived containers",
               bkRoot, (unsigned long)bkUUIDs.count);
 
@@ -4307,7 +4321,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   title:@"Khôi phục thông tin máy fake"
                subtitle:@"config.plist + DC tokens..."];
         [NSThread sleepForTimeInterval:0.8];
+        // Same private/var symlink dance as the container scan above.
         NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
+        if (![fm fileExistsAtPath:bkConfigDir]) {
+            NSString *alt = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
+            if ([fm fileExistsAtPath:alt]) bkConfigDir = alt;
+        }
         NSUInteger configFiles = 0;
         if ([fm fileExistsAtPath:bkConfigDir]) {
             NSArray *cfgList = [fm contentsOfDirectoryAtPath:bkConfigDir error:nil];
