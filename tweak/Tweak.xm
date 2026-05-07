@@ -509,6 +509,12 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGCopyAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGCopyAnswer(property);
+    // Emergency bypass — set _ci_skip_mg=YES via SSH if MG hook causes
+    // crashes (we hit a recursive ellekit.portLoop fault on Zalo when
+    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic called this hook).
+    // When set, the MG triplet is fully passthrough but UIDevice / IOReg /
+    // sysctl / DC hooks still run, so we keep partial spoof.
+    if (getConfigBool(@"_ci_skip_mg")) return orig_MGCopyAnswer(property);
 
     initMGKeyMap();
 
@@ -581,6 +587,7 @@ static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGGetBoolAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGGetBoolAnswer(property);
+    if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetBoolAnswer(property);
 
     NSString *key = (__bridge NSString *)property;
     NSString *configKey = mgKeyMap[key];
@@ -607,6 +614,7 @@ static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGGetStringAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGGetStringAnswer(property);
+    if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetStringAnswer(property);
 
     initMGKeyMap();
 
