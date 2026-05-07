@@ -300,7 +300,11 @@ BOOL fakeLayer(NSString *shortName) {
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
     BOOL out = NO;
-    if (isCurrentBundleTargeted()) {
+    // Emergency runtime kill-switch — set _ci_skipall=YES via SSH to make
+    // every %hook fall through to %orig without re-installing the dylib.
+    // Lets us bisect "is the crash from a specific hook return value, or
+    // from %ctor/MSHookFunction itself" without a build cycle.
+    if (!getConfigBool(@"_ci_skipall") && isCurrentBundleTargeted()) {
         NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
         out = getConfigBool(full);
     }
