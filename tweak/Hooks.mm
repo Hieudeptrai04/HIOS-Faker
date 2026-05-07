@@ -509,13 +509,135 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 // !!! REVERTED: C-level hooks added in v2.4.0-bc23d78 / aa84601
 // ============================================================
 // getifaddrs / statfs / gettimeofday / getppid / task_for_pid /
-// proc_listallpids / open / opendir / readlink / ptrace.
-// All caused EXC_BAD_ACCESS / SIGBUS in target apps because the
-// variadic typedef (open) and direct kern API calls (task_for_pid)
-// dont match the libsystem_kernel ABI — corrupted thread state
-// when called by background queues. The fopen / stat / lstat /
-// access / dlopen / dladdr / fork / getenv / sysctlbyname / uname
-// hooks below already cover 99% of JB detection without ABI risk.
+// proc_listallpids / open / opendir / readlink. All caused
+// EXC_BAD_ACCESS / SIGBUS in target apps because the variadic
+// typedef (open) and direct kern API calls (task_for_pid) dont
+// match the libsystem_kernel ABI — corrupted thread state when
+// called by background queues. The fopen / stat / lstat / access
+// / dlopen / dladdr / fork / getenv / sysctlbyname / uname hooks
+// below already cover 99% of JB detection without ABI risk.
+
+// NEW (post-revert): the four hooks below are SAFE — none variadic,
+// all match libsystem_kernel ABI exactly, and they target the
+// remaining detection vectors that the file-existence hooks miss:
+//   1. dlsym(RTLD_DEFAULT, "MSHookFunction") — symbol-table probe
+//   2. sysctl(KERN_PROC, ...) — kernel process listing
+//   3. ptrace(PT_DENY_ATTACH, ...) — anti-debug probe
+//   4. csops(pid, CS_OPS_STATUS, ...) — code-signing flags probe
+
+// dlsym hook — substrate symbol mask
+// ABI: void *dlsym(void *handle, const char *symbol) — 2 fixed args.
+typedef void *(*dlsym_t)(void *handle, const char *symbol);
+static dlsym_t orig_dlsym = NULL;
+static void *hooked_dlsym(void *handle, const char *symbol) {
+    if (is_critical_process()) return orig_dlsym(handle, symbol);
+    if (jbHideActive() && symbol) {
+        // Anyone probing for these symbols is doing JB detection. Apps
+        // that legitimately use MSHook* won't run on a non-jailbroken
+        // device anyway — they wouldn't reach our hook.
+        static const char *kBlocked[] = {
+            "MSHookFunction", "MSHookMessageEx", "MSGetImageByName",
+            "_MSHookFunction", "_MSHookMessageEx", "_MSFindSymbol",
+            "MSFindSymbol", "MSHookSymbol", "MSCloseImage",
+            "ZzInitialize", "ZzBuildHook",
+            "EKHookFunction", "EKHookMessageEx",
+            "fishhook_rebind", "rebind_symbols",
+            NULL
+        };
+        for (int i = 0; kBlocked[i]; i++) {
+            if (strstr(symbol, kBlocked[i])) return NULL;
+        }
+    }
+    return orig_dlsym(handle, symbol);
+}
+
+// sysctl hook — filter KERN_PROC list to hide tweak/JB processes
+// ABI: int sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) — 6 fixed args.
+typedef int (*sysctl_t)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static sysctl_t orig_sysctl = NULL;
+static int hooked_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    int ret = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    if (ret != 0 || !jbHideActive() || !name || namelen < 3 || !oldp || !oldlenp) return ret;
+    // KERN_PROC: name[0]=CTL_KERN(1), name[1]=KERN_PROC(14)
+    if (name[0] != 1 || name[1] != 14) return ret;
+    struct kinfo_proc *procs = (struct kinfo_proc *)oldp;
+    size_t count = *oldlenp / sizeof(struct kinfo_proc);
+    static const char *kSuspicious[] = {
+        "Sileo", "Cydia", "MobileSubstrate", "substrate", "ElleKit",
+        "TweakInject", "tweakloader", "ShimInjector", "SafeMode",
+        "dopamine", "Choicy", "LiberTV", "PaleRain", "Taurine",
+        "Frida", "frida-server", "frida-agent", "ssh", "sshd",
+        NULL
+    };
+    size_t writeIdx = 0;
+    for (size_t readIdx = 0; readIdx < count; readIdx++) {
+        BOOL hide = NO;
+        const char *comm = procs[readIdx].kp_proc.p_comm;
+        for (int j = 0; kSuspicious[j]; j++) {
+            if (strstr(comm, kSuspicious[j])) { hide = YES; break; }
+        }
+        if (!hide) {
+            if (writeIdx != readIdx) procs[writeIdx] = procs[readIdx];
+            writeIdx++;
+        }
+    }
+    *oldlenp = writeIdx * sizeof(struct kinfo_proc);
+    return 0;
+}
+
+// ptrace hook — silence PT_DENY_ATTACH so debuggers (and the runtime
+// hook loader during boot) keep working. PT_DENY_ATTACH = 31.
+// ABI: int ptrace(int request, pid_t pid, caddr_t addr, int data) — 4 fixed args.
+typedef int (*ptrace_t)(int request, pid_t pid, caddr_t addr, int data);
+static ptrace_t orig_ptrace = NULL;
+static int hooked_ptrace(int request, pid_t pid, caddr_t addr, int data) {
+    if (is_critical_process()) return orig_ptrace(request, pid, addr, data);
+    if (jbHideActive() && request == 31 /* PT_DENY_ATTACH */) return 0;
+    return orig_ptrace(request, pid, addr, data);
+}
+
+// csops hook — patch returned codesign flags so the process looks like
+// a normal App Store binary (no CS_DEBUGGED, no CS_GET_TASK_ALLOW).
+// ABI: int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize) — 4 fixed args.
+extern "C" int csops(pid_t, unsigned int, void *, size_t);
+typedef int (*csops_t)(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
+static csops_t orig_csops = NULL;
+static int hooked_csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize) {
+    int ret = orig_csops ? orig_csops(pid, ops, useraddr, usersize) : -1;
+    if (!jbHideActive() || ret != 0 || !useraddr || usersize < sizeof(uint32_t)) return ret;
+    // CS_OPS_STATUS = 0 → useraddr receives a uint32_t flag word.
+    if (ops == 0) {
+        uint32_t *flags = (uint32_t *)useraddr;
+        *flags &= ~0x10000000u;  // CS_DEBUGGED   off
+        *flags &= ~0x00000004u;  // CS_GET_TASK_ALLOW off
+        *flags |=  0x04000000u;  // CS_PLATFORM_BINARY on
+        *flags |=  0x00000001u;  // CS_VALID on
+    }
+    return ret;
+}
+
+// connect hook — block outbound connects to localhost on Frida/Cycript
+// debug ports. Apps probe these ports as a presence check; returning
+// ECONNREFUSED simulates "no debugger listening".
+// ABI: int connect(int s, const struct sockaddr *name, socklen_t namelen) — 3 fixed args.
+typedef int (*connect_t)(int, const struct sockaddr *, socklen_t);
+static connect_t orig_connect = NULL;
+static int hooked_connect(int s, const struct sockaddr *name, socklen_t namelen) {
+    if (is_critical_process()) return orig_connect(s, name, namelen);
+    if (jbHideActive() && name && namelen >= (socklen_t)sizeof(struct sockaddr_in)) {
+        if (name->sa_family == AF_INET) {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)name;
+            uint16_t port = ntohs(sin->sin_port);
+            // Frida default 27042/27043, Cycript 32498. Match localhost only.
+            if ((port == 27042 || port == 27043 || port == 32498) &&
+                (ntohl(sin->sin_addr.s_addr) >> 24) == 127) {
+                errno = ECONNREFUSED;
+                return -1;
+            }
+        }
+    }
+    return orig_connect(s, name, namelen);
+}
 
 extern "C" void initCLvlHooks(void) {
     // sysctlbyname
@@ -633,6 +755,48 @@ extern "C" void initCLvlHooks(void) {
         NSLog(@"[ChangeInfoIos] SecItemCopyMatching hooked");
     }
 #endif
+
+    // sysctl (KERN_PROC filter) — hides tweak/JB processes from process listing.
+    // dlsym name "sysctl" must come BEFORE we hook dlsym itself; otherwise we'd
+    // need RTLD_NEXT semantics which substrate doesn't expose.
+    void *sysctl2_sym = dlsym(RTLD_DEFAULT, "sysctl");
+    if (sysctl2_sym && !orig_sysctl) {
+        MSHookFunction(sysctl2_sym, (void *)hooked_sysctl, (void **)&orig_sysctl);
+        NSLog(@"[ChangeInfoIos] sysctl hooked");
+    }
+
+    // ptrace — neutralizes PT_DENY_ATTACH (anti-debug); leaves all other
+    // ptrace operations untouched so legitimate use (Xcode debugger, crashed
+    // processes) still works.
+    void *ptrace_sym = dlsym(RTLD_DEFAULT, "ptrace");
+    if (ptrace_sym && !orig_ptrace) {
+        MSHookFunction(ptrace_sym, (void *)hooked_ptrace, (void **)&orig_ptrace);
+        NSLog(@"[ChangeInfoIos] ptrace hooked");
+    }
+
+    // csops — code-signing status probe. Apps inspect CS_DEBUGGED /
+    // CS_GET_TASK_ALLOW to detect debugger / non-platform-binary state.
+    void *csops_sym = dlsym(RTLD_DEFAULT, "csops");
+    if (csops_sym && !orig_csops) {
+        MSHookFunction(csops_sym, (void *)hooked_csops, (void **)&orig_csops);
+        NSLog(@"[ChangeInfoIos] csops hooked");
+    }
+
+    // connect — block Frida / Cycript loopback probes (port 27042/27043/32498).
+    void *connect_sym = dlsym(RTLD_DEFAULT, "connect");
+    if (connect_sym && !orig_connect) {
+        MSHookFunction(connect_sym, (void *)hooked_connect, (void **)&orig_connect);
+        NSLog(@"[ChangeInfoIos] connect hooked");
+    }
+
+    // dlsym hook MUST be installed LAST. Hooking it earlier would route our
+    // own subsequent dlsym lookups through the hook, possibly returning NULL
+    // for legit substrate symbols and breaking the rest of init.
+    void *dlsym_sym = dlsym(RTLD_DEFAULT, "dlsym");
+    if (dlsym_sym && !orig_dlsym) {
+        MSHookFunction(dlsym_sym, (void *)hooked_dlsym, (void **)&orig_dlsym);
+        NSLog(@"[ChangeInfoIos] dlsym hooked");
+    }
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
 }

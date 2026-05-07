@@ -1303,6 +1303,30 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
+// LAYER 16: NSURLSessionConfiguration default headers — NSURLSession
+// users set User-Agent via configuration.HTTPAdditionalHeaders BEFORE
+// any request is made, so the per-request -setValue:forHTTPHeaderField:
+// hook never sees them. Patch the property setter so the fake UA wins.
+%hook NSURLSessionConfiguration
+
+- (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
+    if (!fakeLayer(@"browser") || !headers) { %orig(headers); return; }
+    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
+    if (!fakeUA.length) { %orig(headers); return; }
+    NSMutableDictionary *patched = [headers mutableCopy];
+    // Replace any case-variant of User-Agent with our fake.
+    for (NSString *k in [headers allKeys]) {
+        if ([k isKindOfClass:[NSString class]] &&
+            [k.lowercaseString isEqualToString:@"user-agent"]) {
+            [patched removeObjectForKey:k];
+        }
+    }
+    patched[@"User-Agent"] = fakeUA;
+    %orig([patched copy]);
+}
+
+%end
+
 %hook NSMutableURLRequest
 
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
