@@ -11,7 +11,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = ChangeInfoIosApp
 ChangeInfoIosApp_FILES = main.m
 ChangeInfoIosApp_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
-ChangeInfoIosApp_FRAMEWORKS = UIKit Foundation
+ChangeInfoIosApp_FRAMEWORKS = UIKit Foundation AVFoundation CoreMedia
 ChangeInfoIosApp_CODESIGN_FLAGS = -Sentitlements.plist
 
 include $(THEOS_MAKE_PATH)/application.mk

@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>  // CAShapeLayer / CABasicAnimation for ring HUD
+#import <AVFoundation/AVFoundation.h>  // AVAssetExportSession for video import (CICameraVC)
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <sys/wait.h>
@@ -3350,31 +3351,68 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     NSURL *src = info[UIImagePickerControllerMediaURL];
     [picker dismissViewControllerAnimated:YES completion:^{
         if (!src) {
-            self->_statusLabel.text = @"❌ Không lấy được URL video";
+            self->_statusLabel.text = @"❌ Không có URL từ picker";
             self->_statusLabel.textColor = [UIColor systemRedColor];
             return;
         }
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
-        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-        [fm removeItemAtPath:kCISpoofVideoPath error:nil];
-        NSError *err = nil;
-        BOOL ok = [fm copyItemAtPath:src.path toPath:kCISpoofVideoPath error:&err];
-        if (!ok) {
-            // Photos picker hands back a sandbox-scoped tmp URL; fall back
-            // to an explicit byte read if the path-level copy denied.
-            NSData *data = [NSData dataWithContentsOfURL:src];
-            if (data.length > 0) {
-                ok = [data writeToFile:kCISpoofVideoPath options:NSDataWritingAtomic error:&err];
+        // Photos picker URL points into the picker's per-process tmp dir
+        // (/private/var/mobile/Containers/Data/Application/<pickerUUID>/tmp).
+        // A no-container app can't access that path via NSFileManager or
+        // NSData — both denied by sandbox even with TCC pre-grant.
+        // AVAssetExportSession reads media through AVFoundation's internal
+        // IPC, which DOES have access. Re-encode to MP4 at our target path.
+        self->_statusLabel.text = @"⌛ Đang import video qua AVAsset…";
+        self->_statusLabel.textColor = [CITheme dim];
+        [self importVideoFromURL:src];
+    }];
+}
+
+- (void)importVideoFromURL:(NSURL *)src {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    [fm removeItemAtPath:kCISpoofVideoPath error:nil];
+
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:src options:nil];
+    if (!asset || asset.tracks.count == 0) {
+        _statusLabel.text = @"❌ AVAsset không load được — file không hợp lệ";
+        _statusLabel.textColor = [UIColor systemRedColor];
+        return;
+    }
+    // Passthrough preset: no re-encode, just remux to MP4 container. Falls
+    // back to highest-quality recode if the source codec doesn't pass.
+    AVAssetExportSession *ex =
+        [AVAssetExportSession exportSessionWithAsset:asset presetName:AVAssetExportPresetPassthrough];
+    if (![[AVAssetExportSession exportPresetsCompatibleWithAsset:asset]
+            containsObject:AVAssetExportPresetPassthrough]) {
+        ex = [AVAssetExportSession exportSessionWithAsset:asset
+                                              presetName:AVAssetExportPresetHighestQuality];
+    }
+    if (!ex) {
+        _statusLabel.text = @"❌ Không tạo được export session";
+        _statusLabel.textColor = [UIColor systemRedColor];
+        return;
+    }
+    ex.outputURL = [NSURL fileURLWithPath:kCISpoofVideoPath];
+    ex.outputFileType = AVFileTypeMPEG4;
+    ex.shouldOptimizeForNetworkUse = NO;
+
+    __weak typeof(self) wself = self;
+    [ex exportAsynchronouslyWithCompletionHandler:^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(wself) ss = wself; if (!ss) return;
+            if (ex.status == AVAssetExportSessionStatusCompleted) {
+                [ss refreshFileInfo];
+            } else {
+                NSString *m = [NSString stringWithFormat:@"❌ Export status=%ld: %@",
+                               (long)ex.status,
+                               ex.error.localizedDescription ?: @"unknown"];
+                ss->_statusLabel.text = m;
+                ss->_statusLabel.textColor = [UIColor systemRedColor];
+                NSLog(@"[ChangeInfoIos] cam spoof export FAILED status=%ld err=%@",
+                      (long)ex.status, ex.error);
             }
-        }
-        if (!ok) {
-            self->_statusLabel.text = [NSString stringWithFormat:@"❌ Copy fail: %@",
-                                       err.localizedDescription];
-            self->_statusLabel.textColor = [UIColor systemRedColor];
-            return;
-        }
-        [self refreshFileInfo];
+        });
     }];
 }
 
