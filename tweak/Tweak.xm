@@ -687,17 +687,26 @@ static int64_t configValueAsMGInteger(NSString *configKey) {
     return 0;
 }
 
+// Re-entrancy guard for MG hooks. ROOT CAUSE of the previous crash chain:
+// our NSLog calls (and any autorelease-pool drain inside the hook) trigger
+// CFLog → ASL → libtrace → MGCopyAnswer for the syslog prefix → re-enters
+// our hook → if the inner call hits NSLog again → infinite recursion →
+// SIGBUS / portLoop fault. With this thread-local guard, the inner call
+// passes straight through to orig, breaking the loop.
+__thread int g_ci_inMGHook = 0;
+
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
+    if (g_ci_inMGHook) return orig_MGCopyAnswer(property);
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGCopyAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGCopyAnswer(property);
-    // Emergency bypass — set _ci_skip_mg=YES via SSH if MG hook causes
-    // crashes (we hit a recursive ellekit.portLoop fault on Zalo when
-    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic called this hook).
-    // When set, the MG triplet is fully passthrough but UIDevice / IOReg /
-    // sysctl / DC hooks still run, so we keep partial spoof.
+    // Emergency bypass — set _ci_skip_mg=YES via SSH if MG hook ever
+    // causes regressions again. With the re-entrancy guard above the
+    // earlier fault should be fixed permanently; flag retained for
+    // diagnostics.
     if (getConfigBool(@"_ci_skip_mg")) return orig_MGCopyAnswer(property);
 
+    g_ci_inMGHook = 1;
     initMGKeyMap();
 
     NSString *key = (__bridge NSString *)property;
@@ -749,6 +758,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
                 NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] SPOOFED (first)", key);
             }
         }
+        g_ci_inMGHook = 0;
         return result;
     }
 
@@ -759,6 +769,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
             NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] passthrough (first)", key);
         }
     }
+    g_ci_inMGHook = 0;
     return orig;
 }
 
@@ -766,26 +777,37 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
 // MGGetBoolAnswer hook - handles bool properties
 // ============================================================
 static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
+    if (g_ci_inMGHook) return orig_MGGetBoolAnswer(property);
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGGetBoolAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGGetBoolAnswer(property);
     if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetBoolAnswer(property);
 
+    g_ci_inMGHook = 1;
     NSString *key = (__bridge NSString *)property;
     NSString *configKey = mgKeyMap[key];
 
     if (configKey) {
         id val = getConfig(configKey);
         if (val) {
-            if ([val isKindOfClass:[NSNumber class]]) return [val boolValue];
+            if ([val isKindOfClass:[NSNumber class]]) {
+                BOOL r = [val boolValue];
+                g_ci_inMGHook = 0;
+                return r;
+            }
             if ([val isKindOfClass:[NSString class]]) {
                 NSString *s = (NSString *)val;
-                if ([s isEqualToString:@"true"] || [s isEqualToString:@"YES"] || [s isEqualToString:@"1"]) return YES;
-                if ([s isEqualToString:@"false"] || [s isEqualToString:@"NO"] || [s isEqualToString:@"0"]) return NO;
+                if ([s isEqualToString:@"true"] || [s isEqualToString:@"YES"] || [s isEqualToString:@"1"]) {
+                    g_ci_inMGHook = 0; return YES;
+                }
+                if ([s isEqualToString:@"false"] || [s isEqualToString:@"NO"] || [s isEqualToString:@"0"]) {
+                    g_ci_inMGHook = 0; return NO;
+                }
             }
         }
     }
 
+    g_ci_inMGHook = 0;
     return orig_MGGetBoolAnswer(property);
 }
 
@@ -793,11 +815,13 @@ static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
 // MGGetStringAnswer hook - handles string properties
 // ============================================================
 static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
+    if (g_ci_inMGHook) return orig_MGGetStringAnswer(property);
     if (!configLoaded) reloadConfigFromDisk();
     if (!configLoaded || !property) return orig_MGGetStringAnswer(property);
     if (!fakeLayer(@"hardware")) return orig_MGGetStringAnswer(property);
     if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetStringAnswer(property);
 
+    g_ci_inMGHook = 1;
     initMGKeyMap();
 
     NSString *key = (__bridge NSString *)property;
@@ -805,9 +829,13 @@ static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
 
     if (configKey) {
         NSString *val = getConfigStr(configKey);
-        if (val) return (__bridge_retained CFTypeRef)val;
+        if (val) {
+            g_ci_inMGHook = 0;
+            return (__bridge_retained CFTypeRef)val;
+        }
     }
 
+    g_ci_inMGHook = 0;
     return orig_MGGetStringAnswer(property);
 }
 
@@ -1408,6 +1436,50 @@ static void ci_swizzleApnsOnDelegate(Class cls) {
 - (NSURL *)appStoreReceiptURL {
     if (fakeLayer(@"keychain")) return nil;
     return %orig;
+}
+%end
+
+// ============================================================
+// LSApplicationWorkspace BLOCKER — hide the installed-app list.
+// ============================================================
+// Anti-fraud SDKs (TrustDecision et al) call -[LSApplicationWorkspace
+// allInstalledApplications] / -applicationProxiesForIdentifiersOfType:
+// to fingerprint a device by which apps the user has installed. Two
+// users with the same set of 30+ apps share a fingerprint vector that's
+// often enough to correlate, even across all the other spoofs we run.
+// We're a private framework class; declare the method we need then hook.
+@interface LSApplicationWorkspace : NSObject
++ (instancetype)defaultWorkspace;
+- (NSArray *)allInstalledApplications;
+- (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type;
+@end
+
+%hook LSApplicationWorkspace
+- (NSArray *)allInstalledApplications {
+    NSArray *real = %orig;
+    if (!fakeLayer(@"jbhide")) return real;
+    // Filter to Apple's stock apps only — every user has these, so the
+    // fingerprint vector collapses to a constant.
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (id proxy in real) {
+        NSString *bid = nil;
+        @try { bid = [proxy performSelector:@selector(applicationIdentifier)]; }
+        @catch (__unused id e) { continue; }
+        if ([bid hasPrefix:@"com.apple."]) [filtered addObject:proxy];
+    }
+    return filtered;
+}
+- (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type {
+    NSArray *real = %orig;
+    if (!fakeLayer(@"jbhide")) return real;
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (id proxy in real) {
+        NSString *bid = nil;
+        @try { bid = [proxy performSelector:@selector(applicationIdentifier)]; }
+        @catch (__unused id e) { continue; }
+        if ([bid hasPrefix:@"com.apple."]) [filtered addObject:proxy];
+    }
+    return filtered;
 }
 %end
 
@@ -2631,7 +2703,10 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         // IOReg / sysctl / DC / WK / location hooks remain active, so
         // spoof depth is good — only ProductType / HardwareModel /
         // UniqueChipID through MGCopyAnswer falls through to real values.
-        BOOL kSkipMG_HARDCODED = YES;
+        // Re-enabled. Earlier crash was caused by NSLog inside the hook
+        // recursing through ASL → MGCopyAnswer; fixed via __thread
+        // g_ci_inMGHook re-entrancy guard at top of each MG hook.
+        BOOL kSkipMG_HARDCODED = NO;
         if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {

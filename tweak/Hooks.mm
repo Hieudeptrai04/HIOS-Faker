@@ -332,6 +332,52 @@ static int hooked_gethostname(char *name, size_t namelen) {
 }
 
 // ============================================================
+// getifaddrs hook — spoof raw MAC at the BSD socket layer.
+// ============================================================
+// UIDevice / CTCarrier hooks cover the high-level Obj-C API. Apps that
+// fingerprint via the C API (`getifaddrs()` then walk for AF_LINK and
+// read sa_data bytes) bypass everything above and read the real MAC.
+// Replace bytes 0..5 of every AF_LINK sockaddr_dl's sdl_data with our
+// spoofed MAC from config (key WiFiAddress). Free path stays default
+// — we don't dup the linked list, so freeifaddrs() still works.
+//
+// MAC parse: WiFiAddress is "AA:BB:CC:DD:EE:FF" — take 6 bytes.
+typedef int (*getifaddrs_t)(struct ifaddrs **ifap);
+typedef void (*freeifaddrs_t)(struct ifaddrs *ifa);
+static getifaddrs_t   orig_getifaddrs = NULL;
+static freeifaddrs_t  orig_freeifaddrs = NULL;
+
+static BOOL ci_parseMAC(NSString *macStr, uint8_t out[6]) {
+    if (![macStr isKindOfClass:[NSString class]]) return NO;
+    NSArray *parts = [macStr componentsSeparatedByString:@":"];
+    if (parts.count != 6) return NO;
+    for (int i = 0; i < 6; i++) {
+        unsigned int v = 0;
+        if (sscanf([parts[i] UTF8String], "%02x", &v) != 1) return NO;
+        out[i] = (uint8_t)v;
+    }
+    return YES;
+}
+
+static int hooked_getifaddrs(struct ifaddrs **ifap) {
+    int ret = orig_getifaddrs ? orig_getifaddrs(ifap) : -1;
+    if (ret != 0 || !ifap || !*ifap) return ret;
+    if (!fakeLayer(@"network")) return ret;
+    uint8_t fakeMAC[6];
+    if (!ci_parseMAC(getConfigStr(@"WiFiAddress"), fakeMAC)) return ret;
+
+    for (struct ifaddrs *p = *ifap; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_LINK) continue;
+        struct sockaddr_dl *sdl = (struct sockaddr_dl *)p->ifa_addr;
+        if (sdl->sdl_alen != 6) continue; // only spoof full 6-byte MAC
+        // sdl_data layout: [name (sdl_nlen bytes)][addr (sdl_alen bytes)]
+        unsigned char *macStart = (unsigned char *)LLADDR(sdl);
+        memcpy(macStart, fakeMAC, 6);
+    }
+    return ret;
+}
+
+// ============================================================
 // mach_absolute_time hook
 // ============================================================
 static uint64_t (*orig_mach_absolute_time)(void) = NULL;
@@ -1085,6 +1131,13 @@ extern "C" void initCLvlHooks(void) {
     }
 
     // gethostname
+    // getifaddrs — spoof MAC at BSD layer
+    void *getifaddrs_sym = dlsym(RTLD_DEFAULT, "getifaddrs");
+    if (getifaddrs_sym && !orig_getifaddrs) {
+        MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
+        NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    }
+
     void *gethostname_sym = dlsym(RTLD_DEFAULT, "gethostname");
     if (gethostname_sym && !orig_gethostname) {
         MSHookFunction(gethostname_sym, (void *)hooked_gethostname, (void **)&orig_gethostname);
