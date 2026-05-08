@@ -521,17 +521,6 @@ static NSMutableDictionary<NSString *, NSString *> *g_fakeKeyCache = nil;
 static dispatch_once_t g_fakeKeyCacheOnce;
 
 BOOL fakeLayer(NSString *shortName) {
-    // PERF DIAG bypass: if /var/jb/etc/changeinfoios/SKIPALL exists at
-    // first call, every fakeLayer-gated hook returns NO for the lifetime
-    // of this process. Lets user toggle our spoof off via single SSH
-    // command (`touch ... SKIPALL`) + force-kill app, no rebuild needed.
-    // Use to confirm/deny whether tweak is causing perceived UI lag.
-    static int g_disk_bypass = -1;
-    if (g_disk_bypass == -1) {
-        g_disk_bypass = (access("/var/jb/etc/changeinfoios/SKIPALL", F_OK) == 0) ? 1 : 0;
-    }
-    if (g_disk_bypass) return NO;
-
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
     BOOL out = NO;
@@ -1671,34 +1660,26 @@ static void ci_installWebRTCHooks(void) {
 - (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type;
 @end
 
-%hook LSApplicationWorkspace
-- (NSArray *)allInstalledApplications {
-    NSArray *real = %orig;
-    if (!fakeLayer(@"jbhide")) return real;
-    // Filter to Apple's stock apps only — every user has these, so the
-    // fingerprint vector collapses to a constant.
-    NSMutableArray *filtered = [NSMutableArray array];
-    for (id proxy in real) {
-        NSString *bid = nil;
-        @try { bid = [proxy performSelector:@selector(applicationIdentifier)]; }
-        @catch (__unused id e) { continue; }
-        if ([bid hasPrefix:@"com.apple."]) [filtered addObject:proxy];
-    }
-    return filtered;
-}
-- (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type {
-    NSArray *real = %orig;
-    if (!fakeLayer(@"jbhide")) return real;
-    NSMutableArray *filtered = [NSMutableArray array];
-    for (id proxy in real) {
-        NSString *bid = nil;
-        @try { bid = [proxy performSelector:@selector(applicationIdentifier)]; }
-        @catch (__unused id e) { continue; }
-        if ([bid hasPrefix:@"com.apple."]) [filtered addObject:proxy];
-    }
-    return filtered;
-}
-%end
+// LSApplicationWorkspace iteration DISABLED 2026-05-08.
+// Crash signature (Zalo register): infinite recursion through
+//   hook → jbHideActive → fakeLayer → ... → hook
+// Each [proxy applicationIdentifier] call inside our iteration triggers
+// LSApplicationProxy lazy-metadata load which calls back into LSAW
+// methods we hook → our hook fires again → iterates 100+ proxies →
+// each triggers another iteration → stack overflow → SIGSEGV at stack
+// guard. fakeLayer's g_inFakeLayer guard breaks at level 2 but the
+// hook body itself isn't guarded, so each new entry from a fresh stack
+// frame proceeds through the iteration.
+//
+// Trade-off: lose the "hide installed apps" anti-fraud signal. Anti-
+// fraud SDKs that fingerprint by walking the app list see real list
+// again. Most don't actually use this signal — the recursion-induced
+// crash is a worse outcome than the leak.
+//
+// To restore safely: add a per-thread guard at the top of EACH hook
+// body, not just inside fakeLayer.
+//
+//  %hook LSApplicationWorkspace ... %end
 
 // ============================================================
 // iCLOUD KEY-VALUE STORE BLOCKER — break iCloud-keyed correlation.
