@@ -427,6 +427,12 @@ static BOOL ci_isOurClass(const char *name) {
 static int hooked_objc_getClassList(Class *buffer, int bufferCount) {
     int real = orig_objc_getClassList ? orig_objc_getClassList(buffer, bufferCount) : 0;
     if (!buffer || real <= 0) return real;
+    // PERFORMANCE: Apple's runtime calls objc_getClassList in tight loops
+    // with small buffers (e.g. probing for a single class via runtime
+    // KVO/serialization). Anti-tweak SDKs walk the FULL class list with
+    // buffers >> 100 entries. Skip the filter for small probes — saves
+    // millions of strcmp comparisons during normal app operation.
+    if (real < 200) return real;
     if (!fakeLayer(@"jbhide")) return real;
 
     int n = real < bufferCount ? real : bufferCount;
@@ -436,7 +442,6 @@ static int hooked_objc_getClassList(Class *buffer, int bufferCount) {
         if (w != r) buffer[w] = buffer[r];
         w++;
     }
-    // Zero out the tail so stale pointers don't get used by the caller
     for (int i = w; i < n; i++) buffer[i] = Nil;
     return w;
 }
@@ -482,23 +487,37 @@ typedef int (*clock_gettime_t)(clockid_t clk_id, struct timespec *tp);
 static gettimeofday_t   orig_gettimeofday   = NULL;
 static clock_gettime_t  orig_clock_gettime  = NULL;
 
+// PERFORMANCE: gettimeofday + clock_gettime are called by EVERY UI tick
+// timer / animation / NSDate / network handshake — Zalo fires ~10K+
+// per second. Caching: read _ci_clock_offset_secs once at first call,
+// store in atomic int64. After dispatch_once, every call is one
+// ATOMIC LOAD + ADD — sub-nanosecond cost. fakeLayer / getConfig are
+// not invoked at all in steady state.
+static int64_t g_clock_offset_secs_cached = 0;
+static dispatch_once_t g_clock_offset_once;
+static inline void ci_loadClockOffset(void) {
+    dispatch_once(&g_clock_offset_once, ^{
+        if (fakeLayer(@"timing")) {
+            id off = getConfig(@"_ci_clock_offset_secs");
+            if (off) g_clock_offset_secs_cached = [off longLongValue];
+        }
+    });
+}
+
 static int hooked_gettimeofday(struct timeval *tv, void *tz) {
     int ret = orig_gettimeofday ? orig_gettimeofday(tv, tz) : -1;
-    if (ret != 0 || !tv || !fakeLayer(@"timing")) return ret;
-    id off = getConfig(@"_ci_clock_offset_secs");
-    if (off) tv->tv_sec += (time_t)[off longLongValue];
+    if (ret != 0 || !tv) return ret;
+    ci_loadClockOffset();
+    if (g_clock_offset_secs_cached) tv->tv_sec += (time_t)g_clock_offset_secs_cached;
     return ret;
 }
 
 static int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
     int ret = orig_clock_gettime ? orig_clock_gettime(clk_id, tp) : -1;
-    if (ret != 0 || !tp || !fakeLayer(@"timing")) return ret;
-    // Only shift the wall-clock domains (REALTIME). Monotonic / uptime
-    // clocks stay raw so app-internal deltas remain consistent.
-    if (clk_id == CLOCK_REALTIME) {
-        id off = getConfig(@"_ci_clock_offset_secs");
-        if (off) tp->tv_sec += (time_t)[off longLongValue];
-    }
+    if (ret != 0 || !tp) return ret;
+    if (clk_id != CLOCK_REALTIME) return ret;
+    ci_loadClockOffset();
+    if (g_clock_offset_secs_cached) tp->tv_sec += (time_t)g_clock_offset_secs_cached;
     return ret;
 }
 
@@ -507,15 +526,22 @@ static int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
 // ============================================================
 static uint64_t (*orig_mach_absolute_time)(void) = NULL;
 
+// PERFORMANCE: mach_absolute_time is the HOTTEST hook in the dylib.
+// CADisplayLink, NSTimer, every dispatch_async timestamp, every animation
+// frame — Zalo fires this MILLIONS of times per second. Pre-cache the
+// offset once so steady-state cost is one atomic load + integer add.
+static int64_t g_mach_offset_cached = 0;
+static dispatch_once_t g_mach_offset_once;
+
 static uint64_t hooked_mach_absolute_time(void) {
     uint64_t real = orig_mach_absolute_time();
-    if (!fakeLayer(@"timing")) return real;
-    id offset = getConfig(@"zalo_timingOffset");
-    if (offset) {
-        int64_t off = [offset longLongValue];
-        return (uint64_t)((int64_t)real + off);
-    }
-    return real;
+    dispatch_once(&g_mach_offset_once, ^{
+        if (fakeLayer(@"timing")) {
+            id offset = getConfig(@"zalo_timingOffset");
+            if (offset) g_mach_offset_cached = [offset longLongValue];
+        }
+    });
+    return (uint64_t)((int64_t)real + g_mach_offset_cached);
 }
 
 // ============================================================

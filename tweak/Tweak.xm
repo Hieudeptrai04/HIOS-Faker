@@ -511,6 +511,15 @@ static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
 // immediately, the outer hook returns %orig, the original caller proceeds.
 static __thread int g_inFakeLayer = 0;
 
+// Cache for the "fake_<shortName>" key strings. fakeLayer is called from
+// EVERY hooked method invocation; -[NSString stringWithFormat:] allocates
+// a fresh NSString each call. With Phase 6+7+Batches we have ~30 hooks
+// and Zalo can fire millions of UIDevice/sysctl/timing calls/sec — the
+// allocation churn alone causes visible UI lag. Cache the formatted key
+// per shortName so we only pay the format cost once per (shortName).
+static NSMutableDictionary<NSString *, NSString *> *g_fakeKeyCache = nil;
+static dispatch_once_t g_fakeKeyCacheOnce;
+
 BOOL fakeLayer(NSString *shortName) {
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
@@ -518,7 +527,17 @@ BOOL fakeLayer(NSString *shortName) {
     // Emergency runtime kill-switch — set _ci_skipall=YES via SSH to make
     // every %hook fall through to %orig without re-installing the dylib.
     if (!getConfigBool(@"_ci_skipall") && isCurrentBundleTargeted()) {
-        NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
+        dispatch_once(&g_fakeKeyCacheOnce, ^{
+            g_fakeKeyCache = [NSMutableDictionary dictionaryWithCapacity:32];
+        });
+        NSString *full;
+        @synchronized (g_fakeKeyCache) {
+            full = g_fakeKeyCache[shortName];
+            if (!full) {
+                full = [@"fake_" stringByAppendingString:shortName];
+                g_fakeKeyCache[shortName] = full;
+            }
+        }
         out = getConfigBool(full);
     }
     g_inFakeLayer--;
