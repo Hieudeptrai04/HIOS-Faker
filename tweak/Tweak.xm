@@ -618,89 +618,16 @@ BOOL jbHideActive(void) {
     return UIUserInterfaceIdiomPhone;
 }
 
-// PRIVATE: -[UIDevice _deviceInfoForKey:] is the wrapper Apple's UIDevice
-// uses to call MGCopyAnswer for many properties. Crash-log evidence
-// (Zalo register flow): GULAppEnvironmentUtil → -[UIDevice systemVersion]
-// → -[UIDevice _deviceInfoForKey:] → MGCopyAnswer. With our MG hook
-// disabled (substrate brk on iOS 16.7.11), MGCopyAnswer returns the
-// REAL UDID/Serial/IMEI/etc. By hooking _deviceInfoForKey: at the
-// UIDevice level, we intercept BEFORE the call descends to MG — same
-// effective spoof, no MG patching needed. This is the standard work
-// around for iOS 16.7.11 substrate-MG-incompatibility.
-- (id)_deviceInfoForKey:(NSString *)key {
-    if (!fakeLayer(@"hardware") || !key) return %orig;
-    // Coverage matches mgKeyMap (see hooked_MGCopyAnswer earlier in
-    // file). When _ci_skip_mg is set we bypass entirely — same gate
-    // as the disabled MG hook.
-    if (getConfigBool(@"_ci_skip_mg")) return %orig;
-
-    static NSDictionary *map = nil;
-    if (!map) {
-        map = @{
-            @"ProductVersion":                  @"systemVersion",
-            @"BuildVersion":                    @"BuildVersion",
-            @"ProductType":                     @"ProductType",
-            @"HardwareModel":                   @"HardwareModel",
-            @"HWModelStr":                      @"HWModelStr",
-            @"DeviceName":                      @"DeviceName",
-            @"DeviceColor":                     @"DeviceColor",
-            @"DeviceEnclosureColor":            @"DeviceEnclosureColor",
-            @"SerialNumber":                    @"SerialNumber",
-            @"UniqueDeviceID":                  @"UniqueDeviceID",
-            @"UniqueDeviceIDData":              @"UniqueDeviceID",
-            @"InverseDeviceID":                 @"UniqueDeviceID",
-            @"UniqueChipID":                    @"UniqueChipID",
-            @"InternationalMobileEquipmentIdentity":  @"InternationalMobileEquipmentIdentity",
-            @"InternationalMobileEquipmentIdentity2": @"InternationalMobileEquipmentIdentity2",
-            @"MobileEquipmentIdentifier":       @"MobileEquipmentIdentifier",
-            @"IntegratedCircuitCardIdentity":   @"IntegratedCircuitCardIdentity",
-            @"IntegratedCircuitCardIdentity2":  @"IntegratedCircuitCardIdentity2",
-            @"WiFiAddress":                     @"WiFiAddress",
-            @"WifiAddress":                     @"WiFiAddress",
-            @"WifiAddressData":                 @"WiFiAddress",
-            @"BluetoothAddress":                @"BluetoothAddress",
-            @"BluetoothAddressData":            @"BluetoothAddress",
-            @"EthernetMacAddress":              @"EthernetAddress",
-            @"BasebandSerialNumber":            @"SerialNumber",
-            @"BasebandVersion":                 @"BasebandVersion",
-            @"FirmwareVersion":                 @"FirmwareVersion",
-            @"ModelNumber":                     @"ModelNumber",
-            @"RegionInfo":                      @"RegionInfo",
-            @"RegionCode":                      @"RegionCode",
-            @"BoardId":                         @"BoardId",
-            @"ChipID":                          @"ChipID",
-            @"BootNonce":                       @"BootNonce",
-            @"TotalDiskCapacity":               @"TotalDiskCapacity",
-            @"TotalSystemAvailable":            @"TotalSystemAvailable",
-            @"DiskUsage":                       @"DiskUsage",
-            @"BatteryCurrentCapacity":          @"BatteryCurrentCapacity",
-            @"BatterySerialNumber":             @"BatterySerialNumber",
-            @"BatteryIsCharging":               @"BatteryIsCharging",
-            @"AirplaneMode":                    @"AirplaneMode",
-            @"SIMTrayStatus":                   @"SIMTrayStatus",
-            @"UserAssignedDeviceName":          @"UserAssignedDeviceName",
-            @"MarketingName":                   @"MarketingName",
-        };
-    }
-    NSString *configKey = map[key];
-    if (configKey) {
-        // Numeric vs string handling — keys that store NSNumber in config
-        // need to come back as NSNumber; rest as NSString.
-        static NSSet *numericKeys = nil;
-        if (!numericKeys) numericKeys = [NSSet setWithArray:@[
-            @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
-            @"BatteryCurrentCapacity", @"BatteryIsCharging", @"AirplaneMode"
-        ]];
-        if ([numericKeys containsObject:key]) {
-            id val = getConfig(configKey);
-            if (val) return val;
-        } else {
-            NSString *val = getConfigStr(configKey);
-            if (val.length > 0) return val;
-        }
-    }
-    return %orig;
-}
+// REMOVED 2026-05-08 (bisect): -[UIDevice _deviceInfoForKey:] hook caused
+// a 4-second register-button lag despite the NSDictionary hook revert.
+// Zalo's register flow gathers ~50+ device info keys via this private
+// UIDevice accessor; each call detoured through fakeLayer + map lookup.
+// Even at sub-microsecond per call, the swizzle-dispatch overhead on
+// the hot collection path was visible.
+//
+// Coverage loss: apps using -[UIDevice _deviceInfoForKey:] now see
+// real UDID / Serial / IMEI / MAC — same as before commit 159abe9.
+// Need cheaper hook strategy or pick fewer keys to spoof.
 
 %end
 
