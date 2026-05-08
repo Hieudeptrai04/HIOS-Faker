@@ -1318,7 +1318,7 @@ static CLLocation *buildFakeLocation(void) {
 // need at sign-up time anyway). Net effect: per-Reset, the server sees
 // what looks like a brand-new device with no history.
 
-static const char kCIApnsOrigKey;
+static const char kCIApnsOrigKey = 0;
 
 static NSData *ci_apnsSpoofTokenData(void) {
     NSString *hex = getConfigStr(@"apnsTokenSpoof");
