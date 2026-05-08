@@ -378,6 +378,44 @@ static int hooked_getifaddrs(struct ifaddrs **ifap) {
 }
 
 // ============================================================
+// objc_getClassList — hide our tweak's classes from runtime enumeration.
+// ============================================================
+// Anti-tweak SDKs walk the loaded class list and grep for tweak-author
+// signatures (Logos / substrate / known tweak class prefixes). When they
+// see "CISpoofProxyDelegate" / "CIConfigManager" / "CISideMenuViewController"
+// in the host process, they know the app is jailbroken and a tweak is
+// active, then sometimes fail-closed or report telemetry. Filter our
+// classes out of the buffer so list-walks see a clean app.
+typedef int (*objc_getClassList_t)(Class *buffer, int bufferCount);
+static objc_getClassList_t orig_objc_getClassList = NULL;
+
+static BOOL ci_isOurClass(const char *name) {
+    if (!name) return NO;
+    // Cheap prefix checks first — every class we ship starts with "CI"
+    // or "CISpoof" or "_CI". Avoid the full strstr scan unless prefix matches.
+    if (name[0] == 'C' && name[1] == 'I') return YES;
+    if (name[0] == '_' && name[1] == 'C' && name[2] == 'I') return YES;
+    return NO;
+}
+
+static int hooked_objc_getClassList(Class *buffer, int bufferCount) {
+    int real = orig_objc_getClassList ? orig_objc_getClassList(buffer, bufferCount) : 0;
+    if (!buffer || real <= 0) return real;
+    if (!fakeLayer(@"jbhide")) return real;
+
+    int n = real < bufferCount ? real : bufferCount;
+    int w = 0;
+    for (int r = 0; r < n; r++) {
+        if (ci_isOurClass(class_getName(buffer[r]))) continue;
+        if (w != r) buffer[w] = buffer[r];
+        w++;
+    }
+    // Zero out the tail so stale pointers don't get used by the caller
+    for (int i = w; i < n; i++) buffer[i] = Nil;
+    return w;
+}
+
+// ============================================================
 // gethostuuid hook — return spoofed 16-byte hardware UUID.
 // ============================================================
 // `int gethostuuid(uuid_t spec, const struct timespec *wait)` — fills
@@ -1197,6 +1235,13 @@ extern "C" void initCLvlHooks(void) {
     if (getifaddrs_sym && !orig_getifaddrs) {
         MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
         NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    }
+
+    // objc_getClassList — hide our tweak's classes from runtime walks.
+    void *gcl_sym = dlsym(RTLD_DEFAULT, "objc_getClassList");
+    if (gcl_sym && !orig_objc_getClassList) {
+        MSHookFunction(gcl_sym, (void *)hooked_objc_getClassList, (void **)&orig_objc_getClassList);
+        NSLog(@"[ChangeInfoIos] objc_getClassList hooked");
     }
 
     // gethostuuid — returns 16-byte hardware UUID. Spoof from UniqueDeviceID.

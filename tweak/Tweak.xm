@@ -1440,6 +1440,103 @@ static void ci_swizzleApnsOnDelegate(Class cls) {
 %end
 
 // ============================================================
+// WEBRTC ICE candidate filter — strip local IP from SDP.
+// ============================================================
+// WebRTC peer connections enumerate local network interfaces and emit
+// "host" ICE candidates that include the device's real IPv4 (often
+// 192.168.x.x / 10.x.x.x). Even when the actual TCP egress goes through
+// a proxy/VPN, the candidate string is sent in the SDP offer/answer to
+// the peer (and to TURN/STUN servers). Anti-fraud / TURN logs see the
+// real client IP → correlate. Filter "host" + "srflx" candidates from
+// SDP at setLocalDescription time.
+@interface RTCSessionDescription : NSObject
+- (NSString *)sdp;
+- (instancetype)initWithType:(int)type sdp:(NSString *)sdp;
+- (int)type;
+@end
+
+@interface RTCPeerConnection : NSObject
+@end
+
+static IMP orig_RTCPC_setLocalDesc = NULL;
+
+static NSString *ci_filterSDP(NSString *sdp) {
+    if (sdp.length == 0) return sdp;
+    NSArray *lines = [sdp componentsSeparatedByString:@"\r\n"];
+    NSMutableArray *kept = [NSMutableArray arrayWithCapacity:lines.count];
+    for (NSString *line in lines) {
+        // Format: "a=candidate:... typ host ..." or "... typ srflx ..."
+        if ([line containsString:@"a=candidate:"] &&
+            ([line containsString:@" typ host"] || [line containsString:@" typ srflx"])) {
+            continue; // drop — would leak local/server-reflexive IP
+        }
+        [kept addObject:line];
+    }
+    return [kept componentsJoinedByString:@"\r\n"];
+}
+
+// Build a new RTCSessionDescription with filtered SDP. Returns nil on
+// failure — caller should fall back to original desc unchanged.
+static id ci_rebuildRTCDesc(id origDesc, NSString *newSDP) {
+    Class C = [origDesc class];
+    NSMethodSignature *sig = [C instanceMethodSignatureForSelector:@selector(initWithType:sdp:)];
+    if (!sig) return nil;
+    NSMethodSignature *typeSig = [origDesc methodSignatureForSelector:@selector(type)];
+    if (!typeSig) return nil;
+    int t = 0;
+    NSInvocation *typeInv = [NSInvocation invocationWithMethodSignature:typeSig];
+    typeInv.target = origDesc; typeInv.selector = @selector(type);
+    [typeInv invoke];
+    [typeInv getReturnValue:&t];
+
+    id alloc = [C alloc];
+    NSInvocation *initInv = [NSInvocation invocationWithMethodSignature:sig];
+    initInv.target = alloc; initInv.selector = @selector(initWithType:sdp:);
+    [initInv setArgument:&t atIndex:2];
+    [initInv setArgument:&newSDP atIndex:3];
+    [initInv invoke];
+    id result = nil;
+    [initInv getReturnValue:&result];
+    return result;
+}
+
+static void ci_RTCPC_setLocalDesc(id self, SEL _cmd, id desc, id completion) {
+    id useDesc = desc;
+    if (fakeLayer(@"network") && desc) {
+        @try {
+            NSString *sdp = nil;
+            if ([desc respondsToSelector:@selector(sdp)]) {
+                sdp = [desc performSelector:@selector(sdp)];
+            }
+            if (sdp.length > 0) {
+                NSString *filtered = ci_filterSDP(sdp);
+                if (![filtered isEqualToString:sdp]) {
+                    id rebuilt = ci_rebuildRTCDesc(desc, filtered);
+                    if (rebuilt) useDesc = rebuilt;
+                }
+            }
+        } @catch (__unused id e) {}
+    }
+    if (orig_RTCPC_setLocalDesc) {
+        void (*orig)(id, SEL, id, id) = (void (*)(id, SEL, id, id))orig_RTCPC_setLocalDesc;
+        orig(self, _cmd, useDesc, completion);
+    }
+}
+
+static void ci_installWebRTCHooks(void) {
+    @autoreleasepool {
+        Class pc = objc_getClass("RTCPeerConnection");
+        if (!pc) return;
+        SEL sel = @selector(setLocalDescription:completionHandler:);
+        Method m = class_getInstanceMethod(pc, sel);
+        if (!m) return;
+        orig_RTCPC_setLocalDesc = method_getImplementation(m);
+        method_setImplementation(m, (IMP)ci_RTCPC_setLocalDesc);
+        NSLog(@"[ChangeInfoIos] RTCPeerConnection.setLocalDescription hooked");
+    }
+}
+
+// ============================================================
 // LSApplicationWorkspace BLOCKER — hide the installed-app list.
 // ============================================================
 // Anti-fraud SDKs (TrustDecision et al) call -[LSApplicationWorkspace
@@ -2775,6 +2872,10 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         // WKWebView fingerprint spoof (UA + JS canvas/WebGL/WebRTC noise).
         // Same runtime-only swizzle pattern; skipped in apps without WebKit.
         ci_installWKWebViewHooks();
+
+        // WebRTC ICE candidate filter — strips host/srflx candidates that
+        // leak local IP. Only installs in processes that link WebRTC.
+        ci_installWebRTCHooks();
 
         NSLog(@"[ChangeInfoIos] Tweak loaded successfully! Config: %@", configLoaded ? @"YES" : @"NO");
     }
