@@ -512,13 +512,17 @@ static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
 static __thread int g_inFakeLayer = 0;
 
 BOOL fakeLayer(NSString *shortName) {
+    // BISECT BUILD: hardcoded short-circuit. Every fake-layer-gated
+    // hook body falls through to %orig as if no spoof active. If Zalo
+    // STILL crashes on register, the crash is in code NOT gated by
+    // fakeLayer (e.g. swizzle install, init paths). If Zalo passes,
+    // the crash is in some fakeLayer-gated path and we need finer
+    // bisection from there.
+    return NO;
+
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
     BOOL out = NO;
-    // Emergency runtime kill-switch — set _ci_skipall=YES via SSH to make
-    // every %hook fall through to %orig without re-installing the dylib.
-    // Lets us bisect "is the crash from a specific hook return value, or
-    // from %ctor/MSHookFunction itself" without a build cycle.
     if (!getConfigBool(@"_ci_skipall") && isCurrentBundleTargeted()) {
         NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
         out = getConfigBool(full);
