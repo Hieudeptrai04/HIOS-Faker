@@ -512,17 +512,11 @@ static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
 static __thread int g_inFakeLayer = 0;
 
 BOOL fakeLayer(NSString *shortName) {
-    // BISECT BUILD: hardcoded short-circuit. Every fake-layer-gated
-    // hook body falls through to %orig as if no spoof active. If Zalo
-    // STILL crashes on register, the crash is in code NOT gated by
-    // fakeLayer (e.g. swizzle install, init paths). If Zalo passes,
-    // the crash is in some fakeLayer-gated path and we need finer
-    // bisection from there.
-    return NO;
-
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
     BOOL out = NO;
+    // Emergency runtime kill-switch — set _ci_skipall=YES via SSH to make
+    // every %hook fall through to %orig without re-installing the dylib.
     if (!getConfigBool(@"_ci_skipall") && isCurrentBundleTargeted()) {
         NSString *full = [NSString stringWithFormat:@"fake_%@", shortName];
         out = getConfigBool(full);
@@ -2854,10 +2848,26 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         // IOReg / sysctl / DC / WK / location hooks remain active, so
         // spoof depth is good — only ProductType / HardwareModel /
         // UniqueChipID through MGCopyAnswer falls through to real values.
-        // Re-enabled. Earlier crash was caused by NSLog inside the hook
-        // recursing through ASL → MGCopyAnswer; fixed via __thread
-        // g_ci_inMGHook re-entrancy guard at top of each MG hook.
-        BOOL kSkipMG_HARDCODED = NO;
+        // PERMANENTLY DISABLED on iOS 16.7.11.
+        // Crash signature: Zalo at launch hits brk 1 inside MGCopyAnswer
+        // (Firebase/GUL Crashlytics init path), watchdog kills process
+        // after 19s. Root cause: substrate's MSHookFunction patches MG
+        // prologue with a branch instruction; on iOS 16.7.11 with our
+        // jailbreak's amfi/codesign rules, that patched prologue ends
+        // up decoding as `brk` (or Apple inserts a brk-trap when the
+        // function is found modified). Either way the hooked path is
+        // broken and there's no clean fix at user-space.
+        //
+        // Earlier crash chain ("post-register stack overflow") had the
+        // same root cause — Zalo's profile-load path hit MG → brk → some
+        // retry in the runtime → infinite loop → stack guard.
+        //
+        // Trade-off: we lose the deepest spoof layer (MG returns
+        // canonical hardware specs that fingerprint SDKs trust). The
+        // remaining 12+ layers (UIDevice / sysctl / IORegistry /
+        // CTCarrier / DCDevice / AppAttest / etc) cover the same keys
+        // at higher levels and most fingerprint libs read those first.
+        BOOL kSkipMG_HARDCODED = YES;
         if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {
