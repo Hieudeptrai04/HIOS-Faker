@@ -1394,33 +1394,57 @@ static NSData *ci_apnsSpoofTokenData(void) {
 static void ci_apnsHookedImpl(id self, SEL _cmd, UIApplication *app, NSData *originalToken) {
     NSData *fake = ci_apnsSpoofTokenData();
     NSData *use = (fake && fakeLayer(@"network")) ? fake : originalToken;
-    NSValue *origPtr = objc_getAssociatedObject([self class], &kCIApnsOrigKey);
+    // Walk class hierarchy to find the orig IMP we stored. We may have
+    // swizzled on a SUPERCLASS (when a delegate class B inherits the
+    // method from class A that we hooked first), so [self class] for B
+    // won't have the association — but A will.
+    Class current = [self class];
+    NSValue *origPtr = nil;
+    while (current && !origPtr) {
+        origPtr = objc_getAssociatedObject(current, &kCIApnsOrigKey);
+        if (origPtr) break;
+        current = class_getSuperclass(current);
+    }
     if (origPtr) {
         void (*orig)(id, SEL, UIApplication *, NSData *) =
             (void (*)(id, SEL, UIApplication *, NSData *))[origPtr pointerValue];
-        if (orig) orig(self, _cmd, app, use);
+        // Defensive: if orig somehow points back to us (shouldn't happen
+        // after the swizzle-guard fix but worth one more guard), bail.
+        if (orig && orig != (void *)ci_apnsHookedImpl) {
+            orig(self, _cmd, app, use);
+        }
     }
-    // If we added the method (no original), nothing else to do — caller
-    // got our spoof, app delegate consumed it.
 }
 
 static void ci_swizzleApnsOnDelegate(Class cls) {
     if (!cls) return;
-    if (objc_getAssociatedObject(cls, &kCIApnsOrigKey)) return; // already swizzled
+    if (objc_getAssociatedObject(cls, &kCIApnsOrigKey)) return; // already swizzled on THIS class
     SEL sel = @selector(application:didRegisterForRemoteNotificationsWithDeviceToken:);
     Method m = class_getInstanceMethod(cls, sel);
     if (m) {
         IMP orig = method_getImplementation(m);
+        // CRITICAL: if the method was already swizzled by a previous
+        // ci_swizzleApnsOnDelegate call (e.g., we hit class B which
+        // inherits from class A that we already patched), method_get
+        // Implementation returns ci_apnsHookedImpl. Storing THAT as
+        // "orig" makes ci_apnsHookedImpl call itself → infinite
+        // recursion → stack overflow → crash post-register (the bug
+        // we've been chasing across 5+ builds).
+        //
+        // Skip the second swizzle entirely. The single A-level swizzle
+        // already covers all subclasses via method inheritance. When
+        // ci_apnsHookedImpl runs for a B-instance, [self class] gives B
+        // but the orig is keyed on A — walk the class chain in the
+        // hooked impl to find it.
+        if (orig == (IMP)ci_apnsHookedImpl) return;
+
         objc_setAssociatedObject(cls, &kCIApnsOrigKey,
                                  [NSValue valueWithPointer:(void *)orig],
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         method_setImplementation(m, (IMP)ci_apnsHookedImpl);
         NSLog(@"[ChangeInfoIos] APNS delegate swizzled on %@", NSStringFromClass(cls));
     } else {
-        // No existing impl — add ours so the spoof token still flows somewhere
-        // (most app delegates DO implement; this branch is rare).
         class_addMethod(cls, sel, (IMP)ci_apnsHookedImpl, "v@:@@");
-        // Mark with a sentinel so we don't double-add.
         objc_setAssociatedObject(cls, &kCIApnsOrigKey,
                                  [NSValue valueWithPointer:NULL],
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1552,16 +1576,25 @@ static void ci_RTCPC_setLocalDesc(id self, SEL _cmd, id desc, id completion) {
 }
 
 static void ci_installWebRTCHooks(void) {
-    @autoreleasepool {
-        Class pc = objc_getClass("RTCPeerConnection");
-        if (!pc) return;
-        SEL sel = @selector(setLocalDescription:completionHandler:);
-        Method m = class_getInstanceMethod(pc, sel);
-        if (!m) return;
-        orig_RTCPC_setLocalDesc = method_getImplementation(m);
-        method_setImplementation(m, (IMP)ci_RTCPC_setLocalDesc);
-        NSLog(@"[ChangeInfoIos] RTCPeerConnection.setLocalDescription hooked");
-    }
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        @autoreleasepool {
+            Class pc = objc_getClass("RTCPeerConnection");
+            if (!pc) return;
+            SEL sel = @selector(setLocalDescription:completionHandler:);
+            Method m = class_getInstanceMethod(pc, sel);
+            if (!m) return;
+            IMP cur = method_getImplementation(m);
+            // Same recursion-trap guard as APNS: if our IMP is already
+            // installed (e.g. from an earlier ctor invocation), don't
+            // re-hook. Saving our own IMP as 'orig' would make our hook
+            // call itself → stack overflow.
+            if (cur == (IMP)ci_RTCPC_setLocalDesc) return;
+            orig_RTCPC_setLocalDesc = cur;
+            method_setImplementation(m, (IMP)ci_RTCPC_setLocalDesc);
+            NSLog(@"[ChangeInfoIos] RTCPeerConnection.setLocalDescription hooked");
+        }
+    });
 }
 
 // ============================================================
@@ -2205,7 +2238,14 @@ static void ci_swizzleInstance(const char *className, SEL sel, IMP newImp, IMP *
     if (!cls) return;
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) return;
-    if (origImpOut) *origImpOut = method_getImplementation(m);
+    IMP cur = method_getImplementation(m);
+    // CRITICAL: if newImp is already installed (e.g., %ctor ran twice,
+    // or another swizzle path got here first), do NOT re-hook. Saving
+    // newImp as 'orig' would make our hook call itself → stack overflow
+    // → post-register crash. This is the bug we've been chasing across
+    // 5+ builds.
+    if (cur == newImp) return;
+    if (origImpOut) *origImpOut = cur;
     method_setImplementation(m, newImp);
 }
 
