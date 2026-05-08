@@ -2422,6 +2422,48 @@ static NSString *ci_CTSubscriber_phoneNumber(id self, SEL _cmd) {
     return orig_CTSubscriber_phoneNumber ? orig_CTSubscriber_phoneNumber(self, _cmd) : nil;
 }
 
+// CTSubscriber.uniqueIdentifier (ICCID/SIM serial) — persistent SIM card
+// fingerprint. Even after Reset Data, real SIM has same ICCID → server
+// correlates registrations to same hardware. Spoof from config
+// IntegratedCircuitCardIdentity (already randomized per Reset Data).
+static CTSubscriber_phoneNumber_t orig_CTSubscriber_uniqueIdentifier = NULL;
+static NSString *ci_CTSubscriber_uniqueIdentifier(id self, SEL _cmd) {
+    if (!fakeLayer(@"network")) {
+        return orig_CTSubscriber_uniqueIdentifier ? orig_CTSubscriber_uniqueIdentifier(self, _cmd) : nil;
+    }
+    NSString *iccid = getConfigStr(@"IntegratedCircuitCardIdentity");
+    if (iccid.length > 0) return iccid;
+    return orig_CTSubscriber_uniqueIdentifier ? orig_CTSubscriber_uniqueIdentifier(self, _cmd) : nil;
+}
+
+// PushKit VoIP token swizzle — `[PKPushRegistry pushTokenForType:]`
+// returns a 32-byte token tied to (Apple ID + bundle + hardware), per
+// VoIP type. Persistent across Reset Data. Zalo uses this for VoIP
+// call delivery; multiple accounts share same VoIP token → server
+// correlates. Synthesize from config apnsTokenSpoof XOR'd with type
+// suffix so PushKit and APNS tokens differ but both rotate per Reset.
+typedef NSData *(*PKPushRegistry_pushTokenForType_t)(id self, SEL _cmd, NSString *type);
+static PKPushRegistry_pushTokenForType_t orig_PKPushRegistry_pushTokenForType = NULL;
+static NSData *ci_PKPushRegistry_pushTokenForType(id self, SEL _cmd, NSString *type) {
+    if (!fakeLayer(@"network")) {
+        return orig_PKPushRegistry_pushTokenForType ? orig_PKPushRegistry_pushTokenForType(self, _cmd, type) : nil;
+    }
+    NSString *hex = getConfigStr(@"apnsTokenSpoof");
+    if (hex.length < 64) {
+        return orig_PKPushRegistry_pushTokenForType ? orig_PKPushRegistry_pushTokenForType(self, _cmd, type) : nil;
+    }
+    NSMutableData *out = [NSMutableData dataWithCapacity:32];
+    for (NSUInteger i = 0; i + 2 <= hex.length && out.length < 32; i += 2) {
+        unsigned int v = 0;
+        const char *p = [[hex substringWithRange:NSMakeRange(i, 2)] UTF8String];
+        if (sscanf(p, "%02x", &v) == 1) {
+            uint8_t b = (uint8_t)v ^ 0xA5; // XOR with sentinel so VoIP token != APNS token
+            [out appendBytes:&b length:1];
+        }
+    }
+    return out.length == 32 ? out : nil;
+}
+
 static void ci_installAttestHooks(void) {
     @autoreleasepool {
         // Only walk classes that already exist in the loaded image set.
@@ -2433,7 +2475,16 @@ static void ci_installAttestHooks(void) {
             ci_swizzleInstance("CTSubscriber", @selector(phoneNumber),
                                (IMP)ci_CTSubscriber_phoneNumber,
                                (IMP *)&orig_CTSubscriber_phoneNumber);
-            NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber hooked");
+            ci_swizzleInstance("CTSubscriber", @selector(uniqueIdentifier),
+                               (IMP)ci_CTSubscriber_uniqueIdentifier,
+                               (IMP *)&orig_CTSubscriber_uniqueIdentifier);
+            NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber+uniqueIdentifier hooked");
+        }
+        if (objc_getClass("PKPushRegistry")) {
+            ci_swizzleInstance("PKPushRegistry", @selector(pushTokenForType:),
+                               (IMP)ci_PKPushRegistry_pushTokenForType,
+                               (IMP *)&orig_PKPushRegistry_pushTokenForType);
+            NSLog(@"[ChangeInfoIos] PKPushRegistry.pushTokenForType: hooked (VoIP)");
         }
         if (objc_getClass("DCDevice")) {
             ci_swizzleInstance("DCDevice", @selector(isSupported),
