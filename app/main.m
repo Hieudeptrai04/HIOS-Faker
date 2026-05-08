@@ -1059,6 +1059,16 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSString *apiURL = [cm stringForKey:@"ip_api_url"];
     NSDictionary *geo = ci_fetchProxyGeo(apiURL);
     BOOL applied = ci_applyGeoFromIPAPI(geo);
+    // Visible flag for the user to verify geo flow took the right path.
+    // PROXY_OK = ip-api responded → GPS/locale/carrier all pulled from
+    //   the IP that ip-api saw (which is your Shadowrocket exit IF the
+    //   VPN is routing this app's traffic).
+    // FALLBACK_VN = ip-api timed out / unreachable → defaulted to random
+    //   point in Vietnam + Vietnamese carrier. DANGEROUS if your VPN
+    //   exit is in another country: GPS says VN, IP says US → instant
+    //   ban on register. If you see this AND your Shadowrocket is on a
+    //   non-VN exit, DO NOT register — fix VPN routing first.
+    [cm setObject:(applied ? @"PROXY_OK" : @"FALLBACK_VN") forKey:@"_ci_geo_source"];
     if (!applied) {
         // Central Vietnam anchor (near Da Nang) so 999km disk covers all of VN.
         const double kVNLat = 16.0, kVNLon = 107.0;
@@ -3660,11 +3670,16 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
         [C row:@"Tracking Auth"  key:@"trackingAuthorizationStatus"],
     ]]];
 
-    [all addObject:[C section:@"GPS Location" icon:@"📍" rows:@[
-        [C row:@"Enabled"        key:@"locationEnabled"],
+    [all addObject:[C section:@"GPS Location (PHẢI khớp Proxy/VPN)" icon:@"📍" rows:@[
+        [C row:@"Geo Source"     key:@"_ci_geo_source"],
+        [C row:@"Last Reset IP"  key:@"lastResetIP"],
+        [C row:@"Country"        key:@"localeCountryCode"],
+        [C row:@"Carrier"        key:@"carrierName"],
+        [C row:@"Timezone"       key:@"timezoneName"],
         [C row:@"Latitude"       key:@"latitude"],
         [C row:@"Longitude"      key:@"longitude"],
         [C row:@"Altitude"       key:@"altitude"],
+        [C row:@"Enabled"        key:@"locationEnabled"],
     ]]];
 
     [all addObject:[C section:@"Web / GPU Fingerprint" icon:@"🌐" rows:@[
