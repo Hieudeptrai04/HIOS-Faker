@@ -2395,8 +2395,8 @@ static NSString *ci_buildWebFingerprintJS(void) {
 
     // Coherent device specs derived from current preset (so navigator
     // values match UIDevice/sysctl story).
-    NSNumber *cpuN  = [[CIConfigManager shared] objectForKey:@"processorCount"];
-    NSNumber *ramN  = [[CIConfigManager shared] objectForKey:@"physicalMemory"];
+    id cpuN = getConfig(@"processorCount");
+    id ramN = getConfig(@"physicalMemory");
     int hwConcurrency = cpuN ? [cpuN intValue] : 6;
     if (hwConcurrency < 2) hwConcurrency = 2;
     if (hwConcurrency > 16) hwConcurrency = 16;
