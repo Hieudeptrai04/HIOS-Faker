@@ -1457,6 +1457,65 @@ static CLLocation *buildFakeLocation(void) {
 %end
 
 // ============================================================
+// LAYER 11.5: NSDictionary system-file reads — catch SystemVersion.plist
+// ============================================================
+// Apps that bypass UIDevice query system info via NSDictionary direct
+// file reads:
+//   [NSDictionary dictionaryWithContentsOfFile:
+//       @"/System/Library/CoreServices/SystemVersion.plist"]
+// returns the canonical iOS version + build (ProductVersion, BuildVersion,
+// ProductName). Apple's framework code uses this same path internally,
+// so MGCopyAnswer for ProductVersion goes through here too. Anti-fraud
+// SDKs that fingerprint via this read get the REAL OS version regardless
+// of UIDevice spoof. Inject our spoofed values when the read targets
+// SystemVersion.plist or related system metadata.
+static BOOL ci_isSystemVersionPath(NSString *path) {
+    if (!path) return NO;
+    return [path containsString:@"/CoreServices/SystemVersion.plist"] ||
+           [path containsString:@"/CoreServices/iBootVersion.plist"] ||
+           [path containsString:@"/Caches/com.apple.MobileGestalt.plist"];
+}
+
+static NSDictionary *ci_spoofedSystemVersion(NSDictionary *real) {
+    if (!fakeLayer(@"sysosversion")) return real;
+    NSMutableDictionary *m = real ? [real mutableCopy] : [NSMutableDictionary dictionary];
+    NSString *ver = getConfigStr(@"systemVersion");
+    NSString *build = getConfigStr(@"BuildVersion");
+    if (ver.length)   m[@"ProductVersion"] = ver;
+    if (build.length) m[@"ProductBuildVersion"] = build;
+    m[@"ProductName"] = @"iPhone OS";
+    return m;
+}
+
+%hook NSDictionary
+
++ (instancetype)dictionaryWithContentsOfFile:(NSString *)path {
+    NSDictionary *orig = %orig;
+    if (ci_isSystemVersionPath(path)) {
+        return ci_spoofedSystemVersion(orig);
+    }
+    return orig;
+}
+
++ (instancetype)dictionaryWithContentsOfURL:(NSURL *)url {
+    NSDictionary *orig = %orig;
+    if (url.isFileURL && ci_isSystemVersionPath(url.path)) {
+        return ci_spoofedSystemVersion(orig);
+    }
+    return orig;
+}
+
++ (instancetype)dictionaryWithContentsOfURL:(NSURL *)url error:(NSError **)error {
+    NSDictionary *orig = %orig;
+    if (url.isFileURL && ci_isSystemVersionPath(url.path)) {
+        return ci_spoofedSystemVersion(orig);
+    }
+    return orig;
+}
+
+%end
+
+// ============================================================
 // APNS PUSH TOKEN SPOOF — break server-side device correlation.
 // ============================================================
 // iOS hands the app's UIApplicationDelegate a 32-byte device token via
@@ -2570,6 +2629,42 @@ static NSString *ci_CTSubscriber_uniqueIdentifier(id self, SEL _cmd) {
     return orig_CTSubscriber_uniqueIdentifier ? orig_CTSubscriber_uniqueIdentifier(self, _cmd) : nil;
 }
 
+// Additional CTSubscriber selectors that some apps probe via private API.
+// Each guards against missing-class / missing-selector at install time
+// (ci_swizzleInstance returns silently if not present on this iOS).
+static CTSubscriber_phoneNumber_t orig_CTSubscriber_subscriberID = NULL;
+static NSString *ci_CTSubscriber_subscriberID(id self, SEL _cmd) {
+    if (!fakeLayer(@"network")) {
+        return orig_CTSubscriber_subscriberID ? orig_CTSubscriber_subscriberID(self, _cmd) : nil;
+    }
+    // Reuse ICCID — distinct from real subscriberId would cause
+    // anti-fraud cross-check fail; same fake value across both is fine
+    // since real device returns same value too.
+    NSString *iccid = getConfigStr(@"IntegratedCircuitCardIdentity");
+    if (iccid.length > 0) return iccid;
+    return orig_CTSubscriber_subscriberID ? orig_CTSubscriber_subscriberID(self, _cmd) : nil;
+}
+
+static CTSubscriber_phoneNumber_t orig_CTSubscriber_mobileCountryCode = NULL;
+static NSString *ci_CTSubscriber_mobileCountryCode(id self, SEL _cmd) {
+    if (!fakeLayer(@"network")) {
+        return orig_CTSubscriber_mobileCountryCode ? orig_CTSubscriber_mobileCountryCode(self, _cmd) : nil;
+    }
+    NSString *mcc = getConfigStr(@"carrierMCC");
+    if (mcc.length > 0) return mcc;
+    return orig_CTSubscriber_mobileCountryCode ? orig_CTSubscriber_mobileCountryCode(self, _cmd) : nil;
+}
+
+static CTSubscriber_phoneNumber_t orig_CTSubscriber_mobileNetworkCode = NULL;
+static NSString *ci_CTSubscriber_mobileNetworkCode(id self, SEL _cmd) {
+    if (!fakeLayer(@"network")) {
+        return orig_CTSubscriber_mobileNetworkCode ? orig_CTSubscriber_mobileNetworkCode(self, _cmd) : nil;
+    }
+    NSString *mnc = getConfigStr(@"carrierMNC");
+    if (mnc.length > 0) return mnc;
+    return orig_CTSubscriber_mobileNetworkCode ? orig_CTSubscriber_mobileNetworkCode(self, _cmd) : nil;
+}
+
 // PushKit VoIP token swizzle — `[PKPushRegistry pushTokenForType:]`
 // returns a 32-byte token tied to (Apple ID + bundle + hardware), per
 // VoIP type. Persistent across Reset Data. Zalo uses this for VoIP
@@ -2612,7 +2707,18 @@ static void ci_installAttestHooks(void) {
             ci_swizzleInstance("CTSubscriber", @selector(uniqueIdentifier),
                                (IMP)ci_CTSubscriber_uniqueIdentifier,
                                (IMP *)&orig_CTSubscriber_uniqueIdentifier);
-            NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber+uniqueIdentifier hooked");
+            // Best-effort additional selectors. ci_swizzleInstance no-ops
+            // when method missing on this iOS, so safe to attempt.
+            ci_swizzleInstance("CTSubscriber", @selector(subscriberID),
+                               (IMP)ci_CTSubscriber_subscriberID,
+                               (IMP *)&orig_CTSubscriber_subscriberID);
+            ci_swizzleInstance("CTSubscriber", @selector(mobileCountryCode),
+                               (IMP)ci_CTSubscriber_mobileCountryCode,
+                               (IMP *)&orig_CTSubscriber_mobileCountryCode);
+            ci_swizzleInstance("CTSubscriber", @selector(mobileNetworkCode),
+                               (IMP)ci_CTSubscriber_mobileNetworkCode,
+                               (IMP *)&orig_CTSubscriber_mobileNetworkCode);
+            NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber+uniqueIdentifier+subscriberID+MCC+MNC hooked");
         }
         if (objc_getClass("PKPushRegistry")) {
             ci_swizzleInstance("PKPushRegistry", @selector(pushTokenForType:),

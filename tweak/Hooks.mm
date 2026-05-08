@@ -447,6 +447,41 @@ static int hooked_objc_getClassList(Class *buffer, int bufferCount) {
 }
 
 // ============================================================
+// statfs / statfs64 / statvfs — disk capacity coherence.
+// ============================================================
+// Apps that bypass MGCopyAnswer / NSFileManager for disk size go to
+// statfs("/") directly — gets f_blocks * f_bsize = total disk bytes.
+// We've spoofed TotalDiskCapacity in config; route the syscall return
+// through that value so apps see the same number across all paths.
+typedef int (*statfs_t)(const char *path, struct statfs *buf);
+static statfs_t orig_statfs = NULL;
+
+static int hooked_statfs(const char *path, struct statfs *buf) {
+    int ret = orig_statfs ? orig_statfs(path, buf) : -1;
+    if (ret != 0 || !buf || !path) return ret;
+    if (!fakeLayer(@"hardware")) return ret;
+    // Only spoof the root volume (/, /private/var) since that's what
+    // apps query for "device storage". Per-app sandbox volumes left
+    // untouched — they'd reveal app's own usage patterns if changed.
+    if (strcmp(path, "/") != 0 && strncmp(path, "/private/var", 12) != 0) return ret;
+
+    id totalObj = getConfig(@"TotalDiskCapacity");
+    id usageObj = getConfig(@"DiskUsage");
+    if (!totalObj) return ret;
+
+    unsigned long long total = [totalObj unsignedLongLongValue];
+    unsigned long long usage = usageObj ? [usageObj unsignedLongLongValue] : 0;
+    if (total == 0) return ret;
+
+    uint32_t bsize = buf->f_bsize > 0 ? buf->f_bsize : 4096;
+    buf->f_bsize  = bsize;
+    buf->f_blocks = total / bsize;
+    buf->f_bfree  = (total - usage) / bsize;
+    buf->f_bavail = buf->f_bfree;
+    return ret;
+}
+
+// ============================================================
 // gethostuuid hook — return spoofed 16-byte hardware UUID.
 // ============================================================
 // `int gethostuuid(uuid_t spec, const struct timespec *wait)` — fills
@@ -1287,6 +1322,13 @@ extern "C" void initCLvlHooks(void) {
     if (getifaddrs_sym && !orig_getifaddrs) {
         MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
         NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    }
+
+    // statfs — disk capacity coherence with TotalDiskCapacity spoof.
+    void *statfs_sym = dlsym(RTLD_DEFAULT, "statfs");
+    if (statfs_sym && !orig_statfs) {
+        MSHookFunction(statfs_sym, (void *)hooked_statfs, (void **)&orig_statfs);
+        NSLog(@"[ChangeInfoIos] statfs hooked");
     }
 
     // objc_getClassList — hide our tweak's classes from runtime walks.
