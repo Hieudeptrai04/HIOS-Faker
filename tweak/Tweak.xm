@@ -618,6 +618,90 @@ BOOL jbHideActive(void) {
     return UIUserInterfaceIdiomPhone;
 }
 
+// PRIVATE: -[UIDevice _deviceInfoForKey:] is the wrapper Apple's UIDevice
+// uses to call MGCopyAnswer for many properties. Crash-log evidence
+// (Zalo register flow): GULAppEnvironmentUtil → -[UIDevice systemVersion]
+// → -[UIDevice _deviceInfoForKey:] → MGCopyAnswer. With our MG hook
+// disabled (substrate brk on iOS 16.7.11), MGCopyAnswer returns the
+// REAL UDID/Serial/IMEI/etc. By hooking _deviceInfoForKey: at the
+// UIDevice level, we intercept BEFORE the call descends to MG — same
+// effective spoof, no MG patching needed. This is the standard work
+// around for iOS 16.7.11 substrate-MG-incompatibility.
+- (id)_deviceInfoForKey:(NSString *)key {
+    if (!fakeLayer(@"hardware") || !key) return %orig;
+    // Coverage matches mgKeyMap (see hooked_MGCopyAnswer earlier in
+    // file). When _ci_skip_mg is set we bypass entirely — same gate
+    // as the disabled MG hook.
+    if (getConfigBool(@"_ci_skip_mg")) return %orig;
+
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = @{
+            @"ProductVersion":                  @"systemVersion",
+            @"BuildVersion":                    @"BuildVersion",
+            @"ProductType":                     @"ProductType",
+            @"HardwareModel":                   @"HardwareModel",
+            @"HWModelStr":                      @"HWModelStr",
+            @"DeviceName":                      @"DeviceName",
+            @"DeviceColor":                     @"DeviceColor",
+            @"DeviceEnclosureColor":            @"DeviceEnclosureColor",
+            @"SerialNumber":                    @"SerialNumber",
+            @"UniqueDeviceID":                  @"UniqueDeviceID",
+            @"UniqueDeviceIDData":              @"UniqueDeviceID",
+            @"InverseDeviceID":                 @"UniqueDeviceID",
+            @"UniqueChipID":                    @"UniqueChipID",
+            @"InternationalMobileEquipmentIdentity":  @"InternationalMobileEquipmentIdentity",
+            @"InternationalMobileEquipmentIdentity2": @"InternationalMobileEquipmentIdentity2",
+            @"MobileEquipmentIdentifier":       @"MobileEquipmentIdentifier",
+            @"IntegratedCircuitCardIdentity":   @"IntegratedCircuitCardIdentity",
+            @"IntegratedCircuitCardIdentity2":  @"IntegratedCircuitCardIdentity2",
+            @"WiFiAddress":                     @"WiFiAddress",
+            @"WifiAddress":                     @"WiFiAddress",
+            @"WifiAddressData":                 @"WiFiAddress",
+            @"BluetoothAddress":                @"BluetoothAddress",
+            @"BluetoothAddressData":            @"BluetoothAddress",
+            @"EthernetMacAddress":              @"EthernetAddress",
+            @"BasebandSerialNumber":            @"SerialNumber",
+            @"BasebandVersion":                 @"BasebandVersion",
+            @"FirmwareVersion":                 @"FirmwareVersion",
+            @"ModelNumber":                     @"ModelNumber",
+            @"RegionInfo":                      @"RegionInfo",
+            @"RegionCode":                      @"RegionCode",
+            @"BoardId":                         @"BoardId",
+            @"ChipID":                          @"ChipID",
+            @"BootNonce":                       @"BootNonce",
+            @"TotalDiskCapacity":               @"TotalDiskCapacity",
+            @"TotalSystemAvailable":            @"TotalSystemAvailable",
+            @"DiskUsage":                       @"DiskUsage",
+            @"BatteryCurrentCapacity":          @"BatteryCurrentCapacity",
+            @"BatterySerialNumber":             @"BatterySerialNumber",
+            @"BatteryIsCharging":               @"BatteryIsCharging",
+            @"AirplaneMode":                    @"AirplaneMode",
+            @"SIMTrayStatus":                   @"SIMTrayStatus",
+            @"UserAssignedDeviceName":          @"UserAssignedDeviceName",
+            @"MarketingName":                   @"MarketingName",
+        };
+    }
+    NSString *configKey = map[key];
+    if (configKey) {
+        // Numeric vs string handling — keys that store NSNumber in config
+        // need to come back as NSNumber; rest as NSString.
+        static NSSet *numericKeys = nil;
+        if (!numericKeys) numericKeys = [NSSet setWithArray:@[
+            @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
+            @"BatteryCurrentCapacity", @"BatteryIsCharging", @"AirplaneMode"
+        ]];
+        if ([numericKeys containsObject:key]) {
+            id val = getConfig(configKey);
+            if (val) return val;
+        } else {
+            NSString *val = getConfigStr(configKey);
+            if (val.length > 0) return val;
+        }
+    }
+    return %orig;
+}
+
 %end
 
 // ============================================================
@@ -2309,6 +2393,27 @@ static NSString *ci_buildWebFingerprintJS(void) {
     BOOL    canvasNoise = getConfigBool(@"web_canvasNoise");
     BOOL    blockWebRTC = getConfigBool(@"fake_webrtc");
 
+    // Coherent device specs derived from current preset (so navigator
+    // values match UIDevice/sysctl story).
+    NSNumber *cpuN  = [[CIConfigManager shared] objectForKey:@"processorCount"];
+    NSNumber *ramN  = [[CIConfigManager shared] objectForKey:@"physicalMemory"];
+    int hwConcurrency = cpuN ? [cpuN intValue] : 6;
+    if (hwConcurrency < 2) hwConcurrency = 2;
+    if (hwConcurrency > 16) hwConcurrency = 16;
+    int deviceMemoryGB = 4;
+    if (ramN) {
+        unsigned long long ramBytes = [ramN unsignedLongLongValue];
+        deviceMemoryGB = (int)(ramBytes / (1024ULL*1024*1024));
+        // Web spec only allows {0.25, 0.5, 1, 2, 4, 8} — clamp + round.
+        if (deviceMemoryGB <= 1) deviceMemoryGB = 1;
+        else if (deviceMemoryGB <= 2) deviceMemoryGB = 2;
+        else if (deviceMemoryGB <= 4) deviceMemoryGB = 4;
+        else deviceMemoryGB = 8;
+    }
+    int screenW = [getConfigStr(@"screenWidth")  intValue]; if (screenW < 320) screenW = 390;
+    int screenH = [getConfigStr(@"screenHeight") intValue]; if (screenH < 480) screenH = 844;
+    NSString *country = getConfigStr(@"localeCountryCode") ?: @"VN";
+
     NSMutableString *js = [NSMutableString stringWithString:@"(function(){"];
 
     if (fakeUA.length) {
@@ -2316,8 +2421,37 @@ static NSString *ci_buildWebFingerprintJS(void) {
     }
 
     [js appendFormat:@"try{Object.defineProperty(navigator,'platform',{get:function(){return 'iPhone';}});}catch(e){}"];
-    [js appendFormat:@"try{Object.defineProperty(navigator,'languages',{get:function(){return ['%@','en-US','en'];}});}catch(e){}", language];
-    [js appendFormat:@"try{Object.defineProperty(navigator,'language',{get:function(){return '%@';}});}catch(e){}", language];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'vendor',{get:function(){return 'Apple Computer, Inc.';}});}catch(e){}"];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'languages',{get:function(){return ['%@-%@','%@','en'];}});}catch(e){}", language, country, language];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'language',{get:function(){return '%@-%@';}});}catch(e){}", language, country];
+    // Match UIDevice spoofs to JS-side navigator probes — anti-fraud SDKs
+    // verify cross-layer consistency (navigator.hardwareConcurrency vs
+    // sysctl hw.physicalcpu, navigator.deviceMemory vs hw_memsize).
+    [js appendFormat:@"try{Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return %d;}});}catch(e){}", hwConcurrency];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'deviceMemory',{get:function(){return %d;}});}catch(e){}", deviceMemoryGB];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'maxTouchPoints',{get:function(){return 5;}});}catch(e){}"];
+    [js appendFormat:@"try{Object.defineProperty(navigator,'productSub',{get:function(){return '20030107';}});}catch(e){}"];
+    // Screen dims must match UIScreen spoof. devicePixelRatio always 3 on retina iPhone.
+    [js appendFormat:@"try{Object.defineProperty(screen,'width',{get:function(){return %d;}});}catch(e){}", screenW];
+    [js appendFormat:@"try{Object.defineProperty(screen,'height',{get:function(){return %d;}});}catch(e){}", screenH];
+    [js appendFormat:@"try{Object.defineProperty(screen,'availWidth',{get:function(){return %d;}});}catch(e){}", screenW];
+    [js appendFormat:@"try{Object.defineProperty(screen,'availHeight',{get:function(){return %d;}});}catch(e){}", screenH];
+    [js appendFormat:@"try{Object.defineProperty(screen,'colorDepth',{get:function(){return 24;}});}catch(e){}"];
+    [js appendFormat:@"try{Object.defineProperty(screen,'pixelDepth',{get:function(){return 24;}});}catch(e){}"];
+    // Disable battery API exposure (iOS Safari already returns undefined,
+    // but in-app webviews sometimes leak it). Random-flat values prevent
+    // charge-cycle fingerprinting where SDKs measure mAh deltas.
+    [js appendString:@"try{navigator.getBattery=function(){return Promise.resolve({charging:false,chargingTime:Infinity,dischargingTime:Infinity,level:0.85,addEventListener:function(){},removeEventListener:function(){}});};}catch(e){}"];
+    // navigator.connection — block real network type readout
+    [js appendString:@"try{Object.defineProperty(navigator,'connection',{get:function(){return {effectiveType:'4g',downlink:10,rtt:50,saveData:false,type:'cellular',addEventListener:function(){},removeEventListener:function(){}};}});}catch(e){}"];
+    // Permissions API — canonicalize to 'prompt' so SDK can't fingerprint
+    // by which permissions are granted.
+    [js appendString:@"try{if(navigator.permissions){var _q=navigator.permissions.query.bind(navigator.permissions);navigator.permissions.query=function(p){return Promise.resolve({state:'prompt',addEventListener:function(){},removeEventListener:function(){}});};}}catch(e){}"];
+    // AudioContext fingerprinting — SDKs render a sine wave, hash the
+    // resulting frequency-domain bytes. Add ±1e-7 noise to baseLatency
+    // so the hash differs across sessions.
+    [js appendString:@"try{var _ac=window.AudioContext||window.webkitAudioContext;if(_ac){var _ob=_ac.prototype.createOscillator;_ac.prototype.createOscillator=function(){var o=_ob.call(this);try{var _f=o.frequency;Object.defineProperty(o,'frequency',{get:function(){return {value:_f.value+(Math.random()-0.5)*1e-7,setValueAtTime:_f.setValueAtTime.bind(_f)};}});}catch(e){}return o;};}}catch(e){}"];
+
     [js appendFormat:@"try{var _gp=WebGLRenderingContext.prototype.getParameter;WebGLRenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp.call(this,p);};}catch(e){}", vendor, renderer];
     [js appendFormat:@"try{var _gp2=WebGL2RenderingContext.prototype.getParameter;WebGL2RenderingContext.prototype.getParameter=function(p){if(p===37445)return '%@';if(p===37446)return '%@';return _gp2.call(this,p);};}catch(e){}", vendor, renderer];
 
