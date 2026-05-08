@@ -391,10 +391,36 @@ static objc_getClassList_t orig_objc_getClassList = NULL;
 
 static BOOL ci_isOurClass(const char *name) {
     if (!name) return NO;
-    // Cheap prefix checks first — every class we ship starts with "CI"
-    // or "CISpoof" or "_CI". Avoid the full strstr scan unless prefix matches.
-    if (name[0] == 'C' && name[1] == 'I') return YES;
-    if (name[0] == '_' && name[1] == 'C' && name[2] == 'I') return YES;
+    // Exact-match allowlist. CRITICAL: CANNOT use a "CI" prefix filter —
+    // CoreImage ships dozens of classes with that prefix (CIImage, CIFilter,
+    // CIContext, CILinearKernel, CIVector, …) which Zalo and most messaging
+    // apps use heavily for image processing. Hiding those from runtime walks
+    // makes CoreImage code paths see a phantom-empty class list and the app
+    // crashes when a CIFilter alloc returns nil. Only hide what we actually
+    // ship.
+    static const char *ours[] = {
+        "CIConfigManager",
+        "CISpoofProxyDelegate",
+        "CIHomeViewController",
+        "CIAppPickerViewController",
+        "CIFakeSettingsViewController",
+        "CIRRSManagerViewController",
+        "CISideMenuViewController",
+        "CIProxyViewController",
+        "CICameraViewController",
+        "CIAppLister",
+        "CIRRSStore",
+        "CIRRSEntry",
+        "CIAppInfo",
+        "CITheme",
+        "CIFakeReportRow",
+        "CIFakeReportSection",
+        "CIFakeInfoReportViewController",
+        NULL
+    };
+    for (int i = 0; ours[i]; i++) {
+        if (strcmp(name, ours[i]) == 0) return YES;
+    }
     return NO;
 }
 

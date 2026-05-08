@@ -696,17 +696,29 @@ static int64_t configValueAsMGInteger(NSString *configKey) {
 __thread int g_ci_inMGHook = 0;
 
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
+    // Guard MUST be set BEFORE any code that can trigger another MG read.
+    // fakeLayer() / getConfigBool() / reloadConfigFromDisk() all call
+    // through CFString routines (stringByAppendingString → CFString
+    // allocation → internal MG queries for "ProductVersion" etc).
+    // Without setting the guard first, that nested MG read sees guard=0
+    // and re-enters our hook, calling fakeLayer again — infinite
+    // recursion → stack overflow → SIGSEGV at STACK GUARD page (root
+    // cause of the post-register crash chain).
     if (g_ci_inMGHook) return orig_MGCopyAnswer(property);
-    if (!configLoaded) reloadConfigFromDisk();
-    if (!configLoaded || !property) return orig_MGCopyAnswer(property);
-    if (!fakeLayer(@"hardware")) return orig_MGCopyAnswer(property);
-    // Emergency bypass — set _ci_skip_mg=YES via SSH if MG hook ever
-    // causes regressions again. With the re-entrancy guard above the
-    // earlier fault should be fixed permanently; flag retained for
-    // diagnostics.
-    if (getConfigBool(@"_ci_skip_mg")) return orig_MGCopyAnswer(property);
-
     g_ci_inMGHook = 1;
+
+    CFTypeRef result = NULL;
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded || !property) {
+        result = orig_MGCopyAnswer(property);
+        g_ci_inMGHook = 0;
+        return result;
+    }
+    if (!fakeLayer(@"hardware") || getConfigBool(@"_ci_skip_mg")) {
+        result = orig_MGCopyAnswer(property);
+        g_ci_inMGHook = 0;
+        return result;
+    }
     initMGKeyMap();
 
     NSString *key = (__bridge NSString *)property;
@@ -778,12 +790,19 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
 // ============================================================
 static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
     if (g_ci_inMGHook) return orig_MGGetBoolAnswer(property);
-    if (!configLoaded) reloadConfigFromDisk();
-    if (!configLoaded || !property) return orig_MGGetBoolAnswer(property);
-    if (!fakeLayer(@"hardware")) return orig_MGGetBoolAnswer(property);
-    if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetBoolAnswer(property);
+    g_ci_inMGHook = 1;  // Set BEFORE any fakeLayer/getConfig call (see CopyAnswer note)
 
-    g_ci_inMGHook = 1;
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded || !property) {
+        BOOL r = orig_MGGetBoolAnswer(property);
+        g_ci_inMGHook = 0;
+        return r;
+    }
+    if (!fakeLayer(@"hardware") || getConfigBool(@"_ci_skip_mg")) {
+        BOOL r = orig_MGGetBoolAnswer(property);
+        g_ci_inMGHook = 0;
+        return r;
+    }
     NSString *key = (__bridge NSString *)property;
     NSString *configKey = mgKeyMap[key];
 
@@ -816,12 +835,19 @@ static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
 // ============================================================
 static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
     if (g_ci_inMGHook) return orig_MGGetStringAnswer(property);
-    if (!configLoaded) reloadConfigFromDisk();
-    if (!configLoaded || !property) return orig_MGGetStringAnswer(property);
-    if (!fakeLayer(@"hardware")) return orig_MGGetStringAnswer(property);
-    if (getConfigBool(@"_ci_skip_mg")) return orig_MGGetStringAnswer(property);
+    g_ci_inMGHook = 1;  // Set BEFORE any fakeLayer/getConfig call
 
-    g_ci_inMGHook = 1;
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded || !property) {
+        CFTypeRef r = orig_MGGetStringAnswer(property);
+        g_ci_inMGHook = 0;
+        return r;
+    }
+    if (!fakeLayer(@"hardware") || getConfigBool(@"_ci_skip_mg")) {
+        CFTypeRef r = orig_MGGetStringAnswer(property);
+        g_ci_inMGHook = 0;
+        return r;
+    }
     initMGKeyMap();
 
     NSString *key = (__bridge NSString *)property;
