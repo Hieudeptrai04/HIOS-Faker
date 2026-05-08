@@ -3543,6 +3543,35 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     return r;
 }
 
+// Same row builder but with explicit value text (for computed values
+// like the VoIP token derived from apnsTokenSpoof XOR 0xA5).
++ (CIFakeReportRow *)rowWithLabel:(NSString *)label value:(NSString *)value {
+    CIFakeReportRow *r = [CIFakeReportRow new];
+    r.label = label; r.configKey = @"";
+    r.value = value.length > 0 ? value : @"(chưa fake)";
+    r.ok = (value.length > 0);
+    return r;
+}
+
+// Compute the VoIP push token preview as the tweak does at runtime:
+// each byte = (apnsTokenSpoof byte) XOR 0xA5. Lets the user verify in
+// the Fake Info screen that the spoof rotated and PKPushRegistry hook
+// will return a different value than APNS.
++ (NSString *)voipTokenPreview {
+    NSString *hex = [[CIConfigManager shared] stringForKey:@"apnsTokenSpoof"];
+    if (hex.length < 64) return @"";
+    NSMutableString *out = [NSMutableString stringWithCapacity:64];
+    for (NSUInteger i = 0; i + 2 <= hex.length && out.length < 64; i += 2) {
+        unsigned int v = 0;
+        const char *p = [[hex substringWithRange:NSMakeRange(i, 2)] UTF8String];
+        if (sscanf(p, "%02x", &v) == 1) {
+            uint8_t b = (uint8_t)v ^ 0xA5;
+            [out appendFormat:@"%02x", b];
+        }
+    }
+    return out;
+}
+
 + (CIFakeReportSection *)section:(NSString *)title icon:(NSString *)icon rows:(NSArray<CIFakeReportRow *> *)rows {
     CIFakeReportSection *s = [CIFakeReportSection new];
     s.title = title; s.icon = icon; s.rows = rows;
@@ -3652,6 +3681,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
         [C row:@"Battery State"    key:@"batteryState"],
         [C row:@"Battery Capacity" key:@"BatteryCurrentCapacity"],
         [C row:@"Is Charging"      key:@"BatteryIsCharging"],
+    ]]];
+
+    [all addObject:[C section:@"Push Tokens (anti-correlation)" icon:@"🔔" rows:@[
+        [C row:@"APNS Token Spoof"  key:@"apnsTokenSpoof"],
+        [C rowWithLabel:@"VoIP Token Spoof" value:[C voipTokenPreview]],
     ]]];
 
     [all addObject:[C section:@"Anti-Fraud Layers" icon:@"🛡️" rows:@[
