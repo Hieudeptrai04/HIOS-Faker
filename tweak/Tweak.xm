@@ -521,6 +521,17 @@ static NSMutableDictionary<NSString *, NSString *> *g_fakeKeyCache = nil;
 static dispatch_once_t g_fakeKeyCacheOnce;
 
 BOOL fakeLayer(NSString *shortName) {
+    // PERF DIAG bypass: if /var/jb/etc/changeinfoios/SKIPALL exists at
+    // first call, every fakeLayer-gated hook returns NO for the lifetime
+    // of this process. Lets user toggle our spoof off via single SSH
+    // command (`touch ... SKIPALL`) + force-kill app, no rebuild needed.
+    // Use to confirm/deny whether tweak is causing perceived UI lag.
+    static int g_disk_bypass = -1;
+    if (g_disk_bypass == -1) {
+        g_disk_bypass = (access("/var/jb/etc/changeinfoios/SKIPALL", F_OK) == 0) ? 1 : 0;
+    }
+    if (g_disk_bypass) return NO;
+
     if (g_inFakeLayer) return NO;
     g_inFakeLayer++;
     BOOL out = NO;
