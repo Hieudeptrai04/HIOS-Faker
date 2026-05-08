@@ -723,11 +723,15 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
 
     NSString *key = (__bridge NSString *)property;
     if ([key isEqualToString:@"ProductVersion"] || [key isEqualToString:@"BuildVersion"]) {
-        if (!fakeLayer(@"sysosversion")) return orig_MGCopyAnswer(property);
+        if (!fakeLayer(@"sysosversion")) {
+            CFTypeRef r = orig_MGCopyAnswer(property);
+            g_ci_inMGHook = 0;
+            return r;
+        }
     }
 
     NSString *configKey = mgKeyMap[key];
-    CFTypeRef result = NULL;
+    // result already declared at function top
 
     if (configKey) {
         NSString *spoofedVal = getConfigStr(configKey);
