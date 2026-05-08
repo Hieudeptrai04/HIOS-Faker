@@ -378,6 +378,67 @@ static int hooked_getifaddrs(struct ifaddrs **ifap) {
 }
 
 // ============================================================
+// gethostuuid hook — return spoofed 16-byte hardware UUID.
+// ============================================================
+// `int gethostuuid(uuid_t spec, const struct timespec *wait)` — fills
+// the 16-byte uuid_t with this device's hardware UUID. Some fingerprint
+// libraries call this directly because it's a Darwin-private syscall
+// (gethostuuid → syscall 142) that bypasses every Obj-C / sysctl hook.
+// We synthesize from config UniqueDeviceID (40 hex chars = 20 bytes;
+// take first 16) so the value is deterministic per Reset Data and
+// matches the Obj-C side's identifier story.
+typedef int (*gethostuuid_t)(uuid_t spec, const struct timespec *wait);
+static gethostuuid_t orig_gethostuuid = NULL;
+
+static int hooked_gethostuuid(uuid_t spec, const struct timespec *wait) {
+    int ret = orig_gethostuuid ? orig_gethostuuid(spec, wait) : -1;
+    if (ret != 0 || !spec) return ret;
+    if (!fakeLayer(@"hardware")) return ret;
+    NSString *udid = getConfigStr(@"UniqueDeviceID");
+    if (udid.length < 32) return ret; // need ≥16 bytes worth of hex
+    for (int i = 0; i < 16; i++) {
+        unsigned int v = 0;
+        const char *hex = [[udid substringWithRange:NSMakeRange(i*2, 2)] UTF8String];
+        if (sscanf(hex, "%02x", &v) == 1) spec[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+// ============================================================
+// gettimeofday + clock_gettime hooks — coherent with mach_absolute_time
+// ============================================================
+// Anti-fraud SDKs cross-check timing sources: mach_absolute_time vs
+// CFAbsoluteTimeGetCurrent vs gettimeofday. If we offset one but not
+// others, the inconsistency itself becomes a fingerprint. Default
+// behaviour is passthrough (no offset); adding _ci_clock_offset_secs
+// shifts wall-clock-based sources by N seconds for cases where you
+// want to fake the device's perceived "now".
+typedef int (*gettimeofday_t)(struct timeval *tv, void *tz);
+typedef int (*clock_gettime_t)(clockid_t clk_id, struct timespec *tp);
+static gettimeofday_t   orig_gettimeofday   = NULL;
+static clock_gettime_t  orig_clock_gettime  = NULL;
+
+static int hooked_gettimeofday(struct timeval *tv, void *tz) {
+    int ret = orig_gettimeofday ? orig_gettimeofday(tv, tz) : -1;
+    if (ret != 0 || !tv || !fakeLayer(@"timing")) return ret;
+    id off = getConfig(@"_ci_clock_offset_secs");
+    if (off) tv->tv_sec += (time_t)[off longLongValue];
+    return ret;
+}
+
+static int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
+    int ret = orig_clock_gettime ? orig_clock_gettime(clk_id, tp) : -1;
+    if (ret != 0 || !tp || !fakeLayer(@"timing")) return ret;
+    // Only shift the wall-clock domains (REALTIME). Monotonic / uptime
+    // clocks stay raw so app-internal deltas remain consistent.
+    if (clk_id == CLOCK_REALTIME) {
+        id off = getConfig(@"_ci_clock_offset_secs");
+        if (off) tp->tv_sec += (time_t)[off longLongValue];
+    }
+    return ret;
+}
+
+// ============================================================
 // mach_absolute_time hook
 // ============================================================
 static uint64_t (*orig_mach_absolute_time)(void) = NULL;
@@ -1136,6 +1197,28 @@ extern "C" void initCLvlHooks(void) {
     if (getifaddrs_sym && !orig_getifaddrs) {
         MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
         NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    }
+
+    // gethostuuid — returns 16-byte hardware UUID. Spoof from UniqueDeviceID.
+    void *guuid_sym = dlsym(RTLD_DEFAULT, "gethostuuid");
+    if (guuid_sym && !orig_gethostuuid) {
+        MSHookFunction(guuid_sym, (void *)hooked_gethostuuid, (void **)&orig_gethostuuid);
+        NSLog(@"[ChangeInfoIos] gethostuuid hooked");
+    }
+
+    // gettimeofday + clock_gettime — leaves real values by default (passthrough).
+    // Apps that fingerprint by checking mach_absolute_time vs wall-clock
+    // consistency see correct relative offsets. If a constant offset is
+    // ever needed, set _ci_clock_offset_secs in config.
+    void *gtod_sym = dlsym(RTLD_DEFAULT, "gettimeofday");
+    if (gtod_sym && !orig_gettimeofday) {
+        MSHookFunction(gtod_sym, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
+        NSLog(@"[ChangeInfoIos] gettimeofday hooked");
+    }
+    void *cgt_sym = dlsym(RTLD_DEFAULT, "clock_gettime");
+    if (cgt_sym && !orig_clock_gettime) {
+        MSHookFunction(cgt_sym, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
+        NSLog(@"[ChangeInfoIos] clock_gettime hooked");
     }
 
     void *gethostname_sym = dlsym(RTLD_DEFAULT, "gethostname");

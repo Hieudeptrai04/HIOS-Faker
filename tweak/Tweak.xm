@@ -2224,6 +2224,20 @@ static void ci_installWKWebViewHooks(void) {
     }
 }
 
+// CTSubscriber.phoneNumber — re-enabled via runtime swizzle (Logos %hook
+// disabled in v2.3.23 because the class symbol isn't always loaded and
+// caused dylib load to fault). Same pattern as DCDevice.
+typedef NSString *(*CTSubscriber_phoneNumber_t)(id self, SEL _cmd);
+static CTSubscriber_phoneNumber_t orig_CTSubscriber_phoneNumber = NULL;
+static NSString *ci_CTSubscriber_phoneNumber(id self, SEL _cmd) {
+    if (!fakeLayer(@"network")) {
+        return orig_CTSubscriber_phoneNumber ? orig_CTSubscriber_phoneNumber(self, _cmd) : nil;
+    }
+    NSString *spoof = getConfigStr(@"PhoneNumber");
+    if (spoof.length > 0) return spoof;
+    return orig_CTSubscriber_phoneNumber ? orig_CTSubscriber_phoneNumber(self, _cmd) : nil;
+}
+
 static void ci_installAttestHooks(void) {
     @autoreleasepool {
         // Only walk classes that already exist in the loaded image set.
@@ -2231,6 +2245,12 @@ static void ci_installAttestHooks(void) {
         // any other dylib, objc_getClass already returns it; otherwise we
         // skip silently (apps that don't link DeviceCheck won't have the
         // hooks install, which is the safe behavior).
+        if (objc_getClass("CTSubscriber")) {
+            ci_swizzleInstance("CTSubscriber", @selector(phoneNumber),
+                               (IMP)ci_CTSubscriber_phoneNumber,
+                               (IMP *)&orig_CTSubscriber_phoneNumber);
+            NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber hooked");
+        }
         if (objc_getClass("DCDevice")) {
             ci_swizzleInstance("DCDevice", @selector(isSupported),
                                (IMP)ci_DC_isSupported, (IMP *)&orig_DC_isSupported);
