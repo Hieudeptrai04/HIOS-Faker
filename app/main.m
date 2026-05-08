@@ -1040,6 +1040,12 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"EthernetAddress":                       ci_randMAC(),
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
+        // 32-byte APNS device-token hex. Tweak's UIApplicationDelegate
+        // swizzle reads this and passes it instead of the real APNS token,
+        // breaking server-side correlation across Reset cycles. Same Apple
+        // ID + same hardware would otherwise give Zalo's server identical
+        // tokens for every account → "abnormal behavior" lock.
+        @"apnsTokenSpoof":                        ci_randHexLower(64),
     };
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
         [cm setObject:v forKey:k];

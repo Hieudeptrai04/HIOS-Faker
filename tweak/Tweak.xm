@@ -1297,6 +1297,80 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
+// ============================================================
+// APNS PUSH TOKEN SPOOF — break server-side device correlation.
+// ============================================================
+// iOS hands the app's UIApplicationDelegate a 32-byte device token via
+// -application:didRegisterForRemoteNotificationsWithDeviceToken: . This
+// token is keyed (Apple ID + bundle ID + hardware) at APNS server side
+// and DOES NOT change across Reset Data, Reset Network Settings, app
+// reinstall — only true device-erase or Apple ID change rotates it.
+// Zalo's backend stores the token per-account; multiple accounts on the
+// same physical device share the same token → trivial correlation →
+// "abnormal behavior" flag → CCCD verification demanded.
+//
+// Strategy: when UIApplication's delegate is set, swizzle the delegate's
+// didRegister method. The swizzled IMP swaps the incoming NSData for a
+// 32-byte fake (kept in config under apnsTokenSpoof, regenerated every
+// Reset Data) before forwarding to the original IMP. Zalo stores+sends
+// the fake; Apple's APNS server is never queried with our spoof, so the
+// real token still works for actual push delivery (which Zalo doesn't
+// need at sign-up time anyway). Net effect: per-Reset, the server sees
+// what looks like a brand-new device with no history.
+
+static const char kCIApnsOrigKey;
+
+static NSData *ci_apnsSpoofTokenData(void) {
+    NSString *hex = getConfigStr(@"apnsTokenSpoof");
+    if (hex.length < 64) return nil;
+    NSMutableData *out = [NSMutableData dataWithCapacity:32];
+    for (NSUInteger i = 0; i + 2 <= hex.length && out.length < 32; i += 2) {
+        unsigned int v = 0;
+        const char *p = [[hex substringWithRange:NSMakeRange(i, 2)] UTF8String];
+        if (sscanf(p, "%02x", &v) == 1) {
+            uint8_t b = (uint8_t)v;
+            [out appendBytes:&b length:1];
+        }
+    }
+    return out.length == 32 ? out : nil;
+}
+
+static void ci_apnsHookedImpl(id self, SEL _cmd, UIApplication *app, NSData *originalToken) {
+    NSData *fake = ci_apnsSpoofTokenData();
+    NSData *use = (fake && fakeLayer(@"network")) ? fake : originalToken;
+    NSValue *origPtr = objc_getAssociatedObject([self class], &kCIApnsOrigKey);
+    if (origPtr) {
+        void (*orig)(id, SEL, UIApplication *, NSData *) =
+            (void (*)(id, SEL, UIApplication *, NSData *))[origPtr pointerValue];
+        if (orig) orig(self, _cmd, app, use);
+    }
+    // If we added the method (no original), nothing else to do — caller
+    // got our spoof, app delegate consumed it.
+}
+
+static void ci_swizzleApnsOnDelegate(Class cls) {
+    if (!cls) return;
+    if (objc_getAssociatedObject(cls, &kCIApnsOrigKey)) return; // already swizzled
+    SEL sel = @selector(application:didRegisterForRemoteNotificationsWithDeviceToken:);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m) {
+        IMP orig = method_getImplementation(m);
+        objc_setAssociatedObject(cls, &kCIApnsOrigKey,
+                                 [NSValue valueWithPointer:(void *)orig],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        method_setImplementation(m, (IMP)ci_apnsHookedImpl);
+        NSLog(@"[ChangeInfoIos] APNS delegate swizzled on %@", NSStringFromClass(cls));
+    } else {
+        // No existing impl — add ours so the spoof token still flows somewhere
+        // (most app delegates DO implement; this branch is rare).
+        class_addMethod(cls, sel, (IMP)ci_apnsHookedImpl, "v@:@@");
+        // Mark with a sentinel so we don't double-add.
+        objc_setAssociatedObject(cls, &kCIApnsOrigKey,
+                                 [NSValue valueWithPointer:NULL],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 %hook UIApplication
 
 - (BOOL)canOpenURL:(NSURL *)url {
@@ -1311,6 +1385,56 @@ static CLLocation *buildFakeLocation(void) {
     return %orig;
 }
 
+- (void)setDelegate:(id<UIApplicationDelegate>)delegate {
+    %orig(delegate);
+    if (delegate) {
+        ci_swizzleApnsOnDelegate([delegate class]);
+    }
+}
+
+%end
+
+// ============================================================
+// APP STORE RECEIPT BLOCKER — Apple ID hash leak prevention.
+// ============================================================
+// `[NSBundle.mainBundle appStoreReceiptURL]` returns a URL to a binary
+// receipt blob iOS provisions per (Apple ID + bundle). The blob contains
+// hashed account identifiers; backend SDKs (AppsFlyer, Branch) sometimes
+// upload it for "fraud verification". Two Zalo accounts on the same
+// Apple ID upload the same hash → server correlates. Returning nil
+// makes apps fall through to "no receipt" handling (App Store unsigned
+// dev builds do this normally), no Apple ID hash leaves the device.
+%hook NSBundle
+- (NSURL *)appStoreReceiptURL {
+    if (fakeLayer(@"keychain")) return nil;
+    return %orig;
+}
+%end
+
+// ============================================================
+// iCLOUD KEY-VALUE STORE BLOCKER — break iCloud-keyed correlation.
+// ============================================================
+// NSUbiquitousKeyValueStore is per-Apple-ID iCloud KVS. SDKs cache
+// install IDs / install timestamps there so reinstall under same Apple
+// ID resurrects the prior identity. Return empty/nil so the app sees
+// a fresh KVS each Reset.
+%hook NSUbiquitousKeyValueStore
+- (id)objectForKey:(NSString *)key {
+    if (fakeLayer(@"keychain")) return nil;
+    return %orig;
+}
+- (NSString *)stringForKey:(NSString *)key {
+    if (fakeLayer(@"keychain")) return nil;
+    return %orig;
+}
+- (NSData *)dataForKey:(NSString *)key {
+    if (fakeLayer(@"keychain")) return nil;
+    return %orig;
+}
+- (NSDictionary *)dictionaryRepresentation {
+    if (fakeLayer(@"keychain")) return @{};
+    return %orig;
+}
 %end
 
 %hook UIPasteboard

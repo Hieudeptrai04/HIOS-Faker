@@ -539,20 +539,59 @@ static BOOL ci_isDeviceIDKey(NSString *s) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         patterns = @[
-            // Generic
+            // Generic device IDs
             @"device_id", @"deviceid", @"device_uuid", @"deviceuuid",
+            @"device_token", @"devicetoken",
             @"install_id", @"installid", @"installation_id",
             @"client_id", @"clientid", @"client_uuid",
             @"fingerprint", @"hardware_id", @"hardwareid",
             @"persistent_id", @"persistentid", @"persistent_device",
             @"udid", @"unique_device", @"uniqueid", @"unique_id",
             @"advertising_id", @"advertisingid", @"idfa", @"idfv",
+            @"vendor_id", @"vendorid",
+
+            // Push tokens (APNS / VoIP / PushKit)
+            @"apns_token", @"apnstoken", @"apns",
+            @"push_token", @"pushtoken",
+            @"voip_token", @"voiptoken", @"pushkit_token", @"pushkit",
+
+            // AppsFlyer (used by Zalo for attribution)
+            @"appsflyer", @"af_uid", @"af_sdk", @"appsflyeruid", @"af_install",
+
+            // Adjust SDK
+            @"adjust_id", @"adjustid", @"adjust_uuid", @"adjustuuid",
+            @"adjust_attribution", @"adid", @"adjust_install",
+
+            // Branch SDK
+            @"bnc_id", @"bnc_install", @"bnc_referrer", @"branch_id", @"branch_install",
+
+            // Firebase / FCM / Google Mobile
+            @"firebase_iid", @"firebaseinstallation", @"fcm_token", @"fcmtoken",
+            @"fiam_install", @"gmp_app_id", @"gmpappid", @"google_install",
+
+            // Crashlytics / Sentry / Bugsnag
+            @"crashlytics_install", @"crashlytics_user", @"com.crashlytics",
+            @"sentry_id", @"sentry_install", @"sentryinstall",
+            @"bugsnag_install", @"bugsnag_id",
+
+            // Analytics — Mixpanel / Amplitude / AppMetrica
+            @"mp_distinct", @"mixpanel_id", @"mixpanelid",
+            @"amplitude_device", @"amplitude_user", @"amplitudedevice",
+            @"appmetrica", @"am_uuid",
+
+            // Apple — iTunes / App Store account hashes
+            @"apple_id_hash", @"itunes_account_hash", @"itunesaccount",
+            @"apple_account",
+
             // Zalo specific
             @"kzalo", @"zl_device", @"zalo_device", @"zalodevice", @"vng_device",
+            @"zalo_install",
+
             // Facebook
-            @"fb_device", @"fbdevice", @"fbnsdevicetoken",
-            // TikTok
-            @"tt_device", @"musicaly_device", @"aweme_device",
+            @"fb_device", @"fbdevice", @"fbnsdevicetoken", @"fb_install",
+
+            // TikTok / ByteDance
+            @"tt_device", @"musicaly_device", @"aweme_device", @"bytedance_install",
         ];
     });
     NSString *low = s.lowercaseString;
