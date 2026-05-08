@@ -459,11 +459,12 @@ static statfs_t orig_statfs = NULL;
 static int hooked_statfs(const char *path, struct statfs *buf) {
     int ret = orig_statfs ? orig_statfs(path, buf) : -1;
     if (ret != 0 || !buf || !path) return ret;
-    if (!fakeLayer(@"hardware")) return ret;
-    // Only spoof the root volume (/, /private/var) since that's what
-    // apps query for "device storage". Per-app sandbox volumes left
-    // untouched — they'd reveal app's own usage patterns if changed.
+    // PERFORMANCE: cheap path filter FIRST before fakeLayer's
+    // dispatch_once + dict lookup. Most statfs calls target sandbox
+    // paths and exit immediately here; only root-volume queries hit
+    // the heavier check.
     if (strcmp(path, "/") != 0 && strncmp(path, "/private/var", 12) != 0) return ret;
+    if (!fakeLayer(@"hardware")) return ret;
 
     id totalObj = getConfig(@"TotalDiskCapacity");
     id usageObj = getConfig(@"DiskUsage");

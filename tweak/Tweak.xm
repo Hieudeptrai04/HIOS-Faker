@@ -1456,64 +1456,23 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
-// ============================================================
-// LAYER 11.5: NSDictionary system-file reads — catch SystemVersion.plist
-// ============================================================
-// Apps that bypass UIDevice query system info via NSDictionary direct
-// file reads:
-//   [NSDictionary dictionaryWithContentsOfFile:
-//       @"/System/Library/CoreServices/SystemVersion.plist"]
-// returns the canonical iOS version + build (ProductVersion, BuildVersion,
-// ProductName). Apple's framework code uses this same path internally,
-// so MGCopyAnswer for ProductVersion goes through here too. Anti-fraud
-// SDKs that fingerprint via this read get the REAL OS version regardless
-// of UIDevice spoof. Inject our spoofed values when the read targets
-// SystemVersion.plist or related system metadata.
-static BOOL ci_isSystemVersionPath(NSString *path) {
-    if (!path) return NO;
-    return [path containsString:@"/CoreServices/SystemVersion.plist"] ||
-           [path containsString:@"/CoreServices/iBootVersion.plist"] ||
-           [path containsString:@"/Caches/com.apple.MobileGestalt.plist"];
-}
-
-static NSDictionary *ci_spoofedSystemVersion(NSDictionary *real) {
-    if (!fakeLayer(@"sysosversion")) return real;
-    NSMutableDictionary *m = real ? [real mutableCopy] : [NSMutableDictionary dictionary];
-    NSString *ver = getConfigStr(@"systemVersion");
-    NSString *build = getConfigStr(@"BuildVersion");
-    if (ver.length)   m[@"ProductVersion"] = ver;
-    if (build.length) m[@"ProductBuildVersion"] = build;
-    m[@"ProductName"] = @"iPhone OS";
-    return m;
-}
-
-%hook NSDictionary
-
-+ (instancetype)dictionaryWithContentsOfFile:(NSString *)path {
-    NSDictionary *orig = %orig;
-    if (ci_isSystemVersionPath(path)) {
-        return ci_spoofedSystemVersion(orig);
-    }
-    return orig;
-}
-
-+ (instancetype)dictionaryWithContentsOfURL:(NSURL *)url {
-    NSDictionary *orig = %orig;
-    if (url.isFileURL && ci_isSystemVersionPath(url.path)) {
-        return ci_spoofedSystemVersion(orig);
-    }
-    return orig;
-}
-
-+ (instancetype)dictionaryWithContentsOfURL:(NSURL *)url error:(NSError **)error {
-    NSDictionary *orig = %orig;
-    if (url.isFileURL && ci_isSystemVersionPath(url.path)) {
-        return ci_spoofedSystemVersion(orig);
-    }
-    return orig;
-}
-
-%end
+// REMOVED 2026-05-08: NSDictionary +dictionaryWithContentsOfFile:/URL:
+// hook caused a 4-second lag when pressing Zalo's register button.
+// The hook itself only added 3x containsString calls per plist read,
+// but Zalo's register flow loads HUNDREDS of plist resources (i18n
+// strings, SDK configs, cache files) and every one of them now had
+// to detour through our class-method swizzle. Class-method hooks via
+// Logos on NSDictionary (a class cluster) carry extra dispatcher
+// overhead that compounds. Net effect: register button stall.
+//
+// Coverage loss: apps reading SystemVersion.plist directly will now
+// see real ProductVersion/BuildVersion. The leak still exists at the
+// MG path but we have UIDevice._deviceInfoForKey: catching most.
+// Cheaper alternatives if we revisit:
+//   1. Hook open()/openat() syscall and rewrite SystemVersion.plist
+//      reads — but file I/O is hot-path too.
+//   2. Hook CFPreferencesCopyValue specifically for system version.
+//   3. Provide spoof via per-app overlay file in container.
 
 // ============================================================
 // APNS PUSH TOKEN SPOOF — break server-side device correlation.
