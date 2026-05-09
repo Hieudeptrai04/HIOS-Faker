@@ -618,16 +618,49 @@ BOOL jbHideActive(void) {
     return UIUserInterfaceIdiomPhone;
 }
 
-// REMOVED 2026-05-08 (bisect): -[UIDevice _deviceInfoForKey:] hook caused
-// a 4-second register-button lag despite the NSDictionary hook revert.
-// Zalo's register flow gathers ~50+ device info keys via this private
-// UIDevice accessor; each call detoured through fakeLayer + map lookup.
-// Even at sub-microsecond per call, the swizzle-dispatch overhead on
-// the hot collection path was visible.
+// RE-ENABLED 2026-05-09. The earlier 4-second register lag was wrongly
+// blamed on this hook; bisect later traced it to the LSApplicationWork
+// space recursion (c525ab7). _deviceInfoForKey: is safe to hook —
+// fakeLayer is cached, map lookup is sub-microsecond.
 //
-// Coverage loss: apps using -[UIDevice _deviceInfoForKey:] now see
-// real UDID / Serial / IMEI / MAC — same as before commit 159abe9.
-// Need cheaper hook strategy or pick fewer keys to spoof.
+// This is the canonical UIDevice-internal path that calls MGCopyAnswer.
+// With our MG hook permanently disabled (substrate brk on iOS 16.7.11),
+// most fingerprint SDKs (Crashlytics, AppsFlyer, Adjust, Firebase) read
+// device info through this path. Without spoofing here, every
+// registration leaks REAL UDID/Serial/IMEI to backend → 1-2h async
+// correlation flags 4 of 5 accounts.
+//
+// Slim'd to 12 highest-impact keys (down from 30) to keep per-call
+// cost minimal. Other keys fall through to %orig (real values) — but
+// those aren't typically the ones SDKs fingerprint on.
+- (id)_deviceInfoForKey:(NSString *)key {
+    if (!fakeLayer(@"hardware") || !key) return %orig;
+    if (getConfigBool(@"_ci_skip_mg")) return %orig;
+
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = @{
+            @"ProductType":                          @"ProductType",
+            @"HardwareModel":                        @"HardwareModel",
+            @"SerialNumber":                         @"SerialNumber",
+            @"UniqueDeviceID":                       @"UniqueDeviceID",
+            @"UniqueDeviceIDData":                   @"UniqueDeviceID",
+            @"UniqueChipID":                         @"UniqueChipID",
+            @"InternationalMobileEquipmentIdentity": @"InternationalMobileEquipmentIdentity",
+            @"InternationalMobileEquipmentIdentity2":@"InternationalMobileEquipmentIdentity2",
+            @"IntegratedCircuitCardIdentity":        @"IntegratedCircuitCardIdentity",
+            @"WiFiAddress":                          @"WiFiAddress",
+            @"BluetoothAddress":                     @"BluetoothAddress",
+            @"EthernetMacAddress":                   @"EthernetAddress",
+        };
+    }
+    NSString *configKey = map[key];
+    if (configKey) {
+        NSString *val = getConfigStr(configKey);
+        if (val.length > 0) return val;
+    }
+    return %orig;
+}
 
 %end
 
