@@ -4855,15 +4855,54 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up — RRS will only contain config snapshot");
     }
 
-    // Trigger keychain dump in every running target. The tweak listens on
-    // this Darwin notification and writes /var/jb/etc/changeinfoios/
-    // keychain_<bid>.plist with the bundle's current SecItem entries
-    // (session tokens, deviceID, etc.). The file then gets pulled into
-    // the tar a few lines below — without this, RRS only captures the
-    // app's container Documents/Library, which is missing the keychain
-    // session that controls "logged in vs not".
+    // Trigger keychain dump in every running target. Tweak's observer
+    // writes <container>/tmp/hios_keychain.plist via per-bundle Sec
+    // ItemCopyMatching (NSTemporaryDirectory, sandbox-allowed). That
+    // file rides into tar with the container path below.
+    //
+    // Fix 2026-05-09 (login-after-restore bug): previous version did
+    // notify_post + fixed 1.5s sleep, then tarred regardless. Failure
+    // modes:
+    //   - Zalo backgrounded → Darwin notify not delivered immediately
+    //   - Zalo just launched → tweak observer not yet registered
+    //   - Tweak's 5s post-ctor dispatch_after hasn't fired yet
+    // Result: tar didn't contain hios_keychain.plist → restore had
+    // nothing to apply → Zalo asked login next launch even though user
+    // restored.
+    //
+    // Now: notify, then poll each target's tmp/hios_keychain.plist for
+    // up to 8s, requiring mtime ≥ dumpStart (guard against stale file
+    // from a previous reset). Log per-bundle status; never abort backup
+    // (partial backup still saves Documents/Library), just warn user.
     notify_post("com.changeinfoios/dump_keychain");
-    [NSThread sleepForTimeInterval:1.5]; // let target process write the snapshot
+    NSDate *dumpStart = [NSDate date];
+    NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];
+    NSMutableArray<NSString *> *foundDumps   = [NSMutableArray array];
+    NSFileManager *dfm = [NSFileManager defaultManager];
+    for (int retry = 0; retry < 16; retry++) {
+        [NSThread sleepForTimeInterval:0.5];
+        [missingDumps removeAllObjects];
+        [foundDumps removeAllObjects];
+        for (NSString *bid in b) {
+            NSString *container = ci_findDataContainerForBundle(bid);
+            if (container.length == 0) {
+                [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
+                continue;
+            }
+            NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
+            NSDictionary *attrs = [dfm attributesOfItemAtPath:dumpPath error:nil];
+            NSDate *mtime = attrs[NSFileModificationDate];
+            unsigned long long sz = [attrs[NSFileSize] unsignedLongLongValue];
+            if (mtime && [mtime compare:dumpStart] != NSOrderedAscending && sz > 0) {
+                [foundDumps addObject:bid];
+            } else {
+                [missingDumps addObject:bid];
+            }
+        }
+        if (missingDumps.count == 0) break; // all dumps present + fresh
+    }
+    NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %d×0.5s retries)",
+          foundDumps, missingDumps, 16);
 
     // Build tar command. Capture stderr to a file so a silent failure
     // becomes visible in syslog instead of vanishing to /dev/null.
@@ -5157,7 +5196,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // dump path we changed in 2026-05-07). Use ci_findDataContainer
         // ForBundle to locate the live container (UUID changes after
         // every Reset Data, so we can't hardcode).
+        // Drop keychain-restore flag IFF the dump file actually landed
+        // in this bundle's tmp/ from cp -a. If missing (backup didn't
+        // catch the dump — see createRRSForBundles fix note), skip the
+        // flag. Otherwise tweak's %ctor would try to read a non-existent
+        // dump, fail silently, and we'd lose the user's keychain anyway
+        // (worse: it would also wipe the bundle's existing keychain via
+        // ci_restoreKeychainIfFlagged's pre-restore SecItemDelete, so
+        // bundles with NO snapshot become MORE damaged than untouched).
         NSUInteger flagsDropped = 0;
+        NSMutableArray<NSString *> *noDumpBundles = [NSMutableArray array];
         for (NSString *bid in e.bundleIDs) {
             NSString *container = ci_findDataContainerForBundle(bid);
             if (container.length == 0) {
@@ -5165,21 +5213,32 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 continue;
             }
             NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
-            [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir
-                                      withIntermediateDirectories:YES
-                                                       attributes:nil error:nil];
+            NSString *dumpPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
+            NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
+            unsigned long long dumpSz = [dumpAttrs[NSFileSize] unsignedLongLongValue];
+            if (dumpSz == 0) {
+                [noDumpBundles addObject:bid];
+                NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
+                continue;
+            }
+
+            [fm createDirectoryAtPath:tmpDir withIntermediateDirectories:YES
+                            attributes:nil error:nil];
             NSString *flagPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
             NSError *err = nil;
             BOOL ok = [@"1" writeToFile:flagPath atomically:YES
                                encoding:NSUTF8StringEncoding error:&err];
             if (ok) {
                 flagsDropped++;
+                NSLog(@"[ChangeInfoIos] restore: keychain flag dropped for %@ (dump=%llu bytes)",
+                      bid, dumpSz);
             } else {
                 NSLog(@"[ChangeInfoIos] restore: flag write FAILED for %@: %@", bid, err);
             }
         }
-        NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles",
-              (unsigned long)flagsDropped, (unsigned long)e.bundleIDs.count);
+        NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles%@",
+              (unsigned long)flagsDropped, (unsigned long)e.bundleIDs.count,
+              noDumpBundles.count ? [NSString stringWithFormat:@" (no-dump: %@)", noDumpBundles] : @"");
 
         // ---- Step 5: Cleanup + respring ----
         [self updateHUD:hud step:5 total:5
