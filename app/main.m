@@ -685,23 +685,7 @@ static NSArray *ci_randomPresets(void) {
             @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(4294967296), @(6),  @(14), @(18), colors12],
             @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
             @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
-            @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), colors13],
-            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), colors13],
-            @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(15), @(18), colors13Pro],
-            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(15), @(18), colors13Pro],
-            @[@"iPhone SE (3)",     @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2", @"A15 Bionic",@"0x8110", @"0x07", @(4294967296), @(6),  @(15), @(18), @[@"Midnight", @"Starlight", @"Red"]],
-            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(16), @(18), colors14],
-            @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x07", @(6442450944), @(6),  @(16), @(18), colors14],
-            @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(16), @(18), colors14Pro],
-            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(16), @(18), colors14Pro],
-            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(17), @(18), colors15],
-            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x08", @(6442450944), @(6),  @(17), @(18), colors15],
-            @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A17 Pro",   @"0x8130", @"0x0D", @(8589934592), @(6),  @(17), @(18), colors15Pro],
-            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A17 Pro",   @"0x8130", @"0x0D", @(8589934592), @(6),  @(17), @(18), colors15Pro],
-            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A18",       @"0x8140", @"0x0E", @(8589934592), @(6),  @(18), @(18), colors16],
-            @[@"iPhone 16 Plus",    @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A18",       @"0x8140", @"0x0E", @(8589934592), @(6),  @(18), @(18), colors16],
-            @[@"iPhone 16 Pro",     @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3", @"A18 Pro",   @"0x8150", @"0x0F", @(8589934592), @(6),  @(18), @(18), colors16Pro],
-            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3", @"A18 Pro",   @"0x8150", @"0x0F", @(8589934592), @(6),  @(18), @(18), colors16Pro],
+            // NOTE: iPhone 13+ removed — Zalo only recognizes models up to iPhone 12 Pro Max.
         ];
     }
     return presets;
@@ -2098,23 +2082,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
             @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
             @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3"],
-            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone SE (3)",     @"iPhone14,6", @"iPhone14,6", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3"],
-            @[@"iPhone 16 Plus",    @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3"],
-            @[@"iPhone 16 Pro",     @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3"],
-            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3"],
+            // NOTE: iPhone 13+ removed — Zalo only recognizes models up to iPhone 12 Pro Max.
         ];
     }
     return presets;
@@ -2196,7 +2164,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)showPresets {
     NSArray *presets = [CIFakeSettingsViewController devicePresets];
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Model iPhone"
-        message:@"iPhone 5 → iPhone 16 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
+        message:@"iPhone 5 → iPhone 12 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSArray *p in presets) {
         [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
             [self applyPreset:p];
