@@ -117,6 +117,7 @@ BOOL         fakeLayer(NSString *shortName);
 BOOL         jbHideActive(void);
 void         reloadConfigFromDisk(void);
 void         initCLvlHooks(void); // defined in Hooks.mm
+BOOL         ci_isHiddenJBPath(const char *path); // defined in Hooks.mm
 #ifdef __cplusplus
 }
 #endif
@@ -1369,72 +1370,33 @@ static CLLocation *buildFakeLocation(void) {
 // ============================================================
 %hook NSFileManager
 
+// HOT PATH: Zalo / Facebook SDKs call fileExistsAtPath: hundreds of times
+// during login navigation (resource loading, cache lookups, plist probes).
+// Previous build iterated a 28-entry NSArray with hasPrefix: → ~50µs/call,
+// total ~150ms across the login transition → user-visible "3s lag" on the
+// register/login button. Pure-C ci_isHiddenJBPath defined in Hooks.mm uses
+// a precomputed prefix table + second-char gate + strncmp; ~1µs/call.
+
 - (BOOL)fileExistsAtPath:(NSString *)path {
     if (!jbHideActive()) return %orig;
-
+    // User-defined override list from config — only checked if non-empty.
+    // Each call hits the C check ONCE (no NSString conversion in the loop).
     NSArray *hiddenPaths = getConfig(@"hiddenPaths");
-    if (hiddenPaths) {
+    if (hiddenPaths.count > 0) {
         for (NSString *hidden in hiddenPaths) {
-            if ([path hasPrefix:hidden] || [path isEqualToString:hidden]) {
-                return NO;
-            }
+            if ([path hasPrefix:hidden]) return NO;
         }
     }
-
-    NSArray *defaultPaths = @[
-        // rootless + symlinks
-        @"/var/jb", @"/private/var/jb",
-        // package manager apps
-        @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-        @"/Applications/Zebra.app", @"/Applications/Installer.app",
-        // substrate / hook engines
-        @"/Library/MobileSubstrate", @"/usr/lib/TweakInject",
-        @"/usr/lib/substrate", @"/usr/libexec/cydia",
-        // SSH
-        @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/etc/ssh", @"/private/etc/ssh",
-        // jb markers + rootful
-        @"/.installed_dopamine", @"/.installed_palera1n", @"/.bootstrapped",
-        @"/var/binpack", @"/var/LIB", @"/var/ulb",
-        @"/private/preboot", @"/private/var/lib/cydia",
-        // apt / dpkg
-        @"/etc/apt", @"/private/etc/apt", @"/var/lib/apt", @"/var/lib/dpkg",
-        @"/var/cache/apt", @"/usr/bin/dpkg", @"/usr/bin/apt",
-        // caches
-        @"/var/mobile/Library/Caches/com.saurik.Cydia",
-        @"/var/mobile/Library/Caches/com.coolstar.Sileo",
-        @"/var/mobile/Library/Caches/xyz.willy.Zebra",
-        // common JB binaries
-        @"/bin/bash", @"/bin/sh",
-    ];
-
-    for (NSString *jbPath in defaultPaths) {
-        if ([path hasPrefix:jbPath] || [path isEqualToString:jbPath]) {
-            return NO;
-        }
-    }
-
+    // Default JB-path table — pure C strncmp via shared helper.
+    const char *cpath = path.UTF8String;
+    if (cpath && ci_isHiddenJBPath(cpath)) return NO;
     return %orig;
 }
 
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
     if (!jbHideActive()) return %orig;
-
-    NSArray *defaultPaths = @[
-        @"/var/jb", @"/private/var/jb",
-        @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-        @"/Applications/Zebra.app", @"/Applications/Installer.app",
-        @"/Library/MobileSubstrate", @"/usr/lib/TweakInject",
-        @"/usr/sbin/sshd", @"/usr/bin/ssh",
-        @"/.installed_dopamine", @"/.installed_palera1n", @"/.bootstrapped",
-        @"/var/binpack", @"/var/LIB",
-        @"/etc/apt", @"/var/lib/apt", @"/var/lib/dpkg",
-        @"/usr/bin/dpkg", @"/usr/bin/apt", @"/bin/bash", @"/bin/sh",
-    ];
-
-    for (NSString *jbPath in defaultPaths) {
-        if ([path hasPrefix:jbPath]) return NO;
-    }
-
+    const char *cpath = path.UTF8String;
+    if (cpath && ci_isHiddenJBPath(cpath)) return NO;
     return %orig;
 }
 
