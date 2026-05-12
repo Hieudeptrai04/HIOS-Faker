@@ -1446,23 +1446,58 @@ static CLLocation *buildFakeLocation(void) {
 
 %end
 
-// REMOVED 2026-05-08: NSDictionary +dictionaryWithContentsOfFile:/URL:
-// hook caused a 4-second lag when pressing Zalo's register button.
-// The hook itself only added 3x containsString calls per plist read,
-// but Zalo's register flow loads HUNDREDS of plist resources (i18n
-// strings, SDK configs, cache files) and every one of them now had
-// to detour through our class-method swizzle. Class-method hooks via
-// Logos on NSDictionary (a class cluster) carry extra dispatcher
-// overhead that compounds. Net effect: register button stall.
+// RE-ADDED 2026-05-12 (perf-safe): SystemVersion.plist direct-read leak.
 //
-// Coverage loss: apps reading SystemVersion.plist directly will now
-// see real ProductVersion/BuildVersion. The leak still exists at the
-// MG path but we have UIDevice._deviceInfoForKey: catching most.
-// Cheaper alternatives if we revisit:
-//   1. Hook open()/openat() syscall and rewrite SystemVersion.plist
-//      reads — but file I/O is hot-path too.
-//   2. Hook CFPreferencesCopyValue specifically for system version.
-//   3. Provide spoof via per-app overlay file in container.
+// AIDA64 + Apple Intelligence detection libs + many device-info SDKs
+// bypass MGCopyAnswer and read /System/Library/CoreServices/SystemVersion
+// .plist directly via -[NSDictionary dictionaryWithContentsOfFile:].
+// They get ProductBuildVersion + ProductVersion straight from the OS
+// image and ignore our MG hooks. Confirmed on iPhone where AIDA64
+// reported the real Build 20H360 while our spoofed ProductVersion was
+// 16.7.1 — anti-fraud sees the mismatch and bans.
+//
+// Previous removal (commit 42a6f58) was justified at the time: the old
+// hook had no path filter and detoured EVERY plist read (Zalo's
+// register flow loads HUNDREDS of plist resources for i18n/SDK config).
+// This re-add applies a UTF-8 strstr filter as the FIRST line: if the
+// path doesn't contain "SystemVersion" we %orig and return in ~50ns,
+// well below the 1µs/call budget. Only SystemVersion plist reads pay
+// the spoof cost — about 5-10 reads per app launch, total <1ms.
+
+static inline BOOL ci_isSystemVersionPlistPath(NSString *path) {
+    if (path.length < 20) return NO;
+    const char *cpath = path.UTF8String;
+    if (!cpath) return NO;
+    // Two known canonical paths + the /var/jb mirror that rootless tools sometimes
+    // proxy reads through.
+    return strstr(cpath, "/SystemVersion.plist") != NULL ||
+           strstr(cpath, "/CoreServices/SystemVersion") != NULL;
+}
+
+static NSDictionary *ci_spoofSystemVersionDict(NSDictionary *orig) {
+    if (!orig || !fakeLayer(@"sysosversion")) return orig;
+    NSString *fakeVer   = getConfigStr(@"systemVersion");
+    NSString *fakeBuild = getConfigStr(@"BuildVersion");
+    if (!fakeVer && !fakeBuild) return orig;
+    NSMutableDictionary *m = [orig mutableCopy];
+    if (fakeVer)   m[@"ProductVersion"]      = fakeVer;
+    if (fakeBuild) m[@"ProductBuildVersion"] = fakeBuild;
+    return [m copy];
+}
+
+%hook NSDictionary
+
++ (NSDictionary *)dictionaryWithContentsOfFile:(NSString *)path {
+    if (!ci_isSystemVersionPlistPath(path)) return %orig;  // fast path 99.9% of calls
+    return ci_spoofSystemVersionDict(%orig);
+}
+
++ (NSDictionary *)dictionaryWithContentsOfURL:(NSURL *)url {
+    if (!ci_isSystemVersionPlistPath(url.path)) return %orig;
+    return ci_spoofSystemVersionDict(%orig);
+}
+
+%end
 
 // ============================================================
 // APNS PUSH TOKEN SPOOF — break server-side device correlation.
