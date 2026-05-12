@@ -572,16 +572,170 @@ static NSDictionary *ci_fetchProxyGeo(NSString *url) {
     return json;
 }
 
+// === Canonical mobile-carrier picker per country ===
+// Returns @[carrierName, mcc, mnc, iso] randomly chosen from a country's
+// actual mobile operators. Used to AVOID writing the raw ISP name returned
+// by ip-api (e.g. "NXKY Vietnam Company Limited" — a wired ISP, not a
+// cellular carrier) into carrierName. Zalo's anti-fraud expects mobile
+// MCC/MNC to be paired with a real mobile-carrier brand; an ISP name +
+// mobile MCC/MNC pair is a contradiction it can detect.
+static NSArray *ci_pickMobileCarrierForCountry(NSString *cc) {
+    if (cc.length == 0) return nil;
+    static NSDictionary *m = nil;
+    if (!m) m = @{
+        @"VN": @[
+            @[@"Viettel",      @"452", @"04", @"vn"],
+            @[@"MobiFone",     @"452", @"01", @"vn"],
+            @[@"Vinaphone",    @"452", @"02", @"vn"],
+            @[@"Vinaphone",    @"452", @"03", @"vn"],
+            @[@"Vietnamobile", @"452", @"05", @"vn"],
+            @[@"Gmobile",      @"452", @"07", @"vn"],
+        ],
+        @"US": @[
+            @[@"T-Mobile",     @"310", @"260", @"us"],
+            @[@"T-Mobile",     @"310", @"160", @"us"],
+            @[@"AT&T",         @"310", @"410", @"us"],
+            @[@"AT&T",         @"310", @"150", @"us"],
+            @[@"Verizon",      @"311", @"480", @"us"],
+            @[@"Verizon",      @"310", @"012", @"us"],
+        ],
+        @"GB": @[
+            @[@"EE",           @"234", @"30",  @"gb"],
+            @[@"O2",           @"234", @"10",  @"gb"],
+            @[@"Vodafone",     @"234", @"15",  @"gb"],
+            @[@"Three",        @"234", @"20",  @"gb"],
+        ],
+        @"TH": @[
+            @[@"AIS",          @"520", @"03",  @"th"],
+            @[@"TrueMove H",   @"520", @"04",  @"th"],
+            @[@"DTAC",         @"520", @"01",  @"th"],
+            @[@"DTAC",         @"520", @"05",  @"th"],
+        ],
+        @"SG": @[
+            @[@"Singtel",      @"525", @"01",  @"sg"],
+            @[@"StarHub",      @"525", @"05",  @"sg"],
+            @[@"M1",           @"525", @"03",  @"sg"],
+        ],
+        @"PH": @[
+            @[@"Smart",        @"515", @"03",  @"ph"],
+            @[@"Globe",        @"515", @"02",  @"ph"],
+        ],
+        @"ID": @[
+            @[@"Telkomsel",    @"510", @"10",  @"id"],
+            @[@"Indosat",      @"510", @"01",  @"id"],
+            @[@"XL Axiata",    @"510", @"11",  @"id"],
+        ],
+        @"MY": @[
+            @[@"Maxis",        @"502", @"12",  @"my"],
+            @[@"Celcom",       @"502", @"13",  @"my"],
+            @[@"DiGi",         @"502", @"16",  @"my"],
+        ],
+        @"JP": @[
+            @[@"NTT DOCOMO",   @"440", @"10",  @"jp"],
+            @[@"au by KDDI",   @"440", @"50",  @"jp"],
+            @[@"SoftBank",     @"440", @"20",  @"jp"],
+        ],
+        @"KR": @[
+            @[@"SK Telecom",   @"450", @"05",  @"kr"],
+            @[@"KT",           @"450", @"08",  @"kr"],
+            @[@"LG U+",        @"450", @"06",  @"kr"],
+        ],
+        @"TW": @[
+            @[@"Chunghwa Telecom",  @"466", @"92", @"tw"],
+            @[@"Taiwan Mobile",     @"466", @"97", @"tw"],
+            @[@"FarEasTone",        @"466", @"01", @"tw"],
+        ],
+        @"HK": @[
+            @[@"CSL",          @"454", @"00",  @"hk"],
+            @[@"3 HK",          @"454", @"03",  @"hk"],
+            @[@"China Mobile HK", @"454", @"12", @"hk"],
+        ],
+        @"AU": @[
+            @[@"Telstra",      @"505", @"01",  @"au"],
+            @[@"Optus",        @"505", @"02",  @"au"],
+            @[@"Vodafone AU",  @"505", @"03",  @"au"],
+        ],
+    };
+    NSArray *list = m[cc.uppercaseString];
+    if (list.count == 0) return nil;
+    return list[arc4random_uniform((uint32_t)list.count)];
+}
+
+// === Canonical IANA timezone per country ===
+// ip-api sometimes returns regional aliases (Asia/Bangkok for VN IPs even
+// though Vietnam's canonical zone is Asia/Ho_Chi_Minh). Apple's CFTimeZone
+// stores Asia/Ho_Chi_Minh — if we report Bangkok while the device's
+// internal CFTimeZone says Ho_Chi_Minh, Zalo sees a mismatch.
+static NSString *ci_canonicalTimezoneForCountry(NSString *cc) {
+    if (cc.length == 0) return nil;
+    static NSDictionary *m = nil;
+    if (!m) m = @{
+        @"VN": @"Asia/Ho_Chi_Minh",   @"TH": @"Asia/Bangkok",
+        @"SG": @"Asia/Singapore",     @"PH": @"Asia/Manila",
+        @"ID": @"Asia/Jakarta",       @"MY": @"Asia/Kuala_Lumpur",
+        @"JP": @"Asia/Tokyo",         @"KR": @"Asia/Seoul",
+        @"CN": @"Asia/Shanghai",      @"TW": @"Asia/Taipei",
+        @"HK": @"Asia/Hong_Kong",     @"IN": @"Asia/Kolkata",
+        @"US": @"America/New_York",   @"CA": @"America/Toronto",
+        @"MX": @"America/Mexico_City", @"BR": @"America/Sao_Paulo",
+        @"GB": @"Europe/London",      @"FR": @"Europe/Paris",
+        @"DE": @"Europe/Berlin",      @"IT": @"Europe/Rome",
+        @"ES": @"Europe/Madrid",      @"NL": @"Europe/Amsterdam",
+        @"SE": @"Europe/Stockholm",   @"AU": @"Australia/Sydney",
+    };
+    return m[cc.uppercaseString];
+}
+
+// === Realistic WiFi SSID per country ===
+// "FPT-Home" / "Viettel-WiFi" only exist in Vietnam. If we claim US IP +
+// US carrier but wifiSSID is a Vietnamese ISP, the inconsistency lights up
+// in any tier-1 anti-fraud. Picks a believable home-router SSID format
+// from the country's actual common ISP/router brands.
+static NSString *ci_wifiSSIDForCountry(NSString *cc) {
+    if (cc.length == 0) return nil;
+    static NSDictionary *m = nil;
+    if (!m) m = @{
+        @"VN": @[@"FPT-Home", @"VNPT-Home", @"Viettel-WiFi", @"FPT_5G",
+                 @"TP-Link", @"Tenda_WiFi", @"HOME-WIFI", @"NHA-WIFI"],
+        @"US": @[@"NETGEAR91", @"Linksys03842", @"xfinitywifi", @"ATT-WIFI-Home",
+                 @"TMOBILE-5G", @"home_2.4G", @"MyHomeWiFi", @"Spectrum-WiFi"],
+        @"GB": @[@"SKY-2G", @"BT-Home", @"Virgin-Media-XX", @"TalkTalk-WiFi",
+                 @"Plusnet-2G", @"EE-BrightBox"],
+        @"TH": @[@"AIS-Fibre", @"TrueMove_H", @"3BB-Home", @"DTAC-WIFI",
+                 @"@TRUEWIFI", @"AIS-3BB"],
+        @"SG": @[@"Singtel-Home", @"StarHub-Home", @"M1-Home", @"MyRepublic_5G"],
+        @"PH": @[@"PLDTHomeFibr", @"Globe-At-Home", @"Smart-WiFi", @"Converge"],
+        @"ID": @[@"Indihome", @"FirstMedia", @"MyRepublic_ID", @"Biznet"],
+        @"MY": @[@"unifi-2G", @"Maxis-Home", @"TIME-Fibre", @"DiGi-Home"],
+        @"JP": @[@"NTT_HOME", @"docomo-NET", @"Buffalo-XXXX", @"NEC-Aterm"],
+        @"KR": @[@"KT_GiGA", @"SKbroadband", @"U+_NET", @"LG-HelloVision"],
+        @"TW": @[@"Chunghwa-CHT", @"FET-Net", @"TaiwanMobile-Home"],
+        @"HK": @[@"CSL-Home", @"PCCW-HomeFibre", @"HKBN-1000M"],
+        @"AU": @[@"Telstra-Home", @"Optus-Internet", @"TPG-WiFi"],
+    };
+    NSArray *list = m[cc.uppercaseString];
+    if (list.count == 0) return nil;
+    return list[arc4random_uniform((uint32_t)list.count)];
+}
+
 // Apply ip-api geo response to config. Returns YES if applied.
+//
+// CRITICAL: this is what makes the map shown in Zalo (and the GPS that
+// Apple/Zalo background-monitor) match the IP your proxy reports. Without
+// this, GPS = random VN coords + IP = random US proxy = instant detection.
+//
+// Propagation per response field:
+//   lat/lon       → latitude/longitude (+2km jitter for sensor realism)
+//   countryCode   → locale, currency, language, carrier brand, MCC/MNC, SSID
+//   timezone      → canonical IANA name (override ip-api regional aliases)
+//   query (IP)    → lastResetIP (for the user-visible report)
 static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     if (!geo) return NO;
     id latV = geo[@"lat"], lonV = geo[@"lon"];
     if (!latV || !lonV) return NO;
     CIConfigManager *cm = [CIConfigManager shared];
 
-    // Match proxy IP location — small jitter (~2km) only for GPS sensor
-    // realism so every reset isn't pixel-identical. Big jitter here would
-    // create an IP/GPS mismatch and defeat the point of the proxy.
+    // GPS: pin to proxy IP location + tiny ~2km jitter only.
     double lat = 0, lon = 0;
     ci_jitterCoordKm([latV doubleValue], [lonV doubleValue], 2.0, &lat, &lon);
     double alt = ci_randDouble(5.0, 180.0);
@@ -590,31 +744,55 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     [cm setObject:[NSString stringWithFormat:@"%.2f", alt] forKey:@"altitude"];
     ci_writeLocationFuzz(cm);
 
-    NSString *tz = geo[@"timezone"];
-    if ([tz isKindOfClass:[NSString class]] && tz.length) [cm setObject:tz forKey:@"timezoneName"];
+    NSString *cc = ([geo[@"countryCode"] isKindOfClass:[NSString class]]
+                    ? [geo[@"countryCode"] uppercaseString] : @"");
 
-    NSString *cc = geo[@"countryCode"];
-    if ([cc isKindOfClass:[NSString class]] && cc.length) {
-        NSArray *info = ci_countryMap()[cc.uppercaseString];
+    // Timezone: prefer our canonical IANA per-country mapping; fall back to
+    // whatever ip-api returned (could be a regional alias).
+    NSString *canonTZ = ci_canonicalTimezoneForCountry(cc);
+    if (canonTZ.length) {
+        [cm setObject:canonTZ forKey:@"timezoneName"];
+    } else if ([geo[@"timezone"] isKindOfClass:[NSString class]] &&
+               [geo[@"timezone"] length] > 0) {
+        [cm setObject:geo[@"timezone"] forKey:@"timezoneName"];
+    }
+
+    if (cc.length) {
+        // Carrier: pick a real mobile operator from this country (random across
+        // resets so multiple accounts on the same proxy IP don't all claim the
+        // same carrier). NEVER use the raw ISP string — it's usually a wired
+        // ISP (NXKY, FPT Telecom) that doesn't pair with a cellular MCC/MNC.
+        NSArray *carrier = ci_pickMobileCarrierForCountry(cc);
+        if (carrier.count >= 4) {
+            [cm setObject:carrier[0] forKey:@"carrierName"];
+            [cm setObject:carrier[1] forKey:@"carrierMCC"];
+            [cm setObject:carrier[2] forKey:@"carrierMNC"];
+            [cm setObject:carrier[3] forKey:@"carrierISO"];
+        }
+
+        // Locale + currency + language from the static country map.
+        NSArray *info = ci_countryMap()[cc];
         if (info.count >= 7) {
-            [cm setObject:info[0] forKey:@"carrierMCC"];
-            [cm setObject:info[1] forKey:@"carrierMNC"];
+            // Don't overwrite carrier from the static map — already done above.
             [cm setObject:info[3] forKey:@"localeIdentifier"];
-            [cm setObject:cc.uppercaseString forKey:@"localeCountryCode"];
+            [cm setObject:cc       forKey:@"localeCountryCode"];
             [cm setObject:info[4] forKey:@"localeCurrencyCode"];
             [cm setObject:info[5] forKey:@"localeLanguageCode"];
-            [cm setObject:info[6] forKey:@"carrierISO"];
-            // Prefer real ISP name from ip-api so carrier matches the proxy's ASN.
-            NSString *isp = geo[@"isp"]; if (![isp isKindOfClass:[NSString class]]) isp = nil;
-            [cm setObject:(isp.length ? isp : info[2]) forKey:@"carrierName"];
         } else {
-            // Unknown country — at least set the country code so locale is broadly right.
-            [cm setObject:cc.uppercaseString forKey:@"localeCountryCode"];
-            NSString *isp = geo[@"isp"];
-            if ([isp isKindOfClass:[NSString class]] && isp.length)
-                [cm setObject:isp forKey:@"carrierName"];
+            [cm setObject:cc forKey:@"localeCountryCode"];
         }
+
+        // WiFi SSID: pick a country-appropriate name. "FPT-Home" with a US IP
+        // would be a giveaway; we want the SSID to look like a local ISP's
+        // default router name.
+        NSString *ssid = ci_wifiSSIDForCountry(cc);
+        if (ssid.length) [cm setObject:ssid forKey:@"wifiSSID"];
+
+        // Region code stays from countryCode for ModelNumber suffix (VN/A).
+        [cm setObject:cc forKey:@"RegionCode"];
+        [cm setObject:[NSString stringWithFormat:@"%@/A", cc] forKey:@"RegionInfo"];
     }
+
     NSString *q = geo[@"query"];
     if ([q isKindOfClass:[NSString class]] && q.length) [cm setObject:q forKey:@"lastResetIP"];
     return YES;
