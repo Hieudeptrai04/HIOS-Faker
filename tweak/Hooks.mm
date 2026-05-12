@@ -359,6 +359,109 @@ extern "C" BOOL ci_isHiddenJBPath(const char *path) {
 }
 
 // ============================================================
+// SystemVersion.plist redirect — defeats AIDA64 / device-info SDKs that
+// bypass MGCopyAnswer and NSDictionary class hooks and read the file via
+// NSPropertyListSerialization, CFPropertyList, or -initWithContentsOfURL:
+// (any of which ultimately call open()).
+//
+// Strategy: pre-build a fake SystemVersion.plist in NSTemporaryDirectory()
+// with our spoofed ProductVersion + ProductBuildVersion, then hook open()
+// + openat() to redirect any read of /System/.../SystemVersion.plist to
+// the tmp file. Result: every API path that ends up calling open() sees
+// the fake content, no matter how high-level the caller.
+// ============================================================
+static char g_fakeSysVerTmpPath[256]  = {0};
+static char g_lastSpoofedVer[64]      = {0};
+static char g_lastSpoofedBuild[64]    = {0};
+
+static void ci_writeFakeSysVerPlistIfNeeded(void) {
+    @autoreleasepool {
+        NSString *ver = getConfigStr(@"systemVersion");
+        NSString *bld = getConfigStr(@"BuildVersion");
+        if (ver.length == 0 || bld.length == 0) return;
+        const char *vc = ver.UTF8String;
+        const char *bc = bld.UTF8String;
+        if (!vc || !bc) return;
+        // Skip rewrite if config unchanged since last write.
+        if (g_fakeSysVerTmpPath[0] != 0 &&
+            strcmp(vc, g_lastSpoofedVer)   == 0 &&
+            strcmp(bc, g_lastSpoofedBuild) == 0) {
+            return;
+        }
+        NSDictionary *dict = @{
+            @"BuildID":             [[NSUUID UUID] UUIDString],
+            @"ProductBuildVersion": bld,
+            @"ProductCopyright":    @"1983-2025 Apple Inc.",
+            @"ProductName":         @"iPhone OS",
+            @"ProductVersion":      ver,
+            @"SystemImageID":       [[NSUUID UUID] UUIDString],
+        };
+        NSData *data = [NSPropertyListSerialization
+            dataWithPropertyList:dict
+                          format:NSPropertyListXMLFormat_v1_0
+                         options:0 error:nil];
+        if (!data) return;
+        NSString *tmpPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:@"ci_fake_sysver.plist"];
+        if ([data writeToFile:tmpPath atomically:YES]) {
+            strncpy(g_fakeSysVerTmpPath, tmpPath.UTF8String, sizeof(g_fakeSysVerTmpPath)-1);
+            g_fakeSysVerTmpPath[sizeof(g_fakeSysVerTmpPath)-1] = 0;
+            strncpy(g_lastSpoofedVer, vc, sizeof(g_lastSpoofedVer)-1);
+            g_lastSpoofedVer[sizeof(g_lastSpoofedVer)-1] = 0;
+            strncpy(g_lastSpoofedBuild, bc, sizeof(g_lastSpoofedBuild)-1);
+            g_lastSpoofedBuild[sizeof(g_lastSpoofedBuild)-1] = 0;
+        }
+    }
+}
+
+static inline BOOL ci_isSystemVersionPath(const char *path) {
+    if (!path || path[0] != '/') return NO;
+    // Skip OUR tmp file to avoid recursion when writeToFile opens it.
+    if (g_fakeSysVerTmpPath[0] && strcmp(path, g_fakeSysVerTmpPath) == 0) return NO;
+    // Apple's canonical path + common alternates.
+    return strstr(path, "/SystemVersion.plist") != NULL;
+}
+
+// open() hook — variadic when O_CREAT / O_TMPFILE.
+static int (*orig_open)(const char *path, int flags, ...) = NULL;
+static int hooked_open(const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (path && ci_isSystemVersionPath(path) && fakeLayer(@"sysosversion")) {
+        ci_writeFakeSysVerPlistIfNeeded();
+        if (g_fakeSysVerTmpPath[0]) {
+            return orig_open(g_fakeSysVerTmpPath, flags, mode);
+        }
+    }
+    return orig_open(path, flags, mode);
+}
+
+// openat() hook — newer iOS frameworks (CFNetwork, Foundation) use this
+// with AT_FDCWD to read system plists.
+static int (*orig_openat)(int dirfd, const char *path, int flags, ...) = NULL;
+static int hooked_openat(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    if (path && ci_isSystemVersionPath(path) && fakeLayer(@"sysosversion")) {
+        ci_writeFakeSysVerPlistIfNeeded();
+        if (g_fakeSysVerTmpPath[0]) {
+            return orig_openat(dirfd, g_fakeSysVerTmpPath, flags, mode);
+        }
+    }
+    return orig_openat(dirfd, path, flags, mode);
+}
+
+// ============================================================
 // stat hook
 // ============================================================
 static int (*orig_stat)(const char *path, struct stat *buf) = NULL;
@@ -1438,6 +1541,19 @@ extern "C" void initCLvlHooks(void) {
     if (fopen_sym && !orig_fopen) {
         MSHookFunction(fopen_sym, (void *)hooked_fopen, (void **)&orig_fopen);
         NSLog(@"[ChangeInfoIos] fopen hooked");
+    }
+
+    // open + openat — required to redirect SystemVersion.plist reads from
+    // every API path (NSPropertyListSerialization, CFPropertyList, etc.).
+    void *open_sym = dlsym(RTLD_DEFAULT, "open");
+    if (open_sym && !orig_open) {
+        MSHookFunction(open_sym, (void *)hooked_open, (void **)&orig_open);
+        NSLog(@"[ChangeInfoIos] open hooked");
+    }
+    void *openat_sym = dlsym(RTLD_DEFAULT, "openat");
+    if (openat_sym && !orig_openat) {
+        MSHookFunction(openat_sym, (void *)hooked_openat, (void **)&orig_openat);
+        NSLog(@"[ChangeInfoIos] openat hooked");
     }
 
     // dlopen
