@@ -414,15 +414,34 @@ static void ci_writeFakeSysVerPlistIfNeeded(void) {
     }
 }
 
+// Strict canonical path — only Apple's official SystemVersion.plist gets
+// redirected. Previous strstr-based filter accidentally matched any path
+// ending with "/SystemVersion.plist" (e.g., some framework's private
+// resource bundle), causing those apps to receive our spoofed dict and
+// fail to parse → crash. AIDA64 crashed on launch from this.
+static const char kSystemVersionCanonicalPath[] =
+    "/System/Library/CoreServices/SystemVersion.plist";
+
 static inline BOOL ci_isSystemVersionPath(const char *path) {
-    if (!path || path[0] != '/') return NO;
-    // Skip OUR tmp file to avoid recursion when writeToFile opens it.
+    if (!path) return NO;
+    // Skip our own tmp file (writeToFile opens it during plist write).
     if (g_fakeSysVerTmpPath[0] && strcmp(path, g_fakeSysVerTmpPath) == 0) return NO;
-    // Apple's canonical path + common alternates.
-    return strstr(path, "/SystemVersion.plist") != NULL;
+    return strcmp(path, kSystemVersionCanonicalPath) == 0;
 }
 
-// open() hook — variadic when O_CREAT / O_TMPFILE.
+// open()/openat() hooks deliberately do NOT call fakeLayer() — fakeLayer
+// uses @synchronized + dispatch_once + plist load that can re-enter the
+// open() path on first call, racing with the hook's own recursion guard.
+// Use direct getConfigBool() (just an NSDict lookup, no I/O) and the
+// is_critical_process() filter so we never disturb SpringBoard / installd /
+// daemons that legitimately need the real SystemVersion.plist.
+static BOOL ci_sysVerSpoofActive(void) {
+    if (is_critical_process()) return NO;
+    if (getConfigBool(@"_ci_skipall")) return NO;
+    if (!getConfigBool(@"fake_sysosversion")) return NO;
+    return YES;
+}
+
 static int (*orig_open)(const char *path, int flags, ...) = NULL;
 static int hooked_open(const char *path, int flags, ...) {
     mode_t mode = 0;
@@ -432,7 +451,7 @@ static int hooked_open(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (path && ci_isSystemVersionPath(path) && fakeLayer(@"sysosversion")) {
+    if (path && ci_isSystemVersionPath(path) && ci_sysVerSpoofActive()) {
         ci_writeFakeSysVerPlistIfNeeded();
         if (g_fakeSysVerTmpPath[0]) {
             return orig_open(g_fakeSysVerTmpPath, flags, mode);
@@ -441,8 +460,6 @@ static int hooked_open(const char *path, int flags, ...) {
     return orig_open(path, flags, mode);
 }
 
-// openat() hook — newer iOS frameworks (CFNetwork, Foundation) use this
-// with AT_FDCWD to read system plists.
 static int (*orig_openat)(int dirfd, const char *path, int flags, ...) = NULL;
 static int hooked_openat(int dirfd, const char *path, int flags, ...) {
     mode_t mode = 0;
@@ -452,7 +469,7 @@ static int hooked_openat(int dirfd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    if (path && ci_isSystemVersionPath(path) && fakeLayer(@"sysosversion")) {
+    if (path && ci_isSystemVersionPath(path) && ci_sysVerSpoofActive()) {
         ci_writeFakeSysVerPlistIfNeeded();
         if (g_fakeSysVerTmpPath[0]) {
             return orig_openat(dirfd, g_fakeSysVerTmpPath, flags, mode);
