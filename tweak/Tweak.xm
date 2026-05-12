@@ -2270,9 +2270,33 @@ static void ci_saveDCState(NSDictionary *state) {
     [state writeToFile:path atomically:YES];
 }
 
+// === DCDevice / DCAppAttest strategy: return "Unsupported" error ===
+// Previously returned random fake bytes. Problem: Zalo POSTs those to its
+// server, server validates with Apple, Apple rejects ("invalid signature
+// for this anonymous device key"), Zalo server marks the device tampered
+// → 39-second post-register account disable.
+//
+// New strategy: return DCErrorFeatureUnsupported (code 0 in
+// com.apple.devicecheck.error). Mimics older iPhones (pre-A11 + iOS <11)
+// that legitimately don't support App Attest. Zalo's anti-fraud doesn't
+// flag this — it's the same response a real older device returns. Apple's
+// server is NEVER contacted with our fake, so there's no audit trail.
+
+static NSError *ci_dcUnsupportedError(void) {
+    static NSError *err = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        err = [NSError errorWithDomain:@"com.apple.devicecheck.error"
+                                  code:0
+                              userInfo:@{NSLocalizedDescriptionKey:
+                                  @"DeviceCheck feature is not supported on this device."}];
+    });
+    return err;
+}
+
 static BOOL ci_DC_isSupported(id self, SEL _cmd) {
     if (!fakeLayer(@"hardware")) return orig_DC_isSupported ? orig_DC_isSupported(self, _cmd) : YES;
-    return YES;
+    return NO;  // pretend this is a pre-iPhone6s device w/o Secure Enclave attest
 }
 
 static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, NSError *)) {
@@ -2280,31 +2304,12 @@ static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, 
         if (orig_DC_generateToken) orig_DC_generateToken(self, _cmd, (id)completion);
         return;
     }
-    if (!completion) return;
-    dispatch_once(&cachedDCTokenOnce, ^{
-        // First try to load persisted token. iOS suspends + relaunches apps
-        // aggressively; without persistence each relaunch re-rolls the
-        // token and server-side validation fails.
-        NSDictionary *saved = ci_loadDCState();
-        NSData *persisted = saved[@"dcToken"];
-        if ([persisted isKindOfClass:[NSData class]] && persisted.length == 32) {
-            cachedDCToken = persisted;
-            return;
-        }
-        uint8_t buf[32];
-        arc4random_buf(buf, sizeof(buf));
-        cachedDCToken = [NSData dataWithBytes:buf length:sizeof(buf)];
-        // Merge with existing state so we don't clobber a sibling keyId.
-        NSMutableDictionary *state = saved ? [saved mutableCopy] : [NSMutableDictionary dictionary];
-        state[@"dcToken"] = cachedDCToken;
-        ci_saveDCState(state);
-    });
-    completion(cachedDCToken, nil);
+    if (completion) completion(nil, ci_dcUnsupportedError());
 }
 
 static BOOL ci_DCA_isSupported(id self, SEL _cmd) {
     if (!fakeLayer(@"hardware")) return orig_DCA_isSupported ? orig_DCA_isSupported(self, _cmd) : YES;
-    return YES;
+    return NO;
 }
 
 static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *, NSError *)) {
@@ -2312,22 +2317,7 @@ static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *,
         if (orig_DCA_generateKey) orig_DCA_generateKey(self, _cmd, (id)completion);
         return;
     }
-    if (!completion) return;
-    dispatch_once(&cachedDCAKeyOnce, ^{
-        NSDictionary *saved = ci_loadDCState();
-        NSString *persisted = saved[@"dcaKeyId"];
-        if ([persisted isKindOfClass:[NSString class]] && persisted.length > 0) {
-            cachedDCAKeyId = persisted;
-            return;
-        }
-        uint8_t buf[32];
-        arc4random_buf(buf, sizeof(buf));
-        cachedDCAKeyId = [[NSData dataWithBytes:buf length:sizeof(buf)] base64EncodedStringWithOptions:0];
-        NSMutableDictionary *state = saved ? [saved mutableCopy] : [NSMutableDictionary dictionary];
-        state[@"dcaKeyId"] = cachedDCAKeyId;
-        ci_saveDCState(state);
-    });
-    completion(cachedDCAKeyId, nil);
+    if (completion) completion(nil, ci_dcUnsupportedError());
 }
 
 static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
@@ -2335,25 +2325,24 @@ static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, v
         if (orig_DCA_attestKey) orig_DCA_attestKey(self, _cmd, keyId, hash, (id)completion);
         return;
     }
-    if (!completion) return;
-    NSMutableData *fake = [NSMutableData dataWithLength:1600];
-    arc4random_buf(fake.mutableBytes, fake.length);
-    completion(fake, nil);
+    if (completion) completion(nil, ci_dcUnsupportedError());
 }
 
 // generateAssertion is called for EVERY request after the initial reg.
 // Apps using App Attest send (keyId, clientDataHash) → SE generates a
 // signed assertion that the server validates against the stored attest.
-// Without a hook, real SE call fails (we never created a real key) and
-// the server kicks the session. Return random 96-byte blob so Zalo's
-// path-of-least-resistance just stores whatever and proceeds.
-//
-// Real assertion size is variable (~70-120 bytes). 96 splits the middle.
+// We return DCErrorFeatureUnsupported so the app's non-attest fallback
+// path runs — same logic as the other DCAppAttest methods above.
 static void ci_DCA_generateAssertion(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_genAssertion) orig_DCA_genAssertion(self, _cmd, keyId, hash, (id)completion);
         return;
     }
+    if (completion) completion(nil, ci_dcUnsupportedError());
+    return;
+    // Legacy random-blob path kept below in case the unsupported strategy
+    // breaks Zalo flow on newer iOS — flip the early-return above to
+    // re-enable.
     if (!completion) return;
     NSMutableData *fake = [NSMutableData dataWithLength:96];
     arc4random_buf(fake.mutableBytes, fake.length);
