@@ -874,6 +874,79 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:hwMachine  forKey:@"HWModelStr"];     // align legacy alias to current preset
     [cm setObject:hwMachine  forKey:@"hw_model"];       // align legacy alias to current preset
     [cm setObject:hwMachine  forKey:@"uname_machine"];
+
+    // === Hardware capability booleans, derived from productType ===
+    // Hooked by MGGetBoolAnswer (HasFaceID, HasTouchID, HasHomeButton,
+    // HasOLEDDisplay, Has5G, HasNFC). Wrong values → instant detection
+    // (e.g. claim iPhone XS Max but Has FaceID=NO + HasHomeButton=YES).
+    //
+    // Generation buckets:
+    //   - "iPhone8,1/2/4", "iPhone9,1/2", "iPhone10,1/2", "iPhone12,8":
+    //       TouchID + HomeButton, no FaceID, LCD
+    //   - "iPhone10,3/6", "iPhone11,*", "iPhone12,1/3/5":
+    //       FaceID + no HomeButton; OLED on Pro/X/XS, LCD on XR/11
+    //   - "iPhone13,*": FaceID, OLED, 5G
+    BOOL hasFaceID    = NO;
+    BOOL hasTouchID   = NO;
+    BOOL hasHomeButton = NO;
+    BOOL hasOLED      = NO;
+    BOOL has5G        = NO;
+    // Pre-FaceID generation (TouchID era).
+    if ([productTyp hasPrefix:@"iPhone8,"] ||
+        [productTyp hasPrefix:@"iPhone9,"] ||
+        [productTyp hasPrefix:@"iPhone10,1"] ||
+        [productTyp hasPrefix:@"iPhone10,2"] ||
+        [productTyp isEqualToString:@"iPhone12,8"]) {
+        hasTouchID = YES; hasHomeButton = YES; hasFaceID = NO; hasOLED = NO;
+    }
+    // FaceID generation, LCD body (XR, 11).
+    else if ([productTyp isEqualToString:@"iPhone11,8"] ||
+             [productTyp isEqualToString:@"iPhone12,1"]) {
+        hasFaceID = YES; hasTouchID = NO; hasHomeButton = NO; hasOLED = NO;
+    }
+    // FaceID + OLED (X, XS, XS Max, 11 Pro, 11 Pro Max).
+    else if ([productTyp isEqualToString:@"iPhone10,3"] ||
+             [productTyp isEqualToString:@"iPhone10,6"] ||
+             [productTyp isEqualToString:@"iPhone11,2"] ||
+             [productTyp isEqualToString:@"iPhone11,4"] ||
+             [productTyp isEqualToString:@"iPhone11,6"] ||
+             [productTyp isEqualToString:@"iPhone12,3"] ||
+             [productTyp isEqualToString:@"iPhone12,5"]) {
+        hasFaceID = YES; hasOLED = YES; hasTouchID = NO; hasHomeButton = NO;
+    }
+    // iPhone 12 series — FaceID + OLED + 5G.
+    else if ([productTyp hasPrefix:@"iPhone13,"]) {
+        hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
+    }
+    [cm setObject:@(hasFaceID)     forKey:@"HasFaceID"];
+    [cm setObject:@(hasTouchID)    forKey:@"HasTouchID"];
+    [cm setObject:@(hasHomeButton) forKey:@"HasHomeButton"];
+    [cm setObject:@(hasOLED)       forKey:@"HasOLEDDisplay"];
+    [cm setObject:@(has5G)         forKey:@"Has5G"];
+    [cm setObject:@(YES)           forKey:@"HasNFC"];                  // every iPhone 6s+
+    [cm setObject:@(YES)           forKey:@"HasCellularConnectivity"]; // every iPhone has cellular
+
+    // === Activation timestamp — stable per profile, random 6-18 months back ===
+    // Stored as Cocoa-style ISO8601 string so MGCopyAnswer hook can return it
+    // verbatim. Only generate once per Reset (don't overwrite if already set
+    // so a single account's claimed device keeps the same activation date).
+    if (![cm objectForKey:@"InitialActivationDate"]) {
+        NSInteger daysAgo = 180 + (NSInteger)arc4random_uniform(360);  // 6-18 months
+        NSDate *activated = [NSDate dateWithTimeIntervalSinceNow:-(double)daysAgo * 86400.0];
+        NSDateFormatter *df = [NSDateFormatter new];
+        df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+        df.timeZone = [NSTimeZone timeZoneWithName:@"GMT"];
+        [cm setObject:[df stringFromDate:activated] forKey:@"InitialActivationDate"];
+        [cm setObject:@"Activated"                    forKey:@"ActivationState"];
+        [cm setObject:@(YES)                          forKey:@"ActivationStateAcknowledged"];
+    }
+
+    // === kern.boottime — fresh boot looks suspicious. Pick last 1h-7d ago. ===
+    // Tweak sysctlbyname hook returns this when apps query KERN_BOOTTIME.
+    NSInteger uptimeSec = 3600 + (NSInteger)arc4random_uniform(7 * 86400 - 3600);
+    [cm setObject:@(time(NULL) - uptimeSec) forKey:@"kern_boottime"];
+    [cm setObject:@(uptimeSec)              forKey:@"systemUptime"];
+
     [cm setObject:preset[3]  forKey:@"screenWidth"];
     [cm setObject:preset[4]  forKey:@"screenHeight"];
     [cm setObject:preset[5]  forKey:@"screenScale"];

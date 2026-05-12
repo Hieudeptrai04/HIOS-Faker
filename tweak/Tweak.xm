@@ -746,6 +746,33 @@ static void initMGKeyMap() {
         @"MobileSubscriberCountryCode": @"MobileSubscriberCountryCode",
         @"MobileSubscriberNetworkCode": @"MobileSubscriberNetworkCode",
         @"SIMTrayStatus":        @"SIMTrayStatus",
+        // === Hardware capability booleans — MUST match the model we claim. ===
+        // iPhone XS+ has FaceID, no TouchID, no HomeButton. iPhone 6s-iPhone 8
+        // has TouchID + HomeButton, no FaceID. If we claim iPhone XS Max but
+        // MGGetBoolAnswer("HasFaceID") returns NO (real older device), anti-
+        // fraud sees inconsistency instantly.
+        @"HasFaceID":            @"HasFaceID",
+        @"HasTouchID":           @"HasTouchID",
+        @"HasMesa":              @"HasTouchID",         // Mesa = Touch ID sensor
+        @"HasHomeButton":        @"HasHomeButton",
+        @"HasOLEDDisplay":       @"HasOLEDDisplay",
+        @"Has5GUW":              @"Has5G",
+        @"HasNFC":               @"HasNFC",
+        @"HasCellularConnectivity": @"HasCellularConnectivity",
+        @"HasBaseband":          @"HasCellularConnectivity",
+        // === Activation / lifecycle timestamps ===
+        // InitialActivationDate is when the device was first activated with
+        // Apple's iTunes/Setup. Server-side anti-fraud cross-references this
+        // against the phone number's registration window — a fresh device
+        // (today) registering a 6-month-old number flags as anomalous.
+        // Spoof to a random date 6-18 months ago.
+        @"InitialActivationDate": @"InitialActivationDate",
+        @"ActivationState":      @"ActivationState",
+        @"ActivationStateAcknowledged": @"ActivationStateAcknowledged",
+        // === Internal device strings used in fingerprinting libraries ===
+        @"DeviceVariant":        @"DeviceVariant",
+        @"DeviceVariantGUID":    @"DeviceVariantGUID",
+        @"RegulatoryModelNumber": @"RegulatoryModelNumber",
     };
 }
 

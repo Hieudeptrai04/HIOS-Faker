@@ -196,6 +196,47 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
         }
     }
 
+    // hw.cpufamily — chip family code. iOS apps fingerprinting performance
+    // tier read this; an "Apple A12" cpufamily on a device claiming iPhone 6
+    // is a red flag. Map well-known chip families per ProductType so the
+    // value always matches the claimed model.
+    if (strcmp(name, "hw.cpufamily") == 0 || strcmp(name, "hw.cpusubfamily") == 0) {
+        id val = getConfig(@"hw_cpufamily");
+        if (val && oldlenp && *oldlenp >= sizeof(uint32_t)) {
+            uint32_t fam = (uint32_t)[val unsignedIntValue];
+            memcpy(oldp, &fam, sizeof(uint32_t));
+            return 0;
+        }
+    }
+
+    // hw.tbfrequency — timer base frequency. Pinned per chip generation by
+    // Apple. Used by some anti-cheat / device-trust frameworks to derive an
+    // implicit chip ID. Spoofed value comes from config if app set it.
+    if (strcmp(name, "hw.tbfrequency") == 0) {
+        id val = getConfig(@"hw_tbfrequency");
+        if (val && oldlenp && *oldlenp >= sizeof(uint64_t)) {
+            uint64_t tb = ci_safeULL(val);
+            memcpy(oldp, &tb, sizeof(uint64_t));
+            return 0;
+        }
+    }
+
+    // kern.boottime — when the device booted. struct timeval = {sec, usec}.
+    // Read by app uptime calculations + anti-fraud freshness checks.
+    // The fake_uptime layer also affects this: when set, return our spoofed
+    // boottime so NSProcessInfo.systemUptime and direct sysctl agree.
+    if (strcmp(name, "kern.boottime") == 0 && fakeLayer(@"uptime")) {
+        id val = getConfig(@"kern_boottime");
+        if (val && oldlenp && *oldlenp >= sizeof(struct timeval)) {
+            struct timeval tv;
+            tv.tv_sec = (time_t)[val longLongValue];
+            tv.tv_usec = 0;
+            memcpy(oldp, &tv, sizeof(struct timeval));
+            *oldlenp = sizeof(struct timeval);
+            return 0;
+        }
+    }
+
     return ret;
 }
 
