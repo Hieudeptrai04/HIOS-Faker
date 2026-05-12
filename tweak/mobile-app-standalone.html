@@ -420,7 +420,7 @@ button{touch-action:manipulation;cursor:pointer;font-family:inherit;border:none;
       <div class="range-section select-only" data-range="device">
         <div class="range-hdr">
           <div class="range-title">iPhone Model Range</div>
-          <div class="range-vals"><span class="range-min" id="rangeDevMinLbl">iPhone 6</span><span class="range-sep">→</span><span class="range-max" id="rangeDevMaxLbl">iPhone 14 Pro Max</span></div>
+          <div class="range-vals"><span class="range-min" id="rangeDevMinLbl">iPhone 6</span><span class="range-sep">→</span><span class="range-max" id="rangeDevMaxLbl">iPhone 12 Pro Max</span></div>
         </div>
         <div class="range-slider" id="rangeDev">
           <div class="range-track"></div>
@@ -592,14 +592,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -611,14 +605,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -627,8 +618,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -1227,7 +1216,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -2375,14 +2364,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -2394,14 +2377,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -2410,8 +2390,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -3010,7 +2988,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -4158,14 +4136,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -4177,14 +4149,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -4193,8 +4162,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -4793,7 +4760,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -5941,14 +5908,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -5960,14 +5921,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -5976,8 +5934,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -6576,7 +6532,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -7724,14 +7680,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -7743,14 +7693,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -7759,8 +7706,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -8359,7 +8304,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -9507,14 +9452,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -9526,14 +9465,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -9542,8 +9478,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -10142,7 +10076,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,
@@ -11290,14 +11224,8 @@ var DEVICE_DATABASE = {
   'iPhone13,2': { marketing: 'iPhone 12', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,3': { marketing: 'iPhone 12 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
   'iPhone13,4': { marketing: 'iPhone 12 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8101', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A14 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,4': { marketing: 'iPhone 13 mini', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 375, screenH: 812, scale: 3, nativeW: 1080, nativeH: 2340, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,5': { marketing: 'iPhone 13', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 4294967296, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,2': { marketing: 'iPhone 13 Pro', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,3': { marketing: 'iPhone 13 Pro Max', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,7': { marketing: 'iPhone 14', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 390, screenH: 844, scale: 3, nativeW: 1170, nativeH: 2532, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone14,8': { marketing: 'iPhone 14 Plus', color: '#1F2020', enclosureColor: '#1F2020', boardId: '0x20', chipId: '0x8110', screenW: 428, screenH: 926, scale: 3, nativeW: 1284, nativeH: 2778, ram: 6442450944, cpuCores: 6, gpu: 'Apple A15 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,2': { marketing: 'iPhone 14 Pro', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 393, screenH: 852, scale: 3, nativeW: 1179, nativeH: 2556, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
-  'iPhone15,3': { marketing: 'iPhone 14 Pro Max', color: '#1F2020', enclosureColor: '#403E3D', boardId: '0x40', chipId: '0x8120', screenW: 430, screenH: 932, scale: 3, nativeW: 1290, nativeH: 2796, ram: 6442450944, cpuCores: 6, gpu: 'Apple A16 GPU', cpuType: 16777228, cpuSubtype: 2 },
+  // NOTE: Devices > iPhone 12 Pro Max removed — Zalo's anti-detection only recognizes
+  // identifiers from iPhone 5s → iPhone 12 Pro Max. Faking newer models triggers detection.
 };
 
 var HW_MODEL_MAP = {
@@ -11309,14 +11237,11 @@ var HW_MODEL_MAP = {
   'iPhone11,2': 'D321AP', 'iPhone11,8': 'N841AP',
   'iPhone12,1': 'N104AP', 'iPhone12,3': 'D421AP', 'iPhone12,5': 'D431AP',
   'iPhone13,1': 'D52gAP', 'iPhone13,2': 'D53gAP', 'iPhone13,3': 'D53pAP', 'iPhone13,4': 'D54pAP',
-  'iPhone14,4': 'D16AP', 'iPhone14,5': 'D17AP', 'iPhone14,2': 'D63AP', 'iPhone14,3': 'D64AP',
-  'iPhone14,7': 'D27AP', 'iPhone14,8': 'D28AP',
-  'iPhone15,2': 'D73AP', 'iPhone15,3': 'D74AP',
 };
 
 // Release order for the dual-thumb range slider — left → right = oldest → newest.
 // Arranged by ship date so the slider picks consecutive devices, e.g. drag handle
-// from "iPhone 6" to "iPhone 13" → randomization picks any device in that span.
+// from "iPhone 6" to "iPhone 12 Pro Max" → randomization picks any device in that span.
 var DEVICE_RELEASE_ORDER = [
   'iPhone7,2', 'iPhone7,1',
   'iPhone8,1', 'iPhone8,2', 'iPhone8,4',
@@ -11325,8 +11250,6 @@ var DEVICE_RELEASE_ORDER = [
   'iPhone11,8', 'iPhone11,2',
   'iPhone12,3', 'iPhone12,5', 'iPhone12,1',
   'iPhone13,1', 'iPhone13,2', 'iPhone13,3', 'iPhone13,4',
-  'iPhone14,4', 'iPhone14,5', 'iPhone14,2', 'iPhone14,3',
-  'iPhone14,7', 'iPhone14,8', 'iPhone15,2', 'iPhone15,3',
 ];
 
 var IOS_VERSIONS = {
@@ -11925,7 +11848,7 @@ function generateBSSID() { return randFrom(['00','08','0c','14','1c','20','24','
 function randAppleMAC() { return '3c:07:54:' + randHex(2) + ':' + randHex(2) + ':' + randHex(2); }
 function generateLocalIP() { return '192.168.' + randInt(1, 254) + '.' + randInt(1, 254); }
 
-var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 14 Pro','iPhone 13','iPhone 15','iPhone 12 mini'];
+var DEVICE_NAMES_VN = ['iPhone của tôi','iPhone Minh','iPhone Hoàng','iPhone Lan','iPhone Tuấn','iPhone Pro Max','iPhone 11','iPhone 12','iPhone X','iPhone 12 mini'];
 
 var DEFAULT_FAKE_LAYERS = {
   fake_uiddevice: true, fake_homebutton: true, fake_hardware: true, fake_ads: true,

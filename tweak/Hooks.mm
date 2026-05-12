@@ -226,20 +226,67 @@ static int hooked_uname(struct utsname *name) {
 }
 
 // ============================================================
+// Shared JB path table — covers rootless (/var/jb/*), rootful (/var/binpack,
+// /Library/MobileSubstrate, /usr/lib/TweakInject), Dopamine/palera1n flag
+// files, all major package managers (Cydia/Sileo/Zebra/Installer), apt/dpkg
+// toolchain, and common JB-shipped binaries. Used by stat/lstat/access/fopen
+// so a check via ANY C syscall returns ENOENT.
+// ============================================================
+static BOOL ci_isHiddenJBPath(const char *path) {
+    if (!path) return NO;
+    // Fast char-prefix bail-out: every entry below starts with '/'.
+    if (path[0] != '/') return NO;
+    static NSArray *hidden = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        hidden = @[
+            // rootless roots (both real path and the /private symlink alias)
+            @"/var/jb", @"/private/var/jb",
+            // rootful binpack / install markers
+            @"/var/binpack", @"/var/LIB", @"/var/ulb",
+            @"/.installed_dopamine", @"/.installed_palera1n",
+            @"/.bootstrapped", @"/.bootstrapped_electra", @"/.installed_unc0ver",
+            @"/private/preboot",
+            // Package manager apps
+            @"/Applications/Cydia.app", @"/Applications/Sileo.app",
+            @"/Applications/Zebra.app", @"/Applications/Installer.app",
+            @"/Applications/Snoop-itConfig.app",
+            // Substrate / hook engines
+            @"/Library/MobileSubstrate", @"/usr/lib/TweakInject",
+            @"/usr/lib/substrate", @"/usr/lib/libsubstrate.dylib",
+            @"/usr/lib/libhooker.dylib", @"/usr/lib/libsubstitute.dylib",
+            @"/usr/libexec/cydia", @"/usr/libexec/sftp-server",
+            // SSH
+            @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/etc/ssh",
+            @"/private/etc/ssh", @"/private/var/lib/cydia",
+            // apt / dpkg toolchain
+            @"/etc/apt", @"/private/etc/apt",
+            @"/var/lib/apt", @"/var/lib/dpkg", @"/var/cache/apt",
+            @"/usr/bin/dpkg", @"/usr/bin/apt", @"/usr/bin/apt-get",
+            // Cydia caches / state
+            @"/var/mobile/Library/Caches/com.saurik.Cydia",
+            @"/var/mobile/Library/Caches/com.coolstar.Sileo",
+            @"/var/mobile/Library/Caches/xyz.willy.Zebra",
+            // common JB-shipped binaries
+            @"/bin/bash", @"/bin/sh", @"/usr/bin/sshd", @"/usr/sbin/frida-server",
+        ];
+        [hidden retain];
+    });
+    NSString *pathStr = [NSString stringWithUTF8String:path];
+    if (!pathStr) return NO;
+    for (NSString *h in hidden) {
+        if ([pathStr hasPrefix:h]) return YES;
+    }
+    return NO;
+}
+
+// ============================================================
 // stat hook
 // ============================================================
 static int (*orig_stat)(const char *path, struct stat *buf) = NULL;
 
 static int hooked_stat(const char *path, struct stat *buf) {
-    if (jbHideActive() && path) {
-        NSString *pathStr = [NSString stringWithUTF8String:path];
-        NSArray *hidden = @[@"/var/jb", @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-                           @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/.installed_dopamine",
-                           @"/.installed_palera1n", @"/var/binpack"];
-        for (NSString *h in hidden) {
-            if ([pathStr hasPrefix:h]) { errno = ENOENT; return -1; }
-        }
-    }
+    if (jbHideActive() && ci_isHiddenJBPath(path)) { errno = ENOENT; return -1; }
     return orig_stat(path, buf);
 }
 
@@ -249,14 +296,7 @@ static int hooked_stat(const char *path, struct stat *buf) {
 static int (*orig_lstat)(const char *path, struct stat *buf) = NULL;
 
 static int hooked_lstat(const char *path, struct stat *buf) {
-    if (jbHideActive() && path) {
-        NSString *pathStr = [NSString stringWithUTF8String:path];
-        NSArray *hidden = @[@"/var/jb", @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-                           @"/usr/sbin/sshd", @"/.installed_dopamine", @"/.installed_palera1n"];
-        for (NSString *h in hidden) {
-            if ([pathStr hasPrefix:h]) { errno = ENOENT; return -1; }
-        }
-    }
+    if (jbHideActive() && ci_isHiddenJBPath(path)) { errno = ENOENT; return -1; }
     return orig_lstat(path, buf);
 }
 
@@ -266,14 +306,7 @@ static int hooked_lstat(const char *path, struct stat *buf) {
 static int (*orig_access)(const char *path, int mode) = NULL;
 
 static int hooked_access(const char *path, int mode) {
-    if (jbHideActive() && path) {
-        NSString *pathStr = [NSString stringWithUTF8String:path];
-        NSArray *hidden = @[@"/var/jb", @"/Applications/Cydia.app", @"/usr/sbin/sshd",
-                           @"/.installed_dopamine", @"/.installed_palera1n"];
-        for (NSString *h in hidden) {
-            if ([pathStr hasPrefix:h]) { errno = ENOENT; return -1; }
-        }
-    }
+    if (jbHideActive() && ci_isHiddenJBPath(path)) { errno = ENOENT; return -1; }
     return orig_access(path, mode);
 }
 
@@ -283,15 +316,7 @@ static int hooked_access(const char *path, int mode) {
 static FILE *(*orig_fopen)(const char *path, const char *mode) = NULL;
 
 static FILE *hooked_fopen(const char *path, const char *mode) {
-    if (jbHideActive() && path) {
-        NSString *pathStr = [NSString stringWithUTF8String:path];
-        NSArray *hidden = @[@"/var/jb", @"/Applications/Cydia.app", @"/usr/sbin/sshd",
-                           @"/.installed_dopamine", @"/.installed_palera1n",
-                           @"/etc/apt/sources.list", @"/var/lib/dpkg"];
-        for (NSString *h in hidden) {
-            if ([pathStr hasPrefix:h]) { errno = ENOENT; return NULL; }
-        }
-    }
+    if (jbHideActive() && ci_isHiddenJBPath(path)) { errno = ENOENT; return NULL; }
     return orig_fopen(path, mode);
 }
 

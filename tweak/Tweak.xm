@@ -1382,11 +1382,29 @@ static CLLocation *buildFakeLocation(void) {
     }
 
     NSArray *defaultPaths = @[
-        @"/var/jb", @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-        @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/usr/lib/TweakInject",
-        @"/Library/MobileSubstrate", @"/var/mobile/Library/Caches/com.saurik.Cydia",
-        @"/.installed_dopamine", @"/.installed_palera1n",
-        @"/var/binpack", @"/private/preboot",
+        // rootless + symlinks
+        @"/var/jb", @"/private/var/jb",
+        // package manager apps
+        @"/Applications/Cydia.app", @"/Applications/Sileo.app",
+        @"/Applications/Zebra.app", @"/Applications/Installer.app",
+        // substrate / hook engines
+        @"/Library/MobileSubstrate", @"/usr/lib/TweakInject",
+        @"/usr/lib/substrate", @"/usr/libexec/cydia",
+        // SSH
+        @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/etc/ssh", @"/private/etc/ssh",
+        // jb markers + rootful
+        @"/.installed_dopamine", @"/.installed_palera1n", @"/.bootstrapped",
+        @"/var/binpack", @"/var/LIB", @"/var/ulb",
+        @"/private/preboot", @"/private/var/lib/cydia",
+        // apt / dpkg
+        @"/etc/apt", @"/private/etc/apt", @"/var/lib/apt", @"/var/lib/dpkg",
+        @"/var/cache/apt", @"/usr/bin/dpkg", @"/usr/bin/apt",
+        // caches
+        @"/var/mobile/Library/Caches/com.saurik.Cydia",
+        @"/var/mobile/Library/Caches/com.coolstar.Sileo",
+        @"/var/mobile/Library/Caches/xyz.willy.Zebra",
+        // common JB binaries
+        @"/bin/bash", @"/bin/sh",
     ];
 
     for (NSString *jbPath in defaultPaths) {
@@ -1402,9 +1420,15 @@ static CLLocation *buildFakeLocation(void) {
     if (!jbHideActive()) return %orig;
 
     NSArray *defaultPaths = @[
-        @"/var/jb", @"/Applications/Cydia.app", @"/Applications/Sileo.app",
-        @"/usr/sbin/sshd", @"/usr/bin/ssh", @"/.installed_dopamine",
-        @"/.installed_palera1n", @"/var/binpack",
+        @"/var/jb", @"/private/var/jb",
+        @"/Applications/Cydia.app", @"/Applications/Sileo.app",
+        @"/Applications/Zebra.app", @"/Applications/Installer.app",
+        @"/Library/MobileSubstrate", @"/usr/lib/TweakInject",
+        @"/usr/sbin/sshd", @"/usr/bin/ssh",
+        @"/.installed_dopamine", @"/.installed_palera1n", @"/.bootstrapped",
+        @"/var/binpack", @"/var/LIB",
+        @"/etc/apt", @"/var/lib/apt", @"/var/lib/dpkg",
+        @"/usr/bin/dpkg", @"/usr/bin/apt", @"/bin/bash", @"/bin/sh",
     ];
 
     for (NSString *jbPath in defaultPaths) {
