@@ -236,6 +236,8 @@ static BOOL ci_isHiddenJBPath(const char *path) {
     if (!path) return NO;
     // Fast char-prefix bail-out: every entry below starts with '/'.
     if (path[0] != '/') return NO;
+    // Static strong ref under ARC — no manual retain needed; the runtime
+    // keeps the array alive for the process lifetime.
     static NSArray *hidden = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -270,7 +272,6 @@ static BOOL ci_isHiddenJBPath(const char *path) {
             // common JB-shipped binaries
             @"/bin/bash", @"/bin/sh", @"/usr/bin/sshd", @"/usr/sbin/frida-server",
         ];
-        [hidden retain];
     });
     NSString *pathStr = [NSString stringWithUTF8String:path];
     if (!pathStr) return NO;
