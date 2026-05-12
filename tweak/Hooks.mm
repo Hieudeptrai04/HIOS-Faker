@@ -1560,18 +1560,19 @@ extern "C" void initCLvlHooks(void) {
         NSLog(@"[ChangeInfoIos] fopen hooked");
     }
 
-    // open + openat — required to redirect SystemVersion.plist reads from
-    // every API path (NSPropertyListSerialization, CFPropertyList, etc.).
-    void *open_sym = dlsym(RTLD_DEFAULT, "open");
-    if (open_sym && !orig_open) {
-        MSHookFunction(open_sym, (void *)hooked_open, (void **)&orig_open);
-        NSLog(@"[ChangeInfoIos] open hooked");
-    }
-    void *openat_sym = dlsym(RTLD_DEFAULT, "openat");
-    if (openat_sym && !orig_openat) {
-        MSHookFunction(openat_sym, (void *)hooked_openat, (void **)&orig_openat);
-        NSLog(@"[ChangeInfoIos] openat hooked");
-    }
+    // open()/openat() hooks DISABLED — caused AIDA64 / other apps to crash
+    // on launch even with strict canonical-path filter. The crash root cause
+    // is not yet pinned down (possibly a re-entrance from Foundation's own
+    // writeToFile during fake-plist generation in the open() hot path, but
+    // unconfirmed). Leaving the hook definitions compiled-in for future
+    // re-enablement once the crash is reproduced + traced.
+    //
+    // Coverage loss: apps reading SystemVersion.plist via NSData /
+    // NSPropertyListSerialization / CFPropertyList still see the real
+    // device's ProductBuildVersion. The MGCopyAnswer hook keymap catches
+    // the API path most anti-fraud SDKs use (BuildVersion, OSBuildVersion,
+    // ProductBuildVersion via MGCopyAnswer + MGGetStringAnswer), but not
+    // direct file reads. AIDA64 specifically uses direct file read.
 
     // dlopen
     void *dlopen_sym = dlsym(RTLD_DEFAULT, "dlopen");
