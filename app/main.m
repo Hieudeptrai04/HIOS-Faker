@@ -662,11 +662,13 @@ static NSArray *ci_randomPresets(void) {
         NSArray *colors16Pro   = @[@"Black Titanium", @"White Titanium", @"Natural Titanium", @"Desert Titanium"];
 
         presets = @[
-            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A6",        @"0x8950", @"0x00", @(1073741824), @(2),  @(7),  @(10), colorsClassic],
-            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A7",        @"0x8960", @"0x00", @(1073741824), @(2),  @(7),  @(12), colorsClassic],
+            // iPhone 5/5s/6/6 Plus removed — their max real iOS is 10-12,
+            // and our IOS_VERSIONS list only spans 14-18. Picking those
+            // models would force an impossible combo (e.g., iPhone 6 Plus
+            // running iOS 18) that Apple/Zalo anti-fraud detects instantly.
+            // iPhone SE (1) kept — A9 chip supports iOS 9-15, our list
+            // intersects at iOS 14-15.
             @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A9",        @"0x8000", @"0x24", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
-            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A8",        @"0x7000", @"0x10", @(1073741824), @(2),  @(8),  @(12), colorsClassic],
-            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3", @"A8",        @"0x7000", @"0x10", @(1073741824), @(2),  @(8),  @(12), colorsClassic],
             @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A9",        @"0x8000", @"0x10", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
             @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3", @"A9",        @"0x8000", @"0x10", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
             @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A10 Fusion",@"0x8010", @"0x10", @(2147483648), @(4),  @(10), @(15), @[@"Black", @"Jet Black", @"Silver", @"Gold", @"Rose Gold", @"Red"]],
@@ -807,7 +809,46 @@ static NSUInteger ci_randomizeIdentities(void) {
     iLo = MAX(0, MIN(iosMaxI, iLo)); iHi = MAX(0, MIN(iosMaxI, iHi)); if (iLo > iHi) { NSInteger t = iLo; iLo = iHi; iHi = t; }
 
     NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
-    NSArray *iosPreset = iosList[(NSUInteger)iLo + arc4random_uniform((uint32_t)(iHi - iLo + 1))];
+
+    // === REALISTIC iOS constraint per model ===
+    // Each preset entry includes [14]=minIOSMajor, [15]=maxIOSMajor for the
+    // chip generation. We MUST filter the iosList window to versions the
+    // selected hardware can actually run. Picking iPhone 6 Plus + iOS 18
+    // = instant anti-fraud detection: AIDA64 even reports the cap as iOS
+    // 12.5.7 from the chip's pkg manifest, exposing the lie.
+    NSInteger modelMinIOSMajor = preset.count > 14 ? [preset[14] integerValue] : 9;
+    NSInteger modelMaxIOSMajor = preset.count > 15 ? [preset[15] integerValue] : 18;
+    NSMutableArray *validIOS = [NSMutableArray array];
+    NSInteger sliderLo = iLo, sliderHi = iHi;
+    for (NSInteger idx = sliderLo; idx <= sliderHi; idx++) {
+        NSArray *entry = iosList[(NSUInteger)idx];
+        // iosPreset format: @[displayName, versionString, buildString]
+        NSString *ver = entry.count > 1 ? entry[1] : @"";
+        NSArray *parts = [ver componentsSeparatedByString:@"."];
+        NSInteger major = parts.count > 0 ? [parts[0] integerValue] : 0;
+        if (major >= modelMinIOSMajor && major <= modelMaxIOSMajor) {
+            [validIOS addObject:entry];
+        }
+    }
+    NSArray *iosPreset;
+    if (validIOS.count > 0) {
+        iosPreset = validIOS[arc4random_uniform((uint32_t)validIOS.count)];
+    } else {
+        // Slider range had zero intersection with the model's supported iOS.
+        // Fall back to ANY version in the model's range from the full list
+        // so we never write an impossible combo to config.
+        NSMutableArray *anyValid = [NSMutableArray array];
+        for (NSArray *entry in iosList) {
+            NSString *ver = entry.count > 1 ? entry[1] : @"";
+            NSInteger major = [[ver componentsSeparatedByString:@"."][0] integerValue];
+            if (major >= modelMinIOSMajor && major <= modelMaxIOSMajor) {
+                [anyValid addObject:entry];
+            }
+        }
+        iosPreset = anyValid.count > 0
+            ? anyValid[arc4random_uniform((uint32_t)anyValid.count)]
+            : iosList[(NSUInteger)iLo + arc4random_uniform((uint32_t)(iHi - iLo + 1))];
+    }
 
     // Coherent column extraction — fields beyond index 8 are NEW (chip, board,
     // RAM, CPU cores, supported iOS range, color list). All numeric fields
@@ -2059,11 +2100,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     static NSArray *presets = nil;
     if (!presets) {
         presets = @[
-            @[@"iPhone 5",          @"iPhone5,2",  @"iPhone5,2",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone 5s",         @"iPhone6,1",  @"iPhone6,1",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
+            // iPhone 5/5s/6/6 Plus removed (max iOS 10-12, can't pair with
+            // our 14-18 iOS list).
             @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone 6",          @"iPhone7,2",  @"iPhone7,2",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 6 Plus",     @"iPhone7,1",  @"iPhone7,1",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
             @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
             @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
             @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],

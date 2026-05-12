@@ -711,8 +711,25 @@ static void initMGKeyMap() {
         @"BasebandSerialNumber": @"BasebandSerialNumber",
         @"BasebandChipId":       @"BasebandChipId",
         @"BasebandCertId":       @"BasebandCertId",
-        @"BuildVersion":         @"BuildVersion",
-        @"ProductVersion":       @"ProductVersion",
+        // Multiple MG keys all alias to the same iOS version / build version
+        // values. AIDA64 / device-info SDKs read via ProductBuildVersion or
+        // SoftwareBundleVersion (NOT just BuildVersion), so if we miss any
+        // alias the unhooked path returns the device's REAL build number
+        // (e.g., 20H360 = iOS 16.7.10) while our spoofed ProductVersion
+        // says iOS 18.1 → server detects the mismatch and bans the account.
+        @"BuildVersion":                  @"BuildVersion",
+        @"ProductBuildVersion":           @"BuildVersion",
+        @"OSBuildVersion":                @"BuildVersion",
+        @"SoftwareBundleVersion":         @"BuildVersion",
+        @"ProductVersion":                @"ProductVersion",
+        @"ProductVersionString":          @"ProductVersion",
+        // MaxSupportedOSVersion reveals the chip's real generation cap
+        // (e.g., A8 → 12.5.7). If we don't override it, anti-fraud sees
+        // "device claims iPhone 12 Pro Max + iOS 18 but max OS = 12.5.7"
+        // → hardware giveaway. Map to spoofed ProductVersion so the
+        // reported cap always >= the claimed running version.
+        @"MaxSupportedOSVersion":         @"ProductVersion",
+        @"SupportedOSVersions":           @"ProductVersion",
         @"DeviceColor":          @"DeviceColor",
         @"DeviceEnclosureColor": @"DeviceEnclosureColor",
         @"DiskUsage":            @"DiskUsage",
