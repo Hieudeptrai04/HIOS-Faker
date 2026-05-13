@@ -12,7 +12,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = VcamFullMayApp
 VcamFullMayApp_FILES         = main.m
 VcamFullMayApp_CFLAGS        = -fobjc-arc -Wno-deprecated-declarations -Wno-error
-VcamFullMayApp_FRAMEWORKS    = UIKit Foundation AVFoundation Photos CoreLocation MobileCoreServices
+VcamFullMayApp_FRAMEWORKS    = UIKit Foundation AVFoundation Photos CoreLocation
 VcamFullMayApp_CODESIGN_FLAGS = -Sentitlements.plist
 
 include $(THEOS_MAKE_PATH)/application.mk

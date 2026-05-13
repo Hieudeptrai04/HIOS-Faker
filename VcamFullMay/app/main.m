@@ -14,9 +14,12 @@
 
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
-#import <MobileCoreServices/MobileCoreServices.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreLocation/CoreLocation.h>
+
+// kUTTypeMovie was deprecated in iOS 14 and removed from MobileCoreServices
+// headers in iOS 15 SDK. The string constant is stable: "public.movie".
+static NSString *const kVcamUTTypeMovie = @"public.movie";
 
 static NSString *const kVcamConfigPath = @"/var/jb/etc/vcam/config.plist";
 static NSString *const kVcamVideoPath  = @"/var/jb/etc/vcam/video.mp4";
@@ -219,7 +222,7 @@ static NSString *vcamCurrentVideoSize(void) {
 - (void)presentPicker {
     UIImagePickerController *picker = [UIImagePickerController new];
     picker.sourceType  = UIImagePickerControllerSourceTypePhotoLibrary;
-    picker.mediaTypes  = @[(NSString *)kUTTypeMovie];
+    picker.mediaTypes  = @[kVcamUTTypeMovie];
     picker.delegate    = self;
     picker.videoQuality = UIImagePickerControllerQualityTypeHigh;
     [self presentViewController:picker animated:YES completion:nil];
