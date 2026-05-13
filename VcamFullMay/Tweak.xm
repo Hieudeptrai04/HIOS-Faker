@@ -51,7 +51,15 @@
 #import <stdatomic.h>
 #import <mach-o/dyld.h>
 
-extern void MSHookFunction(void *symbol, void *replace, void **result);
+// Logos preprocesses Tweak.xm into Obj-C++ when any class is declared,
+// so external C symbols need explicit C linkage or clang mangles the name.
+#ifdef __cplusplus
+extern "C" {
+#endif
+void MSHookFunction(void *symbol, void *replace, void **result);
+#ifdef __cplusplus
+}
+#endif
 
 // ============================================================
 // CONFIG
