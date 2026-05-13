@@ -5,56 +5,32 @@
     <!--
         ellekit filter plist for VcamFullMay.
 
-        Pattern proven by sibling ChangeInfoIos tweak (tweak/ChangeInfoIos.plist):
-        list app bundle IDs explicitly, set Mode=Any. Confirmed live on
-        ellekit 1.1.3+ that Mode=Any is REQUIRED for the Filter dict to match
-        sandboxed App Store apps — without it ellekit silently skips inject
-        for the listed Bundles.
+        Live testing on Dopamine 2 / ellekit 1.1.3 confirmed: `Filter > Bundles`
+        only matches FRAMEWORK bundle IDs in a process's dyld-loaded bundle
+        list (com.apple.UIKit, com.apple.Foundation, …). It does NOT match
+        the app's own CFBundleIdentifier (vn.com.vng.zingalo etc.) regardless
+        of `Mode=Any`. Listing app IDs never caused injection into Zalo on
+        this device.
 
-        NEVER add com.apple.UIKit or any system framework here. Earlier
-        attempt with UIKit-broad inject put the dylib into 165+ processes
-        including SpringBoard, Sileo, contextstored, healthd and entered a
-        crash loop in seconds.
+        To actually reach Zalo / Facebook / etc., we filter on UIKit
+        (loaded by every UI app, including system processes). Safety is
+        provided by:
+          1. vcam_unsafe_host() in %ctor — bails on sh/bash/sudo/sshd/...
+          2. vcam_target_app() in %ctor — bails on non-target bundle IDs
+          3. g_vcam_active flag — every %hook method falls through to %orig
+             when the flag is unset, so even the +load-installed swizzles
+             are no-ops in non-target processes.
+
+        Result: dylib loads into many processes (cheap — just ROM-mapped),
+        %ctor returns early in non-target apps, hooks stay inert. Only
+        bundle IDs in vcam_target_app's allowlist get hooks active.
     -->
     <key>Filter</key>
     <dict>
         <key>Bundles</key>
         <array>
-            <!-- Messaging / video call -->
-            <string>com.vng.zalo</string>
-            <string>com.zing.zalo</string>
-            <string>vn.com.vng.zingalo</string>
-            <string>com.facebook.Facebook</string>
-            <string>com.facebook.Messenger</string>
-            <string>net.whatsapp.WhatsApp</string>
-            <string>com.tencent.mm</string>
-            <string>com.netease.mm</string>
-            <string>com.viber</string>
-            <string>com.skype.skype</string>
-            <string>ph.telegra.Telegraph</string>
-            <string>com.hammerandchisel.discord</string>
-            <string>jp.naver.line</string>
-            <string>com.kakao.talk</string>
-
-            <!-- Social / video upload -->
-            <string>com.burbn.instagram</string>
-            <string>com.zhiliaoapp.musically</string>
-            <string>com.ss.iphone.ugc.Aweme</string>
-            <string>com.toyopagroup.picaboo</string>
-            <string>com.google.ios.youtube</string>
-            <string>com.atebits.Tweetie2</string>
-
-            <!-- Productivity / browser using camera -->
-            <string>com.microsoft.Office.Outlook</string>
-            <string>com.google.chrome.ios</string>
-
-            <!-- Banking / e-KYC -->
-            <string>com.tpbank.ebank</string>
-            <string>com.acb.acbmobileapp</string>
-            <string>com.VPBank.VPBankNeo</string>
+            <string>com.apple.UIKit</string>
         </array>
-        <key>Mode</key>
-        <string>Any</string>
     </dict>
 </dict>
 </plist>
