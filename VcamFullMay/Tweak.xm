@@ -62,6 +62,28 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 #endif
 
 // ============================================================
+// HOOK ACTIVATION GATE
+// ============================================================
+// CRITICAL: Logos `%hook` directives generate Obj-C `+load` methods that
+// install method swizzles BEFORE %ctor runs. That means once our dylib is
+// loaded into a process (broad UIKit filter loads us into every UIKit-using
+// process — SpringBoard, Sileo, contextstored, healthd, …), the hooks fire
+// unconditionally and spoof methods system daemons depend on, crashing them.
+//
+// %ctor's allowlist check therefore isn't enough — we also need each hook
+// method to self-gate. The pattern: a global `g_vcam_active` flag that
+// stays 0 by default and is set to 1 only inside %ctor after the bundle-ID
+// allowlist passes. Every hooked method starts with VCAM_GATE() to fall
+// through to %orig when the flag isn't set, leaving non-target processes
+// completely untouched at runtime.
+//
+// Discovered the hard way after the broad UIKit filter put us in 165+
+// processes and contextstored/healthd/parsecd entered a crash loop.
+static int g_vcam_active = 0;
+#define VCAM_GATE()       do { if (!g_vcam_active) return %orig; } while (0)
+#define VCAM_GATE_VOID()  do { if (!g_vcam_active) { %orig; return; } } while (0)
+
+// ============================================================
 // CONFIG
 // ============================================================
 static NSString *const kVcamConfigPath       = @"/var/jb/etc/vcam/config.plist";
@@ -219,6 +241,7 @@ static const void *kVcamProxyKey = &kVcamProxyKey;
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
                             queue:(dispatch_queue_t)queue
 {
+    VCAM_GATE_VOID();
     if (!vcamEnabled() || !delegate) { %orig; return; }
     NSString *video = vcamVideoPath();
     if (!video) { %orig; return; }
@@ -322,12 +345,14 @@ static inline BOOL vcam_isSubstrateLib(const char *path) {
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
+    VCAM_GATE();
     const char *c = path.UTF8String;
     if (c && vcam_isHiddenPath(c)) return NO;
     return %orig;
 }
 
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
+    VCAM_GATE();
     const char *c = path.UTF8String;
     if (c && vcam_isHiddenPath(c)) return NO;
     return %orig;
@@ -341,6 +366,7 @@ static inline BOOL vcam_isSubstrateLib(const char *path) {
 %hook UIApplication
 
 - (BOOL)canOpenURL:(NSURL *)url {
+    VCAM_GATE();
     NSString *scheme = url.scheme;
     if (scheme.length > 0) {
         static NSArray *blocked = nil;
@@ -551,12 +577,12 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook CLLocationManager
 
 - (CLLocation *)location {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return vcam_makeFakeLocation();
 }
 
 - (void)requestLocation {
-    if (!vcamEnabled()) { %orig; return; }
+    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -567,7 +593,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (void)startUpdatingLocation {
-    if (!vcamEnabled()) { %orig; return; }
+    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -578,7 +604,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (void)startMonitoringSignificantLocationChanges {
-    if (!vcamEnabled()) { %orig; return; }
+    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -589,7 +615,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (CLAuthorizationStatus)authorizationStatus {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return kCLAuthorizationStatusAuthorizedWhenInUse;
 }
 
@@ -628,22 +654,22 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook NSLocale
 
 - (NSString *)countryCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"VN";
 }
 
 - (NSString *)languageCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"vi";
 }
 
 - (NSString *)currencyCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"VND";
 }
 
 - (NSString *)localeIdentifier {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"vi_VN";
 }
 
@@ -652,17 +678,17 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook NSTimeZone
 
 - (NSString *)name {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"Asia/Ho_Chi_Minh";
 }
 
 - (NSString *)abbreviation {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"ICT";
 }
 
 - (NSInteger)secondsFromGMT {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return 7 * 3600;  // UTC+7
 }
 
@@ -696,30 +722,30 @@ static void vcam_ensureFakeCarrierPicked(void) {
 %hook CTCarrier
 
 - (NSString *)carrierName {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->name];
 }
 
 - (NSString *)mobileCountryCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->mcc];
 }
 
 - (NSString *)mobileNetworkCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->mnc];
 }
 
 - (NSString *)isoCountryCode {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return @"vn";
 }
 
 - (BOOL)allowsVOIP {
-    if (!vcamEnabled()) return %orig;
+    VCAM_GATE(); if (!vcamEnabled()) return %orig;
     return YES;
 }
 
@@ -804,26 +830,14 @@ static int vcam_target_app(void) {
 }
 
 %ctor {
-    // DEBUG: drop a load-trace marker BEFORE any bail check. Lets us verify
-    // via SSH whether ellekit is actually injecting our dylib into a given
-    // process — independent of whether that process is a target. File name
-    // includes pid+exe so we can see every load. Remove once confirmed.
-    {
-        char exepath[256] = {0};
-        uint32_t exesz = sizeof(exepath);
-        extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
-        if (_NSGetExecutablePath(exepath, &exesz) == 0) {
-            const char *slash = strrchr(exepath, '/');
-            const char *exe = slash ? slash + 1 : exepath;
-            char path[320];
-            snprintf(path, sizeof(path), "/var/jb/etc/vcam/trace_%d_%s.txt", getpid(), exe);
-            FILE *f = orig_fopen ? NULL : fopen(path, "w");  // raw fopen, hooks not installed yet
-            if (f) { fputs("loaded\n", f); fclose(f); }
-        }
-    }
-
     if (vcam_unsafe_host()) return;   // skip injection into shells / tools
     if (!vcam_target_app()) return;   // skip non-target apps (SpringBoard etc.)
+
+    // Activate hooks. Every %hook method gates on this flag — without it
+    // the hooks would still fire in any UIKit-loading process (Sileo,
+    // SpringBoard, system daemons) because logos installs +load swizzles
+    // unconditionally. See VCAM_GATE comment block at top.
+    g_vcam_active = 1;
 
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
