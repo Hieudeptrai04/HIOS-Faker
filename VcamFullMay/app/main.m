@@ -250,14 +250,28 @@ static NSString *vcamCurrentVideoSize(void) {
     // Ensure target dir exists, world-writable.
     [fm createDirectoryAtPath:kVcamDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // Remove existing video (overwrite).
-    [fm removeItemAtPath:kVcamVideoPath error:nil];
+    // [NSFileManager copyItemAtURL:toURL:] uses copyfile()/clonefile() under
+    // the hood. On rootless jailbreaks the iOS sandbox profile blocks those
+    // syscalls when crossing into /var/jb/* even with no-sandbox entitlement
+    // (the sandbox runs at a lower layer than the entitlement check for
+    // certain ops). Workaround: read source as NSData, write to destination
+    // — that uses plain open()/write() syscalls which the entitlement DOES
+    // cover. Tested working on Dopamine 2 rootless.
 
     NSError *err = nil;
-    BOOL ok = [fm copyItemAtURL:src toURL:[NSURL fileURLWithPath:kVcamVideoPath] error:&err];
-    if (!ok) {
-        [self alert:@"Copy lỗi"
-            message:[NSString stringWithFormat:@"Không copy được video:\n%@\n\nTarget path có thể không ghi được. SSH check chmod /var/jb/etc/vcam", err.localizedDescription]];
+    NSData *data = [NSData dataWithContentsOfURL:src options:0 error:&err];
+    if (!data || err) {
+        [self alert:@"Đọc video lỗi"
+            message:[NSString stringWithFormat:@"Không đọc được video gốc:\n%@", err.localizedDescription ?: @"unknown"]];
+        return;
+    }
+    // Overwrite existing target.
+    [fm removeItemAtPath:kVcamVideoPath error:nil];
+    if (![data writeToFile:kVcamVideoPath options:NSDataWritingAtomic error:&err]) {
+        [self alert:@"Ghi video lỗi"
+            message:[NSString stringWithFormat:
+                @"Không ghi được vào:\n%@\n\nLỗi: %@\n\nKiểm tra: SSH chmod 0777 /var/jb/etc/vcam",
+                kVcamVideoPath, err.localizedDescription ?: @"unknown"]];
         return;
     }
 
@@ -269,7 +283,7 @@ static NSString *vcamCurrentVideoSize(void) {
     [self refreshStatus];
     [self alert:@"✓ Đã lưu video"
         message:[NSString stringWithFormat:
-            @"Video đã copy sang:\n%@\n\nKích thước: %@\n\nBật/relaunch Zalo (hoặc app target) để vcam phát video này.",
+            @"Video đã ghi vào:\n%@\n\nKích thước: %@\n\nMở/relaunch Zalo (hoặc app target) để vcam phát video này.",
             kVcamVideoPath, vcamCurrentVideoSize()]];
 }
 

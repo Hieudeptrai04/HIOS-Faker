@@ -39,5 +39,22 @@
     <string>Chọn video từ thư viện ảnh làm nguồn camera giả cho video call.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>Lưu video vào thư viện.</string>
+
+    <!-- App icon files in Resources/. Without CFBundleIcons iOS shows a
+         generic placeholder icon on the home screen. -->
+    <key>CFBundleIcons</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon60x60</string>
+                <string>AppIcon-Small-40</string>
+                <string>AppIcon-Small</string>
+            </array>
+            <key>CFBundleIconName</key>
+            <string>AppIcon</string>
+        </dict>
+    </dict>
 </dict>
 </plist>
