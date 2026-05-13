@@ -73,15 +73,16 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 // %ctor's allowlist check therefore isn't enough — we also need each hook
 // method to self-gate. The pattern: a global `g_vcam_active` flag that
 // stays 0 by default and is set to 1 only inside %ctor after the bundle-ID
-// allowlist passes. Every hooked method starts with VCAM_GATE() to fall
-// through to %orig when the flag isn't set, leaving non-target processes
-// completely untouched at runtime.
+// allowlist passes. Every hooked method starts with `if (!g_vcam_active)
+// return %orig;` to fall through to original behavior when the flag isn't
+// set, leaving non-target processes completely untouched at runtime.
 //
 // Discovered the hard way after the broad UIKit filter put us in 165+
 // processes and contextstored/healthd/parsecd entered a crash loop.
+// The gate flag itself. Each %hook method writes its own check inline —
+// `%orig` is a logos preprocessor token and cannot appear inside a C macro
+// (the preprocessor only recognizes it at the method call site).
 static int g_vcam_active = 0;
-#define VCAM_GATE()       do { if (!g_vcam_active) return %orig; } while (0)
-#define VCAM_GATE_VOID()  do { if (!g_vcam_active) { %orig; return; } } while (0)
 
 // ============================================================
 // CONFIG
@@ -241,8 +242,7 @@ static const void *kVcamProxyKey = &kVcamProxyKey;
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
                             queue:(dispatch_queue_t)queue
 {
-    VCAM_GATE_VOID();
-    if (!vcamEnabled() || !delegate) { %orig; return; }
+    if (!g_vcam_active || !vcamEnabled() || !delegate) { %orig; return; }
     NSString *video = vcamVideoPath();
     if (!video) { %orig; return; }
 
@@ -345,14 +345,14 @@ static inline BOOL vcam_isSubstrateLib(const char *path) {
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    VCAM_GATE();
+    if (!g_vcam_active) return %orig;
     const char *c = path.UTF8String;
     if (c && vcam_isHiddenPath(c)) return NO;
     return %orig;
 }
 
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
-    VCAM_GATE();
+    if (!g_vcam_active) return %orig;
     const char *c = path.UTF8String;
     if (c && vcam_isHiddenPath(c)) return NO;
     return %orig;
@@ -366,7 +366,7 @@ static inline BOOL vcam_isSubstrateLib(const char *path) {
 %hook UIApplication
 
 - (BOOL)canOpenURL:(NSURL *)url {
-    VCAM_GATE();
+    if (!g_vcam_active) return %orig;
     NSString *scheme = url.scheme;
     if (scheme.length > 0) {
         static NSArray *blocked = nil;
@@ -577,12 +577,12 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook CLLocationManager
 
 - (CLLocation *)location {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return vcam_makeFakeLocation();
 }
 
 - (void)requestLocation {
-    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
+    if (!g_vcam_active || !vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -593,7 +593,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (void)startUpdatingLocation {
-    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
+    if (!g_vcam_active || !vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -604,7 +604,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (void)startMonitoringSignificantLocationChanges {
-    VCAM_GATE_VOID(); if (!vcamEnabled()) { %orig; return; }
+    if (!g_vcam_active || !vcamEnabled()) { %orig; return; }
     CLLocation *fake = vcam_makeFakeLocation();
     id<CLLocationManagerDelegate> d = self.delegate;
     if ([d respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -615,7 +615,7 @@ static CLLocation *vcam_makeFakeLocation(void) {
 }
 
 - (CLAuthorizationStatus)authorizationStatus {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return kCLAuthorizationStatusAuthorizedWhenInUse;
 }
 
@@ -654,22 +654,22 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook NSLocale
 
 - (NSString *)countryCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"VN";
 }
 
 - (NSString *)languageCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"vi";
 }
 
 - (NSString *)currencyCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"VND";
 }
 
 - (NSString *)localeIdentifier {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"vi_VN";
 }
 
@@ -678,17 +678,17 @@ static CLLocation *vcam_makeFakeLocation(void) {
 %hook NSTimeZone
 
 - (NSString *)name {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"Asia/Ho_Chi_Minh";
 }
 
 - (NSString *)abbreviation {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"ICT";
 }
 
 - (NSInteger)secondsFromGMT {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return 7 * 3600;  // UTC+7
 }
 
@@ -722,30 +722,30 @@ static void vcam_ensureFakeCarrierPicked(void) {
 %hook CTCarrier
 
 - (NSString *)carrierName {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->name];
 }
 
 - (NSString *)mobileCountryCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->mcc];
 }
 
 - (NSString *)mobileNetworkCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     vcam_ensureFakeCarrierPicked();
     return [NSString stringWithUTF8String:g_fakeCarrier->mnc];
 }
 
 - (NSString *)isoCountryCode {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return @"vn";
 }
 
 - (BOOL)allowsVOIP {
-    VCAM_GATE(); if (!vcamEnabled()) return %orig;
+    if (!g_vcam_active || !vcamEnabled()) return %orig;
     return YES;
 }
 
@@ -836,7 +836,7 @@ static int vcam_target_app(void) {
     // Activate hooks. Every %hook method gates on this flag — without it
     // the hooks would still fire in any UIKit-loading process (Sileo,
     // SpringBoard, system daemons) because logos installs +load swizzles
-    // unconditionally. See VCAM_GATE comment block at top.
+    // unconditionally. See g_vcam_active comment block at top.
     g_vcam_active = 1;
 
     @autoreleasepool {
