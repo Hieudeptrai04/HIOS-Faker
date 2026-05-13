@@ -757,8 +757,55 @@ static int vcam_unsafe_host(void) {
     return 0;
 }
 
+// Allowlist: only install hooks if running inside one of our target apps.
+// The substrate filter (com.apple.UIKit) loads us into every UIKit process —
+// SpringBoard, Sileo, Settings, etc. Without this allowlist those apps would
+// get our anti-detection hooks for free, slowing them down and risking
+// stat/fopen returning ENOENT for /var/jb paths the app legitimately needs.
+//
+// Reason: ellekit's `Filter > Bundles` only matches loaded *framework* bundle
+// IDs, not the app's own CFBundleIdentifier — so we can't narrow at the
+// filter level. Allowlist-in-%ctor is the standard pattern (see Choicy).
+static int vcam_target_app(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid || bid.length == 0) return 0;
+    static NSSet *targets = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        targets = [NSSet setWithArray:@[
+            // Messaging / video call
+            @"com.vng.zalo", @"com.zing.zalo", @"vn.com.vng.zingalo",
+            @"com.facebook.Facebook", @"com.facebook.Messenger",
+            @"net.whatsapp.WhatsApp",
+            @"com.tencent.mm", @"com.netease.mm",
+            @"com.viber",
+            @"com.skype.skype", @"com.skype.SkypeForiPad",
+            @"ph.telegra.Telegraph",
+            @"com.hammerandchisel.discord",
+            @"jp.naver.line",
+            @"com.kakao.talk",
+            // Social / video upload
+            @"com.burbn.instagram",
+            @"com.zhiliaoapp.musically",
+            @"com.ss.iphone.ugc.Aweme",
+            @"com.toyopagroup.picaboo",
+            @"com.google.ios.youtube",
+            @"com.atebits.Tweetie2",
+            // Productivity / browser using camera
+            @"com.microsoft.Office.Outlook",
+            @"com.google.chrome.ios",
+            // Banking / e-KYC
+            @"com.tpbank.ebank",
+            @"com.acb.acbmobileapp",
+            @"com.VPBank.VPBankNeo",
+        ]];
+    });
+    return [targets containsObject:bid] ? 1 : 0;
+}
+
 %ctor {
-    if (vcam_unsafe_host()) return;  // skip injection into shells / tools
+    if (vcam_unsafe_host()) return;   // skip injection into shells / tools
+    if (!vcam_target_app()) return;   // skip non-target apps (SpringBoard etc.)
 
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";

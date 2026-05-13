@@ -5,54 +5,29 @@
     <!--
         ellekit filter plist for VcamFullMay.
 
-        IMPORTANT: ellekit's `Filter > Bundles` matches FRAMEWORK bundle IDs
-        loaded into a process (e.g. com.apple.UIKit), NOT the app's own
-        CFBundleIdentifier. Live test on Dopamine 2 / ellekit 1.1.3 confirmed
-        a Bundles list of app IDs (com.vng.zalo, etc.) matched nothing.
+        Lessons learned via live testing on Dopamine 2 / ellekit 1.1.3:
 
-        To target specific apps, use `Filter > Executables` instead — this
-        matches the executable name (last path component of the binary).
-        For Zalo.app/Zalo → "Zalo". For musical_ly.app/musical_ly → "musical_ly".
+        1. `Filter > Bundles` matches FRAMEWORK bundle IDs (e.g. com.apple.UIKit),
+           NOT the app's own CFBundleIdentifier — listing app IDs there
+           matched nothing.
+        2. `Filter > Executables` did not match running apps either — likely
+           not supported by ellekit at all.
+        3. The reliable pattern is: broad-inject via UIKit framework filter,
+           then *inside %ctor* check `[NSBundle mainBundle].bundleIdentifier`
+           against an allowlist. Tweaks like Choicy follow this pattern.
 
-        NEVER add system shell executables (sh, bash, sudo, ssh, cp, ls) or
-        com.apple.* frameworks here — our libc hooks (fopen/stat/access) break
-        PAM auth and shell tooling, locking SSH out of the device.
+        We do both:
+          - This filter targets `com.apple.UIKit` so ellekit injects us into
+            every UIKit-loading process.
+          - Tweak.xm's %ctor calls `vcam_unsafe_host()` (skip shells/system
+            tools) and `vcam_target_app()` (skip non-target apps) before
+            installing any hooks. Non-target apps see a no-op dylib.
     -->
     <key>Filter</key>
     <dict>
-        <key>Executables</key>
+        <key>Bundles</key>
         <array>
-            <!-- Messaging / video call -->
-            <string>Zalo</string>
-            <string>Facebook</string>
-            <string>Messenger</string>
-            <string>WhatsApp</string>
-            <string>WeChat</string>
-            <string>MicroMessenger</string>
-            <string>Viber</string>
-            <string>Skype for iPhone</string>
-            <string>Telegram</string>
-            <string>Discord</string>
-            <string>LINE</string>
-            <string>KakaoTalk</string>
-
-            <!-- Social / video upload -->
-            <string>Instagram</string>
-            <string>TikTok</string>
-            <string>musical_ly</string>
-            <string>Aweme</string>
-            <string>Snapchat</string>
-            <string>YouTube</string>
-            <string>Twitter</string>
-
-            <!-- Productivity that uses camera (QR scan, docs) -->
-            <string>Outlook</string>
-            <string>Chrome</string>
-
-            <!-- Banking / e-KYC (selfie verification) -->
-            <string>TPBank</string>
-            <string>ACBMobileApp</string>
-            <string>VPBankNEO</string>
+            <string>com.apple.UIKit</string>
         </array>
     </dict>
 </dict>
