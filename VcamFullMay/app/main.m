@@ -231,12 +231,37 @@ static NSString *vcamCurrentVideoSize(void) {
 - (void)imagePickerController:(UIImagePickerController *)picker
        didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
     NSURL *src = info[UIImagePickerControllerMediaURL];
+
+    // CRITICAL: read the file's bytes RIGHT NOW, while the picker is still
+    // presented. The previous code dismissed first and read in the dismiss
+    // completion — by the time the completion ran, iOS had already cleaned
+    // up the picker's temp file (trim.xxxxx.MOV in the picker's tmp dir),
+    // causing dataWithContentsOfURL: to return nil with NSFileReadNoSuch
+    // FileError ("không có quyền xem tệp đó").
+    NSData *videoData = nil;
+    NSError *readErr = nil;
+    if (src) {
+        videoData = [NSData dataWithContentsOfURL:src options:0 error:&readErr];
+        // Defensive fallback — read via NSFileHandle if NSData fails
+        // (different sandbox check path in some iOS builds).
+        if (!videoData) {
+            NSFileHandle *fh = [NSFileHandle fileHandleForReadingFromURL:src error:nil];
+            if (fh) {
+                videoData = [fh readDataToEndOfFile];
+                [fh closeFile];
+            }
+        }
+    }
     [picker dismissViewControllerAnimated:YES completion:^{
-        if (!src) {
-            [self toast:@"❌ Không lấy được URL video"];
+        if (!src) { [self toast:@"❌ Không lấy được URL video"]; return; }
+        if (!videoData) {
+            [self alert:@"Đọc video lỗi"
+                message:[NSString stringWithFormat:
+                    @"Không đọc được nội dung video gốc.\nLỗi: %@",
+                    readErr.localizedDescription ?: @"unknown"]];
             return;
         }
-        [self copyVideoFromURL:src];
+        [self writeVideoData:videoData];
     }];
 }
 
@@ -244,38 +269,19 @@ static NSString *vcamCurrentVideoSize(void) {
     [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (void)copyVideoFromURL:(NSURL *)src {
+- (void)writeVideoData:(NSData *)videoData {
     NSFileManager *fm = [NSFileManager defaultManager];
-
-    // Ensure target dir exists, world-writable.
     [fm createDirectoryAtPath:kVcamDir withIntermediateDirectories:YES attributes:nil error:nil];
-
-    // [NSFileManager copyItemAtURL:toURL:] uses copyfile()/clonefile() under
-    // the hood. On rootless jailbreaks the iOS sandbox profile blocks those
-    // syscalls when crossing into /var/jb/* even with no-sandbox entitlement
-    // (the sandbox runs at a lower layer than the entitlement check for
-    // certain ops). Workaround: read source as NSData, write to destination
-    // — that uses plain open()/write() syscalls which the entitlement DOES
-    // cover. Tested working on Dopamine 2 rootless.
+    [fm removeItemAtPath:kVcamVideoPath error:nil];
 
     NSError *err = nil;
-    NSData *data = [NSData dataWithContentsOfURL:src options:0 error:&err];
-    if (!data || err) {
-        [self alert:@"Đọc video lỗi"
-            message:[NSString stringWithFormat:@"Không đọc được video gốc:\n%@", err.localizedDescription ?: @"unknown"]];
-        return;
-    }
-    // Overwrite existing target.
-    [fm removeItemAtPath:kVcamVideoPath error:nil];
-    if (![data writeToFile:kVcamVideoPath options:NSDataWritingAtomic error:&err]) {
+    if (![videoData writeToFile:kVcamVideoPath options:NSDataWritingAtomic error:&err]) {
         [self alert:@"Ghi video lỗi"
             message:[NSString stringWithFormat:
                 @"Không ghi được vào:\n%@\n\nLỗi: %@\n\nKiểm tra: SSH chmod 0777 /var/jb/etc/vcam",
                 kVcamVideoPath, err.localizedDescription ?: @"unknown"]];
         return;
     }
-
-    // Set 0644 so the tweak running in target app's sandbox can read.
     [fm setAttributes:@{NSFilePosixPermissions: @0644}
          ofItemAtPath:kVcamVideoPath
                 error:nil];
