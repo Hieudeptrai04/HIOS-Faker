@@ -14,6 +14,7 @@
 
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
+#import <PhotosUI/PhotosUI.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreLocation/CoreLocation.h>
 
@@ -61,7 +62,7 @@ static NSString *vcamCurrentVideoSize(void) {
 // ============================================================
 // MAIN VIEW CONTROLLER
 // ============================================================
-@interface VcamRootVC : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface VcamRootVC : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate>
 @property (nonatomic, strong) UILabel  *statusLabel;
 @property (nonatomic, strong) UISwitch *enabledSwitch;
 @end
@@ -194,75 +195,78 @@ static NSString *vcamCurrentVideoSize(void) {
 }
 
 // ============================================================
-// VIDEO PICKER
+// VIDEO PICKER — PHPickerViewController (iOS 14+)
+//
+// PHPicker is the modern, sandbox-friendly photo library picker:
+//   - No Photos permission required (out-of-process UI)
+//   - NSItemProvider handles cross-process file transfer correctly
+//   - Returns a temp file URL that's guaranteed accessible to us
+//     (system creates it in a path we can read, unlike UIImagePicker
+//     Controller which leaves the file in the PluginKit host's tmp/)
+//
+// Previous attempts with UIImagePickerController failed because the
+// containerless app couldn't read the picker host's temp file even
+// with no-sandbox entitlement — kernel checks the file's owner ACL
+// not the entitlements for cross-process tmp files.
 // ============================================================
 - (void)pickVideo {
-    // Request Photos auth first (entitlement pre-grants but the framework
-    // still needs a permission check via PHPhotoLibrary).
-    PHAuthorizationStatus auth = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
-    if (auth == PHAuthorizationStatusDenied || auth == PHAuthorizationStatusRestricted) {
-        [self alert:@"Lỗi quyền"
-            message:@"Hãy vào Cài đặt → VcamFullMay → bật quyền truy cập Ảnh."];
+    if (@available(iOS 14.0, *)) {
+        PHPickerConfiguration *cfg = [[PHPickerConfiguration alloc] init];
+        cfg.filter         = [PHPickerFilter videosFilter];
+        cfg.selectionLimit = 1;
+        PHPickerViewController *picker = [[PHPickerViewController alloc]
+            initWithConfiguration:cfg];
+        picker.delegate = self;
+        [self presentViewController:picker animated:YES completion:nil];
+    } else {
+        [self alert:@"Không hỗ trợ"
+            message:@"Cần iOS 14 trở lên cho photo picker."];
+    }
+}
+
+- (void)picker:(PHPickerViewController *)picker
+        didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    if (results.count == 0) return;
+
+    NSItemProvider *ip = results.firstObject.itemProvider;
+    if (![ip hasItemConformingToTypeIdentifier:kVcamUTTypeMovie]) {
+        [self toast:@"❌ File chọn không phải video"];
         return;
     }
-    if (auth == PHAuthorizationStatusNotDetermined) {
-        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite
-                                                   handler:^(PHAuthorizationStatus s) {
+
+    // loadFileRepresentation gives us a system-managed temp URL that
+    // EXISTS and is READABLE for the duration of the completion handler.
+    // The system copies the picked asset to a sandbox-accessible location
+    // on our behalf — no permission dance needed.
+    [ip loadFileRepresentationForTypeIdentifier:kVcamUTTypeMovie
+                              completionHandler:^(NSURL *url, NSError *err) {
+        if (!url) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (s == PHAuthorizationStatusAuthorized || s == PHAuthorizationStatusLimited) {
-                    [self presentPicker];
-                }
+                [self alert:@"Tải video lỗi"
+                    message:[NSString stringWithFormat:@"%@", err.localizedDescription ?: @"unknown"]];
             });
-        }];
-        return;
-    }
-    [self presentPicker];
-}
-
-- (void)presentPicker {
-    UIImagePickerController *picker = [UIImagePickerController new];
-    picker.sourceType  = UIImagePickerControllerSourceTypePhotoLibrary;
-    picker.mediaTypes  = @[kVcamUTTypeMovie];
-    picker.delegate    = self;
-    picker.videoQuality = UIImagePickerControllerQualityTypeHigh;
-    [self presentViewController:picker animated:YES completion:nil];
-}
-
-- (void)imagePickerController:(UIImagePickerController *)picker
-       didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
-    NSURL *src = info[UIImagePickerControllerMediaURL];
-
-    // CRITICAL: read the file's bytes RIGHT NOW, while the picker is still
-    // presented. The previous code dismissed first and read in the dismiss
-    // completion — by the time the completion ran, iOS had already cleaned
-    // up the picker's temp file (trim.xxxxx.MOV in the picker's tmp dir),
-    // causing dataWithContentsOfURL: to return nil with NSFileReadNoSuch
-    // FileError ("không có quyền xem tệp đó").
-    NSData *videoData = nil;
-    NSError *readErr = nil;
-    if (src) {
-        videoData = [NSData dataWithContentsOfURL:src options:0 error:&readErr];
-        // Defensive fallback — read via NSFileHandle if NSData fails
-        // (different sandbox check path in some iOS builds).
-        if (!videoData) {
-            NSFileHandle *fh = [NSFileHandle fileHandleForReadingFromURL:src error:nil];
-            if (fh) {
-                videoData = [fh readDataToEndOfFile];
-                [fh closeFile];
-            }
-        }
-    }
-    [picker dismissViewControllerAnimated:YES completion:^{
-        if (!src) { [self toast:@"❌ Không lấy được URL video"]; return; }
-        if (!videoData) {
-            [self alert:@"Đọc video lỗi"
-                message:[NSString stringWithFormat:
-                    @"Không đọc được nội dung video gốc.\nLỗi: %@",
-                    readErr.localizedDescription ?: @"unknown"]];
             return;
         }
-        [self writeVideoData:videoData];
+        NSError *readErr = nil;
+        NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&readErr];
+        if (!data) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self alert:@"Đọc video lỗi"
+                    message:[NSString stringWithFormat:@"%@", readErr.localizedDescription ?: @"unknown"]];
+            });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self writeVideoData:data];
+        });
     }];
+}
+
+// Keep UIImagePicker delegate stubs in case iOS <14 fallback ever needed.
+- (void)imagePickerController:(UIImagePickerController *)picker
+       didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
