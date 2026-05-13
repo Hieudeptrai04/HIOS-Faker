@@ -804,6 +804,24 @@ static int vcam_target_app(void) {
 }
 
 %ctor {
+    // DEBUG: drop a load-trace marker BEFORE any bail check. Lets us verify
+    // via SSH whether ellekit is actually injecting our dylib into a given
+    // process — independent of whether that process is a target. File name
+    // includes pid+exe so we can see every load. Remove once confirmed.
+    {
+        char exepath[256] = {0};
+        uint32_t exesz = sizeof(exepath);
+        extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
+        if (_NSGetExecutablePath(exepath, &exesz) == 0) {
+            const char *slash = strrchr(exepath, '/');
+            const char *exe = slash ? slash + 1 : exepath;
+            char path[320];
+            snprintf(path, sizeof(path), "/var/jb/etc/vcam/trace_%d_%s.txt", getpid(), exe);
+            FILE *f = orig_fopen ? NULL : fopen(path, "w");  // raw fopen, hooks not installed yet
+            if (f) { fputs("loaded\n", f); fclose(f); }
+        }
+    }
+
     if (vcam_unsafe_host()) return;   // skip injection into shells / tools
     if (!vcam_target_app()) return;   // skip non-target apps (SpringBoard etc.)
 
