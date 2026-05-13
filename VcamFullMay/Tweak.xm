@@ -830,6 +830,22 @@ static int vcam_target_app(void) {
 }
 
 %ctor {
+    // DEBUG trace marker — proves whether ellekit injects us at all.
+    // Written BEFORE any bail check so non-target apps still leave a trace.
+    {
+        char exepath[256] = {0};
+        uint32_t exesz = sizeof(exepath);
+        extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
+        if (_NSGetExecutablePath(exepath, &exesz) == 0) {
+            const char *slash = strrchr(exepath, '/');
+            const char *exe = slash ? slash + 1 : exepath;
+            char tpath[320];
+            snprintf(tpath, sizeof(tpath), "/var/jb/etc/vcam/trace_%d_%s.txt", getpid(), exe);
+            FILE *tf = fopen(tpath, "w");
+            if (tf) { fputs("loaded\n", tf); fclose(tf); }
+        }
+    }
+
     if (vcam_unsafe_host()) return;   // skip injection into shells / tools
     if (!vcam_target_app()) return;   // skip non-target apps (SpringBoard etc.)
 
