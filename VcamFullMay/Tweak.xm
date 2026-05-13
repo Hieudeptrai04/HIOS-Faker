@@ -728,7 +728,38 @@ static void vcam_ensureFakeCarrierPicked(void) {
 // ============================================================
 // CTOR — install all C-level hooks
 // ============================================================
+// Defense-in-depth: even with a correct filter, if the dylib ever ends up
+// injected into a shell or system tool (misconfigured plist, future ellekit
+// edge case), our libc hooks can break PAM/auth and lock SSH out — which
+// already happened once in dev. Bail out *before* installing any hook if
+// the host process is a known shell/tool.
+static int vcam_unsafe_host(void) {
+    char buf[256] = {0};
+    uint32_t sz = sizeof(buf);
+    extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
+    if (_NSGetExecutablePath(buf, &sz) != 0) return 0;
+    const char *slash = strrchr(buf, '/');
+    const char *exe = slash ? slash + 1 : buf;
+    static const char *kBlocked[] = {
+        "sh", "bash", "zsh", "dash", "ksh", "fish",
+        "sshd", "sftp-server", "ssh", "scp",
+        "sudo", "su", "doas",
+        "ps", "ls", "cat", "cp", "mv", "rm", "ln", "mkdir", "rmdir",
+        "echo", "grep", "find", "head", "tail", "sed", "awk", "tr",
+        "tar", "gzip", "xz", "dpkg", "dpkg-deb", "apt", "apt-get",
+        "killall", "kill", "pkill",
+        "jbctl", "uicache", "uiopen", "opainject", "ldid",
+        "launchctl", "open", NULL
+    };
+    for (int i = 0; kBlocked[i]; i++) {
+        if (strcmp(exe, kBlocked[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 %ctor {
+    if (vcam_unsafe_host()) return;  // skip injection into shells / tools
+
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
         NSLog(@"[VcamFullMay] loading in %@", bid);
