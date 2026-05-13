@@ -589,29 +589,24 @@ static CLLocation *vcam_makeFakeLocation(void) {
 
 %hook CLGeocoder
 
+// Bypass — let the real geocoder run against our spoofed location.
+// CLGeocoder calls Apple's MapKit reverse-geo backend with whatever
+// CLLocation we pass. Since CLLocationManager hooks above already
+// guarantee the location is our fake VN coord, the placemark returned
+// by Apple WILL already be a VN city (matching whatever city we picked
+// from kVNCities). No need to synthesize a fake CLPlacemark — the
+// private init API isn't in the public SDK, and forwarding to %orig
+// produces a real, valid CLPlacemark that passes any app's plist
+// validation.
+//
+// Edge case: if reverseGeocodeLocation is called with a different
+// CLLocation than our fake (e.g., app passes a stored old location),
+// rewrite it to our fake coord before forwarding.
 - (void)reverseGeocodeLocation:(CLLocation *)location
               completionHandler:(CLGeocodeCompletionHandler)completionHandler {
-    if (!vcamEnabled()) { %orig; return; }
-    // Return a synthesized VN placemark — app uses this to display
-    // "current city" in some KYC flows.
-    vcam_ensureFakeGeoPicked();
-    NSString *city = [NSString stringWithUTF8String:(g_fakeCityName ?: "Hà Nội")];
-    NSDictionary *addr = @{
-        (NSString *)@"CountryCode": @"VN",
-        (NSString *)@"Country":     @"Việt Nam",
-        (NSString *)@"State":       city,
-        (NSString *)@"City":        city,
-    };
-    @try {
-        CLPlacemark *pm = [[CLPlacemark alloc] initWithLocation:location ?: vcam_makeFakeLocation()
-                                                           name:city
-                                                  postalAddress:nil];
-        if (completionHandler) completionHandler(@[pm], nil);
-    } @catch (NSException *ex) {
-        // Fallback — some iOS versions disallow direct CLPlacemark init.
-        if (completionHandler) completionHandler(@[], nil);
-    }
-    (void)addr;
+    if (!vcamEnabled() || !location) { %orig; return; }
+    CLLocation *spoofed = vcam_makeFakeLocation();
+    %orig(spoofed, completionHandler);
 }
 
 %end
