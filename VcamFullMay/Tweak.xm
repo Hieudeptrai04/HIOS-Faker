@@ -733,6 +733,22 @@ static void vcam_ensureFakeCarrierPicked(void) {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
         NSLog(@"[VcamFullMay] loading in %@", bid);
 
+        // Drop a marker file so we can SSH-verify the dylib actually
+        // loaded into this bundle. Filename = bundle id so multiple apps
+        // each leave their own marker. Useful when "tweak doesn't seem
+        // to work" — if no marker for the target bundle → dylib never
+        // got injected (filter plist / cache issue).
+        @try {
+            NSString *safeBid = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+            NSString *markerDir = @"/var/jb/etc/vcam";
+            NSString *marker    = [NSString stringWithFormat:@"%@/loaded_%@.txt",
+                                   markerDir, safeBid];
+            NSString *content   = [NSString stringWithFormat:@"loaded %@\npid %d\nat %@\n",
+                                   bid, getpid(), [NSDate date]];
+            [content writeToFile:marker atomically:YES
+                        encoding:NSUTF8StringEncoding error:nil];
+        } @catch (...) {}
+
         // Resolve via dlsym from the global handle. Easier than typing the
         // dylib path for every libsystem function.
         void *RTLD = RTLD_DEFAULT;
