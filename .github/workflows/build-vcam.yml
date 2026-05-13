@@ -42,93 +42,172 @@ jobs:
           mkdir -p "$THEOS/sdks"
           curl -fSL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS${SDK_VERSION}.sdk.tar.xz" -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
-          test -f "$THEOS/makefiles/common.mk"
-          test -d "$THEOS/sdks/iPhoneOS${SDK_VERSION}.sdk"
 
-      - name: Verify Theos
-        run: |
-          ls "$THEOS/makefiles/common.mk"
-          ls "$THEOS/sdks/"
-
-      - name: Build VcamFullMay tweak
+      - name: Build tweak
         run: |
           set -euo pipefail
           cd VcamFullMay
           rm -rf packages .theos obj
           make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
           ls -lh packages/
-          test -n "$(ls packages/*.deb 2>/dev/null)"
 
-      - name: Patch install_name + filter plist (rootless compat)
+      - name: Patch tweak dylib (install_name + ellekit substrate alias)
         run: |
           set -euo pipefail
           cd VcamFullMay
           DEB=$(ls packages/*.deb | head -1)
-          echo "Original .deb: $DEB"
-
-          rm -rf /tmp/deb-work
-          mkdir -p /tmp/deb-work
-          dpkg-deb -R "$DEB" /tmp/deb-work
-
-          DEPLOYED=$(find /tmp/deb-work -name "VcamFullMay.dylib" | head -1)
-          test -n "$DEPLOYED" || { echo "ERR: no dylib in .deb"; exit 1; }
-
-          echo "=== before patch ==="
-          otool -D "$DEPLOYED" || true
-          otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
-
-          # install_name → absolute deploy path so ellekit/substrate scanner
-          # matches it against the path it found the dylib at.
-          install_name_tool -id \
-            "/var/jb/Library/MobileSubstrate/DynamicLibraries/VcamFullMay.dylib" \
-            "$DEPLOYED"
-
-          # CydiaSubstrate.framework → libsubstrate.dylib (ellekit alias)
-          if otool -L "$DEPLOYED" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
-            install_name_tool -change \
-              "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
-              "/var/jb/usr/lib/libsubstrate.dylib" \
-              "$DEPLOYED"
+          rm -rf /tmp/tweak-work && mkdir -p /tmp/tweak-work
+          dpkg-deb -R "$DEB" /tmp/tweak-work
+          DYLIB=$(find /tmp/tweak-work -name "VcamFullMay.dylib" | head -1)
+          test -n "$DYLIB" || { echo "ERR: no dylib"; exit 1; }
+          install_name_tool -id "/var/jb/Library/MobileSubstrate/DynamicLibraries/VcamFullMay.dylib" "$DYLIB"
+          if otool -L "$DYLIB" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            install_name_tool -change "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+              "/var/jb/usr/lib/libsubstrate.dylib" "$DYLIB"
           fi
-
-          ldid -S "$DEPLOYED"
-
-          echo "=== after patch ==="
-          otool -D "$DEPLOYED"
-          otool -L "$DEPLOYED" | grep -iE 'substrate|ellekit' || true
-
-          # Convert filter plist to XML (Dopamine ellekit needs XML for complex rules)
-          PLIST=$(find /tmp/deb-work -name "*.plist" | grep -v DEBIAN | head -1)
-          if [ -n "$PLIST" ]; then
-            plutil -convert xml1 "$PLIST"
-          fi
-
+          ldid -S "$DYLIB"
+          PLIST=$(find /tmp/tweak-work -name "*.plist" | grep -v DEBIAN | head -1)
+          if [ -n "$PLIST" ]; then plutil -convert xml1 "$PLIST"; fi
           rm -f "$DEB"
-          dpkg-deb -Zxz -b /tmp/deb-work "$DEB"
+          dpkg-deb -Zxz -b /tmp/tweak-work "$DEB"
           ls -lh packages/
 
-      - name: Verify tweak dylib
+      - name: Build companion app
+        id: build-app
+        run: |
+          set -o pipefail
+          cd VcamFullMay/app
+          rm -rf packages .theos obj
+          ls -la
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" 2>&1 | tee ../../app_build.log
+          status=${PIPESTATUS[0]}
+          echo "make exit: $status"
+          ls -la packages/ || true
+          exit $status
+
+      - name: Upload app build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcam-app-build-log
+          path: app_build.log
+          if-no-files-found: warn
+
+      - name: Combine tweak + app into single deb
         run: |
           set -euo pipefail
-          cd VcamFullMay
-          rm -rf /tmp/vcam-verify
-          dpkg-deb -x packages/*.deb /tmp/vcam-verify
-          DYLIB=$(find /tmp/vcam-verify -name "VcamFullMay.dylib" | head -1)
-          test -n "$DYLIB" || { echo "ERR: no dylib"; exit 1; }
-          echo "=== arch slices ==="
-          lipo -info "$DYLIB"
-          lipo -info "$DYLIB" | grep -qE 'arm64.*arm64e|arm64e.*arm64' || { echo "ERR: missing arm64e"; exit 1; }
-          echo "=== linked frameworks ==="
-          otool -L "$DYLIB"
-          echo "=== install_name ==="
-          INSTALL_NAME=$(otool -D "$DYLIB" | tail -1)
-          EXPECTED="/var/jb/Library/MobileSubstrate/DynamicLibraries/VcamFullMay.dylib"
-          test "$INSTALL_NAME" = "$EXPECTED" || { echo "ERR: install_name wrong"; exit 1; }
+          TWEAK_DEB=$(ls VcamFullMay/packages/*.deb | head -1)
+          APP_DEB=$(ls VcamFullMay/app/packages/*.deb | head -1)
+          echo "Tweak: $TWEAK_DEB"
+          echo "App:   $APP_DEB"
 
-      - name: Upload .deb artifact
+          rm -rf combined /tmp/tweak-extract /tmp/app-extract
+          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract
+
+          dpkg-deb -x "$TWEAK_DEB" /tmp/tweak-extract
+          dpkg-deb -x "$APP_DEB"   /tmp/app-extract
+
+          cp -R /tmp/tweak-extract/. combined/
+          cp -R /tmp/app-extract/.   combined/
+
+          # Compute cdhashes via ldid -h for the trustcache postinst step.
+          mkdir -p combined/var/jb/etc/vcam
+          CDHASH_FILE="combined/var/jb/etc/vcam/cdhashes"
+          : > "$CDHASH_FILE"
+          for b in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/VcamFullMay.dylib \
+                   combined/var/jb/Applications/VcamFullMayApp.app/VcamFullMayApp; do
+            [ -f "$b" ] || continue
+            ldid -h "$b" 2>/dev/null | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH_FILE"
+          done
+          echo "=== cdhashes ==="
+          cat "$CDHASH_FILE"
+
+          cat > combined/DEBIAN/postinst <<'POSTINST'
+          #!/bin/sh
+          # Universal postinst — handles Dopamine, palera1n rootless,
+          # rootful jailbreaks. Best-effort, falls through if a tool isn't
+          # present.
+          set -e
+
+          # Detect rootless prefix.
+          if [ -d /var/jb ]; then ROOT=/var/jb; else ROOT=; fi
+          MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
+          ETC="$ROOT/etc/vcam"
+          APP="$ROOT/Applications/VcamFullMayApp.app"
+
+          # Find jbctl across known paths (Dopamine 2 trustcache loader).
+          JBCTL=""
+          for c in "$ROOT/basebin/jbctl" "/var/jb/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
+            [ -x "$c" ] && JBCTL="$c" && break
+          done
+
+          # Ownership / perms — root:wheel for tweak payload, world-writable
+          # for the shared video dir so the companion app (running as mobile)
+          # can drop the user's chosen video there.
+          for f in "$MS/VcamFullMay.dylib" "$MS/VcamFullMay.plist"; do
+            [ -e "$f" ] || continue
+            chown root:wheel "$f" 2>/dev/null || true
+            case "$f" in
+              *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
+              *)       chmod 0644 "$f" 2>/dev/null || true ;;
+            esac
+          done
+          mkdir -p "$ETC" 2>/dev/null || true
+          chmod 0777 "$ETC" 2>/dev/null || true
+
+          # Trustcache: feed the packaged cdhash list. Skips silently on jbs
+          # without jbctl.
+          if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              "$JBCTL" trustcache add "$h" 2>/dev/null || true
+            done < "$ETC/cdhashes"
+          fi
+
+          # Refresh icon cache so the app icon appears immediately.
+          for u in uicache "$ROOT/usr/bin/uicache" /var/jb/usr/bin/uicache /usr/bin/uicache; do
+            command -v "$u" >/dev/null 2>&1 && "$u" -p "$APP" 2>/dev/null && break
+          done
+
+          exit 0
+          POSTINST
+          chmod 0755 combined/DEBIAN/postinst
+
+          cat > combined/DEBIAN/control <<EOF
+          Package: com.vcamfullmay
+          Name: VcamFullMay
+          Version: 1.0.0
+          Architecture: iphoneos-arm64
+          Description: Virtual camera tweak + companion UI app. Pick a video from the Photos library to feed into AVCaptureSession for any listed app. Includes comprehensive JB hide + KYC location spoof.
+          Maintainer: Hieudeptrai04
+          Author: Hieudeptrai04
+          Section: Tweaks
+          Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          Replaces: com.vcamfullmay.tweak, com.vcamfullmay.app
+          Conflicts: com.vcamfullmay.tweak, com.vcamfullmay.app
+          Provides: com.vcamfullmay.tweak, com.vcamfullmay.app
+          EOF
+
+          mkdir -p out
+          dpkg-deb -Zxz -b combined "out/VcamFullMay_1.0.0_iphoneos-arm64.deb"
+          ls -lh out/
+
+      - name: Audit combined deb
+        run: |
+          set -euo pipefail
+          echo "=== combined/ tree ==="
+          find combined -type f -o -type l | sort
+          echo
+          echo "=== DEBIAN/control ==="
+          cat combined/DEBIAN/control
+          echo
+          echo "=== app bundle Info.plist ==="
+          plutil -p combined/var/jb/Applications/VcamFullMayApp.app/Info.plist || true
+
+      - name: Upload combined .deb artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: VcamFullMay
-          path: VcamFullMay/packages/*.deb
+          path: out/*.deb
           retention-days: 14

@@ -1,0 +1,9 @@
+Package: com.vcamfullmay.app
+Name: VcamFullMay App
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Companion UI for VcamFullMay camera-spoof tweak. Pick a video from Photos library, toggle vcam on/off, random GPS pin. Depends on the com.vcamfullmay.tweak package.
+Maintainer: Hieudeptrai04
+Author: Hieudeptrai04
+Section: Applications
+Depends: com.vcamfullmay.tweak
