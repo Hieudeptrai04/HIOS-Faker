@@ -11,7 +11,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ChangeInfoIos
-ChangeInfoIos_FILES = Tweak.xm Hooks.mm
+ChangeInfoIos_FILES = Tweak.xm Hooks.mm fishhook.c
 ChangeInfoIos_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 # Link every framework used by Tweak.xm/Hooks.mm. Missing framework → dylib
 # has unresolved Obj-C classes at load time → ellekit/substrate skip inject

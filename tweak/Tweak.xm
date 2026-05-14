@@ -28,6 +28,7 @@
 #import <mach-o/dyld.h>
 #include <sys/time.h>
 #import <spawn.h>
+#include "fishhook.h"
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <CoreTelephony/CTCarrier.h>
 #if __has_include(<CoreTelephony/CTSubscriber.h>)
@@ -512,6 +513,14 @@ static NSUInteger ci_toUInteger(id v) { return (NSUInteger)ci_toULL(v); }
 // immediately, the outer hook returns %orig, the original caller proceeds.
 static __thread int g_inFakeLayer = 0;
 
+// Wall-clock anchor set at dylib %ctor. Used by drift-style hooks
+// (batteryLevel, systemUptime) so the host app sees a value that
+// advances with real time instead of returning the same constant on
+// every read — a real device's battery slowly discharges and uptime
+// always grows. Two reads N seconds apart MUST differ by ~N or the
+// host app's anti-bot timing checks flag the read as a replay.
+static CFAbsoluteTime g_dylibLoadTime = 0.0;
+
 // Cache for the "fake_<shortName>" key strings. fakeLayer is called from
 // EVERY hooked method invocation; -[NSString stringWithFormat:] allocates
 // a fresh NSString each call. With Phase 6+7+Batches we have ~30 hooks
@@ -600,8 +609,21 @@ BOOL jbHideActive(void) {
 - (float)batteryLevel {
     if (!fakeLayer(@"uiddevice")) return %orig;
     id val = getConfig(@"batteryLevel");
-    if (val) return [val floatValue];
-    return %orig;
+    if (!val) return %orig;
+    float base = [val floatValue];
+    // Slow drift: ~1% per 20min. Two reads 1 minute apart differ ~0.0008 →
+    // never crosses an int-percent boundary in a single registration flow,
+    // so the host app still sees a stable "73%" UI, but a logger sampling
+    // every second sees realistic noise. Discharge always (sign chosen to
+    // match the most common batteryState=unplugged path).
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    double minutesSinceLoad = (now - g_dylibLoadTime) / 60.0;
+    if (minutesSinceLoad < 0) minutesSinceLoad = 0;
+    float drift = (float)(minutesSinceLoad / 20.0 / 100.0);  // % → 0..1 scale
+    float out = base - drift;
+    if (out < 0.05f) out = 0.05f;  // never drain to zero mid-session
+    if (out > 1.0f)  out = 1.0f;
+    return out;
 }
 
 - (UIDeviceBatteryState)batteryState {
@@ -1214,8 +1236,16 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
 - (NSTimeInterval)systemUptime {
     if (!fakeLayer(@"processinfo")) return %orig;
     id val = getConfig(@"systemUptime");
-    if (val) return [val doubleValue];
-    return %orig;
+    if (!val) return %orig;
+    // Base value is "how long the device has been up at dylib load"; from
+    // here we MUST advance with wall clock — apps that read uptime twice
+    // expect t2 > t1 by the elapsed delta. Returning the same constant
+    // every call lets bot-detection flag the read as a replay.
+    double base = [val doubleValue];
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    double elapsed = now - g_dylibLoadTime;
+    if (elapsed < 0) elapsed = 0;
+    return base + elapsed;
 }
 
 - (NSOperatingSystemVersion)operatingSystemVersion {
@@ -1758,26 +1788,104 @@ static void ci_installWebRTCHooks(void) {
 - (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type;
 @end
 
-// LSApplicationWorkspace iteration DISABLED 2026-05-08.
-// Crash signature (Zalo register): infinite recursion through
-//   hook → jbHideActive → fakeLayer → ... → hook
-// Each [proxy applicationIdentifier] call inside our iteration triggers
-// LSApplicationProxy lazy-metadata load which calls back into LSAW
-// methods we hook → our hook fires again → iterates 100+ proxies →
-// each triggers another iteration → stack overflow → SIGSEGV at stack
-// guard. fakeLayer's g_inFakeLayer guard breaks at level 2 but the
-// hook body itself isn't guarded, so each new entry from a fresh stack
-// frame proceeds through the iteration.
+// Forward-declare the proxy method we read so we don't have to call it
+// via performSelector: (which trips an ARC "may leak" warning because
+// the compiler can't reason about the unknown selector's return type).
+@interface LSApplicationProxy : NSObject
+- (NSString *)applicationIdentifier;
+@end
+
+// RE-ENABLED 2026-05-15. The earlier crash (infinite recursion through
+//   hook → [proxy applicationIdentifier] → LSAW internal → hook again)
+// was caused by relying ONLY on fakeLayer's g_inFakeLayer guard, which
+// breaks at level 2 but does nothing to prevent the hook body itself
+// from re-entering on a fresh stack frame from the same thread.
 //
-// Trade-off: lose the "hide installed apps" anti-fraud signal. Anti-
-// fraud SDKs that fingerprint by walking the app list see real list
-// again. Most don't actually use this signal — the recursion-induced
-// crash is a worse outcome than the leak.
+// New strategy: dedicated __thread guard g_inLSAW guards each hook
+// body's iteration block. On nested entry from LSApplicationProxy
+// metadata-load callbacks, the guard makes us pass through to %orig
+// immediately so the lazy metadata can resolve normally without our
+// filter running again.
 //
-// To restore safely: add a per-thread guard at the top of EACH hook
-// body, not just inside fakeLayer.
+// Why this matters for reg-success: anti-fraud SDKs walk
+// allInstalledApplications to fingerprint by which apps the user has
+// installed. With 30+ apps on a real phone, the install-set vector is
+// often 30+ bits — enough to correlate accounts across Reset Data even
+// when every other ID is freshly spoofed. Filtering down to "host app
+// + Apple system bundles only" gives every fresh-reset account the
+// same install-set vector → no cross-account correlation through this
+// path. Same outcome as a freshly factory-restored iPhone, which is
+// the persona we're trying to project.
 //
-//  %hook LSApplicationWorkspace ... %end
+// Why not return @[]: zero installed apps is itself a flag. Real iOS
+// always reports the host app + dozens of com.apple.* preinstalls.
+
+static __thread int g_inLSAW = 0;
+
+// Decide whether a given LSApplicationProxy should be visible to the
+// host app. Allowlist: Apple system bundles (always present on every
+// iPhone) + the host app itself. Everything else (Zalo, Facebook,
+// other social apps, banking apps, the user's third-party installs)
+// is hidden so the install-set vector becomes stable across accounts.
+static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundleID) {
+    @try {
+        NSString *bid = [proxy applicationIdentifier];
+        if (![bid isKindOfClass:[NSString class]]) return YES;  // unknown → keep
+        if ([bid hasPrefix:@"com.apple."]) return YES;          // Apple preinstall
+        if (hostBundleID && [bid isEqualToString:hostBundleID]) return YES;
+        return NO;
+    } @catch (__unused id e) {
+        return YES;
+    }
+}
+
+%hook LSApplicationWorkspace
+
+- (NSArray *)allInstalledApplications {
+    if (g_inLSAW) return %orig;     // nested re-entry from metadata-load callback
+    if (!fakeLayer(@"keychain")) return %orig;
+    g_inLSAW++;
+    NSArray *original = %orig;
+    NSArray *result = original;
+    @try {
+        NSString *hostBID = [[NSBundle mainBundle] bundleIdentifier];
+        NSMutableArray *trimmed = [NSMutableArray arrayWithCapacity:original.count];
+        for (id proxy in original) {
+            if (ci_proxyVisibleToHost(proxy, hostBID)) {
+                [trimmed addObject:proxy];
+            }
+        }
+        result = trimmed;
+    } @catch (__unused id e) {
+        result = original;          // any iteration failure → fall back to real list
+    }
+    g_inLSAW--;
+    return result;
+}
+
+- (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type {
+    if (g_inLSAW) return %orig;
+    if (!fakeLayer(@"keychain")) return %orig;
+    g_inLSAW++;
+    NSArray *original = %orig;
+    NSArray *result = original;
+    @try {
+        NSString *hostBID = [[NSBundle mainBundle] bundleIdentifier];
+        NSMutableArray *trimmed = [NSMutableArray arrayWithCapacity:original.count];
+        for (id proxy in original) {
+            if (ci_proxyVisibleToHost(proxy, hostBID)) {
+                [trimmed addObject:proxy];
+            }
+        }
+        result = trimmed;
+    } @catch (__unused id e) {
+        result = original;
+    }
+    g_inLSAW--;
+    return result;
+}
+
+%end
 
 // ============================================================
 // iCLOUD KEY-VALUE STORE BLOCKER — break iCloud-keyed correlation.
@@ -3015,6 +3123,57 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
 
 @end
 
+// ============================================================
+// AVCaptureDevice fingerprint — spoof per-camera hardware identifiers.
+// ============================================================
+// Anti-fraud SDKs in eKYC flows (Zalo / banking apps) read AVCaptureDevice
+// .uniqueID and .modelID during selfie/ID-card capture and ship them to the
+// backend with the captured frames. Real values look like "0001:0001" /
+// "back-camera-iPhone14,5" and are stable across Reset Data because the
+// camera hardware never changes — so even with a fresh container + spoofed
+// MGCopyAnswer + spoofed UDID, the camera ID gives the device away.
+//
+// Strategy: derive a deterministic-per-Reset uniqueID from the spoofed
+// UDID config so it stays internally consistent within one profile cycle
+// (every Reset → new UDID → new camera ID), and modelID from the spoofed
+// ProductType so a "claim iPhone 12 + back camera" reads as a back camera
+// from an iPhone 12, not the real device.
+%hook AVCaptureDevice
+
+- (NSString *)uniqueID {
+    if (!fakeLayer(@"hardware")) return %orig;
+    NSString *spoof = getConfigStr(@"AVCaptureDeviceUniqueID");
+    if (spoof.length > 0) {
+        // Optionally suffix per-position so front/back stay distinguishable
+        // (apps that enumerate devices expect different IDs per position).
+        // -position returns AVCaptureDevicePositionBack(1) / Front(2) / Unspecified(0).
+        @try {
+            NSInteger pos = (NSInteger)[self position];
+            if (pos == 2 /* Front */) return [spoof stringByAppendingString:@":F"];
+            if (pos == 1 /* Back */)  return [spoof stringByAppendingString:@":B"];
+        } @catch (__unused id e) {}
+        return spoof;
+    }
+    return %orig;
+}
+
+- (NSString *)modelID {
+    if (!fakeLayer(@"hardware")) return %orig;
+    NSString *productType = getConfigStr(@"ProductType");
+    if (productType.length > 0) {
+        @try {
+            NSInteger pos = (NSInteger)[self position];
+            const char *side = (pos == 2) ? "front" : "back";
+            return [NSString stringWithFormat:@"com.apple.avfoundation.avcapturedevice.built-in_video:%s:%@",
+                    side, productType];
+        } @catch (__unused id e) {}
+        return [NSString stringWithFormat:@"com.apple.avfoundation.avcapturedevice.built-in_video:%@", productType];
+    }
+    return %orig;
+}
+
+%end
+
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
@@ -3045,6 +3204,10 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
 
 %ctor {
     @autoreleasepool {
+        // Anchor wall-clock at dylib load for drift-style hooks.
+        // Set BEFORE any %hook bodies could read it.
+        g_dylibLoadTime = CFAbsoluteTimeGetCurrent();
+
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
 
         // SAFETY GUARD — broad UIKit filter inject puts us in every GUI app,
@@ -3125,27 +3288,34 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         NSLog(@"[ChangeInfoIos] Tweak loading for %@...", bid);
         ci_wipeContainerIfScheduled();
 
-        // Keychain restore: if host app dropped a restore flag (via RRS
-        // restore), apply the snapshot BEFORE the host app reads any
-        // keychain entries. Suppress the auto-dump 5s later so we don't
-        // overwrite the just-restored data with… the same data. Otherwise
-        // schedule a background dump to keep the snapshot fresh per launch.
-        BOOL didRestore = ci_restoreKeychainIfFlagged();
-        if (!didRestore) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
-                           dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
-                ci_dumpKeychain();
-            });
-        }
-        // On-demand dump trigger from host app (sent via notify_post just
-        // before tar). Listener stays installed for the lifetime of the
-        // process so RRS backups always hit a current snapshot.
+        // ORDER MATTERS: register the dump_keychain observer FIRST, before
+        // any further ctor work, then run restore + initial dump. Earlier
+        // build registered the observer AFTER restore + dispatch_after(5s)
+        // chain — race window where the host app's notify_post fired during
+        // the gap reached an unregistered Darwin notifyd entry and was lost
+        // (Darwin notify does NOT queue for unregistered observers). Result:
+        // backup tarred a stale 5s-old dump (or nothing for a fresh launch),
+        // restore replayed empty/old keychain, Zalo asked login again.
+        // Now the listener is live within microseconds of dylib load, so
+        // every notify after %ctor enters our handler.
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
             ci_onDumpKeychainNotification,
             CFSTR("com.changeinfoios/dump_keychain"), NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
-
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+
+        // Keychain restore: if host app dropped a restore flag (via RRS
+        // restore), apply the snapshot BEFORE the host app reads any
+        // keychain entries. Suppress the auto-dump immediately after so we
+        // don't overwrite the just-restored data with… the same data.
+        // Otherwise dump synchronously now (was 5s dispatch_after — the
+        // delay caused tar-time stale dumps when user backed up quickly
+        // after launch). Cost is ~30ms on a typical Zalo keychain (<200
+        // entries), well under the host watchdog budget.
+        BOOL didRestore = ci_restoreKeychainIfFlagged();
+        if (!didRestore) {
+            ci_dumpKeychain();
+        }
 
         // EMERGENCY KILL-SWITCH: MG install hardcoded OFF until we
         // diagnose the trampoline / libMobileGestalt iOS 16.7 interaction
@@ -3183,7 +3353,56 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         // CTCarrier / DCDevice / AppAttest / etc) cover the same keys
         // at higher levels and most fingerprint libs read those first.
         BOOL kSkipMG_HARDCODED = YES;
-        if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
+        // Opt-in MG hook via fishhook GOT rebinding — avoids MSHookFunction's
+        // prologue patch that brk-traps on iOS 16.7.11. To enable in-the-field:
+        //   ssh root@iphone "/var/jb/usr/bin/plutil -replace _ci_use_mg_fishhook \
+        //     -bool true /var/mobile/Library/Preferences/com.changeinfoios.plist"
+        // then respring. Caveats:
+        //   1. Only intercepts calls through __DATA __la_symbol_ptr / __got
+        //      (static linkage). Calls via dlsym(RTLD_DEFAULT,"MGCopyAnswer")
+        //      bypass — UIDevice._deviceInfoForKey: hook is the safety net.
+        //   2. Newly-loaded dylibs after %ctor are caught via
+        //      _dyld_register_func_for_add_image inside rebind_symbols, but
+        //      our rebinding metadata must outlive %ctor — keep static.
+        //   3. AppAttest / Crashlytics / Firebase typically use static link →
+        //      fishhook intercepts these. Manual probe SDKs may not.
+        BOOL useFishhook = getConfigBool(@"_ci_use_mg_fishhook");
+        if (useFishhook && !getConfigBool(@"_ci_skip_mg")) {
+            // dlopen MG so dlsym below gives us the real entry points to
+            // call from inside our hooked_* functions (orig_* pointers).
+            void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+            if (mgHandle) {
+                orig_MGCopyAnswer      = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
+                orig_MGGetBoolAnswer   = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
+                orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
+                if (orig_MGCopyAnswer) {
+                    // Must outlive %ctor — fishhook keeps a pointer.
+                    static struct rebinding mgRebindings[3];
+                    int n = 0;
+                    mgRebindings[n++] = (struct rebinding){
+                        "MGCopyAnswer", (void *)hooked_MGCopyAnswer, (void **)&orig_MGCopyAnswer
+                    };
+                    if (orig_MGGetBoolAnswer) {
+                        mgRebindings[n++] = (struct rebinding){
+                            "MGGetBoolAnswer", (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer
+                        };
+                    }
+                    if (orig_MGGetStringAnswer) {
+                        mgRebindings[n++] = (struct rebinding){
+                            "MGGetStringAnswer", (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer
+                        };
+                    }
+                    int rc = rebind_symbols(mgRebindings, n);
+                    NSLog(@"[ChangeInfoIos] MG hooked via fishhook (n=%d rc=%d)", n, rc);
+                } else {
+                    NSLog(@"[ChangeInfoIos] MG fishhook: MGCopyAnswer dlsym failed");
+                }
+            }
+        } else if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
+            // Legacy MSHookFunction path — kept for opt-in regression testing
+            // on iOS < 16.7 where the brk trap doesn't trigger. NOT used by
+            // default; toggle by flipping kSkipMG_HARDCODED to NO above AND
+            // leaving _ci_use_mg_fishhook unset.
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {
                 orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
@@ -3191,7 +3410,7 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
                     orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer_internal");
                 if (orig_MGCopyAnswer) {
                     MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer, (void **)&orig_MGCopyAnswer);
-                    NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked");
+                    NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked (MSHook)");
                 } else {
                     NSLog(@"[ChangeInfoIos] MGCopyAnswer symbol not found");
                 }
@@ -3199,17 +3418,17 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
                 orig_MGGetBoolAnswer = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
                 if (orig_MGGetBoolAnswer) {
                     MSHookFunction((void *)orig_MGGetBoolAnswer, (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer);
-                    NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked");
+                    NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked (MSHook)");
                 }
 
                 orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
                 if (orig_MGGetStringAnswer) {
                     MSHookFunction((void *)orig_MGGetStringAnswer, (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer);
-                    NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked");
+                    NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked (MSHook)");
                 }
             }
         } else {
-            NSLog(@"[ChangeInfoIos] _ci_skip_mg=YES — skipping MG hook install entirely");
+            NSLog(@"[ChangeInfoIos] MG hook skipped (kSkipMG_HARDCODED=YES, _ci_use_mg_fishhook unset)");
         }
 
         void *iokitHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
