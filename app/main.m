@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.2.1-native";
+static NSString *const kAppVersion = @"2.4.3";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5260,16 +5260,44 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         BOOL prefsOK = sharedExists && sharedSize >= 256;
 
-        // Check tweak injection markers. Each target's tweak %ctor writes
-        // /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt on load.
-        // If a bundle was opened since install but no marker → tweak didn't
-        // inject there. See BUILD_NOTES §10.
+        // Check tweak injection markers. The tweak's %ctor writes a marker
+        // to up to THREE locations, depending on which one its sandbox
+        // permits — diag must check all three before declaring failure or
+        // sandboxed App Store apps (Zalo/AIDA64/etc) ALWAYS read as "not
+        // injected" even when the tweak is clearly running (user observes
+        // spoofed AIDA64 values while the alert still warns CHƯA inject).
+        //
+        //   (A) /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt
+        //       Writable by system processes (SpringBoard, daemons) and
+        //       some host apps with broad entitlements. Hit by ~10 system
+        //       bundles on a typical device.
+        //   (B) /var/jb/etc/changeinfoios/loaded_<bid>.txt
+        //       Writable only by jailbroken-toolchain processes. App Store
+        //       app sandboxes get EPERM here — confirmed live 2026-05-07
+        //       (Zalo had ChangeInfoIos.dylib loaded but loaded_*.txt
+        //       silently failed). Useful for daemons only.
+        //   (C) <containerPath>/tmp/hios_changeinfo_loaded.txt
+        //       Inside each app's own data container — sandbox-permitted
+        //       for every App Store app. THIS is the one Zalo / AIDA64
+        //       actually hit. We resolve containerPath via the same lookup
+        //       CIAppInfo uses; if any of the three paths exists, the
+        //       bundle's tweak is considered live.
         NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
+        NSString *jbMarkerDir = @"/var/jb/etc/changeinfoios";
         NSMutableArray<NSString *> *notInjected = [NSMutableArray array];
         for (CIAppInfo *a in fullTargets) {
             if (!a.bundleID.length) continue;
-            NSString *m = [markerDir stringByAppendingFormat:@"/injected_%@.txt", a.bundleID];
-            if (![fm2 fileExistsAtPath:m]) {
+            NSString *mA = [markerDir stringByAppendingFormat:@"/injected_%@.txt", a.bundleID];
+            NSString *mB = [jbMarkerDir stringByAppendingFormat:@"/loaded_%@.txt",   a.bundleID];
+            BOOL injected = [fm2 fileExistsAtPath:mA] || [fm2 fileExistsAtPath:mB];
+            if (!injected) {
+                NSString *container = a.containerPath ?: ci_findDataContainerForBundle(a.bundleID);
+                if (container.length) {
+                    NSString *mC = [container stringByAppendingPathComponent:@"tmp/hios_changeinfo_loaded.txt"];
+                    if ([fm2 fileExistsAtPath:mC]) injected = YES;
+                }
+            }
+            if (!injected) {
                 [notInjected addObject:a.name ?: a.bundleID];
             }
         }
