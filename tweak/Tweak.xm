@@ -310,32 +310,77 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
             SecItemDelete((__bridge CFDictionaryRef)q);
         }
 
-        // Read-only / system-managed attrs that SecItemAdd rejects.
-        NSArray *stripKeys = @[
+        // Two-pass strip lists. The first pass strips ONLY truly
+        // system-managed read-only attrs that SecItemAdd always rejects
+        // (creation/modification dates, persistent ref, sha1 row hash,
+        // musr per-user multiuser tag). It DELIBERATELY KEEPS:
+        //   - kSecAttrAccessGroup / "agrp": items in Zalo's shared
+        //     keychain group "CVB6BX97VM.group.keychain.vn.com.vng.zalo"
+        //     MUST be restored back into that group, otherwise Zalo's
+        //     code reads from the shared group and finds nothing →
+        //     session-token lookup misses → login screen even though we
+        //     just restored a 32 KB dump. Verified live 2026-05-19:
+        //     stripping agrp gave 11/N entries in the default per-app
+        //     group, which doesn't match Zalo's reads. Host process (the
+        //     target app itself) carries the entitlement for its own
+        //     groups, so SecItemAdd accepts the agrp value.
+        //   - kSecAttrAccessible / "pdmn": Apple's data-protection class
+        //     (WhenUnlocked vs AfterFirstUnlock vs AlwaysThisDeviceOnly).
+        //     Keep so items restore to the same protection class they
+        //     came from — mismatched class breaks reads in some flows.
+        //
+        // If the first pass returns errSecMissingEntitlement (-34018)
+        // or related access-group errors, the SECOND pass falls back to
+        // also stripping agrp/pdmn → item lands in the default group
+        // with default protection. Better than not restoring at all.
+        NSArray *strictStrip = @[
             (__bridge NSString *)kSecAttrCreationDate,
             (__bridge NSString *)kSecAttrModificationDate,
+            @"persistref", @"musr", @"sha1", @"cdat", @"mdat",
+        ];
+        NSArray *fallbackExtra = @[
             (__bridge NSString *)kSecAttrAccessGroup,
-            @"persistref", @"agrp", @"musr", @"sha1", @"cdat", @"mdat", @"pdmn",
+            (__bridge NSString *)kSecAttrAccessible,
+            @"agrp", @"pdmn",
         ];
 
-        NSUInteger added = 0;
+        NSUInteger added = 0, fallbackAdded = 0;
+        NSMutableDictionary<NSString *, NSNumber *> *statusHist = [NSMutableDictionary dictionary];
         for (NSDictionary *enc in all) {
             if (![enc isKindOfClass:[NSDictionary class]]) continue;
             NSMutableDictionary *e = ci_decodeKCEntry(enc);
             NSString *cls = e[@"__class"];
             if (!cls) continue;
             [e removeObjectForKey:@"__class"];
-            for (NSString *k in stripKeys) [e removeObjectForKey:k];
+            for (NSString *k in strictStrip) [e removeObjectForKey:k];
             e[(__bridge NSString *)kSecClass] = cls;
+
             OSStatus s = SecItemAdd((__bridge CFDictionaryRef)e, NULL);
-            if (s == errSecSuccess) added++;
+            if (s == errSecSuccess) {
+                added++;
+            } else {
+                // Track histogram for diag and decide whether to retry.
+                NSString *key = [NSString stringWithFormat:@"%d", (int)s];
+                statusHist[key] = @([statusHist[key] integerValue] + 1);
+
+                // -34018 = errSecMissingEntitlement; -25243 = errSecNoAccessForItem.
+                // For any error, retry with agrp/pdmn stripped — the cost is
+                // landing in default group instead of failing entirely.
+                NSMutableDictionary *fallback = [e mutableCopy];
+                for (NSString *k in fallbackExtra) [fallback removeObjectForKey:k];
+                OSStatus s2 = SecItemAdd((__bridge CFDictionaryRef)fallback, NULL);
+                if (s2 == errSecSuccess) {
+                    fallbackAdded++;
+                }
+            }
         }
 
         g_ci_skipKeychainHook--;
 
         [fm removeItemAtPath:flag error:nil];
-        NSLog(@"[ChangeInfoIos] keychain restore: %lu/%lu entries reapplied",
-              (unsigned long)added, (unsigned long)all.count);
+        NSLog(@"[ChangeInfoIos] keychain restore: %lu primary + %lu fallback / %lu entries reapplied (hist=%@)",
+              (unsigned long)added, (unsigned long)fallbackAdded,
+              (unsigned long)all.count, statusHist);
         return YES;
     }
 }
