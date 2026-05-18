@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.3";
+static NSString *const kAppVersion = @"2.4.5";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5260,47 +5260,28 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         BOOL prefsOK = sharedExists && sharedSize >= 256;
 
-        // Check tweak injection markers. The tweak's %ctor writes a marker
-        // to up to THREE locations, depending on which one its sandbox
-        // permits — diag must check all three before declaring failure or
-        // sandboxed App Store apps (Zalo/AIDA64/etc) ALWAYS read as "not
-        // injected" even when the tweak is clearly running (user observes
-        // spoofed AIDA64 values while the alert still warns CHƯA inject).
+        // Tweak-injection check REMOVED. The old check stat-ed marker
+        // files written by tweak %ctor (injected_<bid>.txt in three
+        // candidate paths) but kept producing false positives because:
         //
-        //   (A) /var/mobile/Library/Caches/ChangeInfoIos/injected_<bid>.txt
-        //       Writable by system processes (SpringBoard, daemons) and
-        //       some host apps with broad entitlements. Hit by ~10 system
-        //       bundles on a typical device.
-        //   (B) /var/jb/etc/changeinfoios/loaded_<bid>.txt
-        //       Writable only by jailbroken-toolchain processes. App Store
-        //       app sandboxes get EPERM here — confirmed live 2026-05-07
-        //       (Zalo had ChangeInfoIos.dylib loaded but loaded_*.txt
-        //       silently failed). Useful for daemons only.
-        //   (C) <containerPath>/tmp/hios_changeinfo_loaded.txt
-        //       Inside each app's own data container — sandbox-permitted
-        //       for every App Store app. THIS is the one Zalo / AIDA64
-        //       actually hit. We resolve containerPath via the same lookup
-        //       CIAppInfo uses; if any of the three paths exists, the
-        //       bundle's tweak is considered live.
-        NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
-        NSString *jbMarkerDir = @"/var/jb/etc/changeinfoios";
-        NSMutableArray<NSString *> *notInjected = [NSMutableArray array];
-        for (CIAppInfo *a in fullTargets) {
-            if (!a.bundleID.length) continue;
-            NSString *mA = [markerDir stringByAppendingFormat:@"/injected_%@.txt", a.bundleID];
-            NSString *mB = [jbMarkerDir stringByAppendingFormat:@"/loaded_%@.txt",   a.bundleID];
-            BOOL injected = [fm2 fileExistsAtPath:mA] || [fm2 fileExistsAtPath:mB];
-            if (!injected) {
-                NSString *container = a.containerPath ?: ci_findDataContainerForBundle(a.bundleID);
-                if (container.length) {
-                    NSString *mC = [container stringByAppendingPathComponent:@"tmp/hios_changeinfo_loaded.txt"];
-                    if ([fm2 fileExistsAtPath:mC]) injected = YES;
-                }
-            }
-            if (!injected) {
-                [notInjected addObject:a.name ?: a.bundleID];
-            }
-        }
+        //   1. Sandboxed App Store apps (Zalo, AIDA64, banking) can't
+        //      write the system-level paths /var/mobile/Library/Caches/
+        //      or /var/jb/etc/, so two of three writes silently EPERM.
+        //   2. The remaining sandbox-permitted path
+        //      <container>/tmp/hios_changeinfo_loaded.txt would also be
+        //      EMPTY immediately after Reset Data — the Reset wipes the
+        //      whole container including tmp/ between marker write and
+        //      diagnostic check. Race-condition by design.
+        //   3. The reverse signal (spoofed values appearing in
+        //      AIDA64 / Lirum / DeviceDesign) is already what the user
+        //      checks to verify the spoof landed, so a separate diag
+        //      adds confusion without adding signal.
+        //
+        // If the user wants forensic proof, /var/jb/etc/changeinfoios/
+        // cdhashes + dpkg -l com.changeinfoios already prove the tweak
+        // is installed; spoofed values in AIDA64 prove the hooks are
+        // live. Keep the alert focused on what the user CAN act on.
+        NSMutableArray<NSString *> *notInjected = [NSMutableArray array];  // intentionally empty
 
         [self dismissHUD:hud completion:^{
             NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
