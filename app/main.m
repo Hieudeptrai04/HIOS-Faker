@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.5";
+static NSString *const kAppVersion = @"2.4.6";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5771,18 +5771,41 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 continue;
             }
 
-            [fm createDirectoryAtPath:tmpDir withIntermediateDirectories:YES
-                            attributes:nil error:nil];
+            // Drop the restore flag via shell instead of NSFileManager.
+            // NSFileManager-from-CIHomeViewController hits the iOS sandbox
+            // MAC even with com.apple.private.security.no-sandbox=true on
+            // our app — confirmed live 2026-05-19: data restore via
+            // shell `cp` (posix_spawn'd, bypasses sandbox) landed
+            // hios_keychain.plist + 50 other files in Zalo's container,
+            // but the parallel NSFileManager `writeToFile:atomically:`
+            // for the flag silently EPERM'd because writing into another
+            // app's container is gated by MAC at the NSFileManager layer
+            // independently of the no-sandbox entitlement. Result:
+            // keychain dump present in tmp/, flag absent → tweak's %ctor
+            // on Zalo launch reads no flag → skips restore → Zalo asks
+            // login again even though every byte of the session was
+            // sitting in its own tmp/. Same shell path that worked for
+            // the data copy works here for a 1-byte flag.
             NSString *flagPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
-            NSError *err = nil;
-            BOOL ok = [@"1" writeToFile:flagPath atomically:YES
-                               encoding:NSUTF8StringEncoding error:&err];
+            // Escape single quotes in the path defensively before splicing
+            // into the shell command (paths under Containers/ shouldn't
+            // have them, but be safe).
+            NSString *flagSafe = [flagPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *flagCmd = [NSString stringWithFormat:
+                @"mkdir -p '%@' 2>/dev/null; "
+                @"echo 1 > '%@' && chmod 0644 '%@'",
+                [flagSafe stringByDeletingLastPathComponent], flagSafe, flagSafe];
+            int flagRC = ci_run([flagCmd UTF8String]);
+            // Verify via stat — shell echo can fail silently if disk full.
+            NSDictionary *flagAttrs = [fm attributesOfItemAtPath:flagPath error:nil];
+            BOOL ok = (flagRC == 0) && ([flagAttrs[NSFileSize] unsignedLongLongValue] > 0);
             if (ok) {
                 flagsDropped++;
                 NSLog(@"[ChangeInfoIos] restore: keychain flag dropped for %@ (dump=%llu bytes)",
                       bid, dumpSz);
             } else {
-                NSLog(@"[ChangeInfoIos] restore: flag write FAILED for %@: %@", bid, err);
+                NSLog(@"[ChangeInfoIos] restore: flag drop FAILED for %@ (shell rc=%d, sz=%llu)",
+                      bid, flagRC, [flagAttrs[NSFileSize] unsignedLongLongValue]);
             }
         }
         NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles%@",
