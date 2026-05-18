@@ -2695,6 +2695,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"20. Fake system uptime" key:@"fake_uptime" indent:0]];
     [_rows addObject:[C text:@"systemUptime (seconds)" key:@"systemUptime" placeholder:@"3600" indent:24]];
 
+    // 21. Reset Data behavior — let user opt out of the SpringBoard
+    // respring that fires at the end of every Reset Data run. Respring
+    // is harmless but takes ~6s + reloads every running app from a
+    // launch snapshot. For users batching many resets in a row, that's
+    // wasted time. With this toggle ON, Step 4 (respring) is skipped
+    // and target apps are killed instead — the tweak %ctor still runs
+    // fresh on next cold-start of each target app, so spoof identities
+    // still rotate correctly. The only thing the user loses is
+    // SpringBoard's icon cache refresh, which is fine if you're not
+    // installing/uninstalling apps mid-session.
+    [_rows addObject:[C toggle:@"21. Bỏ qua respring sau Reset Data" key:@"skipRespringAfterReset" indent:0]];
+    [_rows addObject:[C note:@"Bật để khỏi mất 6s reload SpringBoard mỗi lần Reset. Target apps vẫn bị kill + reload tweak ở lần mở tiếp theo." indent:24]];
+
     [self.tableView reloadData];
 }
 
@@ -5182,22 +5195,39 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // As mobile user we can't killall SpringBoard (root-owned). Try
         // sbreload/launchctl first (rootless-jb friendly), then fall back
         // to killall SpringBoard which only works if elevated.
-        [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
-                  title:@"Restart SpringBoard"
-               subtitle:@"Reload tweak với config mới…"];
-        [NSThread sleepForTimeInterval:1.5];
-        const char *respringCmd =
-            "/var/jb/usr/bin/sbreload 2>/dev/null"
-            " || sbreload 2>/dev/null"
-            " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-            " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-            " || killall -9 SpringBoard 2>/dev/null";
-        int respringRC = ci_run(respringCmd);
-        [NSThread sleepForTimeInterval:4.0];
-        ci_run("/var/jb/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null");
-        [NSThread sleepForTimeInterval:2.0];
-        BOOL respringOK = (respringRC == 0);
-        NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
+        //
+        // User can opt out via the "21. Bỏ qua respring sau Reset Data"
+        // toggle in Fake Settings (config key skipRespringAfterReset).
+        // When skipped: Step 5's kill sweep still ensures cold-start the
+        // next time the user opens a target app, so the new fake config
+        // still takes effect — we just save the ~6s SpringBoard reload.
+        BOOL skipRespring = [[CIConfigManager shared] boolForKey:@"skipRespringAfterReset"];
+        int respringRC = 0;
+        BOOL respringOK = YES;
+        if (skipRespring) {
+            [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
+                      title:@"Bỏ qua Respring"
+                   subtitle:@"Target apps sẽ cold-start ở lần mở tiếp theo…"];
+            [NSThread sleepForTimeInterval:0.6];
+            NSLog(@"[ChangeInfoIos] Step 4 skipped (skipRespringAfterReset=YES)");
+        } else {
+            [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
+                      title:@"Restart SpringBoard"
+                   subtitle:@"Reload tweak với config mới…"];
+            [NSThread sleepForTimeInterval:1.5];
+            const char *respringCmd =
+                "/var/jb/usr/bin/sbreload 2>/dev/null"
+                " || sbreload 2>/dev/null"
+                " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                " || killall -9 SpringBoard 2>/dev/null";
+            respringRC = ci_run(respringCmd);
+            [NSThread sleepForTimeInterval:4.0];
+            ci_run("/var/jb/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null");
+            [NSThread sleepForTimeInterval:2.0];
+            respringOK = (respringRC == 0);
+            NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
+        }
 
         // Step 5: Final kill sweep. After SpringBoard respring, iOS often
         // auto-resumes target apps from their launch snapshot. Kill them one
@@ -5256,7 +5286,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [body appendFormat:@"🚨 Tweak CHƯA inject vào: %@\n(Mở app đó 1 lần rồi thử lại.)\n\n",
                     [notInjected componentsJoinedByString:@", "]];
             }
-            if (!respringOK) {
+            if (skipRespring) {
+                [body appendString:@"⏭ Bỏ qua respring (tuỳ chọn 21).\n→ Mở lại target app để thấy thông tin fake mới.\n\n"];
+            } else if (!respringOK) {
                 [body appendFormat:@"⚠️ Respring fail (rc=%d).\n→ Hãy **force-quit** target app (vuốt lên) rồi mở lại.\n\n", respringRC];
             }
             [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
@@ -5268,7 +5300,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (notInjected.count == 0 && fullTargets.count > 0) {
                 [body appendFormat:@"✅ Tweak inject OK vào %lu app\n", (unsigned long)fullTargets.count];
             }
-            if (respringOK) {
+            if (respringOK && !skipRespring) {
                 [body appendString:@"✅ Đã restart SpringBoard.\n"];
             }
             [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
