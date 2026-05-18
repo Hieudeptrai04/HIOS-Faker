@@ -375,36 +375,57 @@ function buildScript() {
     '    fi',
     'done',
     '',
-    '# --- Step 1: Try to build Tweak (optional, may fail without Theos) ---',
-    'echo "[1/3] Building Tweak (optional)..."',
+    '# Resolve ldid up-front — used by both dylib (Step 1) and app (Step 2)',
+    'LDID=$(command -v ldid 2>/dev/null || echo "/var/jb/usr/bin/ldid")',
+    '',
+    '# --- Step 1: Build Tweak dylib (Tweak.xm + Hooks.mm) ---',
+    'echo "[1/3] Building Tweak dylib..."',
     'THEOS_PATH=""',
     'for p in /var/jb/opt/theos "$HOME/theos" /opt/theos; do',
     '    if [ -d "$p" ]; then THEOS_PATH="$p"; break; fi',
     'done',
     '',
     'if [ -n "$THEOS_PATH" ] && [ -f "$THEOS_PATH/bin/logos.pl" ] && [ -f "Tweak.xm" ]; then',
-    '    "$THEOS_PATH/bin/logos.pl" Tweak.xm > Tweak.mm 2>/dev/null',
-    '    if [ -f "Tweak.mm" ]; then',
-    '        clang++ -dynamiclib -o "ChangeInfoIos.dylib" Tweak.mm \\',
-    '            -arch arm64 \\',
-    '            -fobjc-arc -Wno-deprecated-declarations \\',
-    '            -framework Foundation -framework UIKit \\',
-    '            -framework CoreTelephony -framework CoreLocation \\',
-    '            -framework SystemConfiguration -framework Security \\',
-    '            -framework AdSupport -framework WebKit -framework IOKit \\',
-    '            -framework CoreMotion -framework Metal -framework AppTrackingTransparency -framework MobileCoreServices \\',
-    '            $HOOK $SDK_FLAG \\',
-    '            -install_name "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib" 2>/dev/null',
-    '        if [ -f "ChangeInfoIos.dylib" ]; then',
-    '            cp -f "ChangeInfoIos.dylib" "/var/jb/Library/MobileSubstrate/DynamicLibraries/"',
-    '            chmod 755 "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib"',
-    '            echo "  Tweak compiled OK"',
-    '        else',
-    '            echo "  Tweak compile failed (non-fatal)"',
+    '    echo "  Theos: $THEOS_PATH"',
+    '    "$THEOS_PATH/bin/logos.pl" Tweak.xm > Tweak.mm 2>&1',
+    '    if [ ! -f "Tweak.mm" ] || [ ! -s "Tweak.mm" ]; then',
+    '        echo "  ERROR: logos.pl failed on Tweak.xm"',
+    '        exit 1',
+    '    fi',
+    '    # Build with BOTH Tweak.mm (post-logos) and Hooks.mm (raw C++).',
+    '    # Hooks.mm is a plain Obj-C++ file (no %hook), so it bypasses logos',
+    '    # and is fed straight to clang++. Framework list matches Makefile.',
+    '    HOOK_SRC=""',
+    '    [ -f "Hooks.mm" ] && HOOK_SRC="Hooks.mm"',
+    '    clang++ -dynamiclib -o "ChangeInfoIos.dylib" Tweak.mm $HOOK_SRC \\',
+    '        -arch arm64 \\',
+    '        -fobjc-arc -Wno-deprecated-declarations -Wno-error \\',
+    '        -I"$THEOS_PATH/include" \\',
+    '        -framework Foundation -framework UIKit -framework CoreFoundation \\',
+    '        -framework CoreGraphics -framework CoreTelephony -framework CoreLocation \\',
+    '        -framework CoreMotion -framework AdSupport -framework SystemConfiguration \\',
+    '        -framework Security -framework AVFoundation -framework CoreMedia \\',
+    '        -framework CoreVideo \\',
+    '        $HOOK $SDK_FLAG \\',
+    '        -install_name "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib" 2>&1',
+    '    if [ -f "ChangeInfoIos.dylib" ]; then',
+    '        # Sign dylib with ldid (no entitlements needed for tweak)',
+    '        $LDID -S "ChangeInfoIos.dylib" 2>/dev/null || true',
+    '        cp -f "ChangeInfoIos.dylib" "/var/jb/Library/MobileSubstrate/DynamicLibraries/"',
+    '        chmod 755 "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib"',
+    '        # Copy filter plist alongside the dylib (substrate looks for it)',
+    '        if [ -f "ChangeInfoIos.plist" ]; then',
+    '            cp -f "ChangeInfoIos.plist" "/var/jb/Library/MobileSubstrate/DynamicLibraries/"',
     '        fi',
+    '        echo "  Tweak dylib built + signed + deployed ($(stat -f %z ChangeInfoIos.dylib 2>/dev/null || stat -c %s ChangeInfoIos.dylib) bytes)"',
+    '    else',
+    '        echo "  ERROR: clang++ compile failed"',
+    '        exit 1',
     '    fi',
     'else',
-    '    echo "  Skipped (Theos not found or Tweak.xm missing)"',
+    '    echo "  ERROR: Theos not found at any of /var/jb/opt/theos, \\$HOME/theos, /opt/theos"',
+    '    echo "  Install Theos: cd \\$HOME && git clone --recursive https://github.com/theos/theos"',
+    '    exit 1',
     'fi',
     '',
     '# --- Step 2: Build Native App (REQUIRED) ---',
@@ -617,6 +638,27 @@ function build() {
     mainSrc = fs.readFileSync(mainPath, 'utf-8');
     console.log('  main.m: ' + mainSrc.length + ' bytes');
   }
+  // Hooks.mm — C-level hooks (stat/fopen/_dyld_*/sysctlbyname/etc.) used
+  // for JB detection bypass. Forgotten by every previous build: dylib
+  // had to be precompiled off-device. Bundling it lets build-on-device.sh
+  // recompile the WHOLE dylib (Tweak.xm + Hooks.mm) when the user updates
+  // anti-detection logic and reinstalls the .deb.
+  var hooksSrc = '';
+  var hooksPath = path.join(TWEAK_DIR, 'Hooks.mm');
+  if (fs.existsSync(hooksPath)) {
+    hooksSrc = fs.readFileSync(hooksPath, 'utf-8');
+    console.log('  Hooks.mm: ' + hooksSrc.length + ' bytes');
+  }
+  var makefileSrc = '';
+  var makefilePath = path.join(TWEAK_DIR, 'Makefile');
+  if (fs.existsSync(makefilePath)) {
+    makefileSrc = fs.readFileSync(makefilePath, 'utf-8');
+  }
+  var ciPlistSrc = '';
+  var ciPlistPath = path.join(TWEAK_DIR, 'ChangeInfoIos.plist');
+  if (fs.existsSync(ciPlistPath)) {
+    ciPlistSrc = fs.readFileSync(ciPlistPath, 'utf-8');
+  }
 
   // 2. Icons
   console.log('[2/6] Generating icons...');
@@ -689,14 +731,34 @@ function build() {
       }
     }
     standaloneHTML = standaloneHTML.replace('__USERS_PLACEHOLDER__', JSON.stringify(usersDB));
-    const serverIp = getLocalIP();
-    standaloneHTML = standaloneHTML.replace("'__CI_SERVER__'", "'" + 'http://' + serverIp + ':3456' + "'");
-    console.log('  -> Injected server URL: http://' + serverIp + ':3456');
+    // CI_PUBLIC_URL env var lets the user inject a public tunnel URL
+    // (ngrok / cloudflared) instead of the build machine's LAN IP. Useful
+    // when the iPhone won't be on the same Wi-Fi as the server — set to
+    // the tunnel URL once at build time and the embedded HTML phones home
+    // to that URL forever (until the next .deb rebuild).
+    //   ngrok:        CI_PUBLIC_URL=https://abc123.ngrok-free.app node build-deb.js
+    //   cloudflared:  CI_PUBLIC_URL=https://my-tunnel.trycloudflare.com node build-deb.js
+    const serverUrl = process.env.CI_PUBLIC_URL || ('http://' + getLocalIP() + ':3456');
+    standaloneHTML = standaloneHTML.replace("'__CI_SERVER__'", "'" + serverUrl + "'");
+    console.log('  -> Injected server URL: ' + serverUrl + (process.env.CI_PUBLIC_URL ? ' (from CI_PUBLIC_URL)' : ' (LAN auto-detect)'));
     console.log('  Standalone HTML: ' + standaloneHTML.length + ' bytes');
   }
 
+  // Optional: bundle a precompiled dylib if one is sitting next to Tweak.xm.
+  // Workflow: build the dylib once on an iPhone/macOS with Theos, copy back
+  // to tweak/ChangeInfoIos.dylib, then re-run build-deb.js → final .deb is
+  // a turnkey install for any other rootless device via Sileo.
+  var prebuiltDylib = null;
+  var prebuiltDylibPath = path.join(TWEAK_DIR, 'ChangeInfoIos.dylib');
+  if (fs.existsSync(prebuiltDylibPath)) {
+    prebuiltDylib = fs.readFileSync(prebuiltDylibPath);
+    console.log('  Prebuilt dylib: ' + prebuiltDylib.length + ' bytes (' + (prebuiltDylib.length/1024).toFixed(1) + ' KB) — will bundle');
+  } else {
+    console.log('  No prebuilt dylib found at tweak/ChangeInfoIos.dylib — .deb will require on-device build');
+  }
+
   var entries = [
-    // --- Tweak filter plist ---
+    // --- Tweak filter plist + (optional) precompiled dylib ---
     tarDir('./var'),
     tarDir('./var/jb'),
     tarDir('./var/jb/Library'),
@@ -716,10 +778,12 @@ function build() {
     // --- Source files for reference + manual build ---
     tarDir('./var/mobile/ChangeInfoIos'),
     tarFile('./var/mobile/ChangeInfoIos/Tweak.xm', tweakSrc || '// empty'),
+    tarFile('./var/mobile/ChangeInfoIos/Hooks.mm', hooksSrc || '// empty'),
     tarFile('./var/mobile/ChangeInfoIos/main.m', mainSrc || '// empty'),
+    tarFile('./var/mobile/ChangeInfoIos/ChangeInfoIos.plist', ciPlistSrc || '// empty'),
     tarFile('./var/mobile/ChangeInfoIos/build-on-device.sh', buildScript(), '100755'),
     tarFile('./var/mobile/ChangeInfoIos/install-native-tools.sh', nativeToolsScript(), '100755'),
-    tarFile('./var/mobile/ChangeInfoIos/Makefile', makefile()),
+    tarFile('./var/mobile/ChangeInfoIos/Makefile', makefileSrc || makefile()),
     tarFile('./var/mobile/ChangeInfoIos/mobile-app-standalone.html', standaloneHTML || '<!-- empty -->'),
     tarFile('./var/mobile/ChangeInfoIos/Info.plist', infoPlistForBundle()),
     tarFile('./var/mobile/ChangeInfoIos/icon.png', icon),
@@ -727,6 +791,16 @@ function build() {
     // --- Prefs dir ---
     tarDir('./var/mobile/Library/Preferences'),
   ];
+
+  // Insert prebuilt dylib into the package right after the filter plist so
+  // Sileo install drops a working dylib into MobileSubstrate immediately;
+  // postinst no longer needs to build on-device for the tweak to inject.
+  if (prebuiltDylib) {
+    entries.splice(6, 0, tarFile(
+      './var/jb/Library/MobileSubstrate/DynamicLibraries/' + PACKAGE_NAME + '.dylib',
+      prebuiltDylib, '100755'
+    ));
+  }
   var dataGz = zlib.gzipSync(tarEnd(entries));
   console.log('  data.tar.gz: ' + dataGz.length + ' bytes');
 

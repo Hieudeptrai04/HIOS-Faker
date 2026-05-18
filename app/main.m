@@ -1755,6 +1755,38 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 // ============================================================
 // RRS STORE (retention snapshot)
 // ============================================================
+// Account-journal fields (accountLabel/Kind/status) were added on top of
+// the original RRS schema 2026-05-15. Older snapshots have these keys
+// missing in their NSCoder data — decode falls back to nil/0 cleanly so
+// pre-existing entries still load and just show "Chưa gắn nhãn" in the
+// UI. Don't reorder existing fields above (NSKeyedArchiver is key-based
+// so order doesn't matter, but the field names below must stay stable
+// or already-saved entries lose their data on next load).
+typedef NS_ENUM(NSInteger, CIAccountKind) {
+    CIAccountKindUnknown  = 0,
+    CIAccountKindZalo     = 1,
+    CIAccountKindFacebook = 2,
+    CIAccountKindTikTok   = 3,
+    CIAccountKindBanking  = 4,
+    CIAccountKindOther    = 5,
+};
+typedef NS_ENUM(NSInteger, CIAccountStatus) {
+    CIAccountStatusUnknown = 0,
+    CIAccountStatusActive  = 1,
+    CIAccountStatusBanned  = 2,
+};
+
+static NSString *ci_kindLabel(CIAccountKind k) {
+    switch (k) {
+        case CIAccountKindZalo:     return @"Zalo";
+        case CIAccountKindFacebook: return @"Facebook";
+        case CIAccountKindTikTok:   return @"TikTok";
+        case CIAccountKindBanking:  return @"Banking";
+        case CIAccountKindOther:    return @"Khác";
+        default:                    return @"";
+    }
+}
+
 @interface CIRRSEntry : NSObject <NSCoding>
 @property (nonatomic, copy)   NSString *uid;           // filename base
 @property (nonatomic, copy)   NSString *idfa;
@@ -1764,6 +1796,11 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 @property (nonatomic, strong) NSDate   *date;
 @property (nonatomic, assign) unsigned long long totalSize;
 @property (nonatomic, copy)   NSString *note;
+// --- Account journal fields (added 2026-05-15, may be empty on old entries) ---
+@property (nonatomic, copy)   NSString *accountLabel;   // phone, email, or any user-defined ID
+@property (nonatomic, assign) CIAccountKind accountKind;
+@property (nonatomic, assign) CIAccountStatus accountStatus;
+@property (nonatomic, copy)   NSString *proxyTag;       // host:port masked (e.g. "1.2.3.x:8080")
 @end
 @implementation CIRRSEntry
 - (instancetype)init {
@@ -1780,6 +1817,12 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
         self.date = [c decodeObjectForKey:@"date"];
         self.totalSize = [[c decodeObjectForKey:@"size"] unsignedLongLongValue];
         self.note = [c decodeObjectForKey:@"note"];
+        // Missing keys decode to nil/0 — older RRS entries silently get the
+        // "unknown" defaults without forcing a schema migration.
+        self.accountLabel  = [c decodeObjectForKey:@"acctLabel"];
+        self.accountKind   = (CIAccountKind)[c decodeIntegerForKey:@"acctKind"];
+        self.accountStatus = (CIAccountStatus)[c decodeIntegerForKey:@"acctStatus"];
+        self.proxyTag      = [c decodeObjectForKey:@"proxyTag"];
     }
     return self;
 }
@@ -1792,6 +1835,10 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
     [c encodeObject:self.date forKey:@"date"];
     [c encodeObject:@(self.totalSize) forKey:@"size"];
     [c encodeObject:self.note forKey:@"note"];
+    [c encodeObject:self.accountLabel forKey:@"acctLabel"];
+    [c encodeInteger:self.accountKind forKey:@"acctKind"];
+    [c encodeInteger:self.accountStatus forKey:@"acctStatus"];
+    [c encodeObject:self.proxyTag forKey:@"proxyTag"];
 }
 @end
 
@@ -3100,6 +3147,61 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     szLbl.textColor = [CITheme orange];
     [card addSubview:szLbl];
 
+    // Account metadata chips — only shown when at least one journal field
+    // is populated, so old entries (label/kind/status all blank) render
+    // unchanged. Layout: [phone] [kind] [status] strung horizontally
+    // starting from the size label, dimmed-style. Tap the cell's "Sửa"
+    // swipe action to fill these in for an old entry.
+    CGFloat chipX = 46 + 84;
+    if (e.accountLabel.length || e.accountKind != CIAccountKindUnknown
+        || e.accountStatus != CIAccountStatusUnknown) {
+        if (e.accountLabel.length) {
+            CGSize sz = [e.accountLabel sizeWithAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11]}];
+            UILabel *acctLbl = [[UILabel alloc] initWithFrame:CGRectMake(chipX, 80, sz.width + 14, 20)];
+            acctLbl.text = e.accountLabel;
+            acctLbl.font = [UIFont systemFontOfSize:11];
+            acctLbl.textColor = [CITheme text];
+            acctLbl.textAlignment = NSTextAlignmentCenter;
+            acctLbl.layer.cornerRadius = 6;
+            acctLbl.layer.borderColor = [[CITheme blue] colorWithAlphaComponent:0.5].CGColor;
+            acctLbl.layer.borderWidth = 1;
+            [card addSubview:acctLbl];
+            chipX += sz.width + 18;
+        }
+        if (e.accountKind != CIAccountKindUnknown) {
+            NSString *k = ci_kindLabel(e.accountKind);
+            CGSize sz = [k sizeWithAttributes:@{NSFontAttributeName: [UIFont boldSystemFontOfSize:10]}];
+            UILabel *kindLbl = [[UILabel alloc] initWithFrame:CGRectMake(chipX, 80, sz.width + 14, 20)];
+            kindLbl.text = k;
+            kindLbl.font = [UIFont boldSystemFontOfSize:10];
+            kindLbl.textColor = [CITheme orange];
+            kindLbl.textAlignment = NSTextAlignmentCenter;
+            kindLbl.layer.cornerRadius = 6;
+            kindLbl.layer.borderColor = [[CITheme orange] colorWithAlphaComponent:0.5].CGColor;
+            kindLbl.layer.borderWidth = 1;
+            [card addSubview:kindLbl];
+            chipX += sz.width + 18;
+        }
+        if (e.accountStatus == CIAccountStatusBanned) {
+            UILabel *bx = [[UILabel alloc] initWithFrame:CGRectMake(chipX, 80, 56, 20)];
+            bx.text = @"BANNED";
+            bx.font = [UIFont boldSystemFontOfSize:10];
+            bx.textColor = [UIColor whiteColor];
+            bx.backgroundColor = [UIColor systemRedColor];
+            bx.textAlignment = NSTextAlignmentCenter;
+            bx.layer.cornerRadius = 6;
+            bx.layer.masksToBounds = YES;
+            [card addSubview:bx];
+        } else if (e.accountStatus == CIAccountStatusActive) {
+            UILabel *act = [[UILabel alloc] initWithFrame:CGRectMake(chipX, 80, 16, 20)];
+            act.text = @"✓";
+            act.font = [UIFont boldSystemFontOfSize:14];
+            act.textColor = [CITheme green];
+            act.textAlignment = NSTextAlignmentCenter;
+            [card addSubview:act];
+        }
+    }
+
     UILabel *cta = [[UILabel alloc] initWithFrame:CGRectMake(card.bounds.size.width - 130, 80, 120, 20)];
     cta.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     cta.text = @"chạm để restore →";
@@ -3108,7 +3210,73 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     cta.textAlignment = NSTextAlignmentRight;
     [card addSubview:cta];
 
+    // Banned entries get a faint red overlay so they're easy to skip
+    // when scanning the list — restore is still allowed but the visual
+    // hint nudges the user to pick another snapshot.
+    if (e.accountStatus == CIAccountStatusBanned) {
+        card.layer.borderColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.55].CGColor;
+    }
+
     return c;
+}
+
+// In-place editor for the journal fields. Triggered from the leading
+// swipe action ("Sửa"). Alert with three inputs: account label (free
+// text — phone/email/anything memorable), kind (segmented choices), and
+// active/banned status. Updates the CIRRSEntry in the shared store and
+// reloads just the affected row to keep the list smooth.
+- (void)editAccountForEntry:(CIRRSEntry *)e atIndex:(NSIndexPath *)ip {
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"Sửa thông tin tài khoản"
+                         message:@"Nhãn (SĐT/email), loại, trạng thái"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"vd: 0912345678";
+        tf.text = e.accountLabel ?: @"";
+        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    // Kind picker — squeeze a segmented control into the alert via a
+    // dummy text field whose inputView is the segmented. Simpler than
+    // pushing a separate VC.
+    static const NSInteger kinds[] = {
+        CIAccountKindZalo, CIAccountKindFacebook, CIAccountKindTikTok,
+        CIAccountKindBanking, CIAccountKindOther
+    };
+    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+
+    // Helper to add one Save action per kind so user picks via the
+    // alert's action list rather than a sub-picker. Each save action
+    // captures its kind. Six total (Zalo/FB/TT/Banking/Khác/Giữ nguyên).
+    void (^addSaveAction)(NSString *, CIAccountKind) = ^(NSString *title, CIAccountKind k) {
+        [a addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *_) {
+                e.accountLabel = a.textFields.firstObject.text ?: @"";
+                e.accountKind  = k;
+                if (e.accountStatus == CIAccountStatusUnknown)
+                    e.accountStatus = CIAccountStatusActive;
+                [[CIRRSStore shared] saveIndex];
+                [self->_table reloadRowsAtIndexPaths:@[ip]
+                                    withRowAnimation:UITableViewRowAnimationFade];
+            }]];
+    };
+    for (NSUInteger i = 0; i < sizeof(kinds)/sizeof(kinds[0]); i++) {
+        addSaveAction([@"Lưu (" stringByAppendingFormat:@"%@)", ci_kindLabel(kinds[i])],
+                      (CIAccountKind)kinds[i]);
+    }
+    // Last action: just save the label without changing kind (for old
+    // entries where user wants to add a phone without picking a kind).
+    [a addAction:[UIAlertAction actionWithTitle:@"Lưu (giữ loại)" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) {
+            e.accountLabel = a.textFields.firstObject.text ?: @"";
+            if (e.accountStatus == CIAccountStatusUnknown)
+                e.accountStatus = CIAccountStatusActive;
+            [[CIRRSStore shared] saveIndex];
+            [self->_table reloadRowsAtIndexPaths:@[ip]
+                                withRowAnimation:UITableViewRowAnimationFade];
+        }]];
+
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 // Tap a row → confirm dialog → restore.
@@ -3173,6 +3341,37 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         doneHandler(YES);
     }];
     return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
+
+// Swipe-right → Sửa (account label/kind) + Ban/Mở khóa (toggle status).
+// Two actions on the leading edge so user can fill metadata or mark a
+// banned account without conflicting with the destructive "Xóa" pattern
+// on the other edge.
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
+        leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    CIRRSEntry *e = _view[ip.row];
+    UIContextualAction *edit = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:@"Sửa"
+                          handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        [self editAccountForEntry:e atIndex:ip];
+        done(YES);
+    }];
+    edit.backgroundColor = [CITheme blue];
+
+    BOOL isBanned = (e.accountStatus == CIAccountStatusBanned);
+    UIContextualAction *toggleBan = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:(isBanned ? @"Mở khóa" : @"Ban")
+                          handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        e.accountStatus = isBanned ? CIAccountStatusActive : CIAccountStatusBanned;
+        [[CIRRSStore shared] saveIndex];
+        [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
+        done(YES);
+    }];
+    toggleBan.backgroundColor = isBanned ? [CITheme green] : [UIColor systemRedColor];
+
+    return [UISwipeActionsConfiguration configurationWithActions:@[edit, toggleBan]];
 }
 @end
 
@@ -4261,7 +4460,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     _noteField = [[UITextField alloc] initWithFrame:CGRectMake(P, y, W-2*P, 48)];
     // Renamed 2026-05-07: this is now the per-account RRS label (e.g.
     // "Acc Hung 0001"). Used to identify which environment to restore.
-    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Tên môi trường / acc (vd: Acc Zalo 001)"
+    // Hint shows the new auto-fill pattern: brand keyword + phone digits.
+    // createRRSForBundles extracts these into accountKind + accountLabel
+    // so the RRS list can show structured info. Free-text still works
+    // (everything goes into `note`) — auto-fill is best-effort.
+    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Tên / acc (vd: Zalo 0912345678 hoặc FB ...)"
         attributes:@{NSForegroundColorAttributeName: [CITheme dim]}];
     _noteField.borderStyle = UITextBorderStyleNone;
     _noteField.backgroundColor = [CITheme card];
@@ -5081,6 +5284,53 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: @"-";
     e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: @"-";
     e.note = note ?: @"";
+
+    // Auto-fill journal fields from the same `note` text the user typed
+    // on the home screen. Two heuristics avoid forcing a separate prompt
+    // dialog (which would interrupt the Backup+Reset HUD progression):
+    //   1. Phone-like substring → accountLabel. Match the first run of
+    //      ≥9 digits (Vietnamese SĐT after country-code strip).
+    //   2. Brand keyword (case-insensitive) → accountKind.
+    // If nothing matches, fields stay at the "unknown" defaults and the
+    // user can fill them later via the leading swipe "Sửa" action — the
+    // schema doesn't require these to be set at creation time.
+    if (note.length > 0) {
+        NSError *re = nil;
+        NSRegularExpression *rx = [NSRegularExpression regularExpressionWithPattern:@"\\d{9,15}"
+                                                                            options:0 error:&re];
+        NSTextCheckingResult *m = [rx firstMatchInString:note options:0 range:NSMakeRange(0, note.length)];
+        if (m && m.range.location != NSNotFound) {
+            e.accountLabel = [note substringWithRange:m.range];
+        }
+        NSString *lower = note.lowercaseString;
+        if      ([lower containsString:@"zalo"])                                  e.accountKind = CIAccountKindZalo;
+        else if ([lower containsString:@"fb"] || [lower containsString:@"face"])  e.accountKind = CIAccountKindFacebook;
+        else if ([lower containsString:@"tiktok"] || [lower containsString:@"tt"])e.accountKind = CIAccountKindTikTok;
+        else if ([lower containsString:@"bank"]   || [lower containsString:@"vcb"]
+              || [lower containsString:@"mb"]     || [lower containsString:@"tcb"]
+              || [lower containsString:@"momo"])                                  e.accountKind = CIAccountKindBanking;
+    }
+    if (e.accountLabel.length || e.accountKind != CIAccountKindUnknown) {
+        e.accountStatus = CIAccountStatusActive;
+    }
+
+    // Snapshot the current proxy so a future restore knows which proxy
+    // the account was registered through. Mask the last IP octet so a
+    // shared screenshot doesn't leak the residential IP cleanly — anti-
+    // fraud SDKs that ban one IP often ban the whole /24 anyway.
+    NSString *proxyStr = [[CIConfigManager shared] stringForKey:@"proxyString"];
+    if ([[CIConfigManager shared] boolForKey:@"proxyEnabled"] && proxyStr.length) {
+        NSArray *parts = [proxyStr componentsSeparatedByString:@":"];
+        if (parts.count >= 2) {
+            NSArray *octets = [parts[0] componentsSeparatedByString:@"."];
+            if (octets.count == 4) {
+                e.proxyTag = [NSString stringWithFormat:@"%@.%@.%@.x:%@",
+                              octets[0], octets[1], octets[2], parts[1]];
+            } else {
+                e.proxyTag = [NSString stringWithFormat:@"%@:%@", parts[0], parts[1]];
+            }
+        }
+    }
     NSMutableArray *n = [NSMutableArray array]; NSMutableArray *b = [NSMutableArray array];
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
     unsigned long long total = 0;
