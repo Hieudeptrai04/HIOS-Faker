@@ -346,6 +346,14 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
 
         NSUInteger added = 0, fallbackAdded = 0;
         NSMutableDictionary<NSString *, NSNumber *> *statusHist = [NSMutableDictionary dictionary];
+        // Per-entry log written to /var/jb/etc/changeinfoios/restore_<bid>.log
+        // for SSH-side diagnosis when NSLog output doesn't reach `log show`.
+        // This is the only way to see WHICH entry failed with WHICH error
+        // when the dump has 29 entries but only 11 survive — the histogram
+        // alone doesn't tell us which keys.
+        NSMutableString *restoreLog = [NSMutableString string];
+        [restoreLog appendFormat:@"=== restore start: bid=%@ entries=%lu at=%@ ===\n",
+                                  bid, (unsigned long)all.count, [NSDate date]];
         for (NSDictionary *enc in all) {
             if (![enc isKindOfClass:[NSDictionary class]]) continue;
             NSMutableDictionary *e = ci_decodeKCEntry(enc);
@@ -355,13 +363,19 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
             for (NSString *k in strictStrip) [e removeObjectForKey:k];
             e[(__bridge NSString *)kSecClass] = cls;
 
+            NSString *acct = e[@"acct"] ?: @"-";
+            NSString *svce = e[@"svce"] ?: @"-";
+            NSString *agrp = e[@"agrp"] ?: @"-";
+
             OSStatus s = SecItemAdd((__bridge CFDictionaryRef)e, NULL);
             if (s == errSecSuccess) {
                 added++;
+                [restoreLog appendFormat:@"  OK   acct=%@ svce=%@ agrp=%@\n", acct, svce, agrp];
             } else {
                 // Track histogram for diag and decide whether to retry.
                 NSString *key = [NSString stringWithFormat:@"%d", (int)s];
                 statusHist[key] = @([statusHist[key] integerValue] + 1);
+                [restoreLog appendFormat:@"  P1=%d acct=%@ svce=%@ agrp=%@", (int)s, acct, svce, agrp];
 
                 // -34018 = errSecMissingEntitlement; -25243 = errSecNoAccessForItem.
                 // For any error, retry with agrp/pdmn stripped — the cost is
@@ -371,6 +385,9 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
                 OSStatus s2 = SecItemAdd((__bridge CFDictionaryRef)fallback, NULL);
                 if (s2 == errSecSuccess) {
                     fallbackAdded++;
+                    [restoreLog appendFormat:@" → P2=OK (default group)\n"];
+                } else {
+                    [restoreLog appendFormat:@" → P2=%d (LOST)\n", (int)s2];
                 }
             }
         }
@@ -378,6 +395,22 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
         g_ci_skipKeychainHook--;
 
         [fm removeItemAtPath:flag error:nil];
+        [restoreLog appendFormat:@"=== summary: %lu primary + %lu fallback / %lu total (hist=%@) ===\n",
+                                  (unsigned long)added, (unsigned long)fallbackAdded,
+                                  (unsigned long)all.count, statusHist];
+        // File-side log: SSH-readable forensic trace. The /var/jb/etc path
+        // works for non-sandboxed processes (system daemons), and we fall
+        // back to NSTemporaryDirectory() which works inside every App Store
+        // sandbox. Both paths get a copy so we don't have to guess which
+        // process this is running in.
+        NSString *bidSafe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+        for (NSString *base in @[@"/var/jb/etc/changeinfoios", NSTemporaryDirectory()]) {
+            if (!base.length) continue;
+            NSString *p = [base stringByAppendingPathComponent:
+                           [NSString stringWithFormat:@"restore_%@.log", bidSafe]];
+            [restoreLog writeToFile:p atomically:NO
+                           encoding:NSUTF8StringEncoding error:nil];
+        }
         NSLog(@"[ChangeInfoIos] keychain restore: %lu primary + %lu fallback / %lu entries reapplied (hist=%@)",
               (unsigned long)added, (unsigned long)fallbackAdded,
               (unsigned long)all.count, statusHist);
