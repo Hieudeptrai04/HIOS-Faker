@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.19";
+static NSString *const kAppVersion = @"2.4.20";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6231,10 +6231,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                         // ProfileEntity's (userid, username, mobile). Just
                         // patching kSessionUid isn't enough — Zalo wipes
                         // profile.sqlite (and chat_dbs/<UID>) when username
-                        // or phone doesn't match. Confirmed live 2026-05-19:
-                        // patched only kSessionUid → 30 entries restored,
-                        // ProfileEntity = 0 rows after launch. Patched all
-                        // three → 3 rows preserved.
+                        // or phone doesn't match.
                         NSString *profilePath = [container stringByAppendingPathComponent:
                                                  @"Documents/profile.sqlite"];
                         NSString *queryOut = [NSString stringWithFormat:
@@ -6255,7 +6252,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             if (parts.count >= 2) targetMobile = parts[1];
                         }
 
-                        // Patch kSessionUid (always) + kSessionUsername / kPhoneNumber (when available).
+                        // Patch session triplet.
                         setVal(sessionEntry, targetUID);
                         if (targetUsername.length) {
                             NSMutableDictionary *uname = findEntry(@"kSessionUsername");
@@ -6265,6 +6262,41 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             NSMutableDictionary *phone = findEntry(@"kPhoneNumber");
                             if (phone) setVal(phone, targetMobile);
                         }
+
+                        // CRITICAL: nuke kCryptKeyData<OTHER_UID> entries.
+                        // The dump may have crypto keys for multiple accounts
+                        // (user had previously switched between them). Keeping
+                        // the OTHER user's crypto key alongside our target
+                        // makes Zalo treat the keychain as multi-account state
+                        // and try to validate both — finds inconsistency and
+                        // wipes profile.sqlite + chat_dbs/<UID>.
+                        //
+                        // Confirmed live 2026-05-19:
+                        //   triplet-patched + kCryptKeyData455815053 kept    → wiped
+                        //   triplet-patched + kCryptKeyData455815053 removed → preserved
+                        //
+                        // Strategy: drop any entry whose acct starts with
+                        // "kCryptKeyData" and whose suffix is numeric AND not
+                        // equal to targetUID. Keep targetUID's crypt key,
+                        // keep any non-numeric kCryptKeyData* entries.
+                        NSMutableArray *toRemove = [NSMutableArray array];
+                        NSString *prefix = @"kCryptKeyData";
+                        for (NSDictionary *entry in entries) {
+                            if (![entry isKindOfClass:[NSDictionary class]]) continue;
+                            NSString *acct = entry[@"acct"];
+                            if (![acct hasPrefix:prefix]) continue;
+                            NSString *suffix = [acct substringFromIndex:prefix.length];
+                            // Numeric suffix that isn't our target → remove
+                            BOOL allDigits = suffix.length > 0;
+                            for (NSUInteger i = 0; i < suffix.length; i++) {
+                                unichar c = [suffix characterAtIndex:i];
+                                if (c < '0' || c > '9') { allDigits = NO; break; }
+                            }
+                            if (allDigits && ![suffix isEqualToString:targetUID]) {
+                                [toRemove addObject:entry];
+                            }
+                        }
+                        for (id rm in toRemove) [entries removeObject:rm];
 
                         NSData *patched = [NSPropertyListSerialization dataWithPropertyList:entries
                                                                                      format:NSPropertyListXMLFormat_v1_0
@@ -6277,10 +6309,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                                 patchedTmp, dumpPath, dumpPath];
                             ci_run([cpCmd UTF8String]);
                             [fm removeItemAtPath:patchedTmp error:nil];
-                            NSLog(@"[ChangeInfoIos] restore: patched %@ session: uid=%@→%@ user=%@ phone=%@ (candidates=%@)",
+                            NSLog(@"[ChangeInfoIos] restore: patched %@ session: uid=%@→%@ user=%@ phone=%@ removed=%lu other-user crypt keys (candidates=%@)",
                                   bid, currentUID ?: @"(nil)", targetUID,
                                   targetUsername ?: @"(skip)",
                                   targetMobile ?: @"(skip)",
+                                  (unsigned long)toRemove.count,
                                   uidCandidates);
                         }
                     } else if (sessionEntry) {
