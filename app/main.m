@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.13";
+static NSString *const kAppVersion = @"2.4.14";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3354,20 +3354,20 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         doneHandler(YES);
     }];
 
-    // "Lưu lại" — re-tar the same bundles with current state. Useful when
+    // "Lưu" — re-tar the same bundles with current state. Useful when
     // user just sent a chat in Zalo and wants the snapshot to reflect the
     // newer state without making a separate RRS entry that duplicates the
     // account-label/kind/note metadata. Confirms first because it
     // OVERWRITES the old tar in place (no undo).
     //
-    // Short title + SF Symbol because the default swipe-action button
-    // width on a 390pt iPhone with 2 actions visible is ~75pt — too
-    // narrow for "Cập nhật" (clipped to "hật" mid-swipe). "Lưu lại"
-    // (7 chars) plus an arrow-cycle icon fits cleanly and reads as
-    // "save/refresh" at a glance.
+    // 3-char title + SF Symbol arrow.clockwise. Tried "Cập nhật" (clipped
+    // mid-swipe to "hật") and "Lưu lại" (clipped to "lại") — the default
+    // swipe-action button gives ~50-60pt of usable text width on a 390pt
+    // iPhone when 2 trailing actions are visible. 3 ASCII chars fit
+    // cleanly with the icon for visual reinforcement.
     UIContextualAction *update = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:@"Lưu lại"
+                            title:@"Lưu"
                           handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
         CIRRSEntry *e = self->_view[ip.row];
         NSString *label = e.accountLabel.length ? e.accountLabel
