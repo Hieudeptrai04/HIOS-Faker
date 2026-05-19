@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.11";
+static NSString *const kAppVersion = @"2.4.12";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3353,7 +3353,48 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
         doneHandler(YES);
     }];
-    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+
+    // "Cập nhật" — re-tar the same bundles with current state. Useful when
+    // user just sent a chat in Zalo and wants the snapshot to reflect the
+    // newer state without making a separate RRS entry that duplicates the
+    // account-label/kind/note metadata. Confirms first because it
+    // OVERWRITES the old tar in place (no undo).
+    UIContextualAction *update = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:@"Cập nhật"
+                          handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
+        CIRRSEntry *e = self->_view[ip.row];
+        NSString *label = e.accountLabel.length ? e.accountLabel
+                        : (e.note.length ? e.note : @"snapshot");
+        UIAlertController *a = [UIAlertController
+            alertControllerWithTitle:@"Cập nhật snapshot?"
+                             message:[NSString stringWithFormat:
+                                      @"Backup \"%@\" sẽ được ghi đè bằng data hiện tại của %lu app. "
+                                      @"Không thể hoàn tác.\n\nTiếp tục?",
+                                      label, (unsigned long)e.bundleIDs.count]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel
+            handler:^(UIAlertAction *_) { doneHandler(NO); }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Cập nhật" style:UIAlertActionStyleDestructive
+            handler:^(UIAlertAction *_) {
+            // Dismiss the modal RRS list first so the rebackup HUD
+            // shows on the home VC (presenting VC), like restoreEntry: does.
+            UIViewController *presenter = self.presentingViewController;
+            if ([presenter isKindOfClass:[UINavigationController class]]) {
+                presenter = [(UINavigationController *)presenter topViewController];
+            }
+            [self dismissViewControllerAnimated:YES completion:^{
+                if ([presenter respondsToSelector:@selector(rebackupEntry:)]) {
+                    [presenter performSelector:@selector(rebackupEntry:) withObject:e];
+                }
+            }];
+            doneHandler(YES);
+        }]];
+        [self presentViewController:a animated:YES completion:nil];
+    }];
+    update.backgroundColor = [CITheme orange];
+
+    return [UISwipeActionsConfiguration configurationWithActions:@[del, update]];
 }
 
 // Swipe-right → Sửa (account label/kind) + Ban/Mở khóa (toggle status).
@@ -5471,6 +5512,114 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSLog(@"[ChangeInfoIos] RRS created: uid=%@ rc=%d archive=%llu bytes (apps=%lu)%@",
           e.uid, rc, actualBytes, (unsigned long)e.bundleIDs.count,
           errs.length ? [NSString stringWithFormat:@"\nstderr: %@", errs] : @"");
+}
+
+// Re-backup: rebuild an existing entry's tar with current container state,
+// preserving uid + bundleIDs + note + accountLabel/Kind/Status. Used when
+// the user wants to "freshen" a saved snapshot — they've sent more chats,
+// installed an update, changed a setting in Zalo, and want to capture the
+// new state on top of the existing label without losing the label itself.
+//
+// Same tar logic as createRRSForBundles: but operates on e.bundleIDs and
+// writes to <kRRSDir>/<e.uid>.tar — OVERWRITES the old tar in place. The
+// idfa / ipReset get refreshed to current values (they're part of the
+// snapshot we're updating), and date moves to NOW; everything else
+// (accountLabel/Kind/Status/note/proxyTag) stays.
+- (void)rebackupEntry:(CIRRSEntry *)e {
+    NSArray<NSString *> *bids = e.bundleIDs;
+    if (bids.count == 0) {
+        [self alert:@"Snapshot trống" msg:@"Entry này không có bundle nào để backup."];
+        return;
+    }
+    NSArray<CIAppInfo *> *all = [CIAppLister allApps];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (CIAppInfo *a in all) if ([bids containsObject:a.bundleID]) {
+        if (a.containerPath) [paths addObject:a.containerPath];
+    }
+    NSString *labelForHUD = e.accountLabel.length ? e.accountLabel
+                          : (e.note.length ? e.note : e.uid);
+    UIView *hud = [self showHUDWithTitle:[@"Đang cập nhật RRS — " stringByAppendingString:labelForHUD]];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Trigger keychain dump + wait for files. Same poll logic as the
+        // create path; up to 8s for every target. Missing dumps don't
+        // abort — partial tar is still useful, and the alert reports
+        // which bundles missed.
+        notify_post("com.changeinfoios/dump_keychain");
+        NSDate *dumpStart = [NSDate date];
+        NSFileManager *dfm = [NSFileManager defaultManager];
+        NSMutableArray<NSString *> *foundDumps = [NSMutableArray array];
+        NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];
+        for (int retry = 0; retry < 16; retry++) {
+            [NSThread sleepForTimeInterval:0.5];
+            [foundDumps removeAllObjects];
+            [missingDumps removeAllObjects];
+            for (NSString *bid in bids) {
+                NSString *container = ci_findDataContainerForBundle(bid);
+                if (container.length == 0) {
+                    [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
+                    continue;
+                }
+                NSString *dp = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
+                NSDictionary *a2 = [dfm attributesOfItemAtPath:dp error:nil];
+                NSDate *mt = a2[NSFileModificationDate];
+                unsigned long long sz = [a2[NSFileSize] unsignedLongLongValue];
+                if (mt && [mt compare:dumpStart] != NSOrderedAscending && sz > 0) {
+                    [foundDumps addObject:bid];
+                } else {
+                    [missingDumps addObject:bid];
+                }
+            }
+            if (missingDumps.count == 0) break;
+        }
+
+        // Rebuild tar — OVERWRITES the existing file at <uid>.tar so the
+        // user's "Cập nhật" tap doesn't accumulate ghost tars in kRRSDir.
+        NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+        NSString *errLog = [NSString stringWithFormat:@"/tmp/ci_rebackup_%@.err", e.uid];
+        [[NSFileManager defaultManager] createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+        NSMutableString *tarCmd = [NSMutableString stringWithFormat:
+            @"tar -cf '%@' /var/jb/etc/changeinfoios", tarPath];
+        for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
+        [tarCmd appendFormat:@" 2>%@", errLog];
+        int rc = ci_run([tarCmd UTF8String]);
+        NSDictionary *fa = [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath error:nil];
+        unsigned long long actualBytes = [fa[NSFileSize] unsignedLongLongValue];
+        NSString *errs = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:errLog error:nil];
+
+        // Refresh metadata: date moves to now, totalSize matches new tar,
+        // idfa/ipReset adopt current spoof identity (which is what this
+        // updated snapshot will restore). Keep uid/bundleIDs/appNames/
+        // accountLabel/accountKind/accountStatus/proxyTag/note unchanged.
+        e.date = [NSDate date];
+        e.totalSize = actualBytes;
+        e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: e.idfa;
+        e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: e.ipReset;
+        [[CIRRSStore shared] saveIndex];
+        NSLog(@"[ChangeInfoIos] RRS re-backed-up: uid=%@ rc=%d archive=%llu bytes (apps=%lu, found=%lu, missing=%lu)%@",
+              e.uid, rc, actualBytes, (unsigned long)bids.count,
+              (unsigned long)foundDumps.count, (unsigned long)missingDumps.count,
+              errs.length ? [NSString stringWithFormat:@"\nstderr: %@", errs] : @"");
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self dismissHUD:hud completion:^{
+                NSMutableString *body = [NSMutableString string];
+                [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n",
+                                    labelForHUD];
+                [body appendFormat:@"Tar mới: %@\n", CIBytesString(actualBytes)];
+                [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
+                                    (unsigned long)foundDumps.count,
+                                    (unsigned long)bids.count];
+                if (missingDumps.count > 0) {
+                    [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
+                                        [missingDumps componentsJoinedByString:@", "]];
+                }
+                [self alert:@"Cập nhật RRS xong" msg:body];
+            }];
+        });
+    });
 }
 
 // Full environment restore. iOS reassigns the data-container UUID for each
