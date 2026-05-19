@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.18";
+static NSString *const kAppVersion = @"2.4.19";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6198,47 +6198,93 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                                                                       format:NULL error:&parseErr];
                 if ([parsed isKindOfClass:[NSArray class]]) {
                     NSMutableArray *entries = (NSMutableArray *)parsed;
-                    NSMutableDictionary *sessionEntry = nil;
-                    for (NSMutableDictionary *entry in entries) {
-                        if (![entry isKindOfClass:[NSMutableDictionary class]]) continue;
-                        if ([entry[@"acct"] isEqualToString:@"kSessionUid"]) {
-                            sessionEntry = entry;
-                            break;
+                    NSMutableDictionary *(^findEntry)(NSString *) = ^(NSString *acct){
+                        for (NSMutableDictionary *e2 in entries) {
+                            if ([e2 isKindOfClass:[NSMutableDictionary class]]
+                                && [e2[@"acct"] isEqualToString:acct]) return e2;
                         }
-                    }
-                    if (sessionEntry) {
-                        NSDictionary *vEnc = sessionEntry[@"v_Data"];
-                        NSString *currentB64 = vEnc[@"__b"];
-                        NSString *currentUID = currentB64
-                            ? [[NSString alloc] initWithData:[[NSData alloc] initWithBase64EncodedString:currentB64 options:0]
-                                                    encoding:NSUTF8StringEncoding]
-                            : nil;
-                        if (![uidCandidates containsObject:currentUID]) {
-                            NSString *targetUID = uidCandidates.firstObject;
-                            NSString *newB64 = [[targetUID dataUsingEncoding:NSUTF8StringEncoding]
-                                                  base64EncodedStringWithOptions:0];
-                            NSMutableDictionary *vMut = [vEnc mutableCopy];
-                            vMut[@"__b"] = newB64;
-                            sessionEntry[@"v_Data"] = vMut;
-                            NSData *patched = [NSPropertyListSerialization dataWithPropertyList:entries
-                                                                                         format:NSPropertyListXMLFormat_v1_0
-                                                                                        options:0 error:&parseErr];
-                            if (patched.length > 0) {
-                                // Write via shell to bypass sandbox MAC (same
-                                // technique we use for the flag file).
-                                NSString *patchedTmp = [@"/tmp/ci_dump_patched_" stringByAppendingString:bid];
-                                [patched writeToFile:patchedTmp atomically:YES];
-                                NSString *cpCmd = [NSString stringWithFormat:
-                                    @"cp '%@' '%@' && chmod 0644 '%@'",
-                                    patchedTmp, dumpPath, dumpPath];
-                                ci_run([cpCmd UTF8String]);
-                                [fm removeItemAtPath:patchedTmp error:nil];
-                                NSLog(@"[ChangeInfoIos] restore: patched kSessionUid for %@: %@ → %@ (candidates=%@)",
-                                      bid, currentUID ?: @"(nil)", targetUID, uidCandidates);
-                            }
-                        } else {
-                            NSLog(@"[ChangeInfoIos] restore: kSessionUid for %@ already matches Documents user (%@)", bid, currentUID);
+                        return (NSMutableDictionary *)nil;
+                    };
+                    NSString *(^getVal)(NSMutableDictionary *) = ^(NSMutableDictionary *e3){
+                        NSDictionary *vEnc = e3[@"v_Data"];
+                        NSString *b64 = vEnc[@"__b"];
+                        if (!b64.length) return @"";
+                        NSData *d3 = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
+                        return [[NSString alloc] initWithData:d3 encoding:NSUTF8StringEncoding] ?: @"";
+                    };
+                    void (^setVal)(NSMutableDictionary *, NSString *) = ^(NSMutableDictionary *e3, NSString *v){
+                        NSMutableDictionary *vMut = [(NSDictionary *)e3[@"v_Data"] mutableCopy];
+                        vMut[@"__b"] = [[v dataUsingEncoding:NSUTF8StringEncoding]
+                                          base64EncodedStringWithOptions:0];
+                        e3[@"v_Data"] = vMut;
+                    };
+
+                    NSMutableDictionary *sessionEntry = findEntry(@"kSessionUid");
+                    NSString *currentUID = sessionEntry ? getVal(sessionEntry) : nil;
+
+                    if (sessionEntry && ![uidCandidates containsObject:currentUID]) {
+                        NSString *targetUID = uidCandidates.firstObject;
+
+                        // Query profile.sqlite for the target user's username +
+                        // mobile. Zalo's session check matches keychain's
+                        // (kSessionUid, kSessionUsername, kPhoneNumber) against
+                        // ProfileEntity's (userid, username, mobile). Just
+                        // patching kSessionUid isn't enough — Zalo wipes
+                        // profile.sqlite (and chat_dbs/<UID>) when username
+                        // or phone doesn't match. Confirmed live 2026-05-19:
+                        // patched only kSessionUid → 30 entries restored,
+                        // ProfileEntity = 0 rows after launch. Patched all
+                        // three → 3 rows preserved.
+                        NSString *profilePath = [container stringByAppendingPathComponent:
+                                                 @"Documents/profile.sqlite"];
+                        NSString *queryOut = [NSString stringWithFormat:
+                            @"/tmp/ci_profile_query_%@.txt", bid];
+                        NSString *queryCmd = [NSString stringWithFormat:
+                            @"/var/jb/usr/bin/sqlite3 '%@' \"SELECT username || '|' || COALESCE(mobile, '') FROM ProfileEntity WHERE userid = %@\" > '%@' 2>&1",
+                            profilePath, targetUID, queryOut];
+                        ci_run([queryCmd UTF8String]);
+                        NSString *queryResult = [NSString stringWithContentsOfFile:queryOut
+                                                                          encoding:NSUTF8StringEncoding error:nil];
+                        [fm removeItemAtPath:queryOut error:nil];
+                        NSString *targetUsername = nil, *targetMobile = nil;
+                        if (queryResult.length > 0) {
+                            NSString *line = [queryResult stringByTrimmingCharactersInSet:
+                                              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                            NSArray *parts = [line componentsSeparatedByString:@"|"];
+                            if (parts.count >= 1) targetUsername = parts[0];
+                            if (parts.count >= 2) targetMobile = parts[1];
                         }
+
+                        // Patch kSessionUid (always) + kSessionUsername / kPhoneNumber (when available).
+                        setVal(sessionEntry, targetUID);
+                        if (targetUsername.length) {
+                            NSMutableDictionary *uname = findEntry(@"kSessionUsername");
+                            if (uname) setVal(uname, targetUsername);
+                        }
+                        if (targetMobile.length) {
+                            NSMutableDictionary *phone = findEntry(@"kPhoneNumber");
+                            if (phone) setVal(phone, targetMobile);
+                        }
+
+                        NSData *patched = [NSPropertyListSerialization dataWithPropertyList:entries
+                                                                                     format:NSPropertyListXMLFormat_v1_0
+                                                                                    options:0 error:&parseErr];
+                        if (patched.length > 0) {
+                            NSString *patchedTmp = [@"/tmp/ci_dump_patched_" stringByAppendingString:bid];
+                            [patched writeToFile:patchedTmp atomically:YES];
+                            NSString *cpCmd = [NSString stringWithFormat:
+                                @"cp '%@' '%@' && chmod 0644 '%@'",
+                                patchedTmp, dumpPath, dumpPath];
+                            ci_run([cpCmd UTF8String]);
+                            [fm removeItemAtPath:patchedTmp error:nil];
+                            NSLog(@"[ChangeInfoIos] restore: patched %@ session: uid=%@→%@ user=%@ phone=%@ (candidates=%@)",
+                                  bid, currentUID ?: @"(nil)", targetUID,
+                                  targetUsername ?: @"(skip)",
+                                  targetMobile ?: @"(skip)",
+                                  uidCandidates);
+                        }
+                    } else if (sessionEntry) {
+                        NSLog(@"[ChangeInfoIos] restore: kSessionUid for %@ already matches Documents user (%@)", bid, currentUID);
                     }
                 }
             }
