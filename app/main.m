@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.20";
+static NSString *const kAppVersion = @"2.4.21";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6261,6 +6261,29 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                         if (targetMobile.length) {
                             NSMutableDictionary *phone = findEntry(@"kPhoneNumber");
                             if (phone) setVal(phone, targetMobile);
+                        }
+
+                        // CRITICAL: ensure Documents/chat_dbs/<targetUID>/ exists.
+                        // Tar from a rebackup taken AFTER Zalo's launch-wipe
+                        // doesn't contain chat_dbs/<UID>/ (Zalo cleaned it
+                        // because of session inconsistency). Restoring leaves
+                        // chat_dbs containing only zdb.kvs. Next launch: Zalo
+                        // reads keychain → kSessionUid=<UID> → looks for
+                        // chat_dbs/<UID>/ → MISSING → wipes profile.sqlite.
+                        //
+                        // Confirmed live 2026-05-19: tar with empty chat_dbs
+                        // wiped data on launch. Same restore + mkdir
+                        // chat_dbs/457384682/ (empty) → 2 ProfileEntity rows
+                        // PRESERVED + dir intact. Zalo doesn't care if the
+                        // dir is empty — it just needs to EXIST.
+                        NSString *chatDbsUser = [chatDbsDir stringByAppendingPathComponent:targetUID];
+                        if (![fm fileExistsAtPath:chatDbsUser]) {
+                            NSString *mkCmd = [NSString stringWithFormat:
+                                @"mkdir -p '%@' && chmod 0755 '%@' && chown mobile:mobile '%@'",
+                                chatDbsUser, chatDbsUser, chatDbsUser];
+                            int rc = ci_run([mkCmd UTF8String]);
+                            NSLog(@"[ChangeInfoIos] restore: created empty chat_dbs/%@ for %@ (rc=%d)",
+                                  targetUID, bid, rc);
                         }
 
                         // CRITICAL: nuke kCryptKeyData<OTHER_UID> entries.
