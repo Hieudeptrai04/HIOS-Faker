@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.14";
+static NSString *const kAppVersion = @"2.4.15";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5582,50 +5582,115 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (missingDumps.count == 0) break;
         }
 
-        // Rebuild tar — OVERWRITES the existing file at <uid>.tar so the
-        // user's "Cập nhật" tap doesn't accumulate ghost tars in kRRSDir.
-        NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
-        NSString *errLog = [NSString stringWithFormat:@"/tmp/ci_rebackup_%@.err", e.uid];
+        // Rebuild tar at a SCRATCH path first, then atomic-rename over
+        // the live tar IFF the new tar isn't catastrophically smaller
+        // than the old one. The user reported 2026-05-19 losing a 69 MB
+        // Zalo backup → 12 MB after rebackup because Zalo's container
+        // had been silently wiped (Reset / app self-wipe) between
+        // backup time and rebackup time. They tapped Lưu in good faith
+        // and the snapshot was destroyed.
+        //
+        // Safety strategy:
+        //   1. tar to <uid>.tar.new
+        //   2. compare to <uid>.tar
+        //   3. if new < 50% of old (and old > 5 MB) → KEEP the .tar.bak
+        //      copy of the old + return error + show alert. User can
+        //      delete the .bak themselves if they're sure.
+        //   4. else → mv .tar.new → .tar (overwrite cleanly)
+        NSString *tarPath    = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+        NSString *tarNew     = [tarPath stringByAppendingString:@".new"];
+        NSString *tarBak     = [tarPath stringByAppendingString:@".bak"];
+        NSString *errLog     = [NSString stringWithFormat:@"/tmp/ci_rebackup_%@.err", e.uid];
         [[NSFileManager defaultManager] createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
+        // Snapshot the old tar's size BEFORE we touch anything.
+        unsigned long long oldBytes = [[[NSFileManager defaultManager]
+            attributesOfItemAtPath:tarPath error:nil][NSFileSize] unsignedLongLongValue];
 
         NSMutableString *tarCmd = [NSMutableString stringWithFormat:
-            @"tar -cf '%@' /var/jb/etc/changeinfoios", tarPath];
+            @"tar -cf '%@' /var/jb/etc/changeinfoios", tarNew];
         for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
         [tarCmd appendFormat:@" 2>%@", errLog];
         int rc = ci_run([tarCmd UTF8String]);
-        NSDictionary *fa = [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath error:nil];
-        unsigned long long actualBytes = [fa[NSFileSize] unsignedLongLongValue];
+        // The new tar is at tarNew now. Inspect its size BEFORE deciding
+        // whether to publish it over the existing tar.
+        NSFileManager *fmgr = [NSFileManager defaultManager];
+        unsigned long long newBytes = [[fmgr attributesOfItemAtPath:tarNew error:nil][NSFileSize] unsignedLongLongValue];
         NSString *errs = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
-        [[NSFileManager defaultManager] removeItemAtPath:errLog error:nil];
+        [fmgr removeItemAtPath:errLog error:nil];
 
-        // Refresh metadata: date moves to now, totalSize matches new tar,
-        // idfa/ipReset adopt current spoof identity (which is what this
-        // updated snapshot will restore). Keep uid/bundleIDs/appNames/
-        // accountLabel/accountKind/accountStatus/proxyTag/note unchanged.
-        e.date = [NSDate date];
-        e.totalSize = actualBytes;
-        e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: e.idfa;
-        e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: e.ipReset;
-        [[CIRRSStore shared] saveIndex];
-        NSLog(@"[ChangeInfoIos] RRS re-backed-up: uid=%@ rc=%d archive=%llu bytes (apps=%lu, found=%lu, missing=%lu)%@",
-              e.uid, rc, actualBytes, (unsigned long)bids.count,
+        // Shrinkage protection. If the new tar is < 50% of the existing
+        // tar AND the existing tar was substantial (> 5 MB), the user
+        // probably triggered Lưu while the target app's container was
+        // empty (Reset Data / app self-wipe). Keep BOTH:
+        //   - <uid>.tar          (unchanged — the old, larger snapshot)
+        //   - <uid>.tar.bak      (also the old, so the user can compare)
+        //   - <uid>.tar.new      (kept for inspection, can be deleted)
+        // Don't update CIRRSEntry metadata. Tell the user.
+        BOOL shrinkageRisk = (oldBytes > 5 * 1024 * 1024)
+                          && (newBytes < oldBytes / 2);
+        BOOL published = NO;
+        if (rc != 0 || newBytes < 1024) {
+            // Tar genuinely failed — keep old, drop new.
+            [fmgr removeItemAtPath:tarNew error:nil];
+        } else if (shrinkageRisk) {
+            // Preserve old as .bak (in case user later wants to fully replace).
+            [fmgr removeItemAtPath:tarBak error:nil];
+            [fmgr copyItemAtPath:tarPath toPath:tarBak error:nil];
+            // Keep the .new file too in case user wants to inspect.
+        } else {
+            // Healthy size — atomic replace: backup old briefly, mv new in.
+            [fmgr removeItemAtPath:tarBak error:nil];
+            [fmgr moveItemAtPath:tarPath toPath:tarBak error:nil];
+            NSError *mvErr = nil;
+            if ([fmgr moveItemAtPath:tarNew toPath:tarPath error:&mvErr]) {
+                [fmgr removeItemAtPath:tarBak error:nil];  // success — drop the .bak
+                published = YES;
+            } else {
+                // Mv failed — restore old.
+                [fmgr moveItemAtPath:tarBak toPath:tarPath error:nil];
+                [fmgr removeItemAtPath:tarNew error:nil];
+                NSLog(@"[ChangeInfoIos] RRS rebackup mv failed: %@", mvErr);
+            }
+        }
+        unsigned long long actualBytes = [[fmgr attributesOfItemAtPath:tarPath error:nil][NSFileSize] unsignedLongLongValue];
+
+        // Only update metadata when we actually published the new tar.
+        if (published) {
+            e.date = [NSDate date];
+            e.totalSize = actualBytes;
+            e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: e.idfa;
+            e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: e.ipReset;
+            [[CIRRSStore shared] saveIndex];
+        }
+        NSLog(@"[ChangeInfoIos] RRS re-backed-up: uid=%@ rc=%d old=%llu new=%llu published=%d shrink=%d (apps=%lu, found=%lu, missing=%lu)%@",
+              e.uid, rc, oldBytes, newBytes, published, shrinkageRisk, (unsigned long)bids.count,
               (unsigned long)foundDumps.count, (unsigned long)missingDumps.count,
               errs.length ? [NSString stringWithFormat:@"\nstderr: %@", errs] : @"");
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self dismissHUD:hud completion:^{
                 NSMutableString *body = [NSMutableString string];
-                [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n",
-                                    labelForHUD];
-                [body appendFormat:@"Tar mới: %@\n", CIBytesString(actualBytes)];
-                [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
-                                    (unsigned long)foundDumps.count,
-                                    (unsigned long)bids.count];
-                if (missingDumps.count > 0) {
-                    [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
-                                        [missingDumps componentsJoinedByString:@", "]];
+                if (rc != 0 || newBytes < 1024) {
+                    [body appendFormat:@"❌ Tar lỗi (rc=%d). Snapshot cũ giữ nguyên.\n\n", rc];
+                } else if (shrinkageRisk) {
+                    [body appendString:@"⚠️ HUỶ cập nhật để bảo vệ data.\n\n"];
+                    [body appendFormat:@"Tar mới chỉ %@ trong khi tar cũ %@ → có thể app target ĐANG RỖNG (Reset Data / app tự wipe). Snapshot cũ giữ nguyên.\n\n",
+                                        CIBytesString(newBytes), CIBytesString(oldBytes)];
+                    [body appendFormat:@"Bản dự phòng: %@.bak\nBản đề xuất: %@.new (có thể xoá nếu không cần)\n\n",
+                                        e.uid, e.uid];
+                    [body appendString:@"→ Mở app target + login, ĐỢI sync xong, rồi Lưu lại."];
+                } else {
+                    [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n", labelForHUD];
+                    [body appendFormat:@"Tar mới: %@ (cũ: %@)\n", CIBytesString(actualBytes), CIBytesString(oldBytes)];
+                    [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
+                                        (unsigned long)foundDumps.count,
+                                        (unsigned long)bids.count];
+                    if (missingDumps.count > 0) {
+                        [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
+                                            [missingDumps componentsJoinedByString:@", "]];
+                    }
                 }
-                [self alert:@"Cập nhật RRS xong" msg:body];
+                [self alert:(published ? @"Cập nhật RRS xong" : @"Cập nhật bị từ chối") msg:body];
             }];
         });
     });
