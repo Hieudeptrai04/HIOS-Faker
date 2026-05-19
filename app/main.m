@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.10";
+static NSString *const kAppVersion = @"2.4.11";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5763,6 +5763,37 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
             NSString *dumpPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
+
+            // CRITICAL: write .ci_last_wipe = current wipe_counter so
+            // tweak's ci_wipeContainerIfScheduled SKIPS the next wipe.
+            // Without this, on the next Zalo launch:
+            //   - tweak reads wipe_counter_<bid> = T1 (set by Reset Data)
+            //   - tweak reads <container>/.ci_last_wipe = T0 (from tar,
+            //     written BEFORE the user's Reset that produced T1)
+            //   - T1 > T0 → tweak wipes Documents+Library+tmp →
+            //     OUR FRESHLY RESTORED DATA IS DELETED.
+            // Confirmed live 2026-05-19: profile.sqlite was 290 KB
+            // after restore (had user data), but Zalo launched and
+            // tweak wiped it → profile.sqlite back to schema-only
+            // 0-row state → Zalo couldn't load session → login screen.
+            // Updating .ci_last_wipe to current counter tells tweak
+            // "wipe already done at this counter, skip" → preserves
+            // restored data.
+            NSString *counterKey = [@"wipe_counter_" stringByAppendingString:bid];
+            id counterVal = [[CIConfigManager shared] objectForKey:counterKey];
+            long long counter = [counterVal respondsToSelector:@selector(longLongValue)]
+                                ? [counterVal longLongValue] : 0;
+            if (counter > 0) {
+                NSString *markerPath = [container stringByAppendingPathComponent:@".ci_last_wipe"];
+                NSString *markerSafe = [markerPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *markCmd = [NSString stringWithFormat:
+                    @"echo %lld > '%@' && chmod 0644 '%@'",
+                    counter, markerSafe, markerSafe];
+                int mc = ci_run([markCmd UTF8String]);
+                NSLog(@"[ChangeInfoIos] restore: .ci_last_wipe=%lld for %@ (rc=%d)",
+                      counter, bid, mc);
+            }
+
             NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
             unsigned long long dumpSz = [dumpAttrs[NSFileSize] unsignedLongLongValue];
             if (dumpSz == 0) {
