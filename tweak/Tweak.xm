@@ -285,53 +285,105 @@ static void ci_dumpKeychain(void) {
 // dump so we don't immediately overwrite the just-restored snapshot).
 static BOOL ci_restoreKeychainIfFlagged(void) {
     @autoreleasepool {
-        // Trace file written even on the early-exit paths so we can see
-        // from SSH which branch fired (no flag, dump unreadable, etc.).
-        // Path is /var/jb/etc/changeinfoios/restore_trace_<bid>.log;
-        // every write APPENDS so the latest entry is at the bottom.
+        // FLAG + DUMP path strategy:
+        //   PRIMARY: /var/jb/etc/changeinfoios/{restore_<bid>.flag, dump_<bid>.plist}
+        //     Survives across app launches. iOS / Zalo clear the per-app
+        //     tmp/ on every launch — confirmed live 2026-05-19: a flag +
+        //     32 KB dump placed via SSH in tmp/ DISAPPEARED before tweak
+        //     %ctor could read them, because Zalo's launch sequence wipes
+        //     tmp/ first. /var/jb/etc/changeinfoios is owned by the
+        //     tweak's host-app deb and never gets purged.
+        //   LEGACY: <container>/tmp/{hios_keychain_restore.flag,
+        //                            hios_keychain.plist}
+        //     Kept as fallback for backward compat with any RRS user
+        //     restored under v2.4.9 or earlier; new restores write to
+        //     PRIMARY.
+        //
+        // CONSUMED-MARKER:
+        //   Tweak can READ /var/jb/etc/changeinfoios/ but NOT WRITE there
+        //   (sandbox MAC blocks writes outside the app's container). So
+        //   we can't delete the flag after restore. Instead, write a
+        //   "consumed_<flag-mtime>.marker" inside the app's own
+        //   Library/Caches/ChangeInfoIos/ — that path IS sandbox-writable
+        //   and DOES survive launches. Next %ctor: if marker matching
+        //   flag's current mtime exists → skip restore (already done).
+        //   If not → run restore + drop marker.
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
         if (bid.length == 0) return NO;
 
         void (^trace)(NSString *) = ^(NSString *msg) {
             NSString *line = [NSString stringWithFormat:@"%@ %@: %@\n",
                               [NSDate date], bid, msg];
-            NSString *dir = @"/var/jb/etc/changeinfoios";
-            NSString *p1 = [dir stringByAppendingPathComponent:
+            NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:
                             [NSString stringWithFormat:@"trace_%@.log", bid]];
-            NSString *p2 = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                            [NSString stringWithFormat:@"trace_%@.log", bid]];
-            for (NSString *p in @[p1, p2]) {
-                if (!p.length) continue;
-                NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
-                if (!fh) {
-                    [line writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil];
-                } else {
-                    [fh seekToEndOfFile];
-                    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-                    [fh closeFile];
-                }
+            if (!p.length) return;
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+            if (!fh) {
+                [line writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            } else {
+                [fh seekToEndOfFile];
+                [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                [fh closeFile];
             }
         };
 
         trace(@"entered");
-        NSString *flag = ci_keychainRestoreFlag(bid);
-        trace([@"flag path=" stringByAppendingString:flag ?: @"(nil)"]);
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if (![fm fileExistsAtPath:flag]) { trace(@"early-exit: NO FLAG"); return NO; }
-        trace(@"flag exists");
+        NSString *sharedDir = @"/var/jb/etc/changeinfoios";
+        NSString *primaryFlag = [sharedDir stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"restore_%@.flag", bid]];
+        NSString *primaryDump = [sharedDir stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"dump_%@.plist", bid]];
+        NSString *legacyFlag = ci_keychainRestoreFlag(bid);
+        NSString *legacyDump = ci_keychainBackupPath(bid);
 
-        NSString *path = ci_keychainBackupPath(bid);
-        trace([@"dump path=" stringByAppendingString:path ?: @"(nil)"]);
-        NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:path error:nil];
-        trace([NSString stringWithFormat:@"dump file size=%llu",
-               [dumpAttrs[NSFileSize] unsignedLongLongValue]]);
-        NSArray *all = [NSArray arrayWithContentsOfFile:path];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *flagPath = nil, *dumpPath = nil;
+        if ([fm fileExistsAtPath:primaryFlag]) {
+            flagPath = primaryFlag;
+            dumpPath = primaryDump;
+            trace(@"flag found at PRIMARY (/var/jb/etc)");
+        } else if ([fm fileExistsAtPath:legacyFlag]) {
+            flagPath = legacyFlag;
+            dumpPath = legacyDump;
+            trace(@"flag found at LEGACY (tmp/)");
+        } else {
+            trace(@"early-exit: NO FLAG (neither primary nor legacy)");
+            return NO;
+        }
+
+        // Consumed-marker check: compare flag's mtime to the per-bid
+        // marker written by the LAST successful restore.
+        NSDictionary *flagAttrs = [fm attributesOfItemAtPath:flagPath error:nil];
+        NSDate *flagMtime = flagAttrs[NSFileModificationDate];
+        NSArray *libDirs = NSSearchPathForDirectoriesInDomains(
+            NSCachesDirectory, NSUserDomainMask, YES);
+        NSString *consumedDir = [libDirs.firstObject stringByAppendingPathComponent:@"ChangeInfoIos"];
+        [fm createDirectoryAtPath:consumedDir withIntermediateDirectories:YES
+                       attributes:nil error:nil];
+        NSString *consumedPath = [consumedDir stringByAppendingPathComponent:@"last_restore.marker"];
+        NSDictionary *consumedAttrs = [fm attributesOfItemAtPath:consumedPath error:nil];
+        NSDate *consumedMtime = consumedAttrs[NSFileModificationDate];
+        if (flagMtime && consumedMtime &&
+            [flagMtime compare:consumedMtime] != NSOrderedDescending) {
+            trace([NSString stringWithFormat:@"early-exit: already consumed (flag=%@ <= consumed=%@)",
+                                              flagMtime, consumedMtime]);
+            return NO;  // Already restored this flag.
+        }
+
+        NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
+        trace([NSString stringWithFormat:@"dump path=%@ size=%llu",
+               dumpPath, [dumpAttrs[NSFileSize] unsignedLongLongValue]]);
+        NSArray *all = [NSArray arrayWithContentsOfFile:dumpPath];
         trace([NSString stringWithFormat:@"parsed: isArray=%d count=%lu",
                [all isKindOfClass:[NSArray class]],
-               (unsigned long)[all isKindOfClass:[NSArray class]] ? all.count : 0]);
+               (unsigned long)([all isKindOfClass:[NSArray class]] ? all.count : 0)]);
         if (![all isKindOfClass:[NSArray class]]) {
             trace(@"early-exit: dump not an array");
-            [fm removeItemAtPath:flag error:nil];
+            // DON'T remove flag from /var/jb/etc — tweak has no write
+            // permission there. Only consume the legacy tmp/ flag.
+            if ([flagPath isEqualToString:legacyFlag]) {
+                [fm removeItemAtPath:legacyFlag error:nil];
+            }
             return NO;
         }
         trace(@"proceeding to SecItem loop");
@@ -432,23 +484,41 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
 
         g_ci_skipKeychainHook--;
 
-        [fm removeItemAtPath:flag error:nil];
+        // Consume the flag.
+        //   - Legacy tmp/ flag: tweak can delete (same sandbox).
+        //   - Primary /var/jb/etc/ flag: tweak CAN'T delete (sandbox MAC).
+        //     Drop a consumed marker in Library/Caches/ChangeInfoIos/ with
+        //     the same mtime as the flag so the next launch sees flag <=
+        //     marker and skips. Library/Caches/ is sandbox-writable AND
+        //     survives launches (unlike tmp/).
+        if ([flagPath isEqualToString:legacyFlag]) {
+            [fm removeItemAtPath:legacyFlag error:nil];
+        } else {
+            // touch the consumed marker, then set its mtime to match flag's
+            [@"1" writeToFile:consumedPath atomically:NO
+                     encoding:NSUTF8StringEncoding error:nil];
+            if (flagMtime) {
+                [fm setAttributes:@{NSFileModificationDate: flagMtime}
+                     ofItemAtPath:consumedPath error:nil];
+            }
+        }
+
         [restoreLog appendFormat:@"=== summary: %lu primary + %lu fallback / %lu total (hist=%@) ===\n",
                                   (unsigned long)added, (unsigned long)fallbackAdded,
                                   (unsigned long)all.count, statusHist];
-        // File-side log: SSH-readable forensic trace. The /var/jb/etc path
-        // works for non-sandboxed processes (system daemons), and we fall
-        // back to NSTemporaryDirectory() which works inside every App Store
-        // sandbox. Both paths get a copy so we don't have to guess which
-        // process this is running in.
-        NSString *bidSafe = [bid stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-        for (NSString *base in @[@"/var/jb/etc/changeinfoios", NSTemporaryDirectory()]) {
-            if (!base.length) continue;
-            NSString *p = [base stringByAppendingPathComponent:
-                           [NSString stringWithFormat:@"restore_%@.log", bidSafe]];
-            [restoreLog writeToFile:p atomically:NO
-                           encoding:NSUTF8StringEncoding error:nil];
-        }
+        // File-side log: SSH-readable forensic trace. Library/Caches/
+        // survives across launches (unlike tmp/) so even after Zalo
+        // wipes tmp/ on next launch, this log persists.
+        NSString *libLog = [consumedDir stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"restore.log"]];
+        [restoreLog writeToFile:libLog atomically:NO
+                       encoding:NSUTF8StringEncoding error:nil];
+        // Also write to tmp/ for convenience while debugging the current
+        // launch (will be wiped on next launch, which is fine).
+        NSString *tmpLog = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"restore_%@.log", bid]];
+        [restoreLog writeToFile:tmpLog atomically:NO
+                       encoding:NSUTF8StringEncoding error:nil];
         NSLog(@"[ChangeInfoIos] keychain restore: %lu primary + %lu fallback / %lu entries reapplied (hist=%@)",
               (unsigned long)added, (unsigned long)fallbackAdded,
               (unsigned long)all.count, statusHist);

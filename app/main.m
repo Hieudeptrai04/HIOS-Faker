@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.9";
+static NSString *const kAppVersion = @"2.4.10";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5786,26 +5786,59 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // login again even though every byte of the session was
             // sitting in its own tmp/. Same shell path that worked for
             // the data copy works here for a 1-byte flag.
+            // Drop flag + dump at /var/jb/etc/changeinfoios/ FIRST (primary
+            // location). Zalo / iOS wipes the per-app tmp/ on every app
+            // launch — confirmed live 2026-05-19: a flag + 32 KB dump
+            // placed via SSH in Zalo's tmp/ DISAPPEARED before tweak %ctor
+            // could read them, because Zalo's launch sequence purges tmp/.
+            // /var/jb/etc/changeinfoios/ is owned by our deb and never
+            // gets purged. Sandboxed apps can READ from there (we already
+            // store config.plist there) but cannot write — and that's
+            // fine, host app (no-sandbox) writes both files via shell.
+            //
+            // The tmp/ path stays as a fallback for back-compat with
+            // older tweak builds that only check tmp/.
+            NSString *sharedDir = @"/var/jb/etc/changeinfoios";
+            NSString *sharedFlag = [sharedDir stringByAppendingPathComponent:
+                                     [NSString stringWithFormat:@"restore_%@.flag", bid]];
+            NSString *sharedDump = [sharedDir stringByAppendingPathComponent:
+                                     [NSString stringWithFormat:@"dump_%@.plist", bid]];
             NSString *flagPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
-            // Escape single quotes in the path defensively before splicing
-            // into the shell command (paths under Containers/ shouldn't
-            // have them, but be safe).
-            NSString *flagSafe = [flagPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
-            NSString *flagCmd = [NSString stringWithFormat:
+
+            NSString *sharedFlagSafe = [sharedFlag stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *sharedDumpSafe = [sharedDump stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *dumpSafe       = [dumpPath  stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *flagSafe       = [flagPath  stringByReplacingOccurrencesOfString:@"'" withString:@""];
+
+            NSString *cmd = [NSString stringWithFormat:
                 @"mkdir -p '%@' 2>/dev/null; "
+                @"mkdir -p '%@' 2>/dev/null; "
+                @"cp -f '%@' '%@' && chmod 0644 '%@' && "
+                @"echo 1 > '%@' && chmod 0644 '%@' && "
                 @"echo 1 > '%@' && chmod 0644 '%@'",
-                [flagSafe stringByDeletingLastPathComponent], flagSafe, flagSafe];
-            int flagRC = ci_run([flagCmd UTF8String]);
-            // Verify via stat — shell echo can fail silently if disk full.
-            NSDictionary *flagAttrs = [fm attributesOfItemAtPath:flagPath error:nil];
-            BOOL ok = (flagRC == 0) && ([flagAttrs[NSFileSize] unsignedLongLongValue] > 0);
+                sharedDir,                                 // mkdir shared dir
+                [flagSafe stringByDeletingLastPathComponent], // mkdir tmp
+                dumpSafe, sharedDumpSafe, sharedDumpSafe,  // cp dump → shared + chmod
+                sharedFlagSafe, sharedFlagSafe,            // echo flag at shared + chmod
+                flagSafe, flagSafe];                       // echo flag at tmp (legacy compat) + chmod
+            int rc = ci_run([cmd UTF8String]);
+
+            NSDictionary *sFlagAttrs = [fm attributesOfItemAtPath:sharedFlag error:nil];
+            NSDictionary *sDumpAttrs = [fm attributesOfItemAtPath:sharedDump error:nil];
+            BOOL ok = (rc == 0)
+                && ([sFlagAttrs[NSFileSize] unsignedLongLongValue] > 0)
+                && ([sDumpAttrs[NSFileSize] unsignedLongLongValue] > 0);
             if (ok) {
                 flagsDropped++;
-                NSLog(@"[ChangeInfoIos] restore: keychain flag dropped for %@ (dump=%llu bytes)",
-                      bid, dumpSz);
+                NSLog(@"[ChangeInfoIos] restore: flag+dump dropped at /var/jb/etc for %@ (sharedDump=%llu, origDump=%llu)",
+                      bid,
+                      [sDumpAttrs[NSFileSize] unsignedLongLongValue],
+                      dumpSz);
             } else {
-                NSLog(@"[ChangeInfoIos] restore: flag drop FAILED for %@ (shell rc=%d, sz=%llu)",
-                      bid, flagRC, [flagAttrs[NSFileSize] unsignedLongLongValue]);
+                NSLog(@"[ChangeInfoIos] restore: drop FAILED for %@ (rc=%d, sFlagSz=%llu, sDumpSz=%llu)",
+                      bid, rc,
+                      [sFlagAttrs[NSFileSize] unsignedLongLongValue],
+                      [sDumpAttrs[NSFileSize] unsignedLongLongValue]);
             }
         }
         NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles%@",
