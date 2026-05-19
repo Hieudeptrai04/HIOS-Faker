@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.15";
+static NSString *const kAppVersion = @"2.4.16";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3354,20 +3354,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         doneHandler(YES);
     }];
 
-    // "Lưu" — re-tar the same bundles with current state. Useful when
-    // user just sent a chat in Zalo and wants the snapshot to reflect the
-    // newer state without making a separate RRS entry that duplicates the
-    // account-label/kind/note metadata. Confirms first because it
-    // OVERWRITES the old tar in place (no undo).
-    //
-    // 3-char title + SF Symbol arrow.clockwise. Tried "Cập nhật" (clipped
-    // mid-swipe to "hật") and "Lưu lại" (clipped to "lại") — the default
-    // swipe-action button gives ~50-60pt of usable text width on a 390pt
-    // iPhone when 2 trailing actions are visible. 3 ASCII chars fit
-    // cleanly with the icon for visual reinforcement.
+    // Re-backup action — re-tar the same bundles with current state.
+    // Icon-only ("") + arrow.clockwise — every text title got clipped
+    // mid-swipe on this device's screen width (tried "Cập nhật" → "hật",
+    // "Lưu lại" → "lại", "Lưu" → "lưu", screenshot still showed the tail
+    // of the previous label). Empty title with image makes iOS render a
+    // pure-icon button that scales to fit the action width without text
+    // metrics getting involved. The orange background + refresh-arrow
+    // glyph carries the meaning: "save/refresh this snapshot".
     UIContextualAction *update = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:@"Lưu"
+                            title:@""
                           handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
         CIRRSEntry *e = self->_view[ip.row];
         NSString *label = e.accountLabel.length ? e.accountLabel
@@ -5617,80 +5614,95 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         unsigned long long newBytes = [[fmgr attributesOfItemAtPath:tarNew error:nil][NSFileSize] unsignedLongLongValue];
         NSString *errs = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
         [fmgr removeItemAtPath:errLog error:nil];
+        if (errs.length) NSLog(@"[ChangeInfoIos] RRS rebackup tar stderr: %@", errs);
 
         // Shrinkage protection. If the new tar is < 50% of the existing
         // tar AND the existing tar was substantial (> 5 MB), the user
         // probably triggered Lưu while the target app's container was
-        // empty (Reset Data / app self-wipe). Keep BOTH:
-        //   - <uid>.tar          (unchanged — the old, larger snapshot)
-        //   - <uid>.tar.bak      (also the old, so the user can compare)
-        //   - <uid>.tar.new      (kept for inspection, can be deleted)
-        // Don't update CIRRSEntry metadata. Tell the user.
+        // empty (Reset Data / app self-wipe). Don't HARD-reject (some
+        // shrinkage is legitimate — user deleted chats, cleared cache).
+        // Instead: show alert with TWO buttons: "Hủy" (keep old) and
+        // "Vẫn cập nhật" (force-publish new). The hard-reject behavior
+        // from v2.4.15 was too strict — confirmed live 2026-05-19: a
+        // 30 MB → 77 MB shrinkage (40%) got blocked even though user
+        // intended to update. UX: confidence buyer.
         BOOL shrinkageRisk = (oldBytes > 5 * 1024 * 1024)
                           && (newBytes < oldBytes / 2);
-        BOOL published = NO;
-        if (rc != 0 || newBytes < 1024) {
-            // Tar genuinely failed — keep old, drop new.
-            [fmgr removeItemAtPath:tarNew error:nil];
-        } else if (shrinkageRisk) {
-            // Preserve old as .bak (in case user later wants to fully replace).
-            [fmgr removeItemAtPath:tarBak error:nil];
-            [fmgr copyItemAtPath:tarPath toPath:tarBak error:nil];
-            // Keep the .new file too in case user wants to inspect.
-        } else {
-            // Healthy size — atomic replace: backup old briefly, mv new in.
+
+        void (^publish)(void) = ^{
+            // Atomic replace via mv-rename: backup old briefly then mv new in.
             [fmgr removeItemAtPath:tarBak error:nil];
             [fmgr moveItemAtPath:tarPath toPath:tarBak error:nil];
             NSError *mvErr = nil;
-            if ([fmgr moveItemAtPath:tarNew toPath:tarPath error:&mvErr]) {
+            BOOL ok = [fmgr moveItemAtPath:tarNew toPath:tarPath error:&mvErr];
+            if (ok) {
                 [fmgr removeItemAtPath:tarBak error:nil];  // success — drop the .bak
-                published = YES;
             } else {
-                // Mv failed — restore old.
                 [fmgr moveItemAtPath:tarBak toPath:tarPath error:nil];
                 [fmgr removeItemAtPath:tarNew error:nil];
                 NSLog(@"[ChangeInfoIos] RRS rebackup mv failed: %@", mvErr);
             }
-        }
-        unsigned long long actualBytes = [[fmgr attributesOfItemAtPath:tarPath error:nil][NSFileSize] unsignedLongLongValue];
+            if (ok) {
+                e.date = [NSDate date];
+                e.totalSize = [[fmgr attributesOfItemAtPath:tarPath error:nil][NSFileSize] unsignedLongLongValue];
+                e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: e.idfa;
+                e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: e.ipReset;
+                [[CIRRSStore shared] saveIndex];
+            }
+            NSLog(@"[ChangeInfoIos] RRS rebackup published: uid=%@ old=%llu new=%llu",
+                  e.uid, oldBytes, newBytes);
+        };
 
-        // Only update metadata when we actually published the new tar.
-        if (published) {
-            e.date = [NSDate date];
-            e.totalSize = actualBytes;
-            e.idfa = [[CIConfigManager shared] stringForKey:@"advertisingIdentifier"] ?: e.idfa;
-            e.ipReset = [[CIConfigManager shared] stringForKey:@"lastResetIP"] ?: e.ipReset;
-            [[CIRRSStore shared] saveIndex];
-        }
-        NSLog(@"[ChangeInfoIos] RRS re-backed-up: uid=%@ rc=%d old=%llu new=%llu published=%d shrink=%d (apps=%lu, found=%lu, missing=%lu)%@",
-              e.uid, rc, oldBytes, newBytes, published, shrinkageRisk, (unsigned long)bids.count,
-              (unsigned long)foundDumps.count, (unsigned long)missingDumps.count,
-              errs.length ? [NSString stringWithFormat:@"\nstderr: %@", errs] : @"");
+        void (^showSuccessAlert)(unsigned long long) = ^(unsigned long long finalBytes){
+            NSMutableString *body = [NSMutableString string];
+            [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n", labelForHUD];
+            [body appendFormat:@"Tar mới: %@ (cũ: %@)\n", CIBytesString(finalBytes), CIBytesString(oldBytes)];
+            [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
+                                (unsigned long)foundDumps.count,
+                                (unsigned long)bids.count];
+            if (missingDumps.count > 0) {
+                [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
+                                    [missingDumps componentsJoinedByString:@", "]];
+            }
+            [self alert:@"Cập nhật RRS xong" msg:body];
+        };
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self dismissHUD:hud completion:^{
-                NSMutableString *body = [NSMutableString string];
                 if (rc != 0 || newBytes < 1024) {
-                    [body appendFormat:@"❌ Tar lỗi (rc=%d). Snapshot cũ giữ nguyên.\n\n", rc];
-                } else if (shrinkageRisk) {
-                    [body appendString:@"⚠️ HUỶ cập nhật để bảo vệ data.\n\n"];
-                    [body appendFormat:@"Tar mới chỉ %@ trong khi tar cũ %@ → có thể app target ĐANG RỖNG (Reset Data / app tự wipe). Snapshot cũ giữ nguyên.\n\n",
-                                        CIBytesString(newBytes), CIBytesString(oldBytes)];
-                    [body appendFormat:@"Bản dự phòng: %@.bak\nBản đề xuất: %@.new (có thể xoá nếu không cần)\n\n",
-                                        e.uid, e.uid];
-                    [body appendString:@"→ Mở app target + login, ĐỢI sync xong, rồi Lưu lại."];
-                } else {
-                    [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n", labelForHUD];
-                    [body appendFormat:@"Tar mới: %@ (cũ: %@)\n", CIBytesString(actualBytes), CIBytesString(oldBytes)];
-                    [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
-                                        (unsigned long)foundDumps.count,
-                                        (unsigned long)bids.count];
-                    if (missingDumps.count > 0) {
-                        [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
-                                            [missingDumps componentsJoinedByString:@", "]];
-                    }
+                    [fmgr removeItemAtPath:tarNew error:nil];
+                    [self alert:@"Cập nhật lỗi"
+                            msg:[NSString stringWithFormat:@"❌ Tar lỗi (rc=%d, new=%llu bytes). Snapshot cũ giữ nguyên.",
+                                  rc, newBytes]];
+                    return;
                 }
-                [self alert:(published ? @"Cập nhật RRS xong" : @"Cập nhật bị từ chối") msg:body];
+                if (shrinkageRisk) {
+                    NSMutableString *body = [NSMutableString string];
+                    [body appendFormat:@"Tar mới: %@\nTar cũ: %@ (giảm %lu%%)\n\n",
+                                        CIBytesString(newBytes),
+                                        CIBytesString(oldBytes),
+                                        (unsigned long)((oldBytes - newBytes) * 100 / oldBytes)];
+                    [body appendString:@"Có thể app target đang RỖNG (Reset Data / app tự wipe). Nếu bạn KHÔNG cố ý xóa data, hủy + mở app target rồi cập nhật lại.\n\nVẫn muốn cập nhật?"];
+                    UIAlertController *a = [UIAlertController
+                        alertControllerWithTitle:@"⚠ Tar mới nhỏ hơn nhiều"
+                                         message:body
+                                  preferredStyle:UIAlertControllerStyleAlert];
+                    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel
+                        handler:^(UIAlertAction *_) {
+                            // Keep old + drop new
+                            [fmgr removeItemAtPath:tarNew error:nil];
+                        }]];
+                    [a addAction:[UIAlertAction actionWithTitle:@"Vẫn cập nhật" style:UIAlertActionStyleDestructive
+                        handler:^(UIAlertAction *_) {
+                            publish();
+                            showSuccessAlert(newBytes);
+                        }]];
+                    [self presentViewController:a animated:YES completion:nil];
+                    return;
+                }
+                // Healthy size — publish without confirmation.
+                publish();
+                showSuccessAlert(newBytes);
             }];
         });
     });
