@@ -285,18 +285,56 @@ static void ci_dumpKeychain(void) {
 // dump so we don't immediately overwrite the just-restored snapshot).
 static BOOL ci_restoreKeychainIfFlagged(void) {
     @autoreleasepool {
+        // Trace file written even on the early-exit paths so we can see
+        // from SSH which branch fired (no flag, dump unreadable, etc.).
+        // Path is /var/jb/etc/changeinfoios/restore_trace_<bid>.log;
+        // every write APPENDS so the latest entry is at the bottom.
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
         if (bid.length == 0) return NO;
+
+        void (^trace)(NSString *) = ^(NSString *msg) {
+            NSString *line = [NSString stringWithFormat:@"%@ %@: %@\n",
+                              [NSDate date], bid, msg];
+            NSString *dir = @"/var/jb/etc/changeinfoios";
+            NSString *p1 = [dir stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"trace_%@.log", bid]];
+            NSString *p2 = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"trace_%@.log", bid]];
+            for (NSString *p in @[p1, p2]) {
+                if (!p.length) continue;
+                NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+                if (!fh) {
+                    [line writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil];
+                } else {
+                    [fh seekToEndOfFile];
+                    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                    [fh closeFile];
+                }
+            }
+        };
+
+        trace(@"entered");
         NSString *flag = ci_keychainRestoreFlag(bid);
+        trace([@"flag path=" stringByAppendingString:flag ?: @"(nil)"]);
         NSFileManager *fm = [NSFileManager defaultManager];
-        if (![fm fileExistsAtPath:flag]) return NO;
+        if (![fm fileExistsAtPath:flag]) { trace(@"early-exit: NO FLAG"); return NO; }
+        trace(@"flag exists");
 
         NSString *path = ci_keychainBackupPath(bid);
+        trace([@"dump path=" stringByAppendingString:path ?: @"(nil)"]);
+        NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:path error:nil];
+        trace([NSString stringWithFormat:@"dump file size=%llu",
+               [dumpAttrs[NSFileSize] unsignedLongLongValue]]);
         NSArray *all = [NSArray arrayWithContentsOfFile:path];
+        trace([NSString stringWithFormat:@"parsed: isArray=%d count=%lu",
+               [all isKindOfClass:[NSArray class]],
+               (unsigned long)[all isKindOfClass:[NSArray class]] ? all.count : 0]);
         if (![all isKindOfClass:[NSArray class]]) {
+            trace(@"early-exit: dump not an array");
             [fm removeItemAtPath:flag error:nil];
             return NO;
         }
+        trace(@"proceeding to SecItem loop");
 
         g_ci_skipKeychainHook++;
 
