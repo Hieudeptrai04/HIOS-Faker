@@ -2029,6 +2029,17 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 - (NSArray *)allInstalledApplications {
     if (g_inLSAW) return %orig;     // nested re-entry from metadata-load callback
+    // CRITICAL: skip filter when running inside HIOS Faker (the spoof
+    // tool itself). HIOS Faker's CIAppLister uses LSAW to enumerate
+    // installed apps so the user can pick targets to back up / wipe /
+    // restore. If we filter the list to com.apple.* only, the user
+    // sees ZERO third-party apps — Backup+Reset finds no Zalo, rebackup
+    // can't locate Zalo's container, etc. Confirmed live 2026-05-19:
+    // rebackup of a Zalo RRS produced a 12 MB tar (only /var/jb/etc/
+    // changeinfoios, no Zalo Documents) because LSAW filter hid Zalo
+    // from CIAppLister. The anti-fraud filter is ONLY useful inside
+    // TARGET apps (Zalo, banking) where SDKs walk LSAW for fingerprint.
+    if (!g_bundleTargeted) return %orig;
     if (!fakeLayer(@"keychain")) return %orig;
     g_inLSAW++;
     NSArray *original = %orig;
@@ -2051,6 +2062,7 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 - (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type {
     if (g_inLSAW) return %orig;
+    if (!g_bundleTargeted) return %orig;
     if (!fakeLayer(@"keychain")) return %orig;
     g_inLSAW++;
     NSArray *original = %orig;

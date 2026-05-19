@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.12";
+static NSString *const kAppVersion = @"2.4.13";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3354,14 +3354,20 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         doneHandler(YES);
     }];
 
-    // "Cập nhật" — re-tar the same bundles with current state. Useful when
+    // "Lưu lại" — re-tar the same bundles with current state. Useful when
     // user just sent a chat in Zalo and wants the snapshot to reflect the
     // newer state without making a separate RRS entry that duplicates the
     // account-label/kind/note metadata. Confirms first because it
     // OVERWRITES the old tar in place (no undo).
+    //
+    // Short title + SF Symbol because the default swipe-action button
+    // width on a 390pt iPhone with 2 actions visible is ~75pt — too
+    // narrow for "Cập nhật" (clipped to "hật" mid-swipe). "Lưu lại"
+    // (7 chars) plus an arrow-cycle icon fits cleanly and reads as
+    // "save/refresh" at a glance.
     UIContextualAction *update = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:@"Cập nhật"
+                            title:@"Lưu lại"
                           handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
         CIRRSEntry *e = self->_view[ip.row];
         NSString *label = e.accountLabel.length ? e.accountLabel
@@ -3393,6 +3399,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [self presentViewController:a animated:YES completion:nil];
     }];
     update.backgroundColor = [CITheme orange];
+    if (@available(iOS 13.0, *)) {
+        update.image = [UIImage systemImageNamed:@"arrow.clockwise"];
+    }
 
     return [UISwipeActionsConfiguration configurationWithActions:@[del, update]];
 }
