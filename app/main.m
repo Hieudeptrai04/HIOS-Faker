@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.17";
+static NSString *const kAppVersion = @"2.4.18";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6145,6 +6145,102 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [noDumpBundles addObject:bid];
                 NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
                 continue;
+            }
+
+            // CRITICAL: sync kSessionUid in the keychain dump to a UID
+            // that actually has data in this container's Documents.
+            //
+            // Zalo (and other multi-account apps) keep per-user data dirs
+            // like Documents/chat_dbs/<UID>/. The keychain has a current
+            // kSessionUid pointing to the LAST-active user. If the user
+            // had switched accounts before backup, the keychain's
+            // kSessionUid may point to a UID whose chat_dbs dir was
+            // cleaned up — leaving keychain.session=UID_A but disk
+            // data only for UID_B.
+            //
+            // On launch, Zalo reads kSessionUid → UID_A, looks for
+            // chat_dbs/UID_A → MISSING → assumes "session corrupt" →
+            // WIPES profile.sqlite (drops ProfileEntity to 0 rows) →
+            // login screen even though we restored everything.
+            //
+            // Confirmed live 2026-05-19: 30-entry Zalo dump with
+            // kSessionUid=455815053 + Documents/chat_dbs/457384682
+            // (Hà An). After Zalo launch, profile.sqlite went from
+            // 290 KB / 3 rows to 290 KB / 0 rows. Patching the dump
+            // file to kSessionUid="457384682" before placing it →
+            // Zalo's check passes → profile.sqlite stays at 3 rows
+            // → auto-login as Hà An works.
+            //
+            // Heuristic: scan Documents/chat_dbs/ (Zalo-specific path
+            // but harmless when missing for other apps) for numeric
+            // subdir names. If kSessionUid in dump isn't one of them
+            // AND we found at least one numeric UID dir → rewrite
+            // kSessionUid to the first found UID.
+            NSString *chatDbsDir = [container stringByAppendingPathComponent:@"Documents/chat_dbs"];
+            NSArray<NSString *> *dbUserDirs = [fm contentsOfDirectoryAtPath:chatDbsDir error:nil];
+            NSMutableArray<NSString *> *uidCandidates = [NSMutableArray array];
+            for (NSString *d in dbUserDirs) {
+                // Numeric-only directory names are user UIDs.
+                if (d.length >= 6 && d.length <= 12) {
+                    BOOL allDigits = YES;
+                    for (NSUInteger i = 0; i < d.length; i++) {
+                        unichar c = [d characterAtIndex:i];
+                        if (c < '0' || c > '9') { allDigits = NO; break; }
+                    }
+                    if (allDigits) [uidCandidates addObject:d];
+                }
+            }
+            if (uidCandidates.count > 0) {
+                NSData *dumpData = [NSData dataWithContentsOfFile:dumpPath];
+                NSError *parseErr = nil;
+                id parsed = [NSPropertyListSerialization propertyListWithData:dumpData
+                                                                     options:NSPropertyListMutableContainersAndLeaves
+                                                                      format:NULL error:&parseErr];
+                if ([parsed isKindOfClass:[NSArray class]]) {
+                    NSMutableArray *entries = (NSMutableArray *)parsed;
+                    NSMutableDictionary *sessionEntry = nil;
+                    for (NSMutableDictionary *entry in entries) {
+                        if (![entry isKindOfClass:[NSMutableDictionary class]]) continue;
+                        if ([entry[@"acct"] isEqualToString:@"kSessionUid"]) {
+                            sessionEntry = entry;
+                            break;
+                        }
+                    }
+                    if (sessionEntry) {
+                        NSDictionary *vEnc = sessionEntry[@"v_Data"];
+                        NSString *currentB64 = vEnc[@"__b"];
+                        NSString *currentUID = currentB64
+                            ? [[NSString alloc] initWithData:[[NSData alloc] initWithBase64EncodedString:currentB64 options:0]
+                                                    encoding:NSUTF8StringEncoding]
+                            : nil;
+                        if (![uidCandidates containsObject:currentUID]) {
+                            NSString *targetUID = uidCandidates.firstObject;
+                            NSString *newB64 = [[targetUID dataUsingEncoding:NSUTF8StringEncoding]
+                                                  base64EncodedStringWithOptions:0];
+                            NSMutableDictionary *vMut = [vEnc mutableCopy];
+                            vMut[@"__b"] = newB64;
+                            sessionEntry[@"v_Data"] = vMut;
+                            NSData *patched = [NSPropertyListSerialization dataWithPropertyList:entries
+                                                                                         format:NSPropertyListXMLFormat_v1_0
+                                                                                        options:0 error:&parseErr];
+                            if (patched.length > 0) {
+                                // Write via shell to bypass sandbox MAC (same
+                                // technique we use for the flag file).
+                                NSString *patchedTmp = [@"/tmp/ci_dump_patched_" stringByAppendingString:bid];
+                                [patched writeToFile:patchedTmp atomically:YES];
+                                NSString *cpCmd = [NSString stringWithFormat:
+                                    @"cp '%@' '%@' && chmod 0644 '%@'",
+                                    patchedTmp, dumpPath, dumpPath];
+                                ci_run([cpCmd UTF8String]);
+                                [fm removeItemAtPath:patchedTmp error:nil];
+                                NSLog(@"[ChangeInfoIos] restore: patched kSessionUid for %@: %@ → %@ (candidates=%@)",
+                                      bid, currentUID ?: @"(nil)", targetUID, uidCandidates);
+                            }
+                        } else {
+                            NSLog(@"[ChangeInfoIos] restore: kSessionUid for %@ already matches Documents user (%@)", bid, currentUID);
+                        }
+                    }
+                }
             }
 
             // Drop the restore flag via shell instead of NSFileManager.
