@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.16";
+static NSString *const kAppVersion = @"2.4.17";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1894,6 +1894,80 @@ static NSString *ci_kindLabel(CIAccountKind k) {
 }
 @end
 
+// Build the `tar -cf …` command shared by createRRSForBundles and
+// rebackupEntry, with --exclude rules that strip cache/log paths.
+// Empirical: an unfiltered Zalo backup ran 77 MB; the same content
+// with these exclusions drops to ~25-35 MB without losing anything
+// the restore path needs (chat sqlite, profile sqlite, KVCore,
+// Preferences, Cookies, tmp/hios_keychain.plist all preserved).
+//
+// What we SKIP (regenerable on next launch):
+//   Library/Caches/*               iOS URLCache + app caches
+//   Library/WebKit/*               WKWebView blob storage
+//   Library/HTTPStorages/*         NSURLSession httpcookies cache
+//   Library/Saved Application State  iOS scene snapshot
+//   Documents/InstantCacheData/*   Zalo instant cache
+//   Documents/Logs/*               per-level log txt files
+//   Documents/LogSocket/*          socket-level traces
+//   Documents/QoS/*                quality-of-service metrics
+//   Documents/UpResult/*           upload result staging
+//   Documents/UpTemp/*             upload temp staging
+//   Documents/DownTemp/*           download temp staging
+//   Documents/VoipLogStats/*       VoIP telemetry
+//   Documents/zinstant_apps/*      mini-app cache
+//   Documents/cloud_audit/*        cloud-side audit logs
+//   Documents/services/*           runtime service queue
+//   Documents/FTS*/*               full-text search index (rebuilds)
+//
+// What we KEEP (load-bearing for restore):
+//   Documents/*.sqlite             chat, profile, contacts, settings
+//   Documents/KVCore/*             account session metadata
+//   Documents/Data/*               user content
+//   Documents/kvs, mmkv            key-value persistence
+//   Documents/ZaloAnalytics/*      analytics state (small)
+//   Library/Preferences/*          NSUserDefaults
+//   Library/Cookies/*              auth cookies
+//   Library/Application Support/*  app-managed persistence
+//   tmp/hios_keychain.plist        the dump our tweak writes
+//   tmp/* (all other)              transient state, small
+//   /var/jb/etc/changeinfoios/*    spoof config + DC state
+static NSString *ci_buildTarCommand(NSString *tarPath,
+                                     NSArray<NSString *> *containerPaths,
+                                     NSString *errLog) {
+    static NSArray *kExcludes = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kExcludes = @[
+            @"Library/Caches",
+            @"Library/WebKit",
+            @"Library/HTTPStorages",
+            @"Library/Saved Application State",
+            @"Documents/InstantCacheData",
+            @"Documents/Logs",
+            @"Documents/LogSocket",
+            @"Documents/QoS",
+            @"Documents/UpResult",
+            @"Documents/UpTemp",
+            @"Documents/DownTemp",
+            @"Documents/VoipLogStats",
+            @"Documents/zinstant_apps",
+            @"Documents/cloud_audit",
+            @"Documents/services",
+            @"Documents/GlobalSearch",  // FTS index — rebuilds on next launch
+        ];
+    });
+    NSMutableString *cmd = [NSMutableString stringWithFormat:@"tar -cf '%@'", tarPath];
+    for (NSString *ex in kExcludes) {
+        // GNU tar accepts wildcards via --wildcards (default in many builds).
+        // Use a pattern that catches the dir at any depth inside any container.
+        [cmd appendFormat:@" --exclude='*/%@'", ex];
+    }
+    [cmd appendString:@" /var/jb/etc/changeinfoios"];
+    for (NSString *p in containerPaths) [cmd appendFormat:@" '%@'", p];
+    if (errLog.length) [cmd appendFormat:@" 2>%@", errLog];
+    return cmd;
+}
+
 // ============================================================
 // THEME (matches "Xoa Info" light style)
 // ============================================================
@@ -3339,7 +3413,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:a animated:YES completion:nil];
 }
 
-// Swipe-left → Delete (iOS-standard pattern; no more multi-select header).
+// Swipe-left → Xóa (single action — never clips). All other actions
+// (Cập nhật / Sửa / Ban) moved to the long-press context menu below.
+// Earlier attempts to cram a 2nd or 3rd action into the swipe area
+// kept getting label-clipped no matter how short the title was
+// (tried "Cập nhật" → "hật", "Lưu lại" → "lại", "Lưu" → "lưu", and
+// even icon-only — the layout broke when 2 trailing actions had to
+// share the swipe width). Single-action swipe gives Xóa the full
+// width with no clipping. Power-user actions hide behind the menu.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
         trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
     UIContextualAction *del = [UIContextualAction
@@ -3353,54 +3434,88 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
         doneHandler(YES);
     }];
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
 
-    // Re-backup action — re-tar the same bundles with current state.
-    // Icon-only ("") + arrow.clockwise — every text title got clipped
-    // mid-swipe on this device's screen width (tried "Cập nhật" → "hật",
-    // "Lưu lại" → "lại", "Lưu" → "lưu", screenshot still showed the tail
-    // of the previous label). Empty title with image makes iOS render a
-    // pure-icon button that scales to fit the action width without text
-    // metrics getting involved. The orange background + refresh-arrow
-    // glyph carries the meaning: "save/refresh this snapshot".
-    UIContextualAction *update = [UIContextualAction
-        contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:@""
-                          handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
-        CIRRSEntry *e = self->_view[ip.row];
-        NSString *label = e.accountLabel.length ? e.accountLabel
-                        : (e.note.length ? e.note : @"snapshot");
-        UIAlertController *a = [UIAlertController
-            alertControllerWithTitle:@"Cập nhật snapshot?"
-                             message:[NSString stringWithFormat:
-                                      @"Backup \"%@\" sẽ được ghi đè bằng data hiện tại của %lu app. "
-                                      @"Không thể hoàn tác.\n\nTiếp tục?",
-                                      label, (unsigned long)e.bundleIDs.count]
-                      preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel
-            handler:^(UIAlertAction *_) { doneHandler(NO); }]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Cập nhật" style:UIAlertActionStyleDestructive
-            handler:^(UIAlertAction *_) {
-            // Dismiss the modal RRS list first so the rebackup HUD
-            // shows on the home VC (presenting VC), like restoreEntry: does.
-            UIViewController *presenter = self.presentingViewController;
-            if ([presenter isKindOfClass:[UINavigationController class]]) {
-                presenter = [(UINavigationController *)presenter topViewController];
-            }
-            [self dismissViewControllerAnimated:YES completion:^{
-                if ([presenter respondsToSelector:@selector(rebackupEntry:)]) {
-                    [presenter performSelector:@selector(rebackupEntry:) withObject:e];
+// Long-press context menu — iOS-native pattern that doesn't clip
+// text and gives plenty of room for multi-action lists. User holds
+// the cell for ~0.4s, the cell pops up, and a menu sheet appears
+// with all the per-entry actions. No more swipe-label fitting puzzles.
+- (UIContextMenuConfiguration *)tableView:(UITableView *)tv
+       contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)ip
+                                           point:(CGPoint)point {
+    CIRRSEntry *e = _view[ip.row];
+    UIContextMenuConfiguration *cfg = [UIContextMenuConfiguration
+        configurationWithIdentifier:nil
+                    previewProvider:nil
+                     actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
+        // 1) Cập nhật — re-tar this snapshot with current state.
+        UIAction *update = [UIAction
+            actionWithTitle:@"Cập nhật"
+                      image:[UIImage systemImageNamed:@"arrow.clockwise"]
+                 identifier:nil
+                    handler:^(UIAction *_) {
+            UIAlertController *a = [UIAlertController
+                alertControllerWithTitle:@"Cập nhật snapshot?"
+                                 message:[NSString stringWithFormat:
+                                          @"Tar mới sẽ ghi đè bản hiện tại của %lu app. "
+                                          @"Nếu tar mới nhỏ hơn nhiều, bạn sẽ được hỏi xác nhận lại.",
+                                          (unsigned long)e.bundleIDs.count]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+            [a addAction:[UIAlertAction actionWithTitle:@"Cập nhật" style:UIAlertActionStyleDestructive
+                handler:^(UIAlertAction *_) {
+                UIViewController *presenter = self.presentingViewController;
+                if ([presenter isKindOfClass:[UINavigationController class]]) {
+                    presenter = [(UINavigationController *)presenter topViewController];
                 }
-            }];
-            doneHandler(YES);
-        }]];
-        [self presentViewController:a animated:YES completion:nil];
-    }];
-    update.backgroundColor = [CITheme orange];
-    if (@available(iOS 13.0, *)) {
-        update.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-    }
+                [self dismissViewControllerAnimated:YES completion:^{
+                    if ([presenter respondsToSelector:@selector(rebackupEntry:)]) {
+                        [presenter performSelector:@selector(rebackupEntry:) withObject:e];
+                    }
+                }];
+            }]];
+            [self presentViewController:a animated:YES completion:nil];
+        }];
 
-    return [UISwipeActionsConfiguration configurationWithActions:@[del, update]];
+        // 2) Sửa — edit account label / kind.
+        UIAction *edit = [UIAction
+            actionWithTitle:@"Sửa nhãn / loại"
+                      image:[UIImage systemImageNamed:@"pencil"]
+                 identifier:nil
+                    handler:^(UIAction *_) {
+            [self editAccountForEntry:e atIndex:ip];
+        }];
+
+        // 3) Ban / Mở khóa — toggle account status.
+        BOOL isBanned = (e.accountStatus == CIAccountStatusBanned);
+        UIAction *toggleBan = [UIAction
+            actionWithTitle:(isBanned ? @"Mở khóa" : @"Đánh dấu BANNED")
+                      image:[UIImage systemImageNamed:(isBanned ? @"checkmark.circle" : @"xmark.octagon")]
+                 identifier:nil
+                    handler:^(UIAction *_) {
+            e.accountStatus = isBanned ? CIAccountStatusActive : CIAccountStatusBanned;
+            [[CIRRSStore shared] saveIndex];
+            [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
+        }];
+
+        // 4) Xóa — destructive, separate inline menu so iOS styles it red.
+        UIAction *del = [UIAction
+            actionWithTitle:@"Xóa snapshot"
+                      image:[UIImage systemImageNamed:@"trash"]
+                 identifier:nil
+                    handler:^(UIAction *_) {
+            [[CIRRSStore shared] deleteEntry:e];
+            self->_view = [[CIRRSStore shared] entries];
+            [self refreshTitle];
+            [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
+        }];
+        del.attributes = UIMenuElementAttributesDestructive;
+
+        return [UIMenu menuWithTitle:@""
+                            children:@[update, edit, toggleBan, del]];
+    }];
+    return cfg;
 }
 
 // Swipe-right → Sửa (account label/kind) + Ban/Mở khóa (toggle status).
@@ -5500,11 +5615,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %d×0.5s retries)",
           foundDumps, missingDumps, 16);
 
-    // Build tar command. Capture stderr to a file so a silent failure
-    // becomes visible in syslog instead of vanishing to /dev/null.
-    NSMutableString *tarCmd = [NSMutableString stringWithFormat:@"tar -cf '%@' /var/jb/etc/changeinfoios", tarPath];
-    for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
-    [tarCmd appendFormat:@" 2>%@", errLog];
+    // Build tar command via helper that adds --exclude rules for cache/log
+    // dirs (see ci_buildTarCommand block comment).
+    NSString *tarCmd = ci_buildTarCommand(tarPath, paths, errLog);
     int rc = ci_run([tarCmd UTF8String]);
 
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath error:nil];
@@ -5603,10 +5716,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         unsigned long long oldBytes = [[[NSFileManager defaultManager]
             attributesOfItemAtPath:tarPath error:nil][NSFileSize] unsignedLongLongValue];
 
-        NSMutableString *tarCmd = [NSMutableString stringWithFormat:
-            @"tar -cf '%@' /var/jb/etc/changeinfoios", tarNew];
-        for (NSString *p in paths) [tarCmd appendFormat:@" '%@'", p];
-        [tarCmd appendFormat:@" 2>%@", errLog];
+        NSString *tarCmd = ci_buildTarCommand(tarNew, paths, errLog);
         int rc = ci_run([tarCmd UTF8String]);
         // The new tar is at tarNew now. Inspect its size BEFORE deciding
         // whether to publish it over the existing tar.
