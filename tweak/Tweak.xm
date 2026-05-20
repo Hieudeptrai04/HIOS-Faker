@@ -371,23 +371,16 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
         NSDictionary *consumedAttrs = [fm attributesOfItemAtPath:consumedPath error:nil];
         NSDate *consumedMtime = consumedAttrs[NSFileModificationDate];
         if (flagMtime && consumedMtime) {
-            // Use a 1-second tolerance instead of strict <= compare.
-            // Confirmed live 2026-05-20: NSDate-via-setAttributes preserves
-            // microseconds but loses nanoseconds when the filesystem writes
-            // mtime back. After first-launch consumed-marker write:
-            //   flag mtime    = 16:56:06.952850132 (132ns extra)
-            //   marker mtime  = 16:56:06.952850000 (ns truncated to µs)
-            // Strict compare → flag > marker by 132ns → NSOrderedDescending
-            // → tweak re-ran restoreKeychain on EVERY subsequent launch,
-            // overwriting any session timestamps Zalo had refreshed during
-            // runtime with the original (now-stale) dump values. Net effect:
-            // first launch worked but swipe-kill + reopen always reverted
-            // to login screen.
-            NSTimeInterval delta = [flagMtime timeIntervalSinceDate:consumedMtime];
-            if (delta < 1.0) {
-                trace([NSString stringWithFormat:@"early-exit: already consumed (flag=%@ marker=%@ Δ=%.6fs)",
-                                                  flagMtime, consumedMtime, delta]);
-                return NO;  // Within tolerance → already restored.
+            // Tolerance window: filesystem mtime precision differs from
+            // NSDate's nanosecond precision (APFS rounds setAttributes
+            // back from ns to us), so a strict flag-vs-marker compare
+            // would re-fire restore on every launch. Treat any flag
+            // within 1s of consumed marker as already-restored.
+            NSTimeInterval skew = [flagMtime timeIntervalSinceDate:consumedMtime];
+            trace([NSString stringWithFormat:@"flag/marker skew = %f sec", skew]);
+            if (skew < 1.0) {
+                trace(@"early-exit: flag within consumed-marker tolerance");
+                return NO;
             }
         }
 
