@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.23";
+static NSString *const kAppVersion = @"2.4.24";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6163,9 +6163,49 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
             NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
             unsigned long long dumpSz = [dumpAttrs[NSFileSize] unsignedLongLongValue];
+
+            // FALLBACK (2026-05-20 v2.4.24): if container/tmp/hios_keychain.plist
+            // is missing or 0 bytes, fall back to the dump that's still sitting in
+            // the extracted tar at /tmp/ci_restore_<uid>/private/var/.../<UUID>/tmp/.
+            // Observed live: UI Restore copies data correctly (step 3) BUT the
+            // live-container dumpPath read here returned 0 bytes by the time
+            // step 5 ran — flag was never dropped, tweak saw NO FLAG, Zalo
+            // launched without keychain restore → blank login + chat_dbs wiped.
+            // The tar's tmp/hios_keychain.plist is always intact since the
+            // extracted tar dir hasn't been cleaned up yet at this point.
+            if (dumpSz == 0) {
+                NSData *bidNeedle = [bid dataUsingEncoding:NSUTF8StringEncoding];
+                for (NSString *uuid in bkUUIDs) {
+                    NSString *altDir = [bkRoot stringByAppendingPathComponent:uuid];
+                    NSString *altMeta = [altDir stringByAppendingPathComponent:
+                        @".com.apple.mobile_container_manager.metadata.plist"];
+                    NSData *altBlob = [NSData dataWithContentsOfFile:altMeta];
+                    if (!altBlob) continue;
+                    if ([altBlob rangeOfData:bidNeedle options:0
+                                       range:NSMakeRange(0, altBlob.length)].location == NSNotFound) continue;
+                    NSString *altDump = [altDir stringByAppendingPathComponent:
+                                          @"tmp/hios_keychain.plist"];
+                    NSDictionary *altAttrs = [fm attributesOfItemAtPath:altDump error:nil];
+                    unsigned long long altSz = [altAttrs[NSFileSize] unsignedLongLongValue];
+                    if (altSz > 0) {
+                        NSLog(@"[ChangeInfoIos] restore: container dump empty, using tar fallback %@ (sz=%llu)",
+                              altDump, altSz);
+                        dumpPath = altDump;
+                        dumpSz   = altSz;
+                        // Also re-seed container/tmp/hios_keychain.plist so
+                        // tweak's LEGACY path also has it (back-compat).
+                        NSString *seedCmd = [NSString stringWithFormat:
+                            @"cp -f '%@' '%@/tmp/hios_keychain.plist' 2>/dev/null && chmod 0644 '%@/tmp/hios_keychain.plist'",
+                            altDump, container, container];
+                        ci_run([seedCmd UTF8String]);
+                        break;
+                    }
+                }
+            }
+
             if (dumpSz == 0) {
                 [noDumpBundles addObject:bid];
-                NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
+                NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ (and no tar fallback) — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
                 continue;
             }
 
