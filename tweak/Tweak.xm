@@ -491,14 +491,21 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
 
         g_ci_skipKeychainHook--;
 
-        // Activate the 90-second wipe-guard window NOW (process-local timer).
-        // The sqlite3 + NSFileManager hooks will block Zalo's internal wipe
-        // routines that fire shortly after %ctor returns. We arm regardless
-        // of whether ANY entries actually succeeded — Zalo will wipe based
-        // on session state, not keychain content. If the restore was a
-        // total dud (0/N entries), 90s of blocking does no harm; if it
-        // succeeded, blocking saves the freshly-restored data.
-        g_restoreGuardActiveUntil = CFAbsoluteTimeGetCurrent() + 90.0;
+        // Activate the wipe-guard window NOW (process-local timer).
+        // The sqlite3 + NSFileManager hooks block Zalo's internal wipe
+        // routines that fire shortly after %ctor returns.
+        //
+        // v2.4.31: dropped from 90s → 15s. Confirmed live 2026-05-20:
+        // 90s window let restore complete + auto-login work, BUT also
+        // blocked legit Zalo session-write ops that happen 20-60s after
+        // launch (session validation w/ server, profile.sqlite refresh
+        // via DELETE-then-INSERT pattern). When user swipe-killed Zalo
+        // within that window, the session never got persisted, so the
+        // next cold launch reverted to the login screen even though
+        // keychain still had a valid triplet. 15s is enough to catch
+        // the early-init wipe (which fires within ~2s of %ctor) but
+        // doesn't block long-running session establishment.
+        g_restoreGuardActiveUntil = CFAbsoluteTimeGetCurrent() + 15.0;
 
         // Consume the flag.
         //   - Legacy tmp/ flag: tweak can delete (same sandbox).
