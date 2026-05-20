@@ -370,11 +370,25 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
         NSString *consumedPath = [consumedDir stringByAppendingPathComponent:@"last_restore.marker"];
         NSDictionary *consumedAttrs = [fm attributesOfItemAtPath:consumedPath error:nil];
         NSDate *consumedMtime = consumedAttrs[NSFileModificationDate];
-        if (flagMtime && consumedMtime &&
-            [flagMtime compare:consumedMtime] != NSOrderedDescending) {
-            trace([NSString stringWithFormat:@"early-exit: already consumed (flag=%@ <= consumed=%@)",
-                                              flagMtime, consumedMtime]);
-            return NO;  // Already restored this flag.
+        if (flagMtime && consumedMtime) {
+            // Use a 1-second tolerance instead of strict <= compare.
+            // Confirmed live 2026-05-20: NSDate-via-setAttributes preserves
+            // microseconds but loses nanoseconds when the filesystem writes
+            // mtime back. After first-launch consumed-marker write:
+            //   flag mtime    = 16:56:06.952850132 (132ns extra)
+            //   marker mtime  = 16:56:06.952850000 (ns truncated to µs)
+            // Strict compare → flag > marker by 132ns → NSOrderedDescending
+            // → tweak re-ran restoreKeychain on EVERY subsequent launch,
+            // overwriting any session timestamps Zalo had refreshed during
+            // runtime with the original (now-stale) dump values. Net effect:
+            // first launch worked but swipe-kill + reopen always reverted
+            // to login screen.
+            NSTimeInterval delta = [flagMtime timeIntervalSinceDate:consumedMtime];
+            if (delta < 1.0) {
+                trace([NSString stringWithFormat:@"early-exit: already consumed (flag=%@ marker=%@ Δ=%.6fs)",
+                                                  flagMtime, consumedMtime, delta]);
+                return NO;  // Within tolerance → already restored.
+            }
         }
 
         NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
