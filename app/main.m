@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.26";
+static NSString *const kAppVersion = @"2.4.27";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1549,6 +1549,7 @@ static void ci_wipeCrossAppResidue(NSArray *targets) {
 
 static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     if (bundleID.length == 0) return nil;
+    // First try NSFileManager (works for some host-app sandbox profiles).
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *root = @"/var/mobile/Containers/Data/Application";
     NSArray *uuids = [fm contentsOfDirectoryAtPath:root error:nil];
@@ -1562,7 +1563,31 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
             return full;
         }
     }
-    return nil;
+
+    // Fallback (2026-05-20 v2.4.27): NSFileManager returned no UUIDs / matches
+    // even though the containers exist. Confirmed via instrumented restoreEntry.log:
+    // `matchedBid=vn.com.vng.zingalo but NO LIVE CONTAINER` even when /var/mobile/
+    // Containers/Data/Application/22B6882C.../*.metadata.plist has the bundle ID
+    // and 644 perms readable by mobile. Sandbox MAC seems to block the directory
+    // listing from inside HIOS Faker's sandboxed process, but the SAME path works
+    // for cp -a / pkill via ci_run (posix_spawn child of host bypasses).
+    //
+    // Shell-based grep through ci_run finds it deterministically.
+    NSString *outPath = [NSString stringWithFormat:
+        @"/tmp/ci_find_%@.txt", [bundleID stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
+    NSString *cmd = [NSString stringWithFormat:
+        @"grep -l '%@' /var/mobile/Containers/Data/Application/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null | head -1 > '%@'",
+        bundleID, outPath];
+    ci_run([cmd UTF8String]);
+    NSString *result = [NSString stringWithContentsOfFile:outPath
+                                                 encoding:NSUTF8StringEncoding error:nil];
+    [fm removeItemAtPath:outPath error:nil];
+    result = [result stringByTrimmingCharactersInSet:
+              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (result.length == 0) return nil;
+    // grep -l returned <container>/.com.apple.mobile_container_manager.metadata.plist;
+    // strip the filename to get the container dir.
+    return [result stringByDeletingLastPathComponent];
 }
 
 static int ci_run(const char *cmd) {
