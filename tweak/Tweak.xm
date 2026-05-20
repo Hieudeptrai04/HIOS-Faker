@@ -178,6 +178,11 @@ static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.pl
 // keychain helpers below + Hooks.mm extern reference both see it.
 __thread int g_ci_skipKeychainHook = 0;
 
+// Restore guard window timer (see ci_isInRestoreGuard / hook bodies below).
+// Defined here so ci_restoreKeychainIfFlagged (which arms it) can write
+// before the hook bodies that read it appear later in the file.
+double g_restoreGuardActiveUntil = 0;
+
 // ====== KEYCHAIN BACKUP / RESTORE ======
 // User flow we're solving: register Zalo acc A, take RRS backup, Reset Data,
 // register acc B (Zalo overwrites keychain session token), now restore A.
@@ -771,7 +776,8 @@ BOOL jbHideActive(void) {
 // entries OK, but ci_isInRestoreGuard saw old marker mtime → returned
 // NO → sqlite3/NSFileManager hooks didn't fire → Zalo wiped chat_dbs +
 // profile.sqlite rows on launch despite a successful keychain restore.
-double g_restoreGuardActiveUntil = 0;  // exported for ci_restoreKeychainIfFlagged
+// (g_restoreGuardActiveUntil is defined near top of file alongside g_ci_skipKeychainHook
+//  so ci_restoreKeychainIfFlagged earlier in the file can write to it.)
 
 static double g_guardLastCheck = 0;
 static BOOL g_guardLastResult = NO;
