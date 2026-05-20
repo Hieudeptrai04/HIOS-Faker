@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.21";
+static NSString *const kAppVersion = @"2.4.22";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1937,23 +1937,45 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
     static NSArray *kExcludes = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // v2.4.22: AGGRESSIVE exclude list of v2.4.17 was REMOVING session-
+        // critical data, causing restore to fail server-side auth.
+        // Specifically Library/HTTPStorages contains cookies + auth tokens
+        // for Zalo's network requests; Library/WebKit holds eKYC + login
+        // webview state; Documents/services has runtime service queue
+        // that may include session tokens. Excluding any of these means
+        // Zalo restores but server rejects → Zalo wipes profile.sqlite +
+        // chat_dbs/<UID> on launch.
+        //
+        // Confirmed live 2026-05-19: 77 MB tar (no excludes) auto-logged
+        // in successfully. 21 MB tar (v2.4.17 excludes applied) wiped to
+        // blank login despite all 6 keychain patches.
+        //
+        // Now: ONLY exclude paths that are guaranteed-safe to lose:
+        //   Library/Caches              iOS URLCache + image caches
+        //   Library/Saved Application State  iOS scene snapshot, regenerates
+        //   Documents/Logs              app-level log files
+        //   Documents/LogSocket         per-socket trace logs
+        //   Documents/QoS               quality-of-service metrics
+        //   Documents/VoipLogStats      VoIP call telemetry
+        //   Documents/cloud_audit/download_cache   transient DL cache
+        //   Documents/GlobalSearch      FTS index, auto-rebuilds
+        //
+        // KEPT (was excluded in 2.4.17, now restored to capture):
+        //   Library/WebKit              webview cookies/storage
+        //   Library/HTTPStorages        critical: NSURLSession cookies+tokens
+        //   Documents/InstantCacheData  Zalo instant cache (may hold tokens)
+        //   Documents/UpResult,UpTemp,DownTemp  upload/download state queues
+        //   Documents/zinstant_apps     mini-app cache (Zalo's in-app browser)
+        //   Documents/services          runtime service state
         kExcludes = @[
             @"Library/Caches",
-            @"Library/WebKit",
-            @"Library/HTTPStorages",
             @"Library/Saved Application State",
-            @"Documents/InstantCacheData",
             @"Documents/Logs",
             @"Documents/LogSocket",
             @"Documents/QoS",
-            @"Documents/UpResult",
-            @"Documents/UpTemp",
-            @"Documents/DownTemp",
             @"Documents/VoipLogStats",
-            @"Documents/zinstant_apps",
-            @"Documents/cloud_audit",
-            @"Documents/services",
-            @"Documents/GlobalSearch",  // FTS index — rebuilds on next launch
+            @"Documents/cloud_audit/download_cache",
+            @"Documents/GlobalSearch",
         ];
     });
     NSMutableString *cmd = [NSMutableString stringWithFormat:@"tar -cf '%@'", tarPath];
