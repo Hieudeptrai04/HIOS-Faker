@@ -368,20 +368,33 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
         [fm createDirectoryAtPath:consumedDir withIntermediateDirectories:YES
                        attributes:nil error:nil];
         NSString *consumedPath = [consumedDir stringByAppendingPathComponent:@"last_restore.marker"];
-        NSDictionary *consumedAttrs = [fm attributesOfItemAtPath:consumedPath error:nil];
-        NSDate *consumedMtime = consumedAttrs[NSFileModificationDate];
-        if (flagMtime && consumedMtime) {
-            // Tolerance window: filesystem mtime precision differs from
-            // NSDate's nanosecond precision (APFS rounds setAttributes
-            // back from ns to us), so a strict flag-vs-marker compare
-            // would re-fire restore on every launch. Treat any flag
-            // within 1s of consumed marker as already-restored.
-            NSTimeInterval skew = [flagMtime timeIntervalSinceDate:consumedMtime];
-            trace([NSString stringWithFormat:@"flag/marker skew = %f sec", skew]);
-            if (skew < 1.0) {
-                trace(@"early-exit: flag within consumed-marker tolerance");
-                return NO;
-            }
+        // Content-based consumed marker (v2.4.34): write the flag's epoch
+        // (whole seconds) into the marker file as text, then compare on
+        // next launch. Sidesteps the NSDate-vs-filesystem mtime precision
+        // issue that broke v2.4.32 and v2.4.33 — strict NSDate compare
+        // saw ~100ns skew between flagMtime and the round-tripped marker
+        // mtime, and the tolerance-window check unexpectedly never
+        // entered (consumedAttrs[NSFileModificationDate] came back nil
+        // for reasons not yet root-caused), so tweak re-ran restore on
+        // every launch and the user's swipe-killed Zalo always came back
+        // to the login screen.
+        NSString *flagEpochStr = nil;
+        if (flagMtime) {
+            flagEpochStr = [NSString stringWithFormat:@"%.0f",
+                            [flagMtime timeIntervalSince1970]];
+        }
+        NSString *consumedContent = [NSString stringWithContentsOfFile:consumedPath
+                                                              encoding:NSUTF8StringEncoding
+                                                                 error:nil];
+        consumedContent = [consumedContent stringByTrimmingCharactersInSet:
+                            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        trace([NSString stringWithFormat:@"consumed-marker check: flag=%@ marker=%@",
+                                          flagEpochStr ?: @"(nil)",
+                                          consumedContent ?: @"(nil)"]);
+        if (flagEpochStr && consumedContent.length > 0
+            && [flagEpochStr isEqualToString:consumedContent]) {
+            trace(@"early-exit: flag epoch matches consumed-marker");
+            return NO;
         }
 
         NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
@@ -517,20 +530,17 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
         // Consume the flag.
         //   - Legacy tmp/ flag: tweak can delete (same sandbox).
         //   - Primary /var/jb/etc/ flag: tweak CAN'T delete (sandbox MAC).
-        //     Drop a consumed marker in Library/Caches/ChangeInfoIos/ with
-        //     the same mtime as the flag so the next launch sees flag <=
-        //     marker and skips. Library/Caches/ is sandbox-writable AND
-        //     survives launches (unlike tmp/).
+        //     Write flag-mtime epoch (whole seconds) into a consumed
+        //     marker file under Library/Caches/ChangeInfoIos/. Next launch
+        //     reads the file content and compares the string to the
+        //     current flag mtime epoch. Content-based avoids the NSDate
+        //     vs filesystem mtime precision mismatch that defeated the
+        //     v2.4.32/33 attempts. Library/Caches survives across launches.
         if ([flagPath isEqualToString:legacyFlag]) {
             [fm removeItemAtPath:legacyFlag error:nil];
-        } else {
-            // touch the consumed marker, then set its mtime to match flag's
-            [@"1" writeToFile:consumedPath atomically:NO
-                     encoding:NSUTF8StringEncoding error:nil];
-            if (flagMtime) {
-                [fm setAttributes:@{NSFileModificationDate: flagMtime}
-                     ofItemAtPath:consumedPath error:nil];
-            }
+        } else if (flagEpochStr) {
+            [flagEpochStr writeToFile:consumedPath atomically:NO
+                             encoding:NSUTF8StringEncoding error:nil];
         }
 
         [restoreLog appendFormat:@"=== summary: %lu primary + %lu fallback / %lu total (hist=%@) ===\n",
