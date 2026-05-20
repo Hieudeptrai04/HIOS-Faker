@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.27";
+static NSString *const kAppVersion = @"2.4.28";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6309,7 +6309,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     if (allDigits) [uidCandidates addObject:d];
                 }
             }
-            if (uidCandidates.count > 0) {
+            // Always parse + patch the dump if it exists. v2.4.27 left mkdir +
+            // nuke logic inside the "kSessionUid doesn't match chat_dbs" branch,
+            // so a fresh-registration backup (chat_dbs/<NEW_UID>/ matches dump's
+            // kSessionUid) skipped the nuke entirely — and any leftover
+            // kCryptKeyData<OLD_UID> from the previous account stayed in the
+            // dump → Zalo wiped on launch. Confirmed live 2026-05-20: dump had
+            // kCryptKeyData457384682 (Hà An) + kCryptKeyData457769976 (new
+            // acc), restore replayed both, Zalo wiped.
+            {
                 NSData *dumpData = [NSData dataWithContentsOfFile:dumpPath];
                 NSError *parseErr = nil;
                 id parsed = [NSPropertyListSerialization propertyListWithData:dumpData
@@ -6341,8 +6349,29 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     NSMutableDictionary *sessionEntry = findEntry(@"kSessionUid");
                     NSString *currentUID = sessionEntry ? getVal(sessionEntry) : nil;
 
-                    if (sessionEntry && ![uidCandidates containsObject:currentUID]) {
-                        NSString *targetUID = uidCandidates.firstObject;
+                    // Determine the effective targetUID.
+                    //   - If chat_dbs has candidates AND kSessionUid doesn't match → use first candidate (triplet patch).
+                    //   - Else if kSessionUid is numeric → use it as-is (typical fresh registration path).
+                    //   - Else if uidCandidates exist → use the first.
+                    NSString *targetUID = nil;
+                    BOOL needTripletPatch = NO;
+                    if (uidCandidates.count > 0 && sessionEntry && ![uidCandidates containsObject:currentUID]) {
+                        targetUID = uidCandidates.firstObject;
+                        needTripletPatch = YES;
+                    } else if (currentUID.length > 0) {
+                        // Quick numeric check
+                        BOOL allDigits = currentUID.length > 0;
+                        for (NSUInteger i = 0; i < currentUID.length; i++) {
+                            unichar c = [currentUID characterAtIndex:i];
+                            if (c < '0' || c > '9') { allDigits = NO; break; }
+                        }
+                        if (allDigits) targetUID = currentUID;
+                    }
+                    if (!targetUID.length && uidCandidates.count > 0) {
+                        targetUID = uidCandidates.firstObject;
+                    }
+
+                    if (needTripletPatch) {
 
                         // Query profile.sqlite for the target user's username +
                         // mobile. Zalo's session check matches keychain's
@@ -6381,20 +6410,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             NSMutableDictionary *phone = findEntry(@"kPhoneNumber");
                             if (phone) setVal(phone, targetMobile);
                         }
+                    }   // end of if (needTripletPatch)
 
-                        // CRITICAL: ensure Documents/chat_dbs/<targetUID>/ exists.
-                        // Tar from a rebackup taken AFTER Zalo's launch-wipe
-                        // doesn't contain chat_dbs/<UID>/ (Zalo cleaned it
-                        // because of session inconsistency). Restoring leaves
-                        // chat_dbs containing only zdb.kvs. Next launch: Zalo
-                        // reads keychain → kSessionUid=<UID> → looks for
-                        // chat_dbs/<UID>/ → MISSING → wipes profile.sqlite.
-                        //
-                        // Confirmed live 2026-05-19: tar with empty chat_dbs
-                        // wiped data on launch. Same restore + mkdir
-                        // chat_dbs/457384682/ (empty) → 2 ProfileEntity rows
-                        // PRESERVED + dir intact. Zalo doesn't care if the
-                        // dir is empty — it just needs to EXIST.
+                    // ALWAYS-RUN section (v2.4.28): mkdir chat_dbs/<targetUID>
+                    // and nuke kCryptKeyData<OTHER_UID>. v2.4.27 left these
+                    // inside the needTripletPatch branch, so a fresh-registration
+                    // backup (kSessionUid already matches chat_dbs/<NEW_UID>/)
+                    // skipped the nuke entirely → leftover kCryptKeyData<OLD_UID>
+                    // from previous account stayed in the dump → Zalo wiped on
+                    // launch. Confirmed live 2026-05-20: dump had
+                    // kCryptKeyData457384682 (Hà An) + kCryptKeyData457769976
+                    // (new acc); restore replayed both; Zalo wiped chat_dbs +
+                    // profile rows. Pulling these out fixes ALL re-registration
+                    // backups regardless of whether triplet patching is needed.
+                    NSUInteger nuked = 0;
+                    if (targetUID.length > 0) {
+                        // mkdir Documents/chat_dbs/<targetUID>/ if missing
+                        // (Zalo only checks dir existence, content can be empty).
                         NSString *chatDbsUser = [chatDbsDir stringByAppendingPathComponent:targetUID];
                         if (![fm fileExistsAtPath:chatDbsUser]) {
                             NSString *mkCmd = [NSString stringWithFormat:
@@ -6405,22 +6437,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                                   targetUID, bid, rc);
                         }
 
-                        // CRITICAL: nuke kCryptKeyData<OTHER_UID> entries.
-                        // The dump may have crypto keys for multiple accounts
-                        // (user had previously switched between them). Keeping
-                        // the OTHER user's crypto key alongside our target
-                        // makes Zalo treat the keychain as multi-account state
-                        // and try to validate both — finds inconsistency and
-                        // wipes profile.sqlite + chat_dbs/<UID>.
-                        //
-                        // Confirmed live 2026-05-19:
-                        //   triplet-patched + kCryptKeyData455815053 kept    → wiped
-                        //   triplet-patched + kCryptKeyData455815053 removed → preserved
-                        //
-                        // Strategy: drop any entry whose acct starts with
-                        // "kCryptKeyData" and whose suffix is numeric AND not
-                        // equal to targetUID. Keep targetUID's crypt key,
-                        // keep any non-numeric kCryptKeyData* entries.
+                        // Drop kCryptKeyData<numeric> entries where numeric != targetUID.
                         NSMutableArray *toRemove = [NSMutableArray array];
                         NSString *prefix = @"kCryptKeyData";
                         for (NSDictionary *entry in entries) {
@@ -6428,7 +6445,6 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             NSString *acct = entry[@"acct"];
                             if (![acct hasPrefix:prefix]) continue;
                             NSString *suffix = [acct substringFromIndex:prefix.length];
-                            // Numeric suffix that isn't our target → remove
                             BOOL allDigits = suffix.length > 0;
                             for (NSUInteger i = 0; i < suffix.length; i++) {
                                 unichar c = [suffix characterAtIndex:i];
@@ -6439,10 +6455,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             }
                         }
                         for (id rm in toRemove) [entries removeObject:rm];
+                        nuked = toRemove.count;
+                    }
 
+                    // Write the patched dump back if EITHER triplet was patched OR
+                    // any kCryptKeyData entries were nuked.
+                    if (needTripletPatch || nuked > 0) {
+                        NSError *writeErr = nil;
                         NSData *patched = [NSPropertyListSerialization dataWithPropertyList:entries
                                                                                      format:NSPropertyListXMLFormat_v1_0
-                                                                                    options:0 error:&parseErr];
+                                                                                    options:0 error:&writeErr];
                         if (patched.length > 0) {
                             NSString *patchedTmp = [@"/tmp/ci_dump_patched_" stringByAppendingString:bid];
                             [patched writeToFile:patchedTmp atomically:YES];
@@ -6451,15 +6473,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                                 patchedTmp, dumpPath, dumpPath];
                             ci_run([cpCmd UTF8String]);
                             [fm removeItemAtPath:patchedTmp error:nil];
-                            NSLog(@"[ChangeInfoIos] restore: patched %@ session: uid=%@→%@ user=%@ phone=%@ removed=%lu other-user crypt keys (candidates=%@)",
-                                  bid, currentUID ?: @"(nil)", targetUID,
-                                  targetUsername ?: @"(skip)",
-                                  targetMobile ?: @"(skip)",
-                                  (unsigned long)toRemove.count,
-                                  uidCandidates);
+                            NSLog(@"[ChangeInfoIos] restore: patched %@ dump (targetUID=%@ tripletPatched=%d nukedCryptKeys=%lu candidates=%@)",
+                                  bid, targetUID, needTripletPatch, (unsigned long)nuked, uidCandidates);
                         }
-                    } else if (sessionEntry) {
-                        NSLog(@"[ChangeInfoIos] restore: kSessionUid for %@ already matches Documents user (%@)", bid, currentUID);
                     }
                 }
             }
