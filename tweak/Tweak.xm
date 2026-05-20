@@ -486,6 +486,15 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
 
         g_ci_skipKeychainHook--;
 
+        // Activate the 90-second wipe-guard window NOW (process-local timer).
+        // The sqlite3 + NSFileManager hooks will block Zalo's internal wipe
+        // routines that fire shortly after %ctor returns. We arm regardless
+        // of whether ANY entries actually succeeded — Zalo will wipe based
+        // on session state, not keychain content. If the restore was a
+        // total dud (0/N entries), 90s of blocking does no harm; if it
+        // succeeded, blocking saves the freshly-restored data.
+        g_restoreGuardActiveUntil = CFAbsoluteTimeGetCurrent() + 90.0;
+
         // Consume the flag.
         //   - Legacy tmp/ flag: tweak can delete (same sandbox).
         //   - Primary /var/jb/etc/ flag: tweak CAN'T delete (sandbox MAC).
@@ -753,11 +762,17 @@ BOOL jbHideActive(void) {
 // RESTORE GUARD — block target app from wiping its own data within
 // 90s of an RRS restore (see %hook NSFileManager removeItemAtPath:).
 // ============================================================
-// Cache the guard state for ~1s to avoid stat-ing the marker on every
-// SQL query (Zalo runs hundreds of queries per second). Cached value
-// is "is_in_guard + check_time"; we re-stat every 1s.
-static dispatch_once_t g_guardOnce;
-static NSString *g_guardMarkerPath = nil;
+// Restore guard window. Active for 90s after ci_restoreKeychainIfFlagged
+// completes a successful restore in THIS process. Set via process-local
+// timer (g_restoreGuardActiveUntil) — NOT via last_restore.marker mtime,
+// because that marker's mtime is intentionally set to flagMtime (which
+// may be stale, e.g. from a tar archive). Conflating those two purposes
+// caused v2.4.24's UI Restore to fail: tweak DID restore 29 keychain
+// entries OK, but ci_isInRestoreGuard saw old marker mtime → returned
+// NO → sqlite3/NSFileManager hooks didn't fire → Zalo wiped chat_dbs +
+// profile.sqlite rows on launch despite a successful keychain restore.
+double g_restoreGuardActiveUntil = 0;  // exported for ci_restoreKeychainIfFlagged
+
 static double g_guardLastCheck = 0;
 static BOOL g_guardLastResult = NO;
 
@@ -765,22 +780,7 @@ BOOL ci_isInRestoreGuard(void) {
     double now = CFAbsoluteTimeGetCurrent();
     if (now - g_guardLastCheck < 1.0) return g_guardLastResult;
     g_guardLastCheck = now;
-
-    dispatch_once(&g_guardOnce, ^{
-        NSArray *libDirs = NSSearchPathForDirectoriesInDomains(
-            NSCachesDirectory, NSUserDomainMask, YES);
-        g_guardMarkerPath = [[libDirs.firstObject
-            stringByAppendingPathComponent:@"ChangeInfoIos"]
-            stringByAppendingPathComponent:@"last_restore.marker"];
-    });
-    if (!g_guardMarkerPath.length) { g_guardLastResult = NO; return NO; }
-
-    NSDictionary *attrs = [[NSFileManager defaultManager]
-        attributesOfItemAtPath:g_guardMarkerPath error:nil];
-    NSDate *mtime = attrs[NSFileModificationDate];
-    if (!mtime) { g_guardLastResult = NO; return NO; }
-    NSTimeInterval age = [[NSDate date] timeIntervalSinceDate:mtime];
-    g_guardLastResult = (age < 90.0);
+    g_guardLastResult = (g_restoreGuardActiveUntil > now);
     return g_guardLastResult;
 }
 
