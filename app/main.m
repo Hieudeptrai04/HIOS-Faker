@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.34";
+static NSString *const kAppVersion = @"2.4.35";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6266,6 +6266,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             rlog([NSString stringWithFormat:@"[step5] bid=%@ dumpPath=%@ dumpSz=%llu", bid, dumpPath, dumpSz]);
 
+            // v2.4.35: removed all dump-patch logic (triplet rewrite,
+            // kCryptKeyData<OTHER_UID> nuke, mkdir chat_dbs/<UID>). User
+            // asked for baseline restore behavior — just drop the captured
+            // keychain dump as-is and let the target app handle it. The
+            // patches were Zalo-specific and the multi-account UID
+            // bookkeeping introduced more failure modes than it fixed
+            // when the backup was made right after a fresh registration.
+            #if 0
             // CRITICAL: sync kSessionUid in the keychain dump to a UID
             // that actually has data in this container's Documents.
             //
@@ -6515,6 +6523,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 NSLog(@"[ChangeInfoIos] restore: dump-patch threw %@: %@\n%@",
                       ex.name, ex.reason, ex.callStackSymbols);
             }
+            #endif
 
             // Drop the restore flag via shell instead of NSFileManager.
             // NSFileManager-from-CIHomeViewController hits the iOS sandbox

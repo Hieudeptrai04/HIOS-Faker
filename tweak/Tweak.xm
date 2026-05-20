@@ -116,8 +116,6 @@ NSString    *getConfigStr(NSString *key);
 BOOL         getConfigBool(NSString *key);
 BOOL         fakeLayer(NSString *shortName);
 BOOL         jbHideActive(void);
-BOOL         ci_isInRestoreGuard(void);
-BOOL         ci_isCriticalRestorePath(const char *cpath);
 void         reloadConfigFromDisk(void);
 void         initCLvlHooks(void); // defined in Hooks.mm
 BOOL         ci_isHiddenJBPath(const char *path); // defined in Hooks.mm
@@ -177,11 +175,6 @@ static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.pl
 // flag and pass through to %orig when non-zero. Declared up here so the
 // keychain helpers below + Hooks.mm extern reference both see it.
 __thread int g_ci_skipKeychainHook = 0;
-
-// Restore guard window timer (see ci_isInRestoreGuard / hook bodies below).
-// Defined here so ci_restoreKeychainIfFlagged (which arms it) can write
-// before the hook bodies that read it appear later in the file.
-double g_restoreGuardActiveUntil = 0;
 
 // ====== KEYCHAIN BACKUP / RESTORE ======
 // User flow we're solving: register Zalo acc A, take RRS backup, Reset Data,
@@ -511,21 +504,11 @@ static BOOL ci_restoreKeychainIfFlagged(void) {
 
         g_ci_skipKeychainHook--;
 
-        // Activate the wipe-guard window NOW (process-local timer).
-        // The sqlite3 + NSFileManager hooks block Zalo's internal wipe
-        // routines that fire shortly after %ctor returns.
-        //
-        // v2.4.31: dropped from 90s → 15s. Confirmed live 2026-05-20:
-        // 90s window let restore complete + auto-login work, BUT also
-        // blocked legit Zalo session-write ops that happen 20-60s after
-        // launch (session validation w/ server, profile.sqlite refresh
-        // via DELETE-then-INSERT pattern). When user swipe-killed Zalo
-        // within that window, the session never got persisted, so the
-        // next cold launch reverted to the login screen even though
-        // keychain still had a valid triplet. 15s is enough to catch
-        // the early-init wipe (which fires within ~2s of %ctor) but
-        // doesn't block long-running session establishment.
-        g_restoreGuardActiveUntil = CFAbsoluteTimeGetCurrent() + 15.0;
+        // v2.4.35: removed wipe-guard activation. The runtime guard hooks
+        // (sqlite3 + NSFileManager) interfered with Zalo's legitimate
+        // session-write ops and caused swipe-kill + reopen to revert to
+        // login screen. User requested baseline restore behavior: copy
+        // data + apply keychain dump, no further runtime interference.
 
         // Consume the flag.
         //   - Legacy tmp/ flag: tweak can delete (same sandbox).
@@ -785,150 +768,6 @@ BOOL jbHideActive(void) {
     id h = getConfig(@"hideJailbreak");
     if (h == nil) return NO;
     return [h boolValue];
-}
-
-// ============================================================
-// RESTORE GUARD — block target app from wiping its own data within
-// 90s of an RRS restore (see %hook NSFileManager removeItemAtPath:).
-// ============================================================
-// Restore guard window. Active for 90s after ci_restoreKeychainIfFlagged
-// completes a successful restore in THIS process. Set via process-local
-// timer (g_restoreGuardActiveUntil) — NOT via last_restore.marker mtime,
-// because that marker's mtime is intentionally set to flagMtime (which
-// may be stale, e.g. from a tar archive). Conflating those two purposes
-// caused v2.4.24's UI Restore to fail: tweak DID restore 29 keychain
-// entries OK, but ci_isInRestoreGuard saw old marker mtime → returned
-// NO → sqlite3/NSFileManager hooks didn't fire → Zalo wiped chat_dbs +
-// profile.sqlite rows on launch despite a successful keychain restore.
-// (g_restoreGuardActiveUntil is defined near top of file alongside g_ci_skipKeychainHook
-//  so ci_restoreKeychainIfFlagged earlier in the file can write to it.)
-
-static double g_guardLastCheck = 0;
-static BOOL g_guardLastResult = NO;
-
-BOOL ci_isInRestoreGuard(void) {
-    double now = CFAbsoluteTimeGetCurrent();
-    if (now - g_guardLastCheck < 1.0) return g_guardLastResult;
-    g_guardLastCheck = now;
-    g_guardLastResult = (g_restoreGuardActiveUntil > now);
-    return g_guardLastResult;
-}
-
-// Returns YES if the path is one we want to protect during the guard
-// window. Pure C strstr (no NSString allocation) — called from hot
-// paths inside NSFileManager hooks.
-BOOL ci_isCriticalRestorePath(const char *cpath) {
-    if (!cpath) return NO;
-    if (strstr(cpath, "/Documents/chat_dbs/")) return YES;
-    if (strstr(cpath, "/Documents/profile.sqlite")) return YES;
-    if (strstr(cpath, "/Documents/chat.sqlite")) return YES;
-    if (strstr(cpath, "/Documents/contact.sqlite")) return YES;
-    if (strstr(cpath, "/Documents/inbox.sqlite")) return YES;
-    if (strstr(cpath, "/Documents/setting.sqlite")) return YES;
-    if (strstr(cpath, "/Documents/KVChat/")) return YES;
-    if (strstr(cpath, "/Documents/KVCore/")) return YES;
-    if (strstr(cpath, "/Documents/Data/")) return YES;
-    if (strstr(cpath, "/Documents/CloudUserKVs/")) return YES;
-    return NO;
-}
-
-// sqlite3_exec / sqlite3_prepare_v2 hooks — block DELETE FROM and
-// DROP TABLE statements during the guard window when the target db
-// is one of the critical Zalo sqlites. Forward all other queries.
-typedef int (*ci_sqlite3_exec_t)(void *db, const char *sql,
-                                  int (*cb)(void *, int, char **, char **),
-                                  void *cb_arg, char **errmsg);
-typedef int (*ci_sqlite3_prepare_v2_t)(void *db, const char *sql, int nBytes,
-                                       void **ppStmt, const char **pzTail);
-typedef const char *(*ci_sqlite3_db_filename_t)(void *db, const char *name);
-
-static ci_sqlite3_exec_t          orig_sqlite3_exec = NULL;
-static ci_sqlite3_prepare_v2_t    orig_sqlite3_prepare_v2 = NULL;
-static ci_sqlite3_db_filename_t   ptr_sqlite3_db_filename = NULL;
-
-static BOOL ci_isWipeSql(const char *sql) {
-    if (!sql) return NO;
-    // Match leading "DELETE FROM" / "DROP TABLE" — Zalo's wipe pattern.
-    // We don't block parameterized DELETE WHERE id=? (those have args after
-    // FROM TableName). Block the bulk pattern: DELETE FROM <Table> with no
-    // WHERE clause, OR DELETE FROM <Table>; (trailing semicolon).
-    const char *p = sql;
-    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-    if (strncasecmp(p, "DELETE FROM", 11) == 0) {
-        // Check if there's a WHERE clause — block if NOT.
-        const char *where = strcasestr(p, " WHERE ");
-        if (!where) return YES;       // unconditional DELETE — block
-        return NO;
-    }
-    if (strncasecmp(p, "DROP TABLE", 10) == 0) return YES;
-    if (strncasecmp(p, "TRUNCATE", 8) == 0) return YES;
-    return NO;
-}
-
-static BOOL ci_isCriticalDB(void *db) {
-    if (!db || !ptr_sqlite3_db_filename) return NO;
-    const char *filename = ptr_sqlite3_db_filename(db, "main");
-    if (!filename) return NO;
-    return ci_isCriticalRestorePath(filename);
-}
-
-static int hooked_sqlite3_exec(void *db, const char *sql,
-                                int (*cb)(void *, int, char **, char **),
-                                void *cb_arg, char **errmsg) {
-    if (ci_isInRestoreGuard() && ci_isCriticalDB(db) && ci_isWipeSql(sql)) {
-        NSLog(@"[ChangeInfoIos] BLOCK sqlite3_exec: %s",
-              sql ? sql : "(null)");
-        if (errmsg) *errmsg = NULL;
-        return 0;  // SQLITE_OK — pretend success
-    }
-    return orig_sqlite3_exec(db, sql, cb, cb_arg, errmsg);
-}
-
-static int hooked_sqlite3_prepare_v2(void *db, const char *sql, int nBytes,
-                                      void **ppStmt, const char **pzTail) {
-    if (ci_isInRestoreGuard() && ci_isCriticalDB(db) && ci_isWipeSql(sql)) {
-        NSLog(@"[ChangeInfoIos] BLOCK sqlite3_prepare_v2: %s",
-              sql ? sql : "(null)");
-        // Return a "no-op" successful prepare: SQLITE_OK with NULL stmt.
-        // Zalo will then call sqlite3_step → SQLITE_DONE (no-op).
-        // Actually we can't return SQLITE_OK with NULL stmt safely — apps
-        // expect a valid stmt. Forward to a harmless query instead.
-        const char *noop = "SELECT 1 WHERE 0";
-        return orig_sqlite3_prepare_v2(db, noop, (int)strlen(noop), ppStmt, pzTail);
-    }
-    return orig_sqlite3_prepare_v2(db, sql, nBytes, ppStmt, pzTail);
-}
-
-// Wire the sqlite3 hooks via fishhook at %ctor time. Called once
-// after dyld loads our dylib and the sqlite3 dylib resolves.
-static void ci_installRestoreGuardSqliteHooks(void) {
-    // Resolve sqlite3_db_filename via dlsym; it's a static lookup we use
-    // inside the hook to query the connection's db file path.
-    void *sqliteH = dlopen("/usr/lib/libsqlite3.dylib", RTLD_NOW);
-    if (!sqliteH) {
-        NSLog(@"[ChangeInfoIos] restore-guard: libsqlite3.dylib not openable");
-        return;
-    }
-    ptr_sqlite3_db_filename = (ci_sqlite3_db_filename_t)
-        dlsym(sqliteH, "sqlite3_db_filename");
-    if (!ptr_sqlite3_db_filename) {
-        NSLog(@"[ChangeInfoIos] restore-guard: sqlite3_db_filename not found");
-        return;
-    }
-
-    static struct rebinding rebs[2];
-    rebs[0] = (struct rebinding){
-        "sqlite3_exec",
-        (void *)hooked_sqlite3_exec,
-        (void **)&orig_sqlite3_exec
-    };
-    rebs[1] = (struct rebinding){
-        "sqlite3_prepare_v2",
-        (void *)hooked_sqlite3_prepare_v2,
-        (void **)&orig_sqlite3_prepare_v2
-    };
-    int rc = rebind_symbols(rebs, 2);
-    NSLog(@"[ChangeInfoIos] restore-guard: sqlite3 hooks installed (rc=%d)", rc);
 }
 
 // ============================================================
@@ -1844,40 +1683,8 @@ static CLLocation *buildFakeLocation(void) {
     return %orig;
 }
 
-// RESTORE GUARD — block target app from wiping its own data within
-// 90s of an RRS restore. Zalo (and similar multi-account apps) detect
-// "session inconsistency" on cold launch and wipe profile.sqlite +
-// chat_dbs/<UID>/ even with all keychain patches applied. Confirmed
-// 2026-05-20: airplane-mode cold launch STILL wipes → wipe is pure
-// local code, not network-driven.
-//
-// Mechanism: Zalo's wipe runs SQL `DELETE FROM <Table>` on profile.sqlite
-// + chat.sqlite + 40 other tables, then NSFileManager removeItemAtPath:
-// on chat_dbs/<UID>/. Within the guard window (mtime of last_restore.marker
-// in Library/Caches/ChangeInfoIos/ < 90s ago), we intercept BOTH:
-//   - NSFileManager removeItemAtPath: hitting Documents/chat_dbs/ paths
-//   - sqlite3_exec / sqlite3_prepare_v2 with "DELETE FROM" or "DROP TABLE"
-//     against profile.sqlite / chat.sqlite / chat_dbs/*.db connections
-//
-// After 90s, normal Zalo operations (delete a chat, etc.) work unaffected.
-- (BOOL)removeItemAtPath:(NSString *)path error:(NSError **)error {
-    if (ci_isInRestoreGuard() && ci_isCriticalRestorePath(path.UTF8String)) {
-        NSLog(@"[ChangeInfoIos] BLOCK removeItemAtPath: %@", path);
-        if (error) *error = nil;
-        return YES;
-    }
-    return %orig;
-}
-
-- (BOOL)removeItemAtURL:(NSURL *)URL error:(NSError **)error {
-    NSString *path = URL.path;
-    if (ci_isInRestoreGuard() && ci_isCriticalRestorePath(path.UTF8String)) {
-        NSLog(@"[ChangeInfoIos] BLOCK removeItemAtURL: %@", path);
-        if (error) *error = nil;
-        return YES;
-    }
-    return %orig;
-}
+// v2.4.35: removed NSFileManager removeItemAtPath: / removeItemAtURL:
+// hooks. Were interfering with Zalo's legitimate session-write paths.
 
 %end
 
@@ -3734,12 +3541,8 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
             ci_dumpKeychain();
         }
 
-        // Install sqlite3 hooks (fishhook) — protects profile.sqlite etc.
-        // from being wiped during the 90s post-restore guard window.
-        // Even when keychain restore didn't run this launch, the hooks
-        // stay armed — ci_isInRestoreGuard reads the marker mtime each
-        // call, so the hook self-disables once the window expires.
-        ci_installRestoreGuardSqliteHooks();
+        // v2.4.35: removed sqlite3 fishhook installation (was blocking
+        // Zalo's session-write paths and breaking swipe-kill resume).
 
         // EMERGENCY KILL-SWITCH: MG install hardcoded OFF until we
         // diagnose the trampoline / libMobileGestalt iOS 16.7 interaction
