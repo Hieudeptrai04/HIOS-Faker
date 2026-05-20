@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.29";
+static NSString *const kAppVersion = @"2.4.30";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6324,11 +6324,33 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // here keeps restore working and surfaces the failure to the log.
             @try {
                 rlog(@"[patch] entered dump-patch block");
-                NSData *dumpData = [NSData dataWithContentsOfFile:dumpPath];
+                // CROSS-SANDBOX READ (v2.4.30): NSData dataWithContentsOfFile
+                // returns nil when host (sandboxed) reads another app's
+                // container — same sandbox MAC that broke
+                // ci_findDataContainerForBundle (Bug 9). attributesOfItemAtPath
+                // returns size OK (probably uses lstat) but open(2) is blocked.
+                // Workaround: shell-cp the dump to /tmp first (posix_spawn
+                // bypass), then NSData read from /tmp. Confirmed live
+                // 2026-05-20 v2.4.29 exception: "data parameter is nil" because
+                // dumpData was nil → NSPropertyListSerialization threw →
+                // @try caught → mkdir + nuke + writeback all skipped → Zalo
+                // launch with stale kCryptKeyData<OTHER_UID> → wipe.
+                NSString *readTmp = [NSString stringWithFormat:@"/tmp/ci_dump_read_%@.plist", bid];
+                NSString *readSafe = [readTmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *dumpSafeIn = [dumpPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *readCmd = [NSString stringWithFormat:@"cp '%@' '%@' && chmod 0644 '%@'",
+                                     dumpSafeIn, readSafe, readSafe];
+                ci_run([readCmd UTF8String]);
+                NSData *dumpData = [NSData dataWithContentsOfFile:readTmp];
+                rlog([NSString stringWithFormat:@"[patch] read via /tmp: %llu bytes",
+                      (unsigned long long)dumpData.length]);
                 NSError *parseErr = nil;
-                id parsed = [NSPropertyListSerialization propertyListWithData:dumpData
-                                                                     options:NSPropertyListMutableContainersAndLeaves
-                                                                      format:NULL error:&parseErr];
+                id parsed = nil;
+                if (dumpData.length > 0) {
+                    parsed = [NSPropertyListSerialization propertyListWithData:dumpData
+                                                                       options:NSPropertyListMutableContainersAndLeaves
+                                                                        format:NULL error:&parseErr];
+                }
                 if ([parsed isKindOfClass:[NSArray class]]) {
                     NSMutableArray *entries = (NSMutableArray *)parsed;
                     NSMutableDictionary *(^findEntry)(NSString *) = ^(NSString *acct){
@@ -6486,6 +6508,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                         }
                     }
                 }
+                // Clean up the shell-cp'd read temp.
+                [fm removeItemAtPath:readTmp error:nil];
             } @catch (NSException *ex) {
                 rlog([NSString stringWithFormat:@"[patch] EXCEPTION %@: %@", ex.name, ex.reason]);
                 NSLog(@"[ChangeInfoIos] restore: dump-patch threw %@: %@\n%@",
