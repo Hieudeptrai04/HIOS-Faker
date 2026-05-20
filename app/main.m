@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.25";
+static NSString *const kAppVersion = @"2.4.26";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5883,6 +5883,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore..."];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Forensic log — appended to /var/jb/etc/changeinfoios/restoreEntry.log
+        // so SSH can read it even after respring kills the host process.
+        // Each restoreEntry invocation appends a new block prefixed with
+        // a timestamp + tar path. NSLog goes nowhere on Dopamine (no syslogd)
+        // so this is the only way to see what step 3/5 actually did.
+        NSString *logPath = @"/var/jb/etc/changeinfoios/restoreEntry.log";
+        NSDateFormatter *df = [NSDateFormatter new];
+        df.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+        __block void (^rlog)(NSString *) = ^(NSString *line) {
+            NSString *full = [NSString stringWithFormat:@"%@ %@\n",
+                              [df stringFromDate:[NSDate date]], line];
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:logPath];
+            if (!fh) { [full writeToFile:logPath atomically:NO encoding:NSUTF8StringEncoding error:nil]; }
+            else { [fh seekToEndOfFile]; [fh writeData:[full dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
+        };
+        rlog([NSString stringWithFormat:@"===== restoreEntry START bundleIDs=%@ tar=%@ size=%llu =====",
+              e.bundleIDs, tar, tarSize]);
+
         // ---- Step 1: Kill running instances of every target ----
         [self updateHUD:hud step:1 total:5
                   title:@"Tắt apps đang chạy"
@@ -5915,10 +5933,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@%@",
               untarRc, tar, tmp,
               untarErrText.length ? [@"\nstderr: " stringByAppendingString:untarErrText] : @"");
+        rlog([NSString stringWithFormat:@"[step2] untar rc=%d stderr=%@", untarRc, untarErrText ?: @""]);
 
         // Sanity check — list what actually landed in /tmp.
         NSArray *tmpEntries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmp error:nil];
         NSLog(@"[ChangeInfoIos] restore: /tmp dir entries after untar = %@", tmpEntries);
+        rlog([NSString stringWithFormat:@"[step2] /tmp entries=%@", tmpEntries]);
 
         [NSThread sleepForTimeInterval:1.5]; // let user see "đang giải nén" before step 3 takes over
 
@@ -5942,6 +5962,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         NSLog(@"[ChangeInfoIos] restore: bkRoot=%@ has %lu archived containers",
               bkRoot, (unsigned long)bkUUIDs.count);
+        rlog([NSString stringWithFormat:@"[step3] bkRoot=%@ uuids.count=%lu", bkRoot, (unsigned long)bkUUIDs.count]);
 
         NSUInteger restoredApps = 0;
         NSUInteger filesCopied = 0;
@@ -5968,14 +5989,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             if (!matchedBid) {
                 NSLog(@"[ChangeInfoIos] restore: archived UUID %@ doesn't match any backed-up bid", uuid);
+                rlog([NSString stringWithFormat:@"[step3] uuid=%@ NO MATCH against bundleIDs=%@", uuid, e.bundleIDs]);
                 continue;
             }
 
             NSString *curContainer = ci_findDataContainerForBundle(matchedBid);
             if (curContainer.length == 0) {
                 NSLog(@"[ChangeInfoIos] restore: NO live container for %@ — app may need to be launched once first", matchedBid);
+                rlog([NSString stringWithFormat:@"[step3] matchedBid=%@ but NO LIVE CONTAINER", matchedBid]);
                 continue;
             }
+            rlog([NSString stringWithFormat:@"[step3] uuid=%@ matchedBid=%@ container=%@", uuid, matchedBid, curContainer]);
 
             [self updateHUD:hud step:3 total:5
                       title:@"Khôi phục dữ liệu app"
@@ -6023,6 +6047,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     NSLog(@"[ChangeInfoIos] restore: cp rc=%d %@/%@%@", rc, matchedBid, sub,
                           errText.length ? [@"\n  stderr: " stringByAppendingString:errText] : @"");
                 }
+                rlog([NSString stringWithFormat:@"[step3] cp %@/%@ rc=%d files=%lu bytes=%llu err=%@",
+                      matchedBid, sub, rc, (unsigned long)appFiles, appBytes,
+                      errText.length ? errText : @"-"]);
             }
             NSLog(@"[ChangeInfoIos] restore: %@ → %lu files, %@",
                   matchedBid, (unsigned long)appFiles, CIBytesString(appBytes));
@@ -6120,14 +6147,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // (worse: it would also wipe the bundle's existing keychain via
         // ci_restoreKeychainIfFlagged's pre-restore SecItemDelete, so
         // bundles with NO snapshot become MORE damaged than untouched).
+        rlog([NSString stringWithFormat:@"[step5] start, e.bundleIDs.count=%lu", (unsigned long)e.bundleIDs.count]);
         NSUInteger flagsDropped = 0;
         NSMutableArray<NSString *> *noDumpBundles = [NSMutableArray array];
         for (NSString *bid in e.bundleIDs) {
             NSString *container = ci_findDataContainerForBundle(bid);
             if (container.length == 0) {
                 NSLog(@"[ChangeInfoIos] restore: cannot locate container for %@ — flag NOT dropped", bid);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ NO CONTAINER", bid]);
                 continue;
             }
+            rlog([NSString stringWithFormat:@"[step5] bid=%@ container=%@", bid, container]);
             NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
             NSString *dumpPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
 
@@ -6206,8 +6236,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (dumpSz == 0) {
                 [noDumpBundles addObject:bid];
                 NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ (and no tar fallback) — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ NO DUMP (even after fallback) — flag SKIPPED", bid]);
                 continue;
             }
+            rlog([NSString stringWithFormat:@"[step5] bid=%@ dumpPath=%@ dumpSz=%llu", bid, dumpPath, dumpSz]);
 
             // CRITICAL: sync kSessionUid in the keychain dump to a UID
             // that actually has data in this container's Documents.
@@ -6470,13 +6502,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                       bid,
                       [sDumpAttrs[NSFileSize] unsignedLongLongValue],
                       dumpSz);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ DROP OK sharedFlagSz=%llu sharedDumpSz=%llu",
+                      bid,
+                      [sFlagAttrs[NSFileSize] unsignedLongLongValue],
+                      [sDumpAttrs[NSFileSize] unsignedLongLongValue]]);
             } else {
                 NSLog(@"[ChangeInfoIos] restore: drop FAILED for %@ (rc=%d, sFlagSz=%llu, sDumpSz=%llu)",
                       bid, rc,
                       [sFlagAttrs[NSFileSize] unsignedLongLongValue],
                       [sDumpAttrs[NSFileSize] unsignedLongLongValue]);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ DROP FAILED rc=%d sFlagSz=%llu sDumpSz=%llu cmd=%@",
+                      bid, rc,
+                      [sFlagAttrs[NSFileSize] unsignedLongLongValue],
+                      [sDumpAttrs[NSFileSize] unsignedLongLongValue],
+                      cmd]);
             }
         }
+        rlog([NSString stringWithFormat:@"===== restoreEntry END flagsDropped=%lu restoredApps=%lu noDumpBundles=%@ =====",
+              (unsigned long)flagsDropped, (unsigned long)restoredApps, noDumpBundles]);
         NSLog(@"[ChangeInfoIos] restore: dropped keychain-restore flags for %lu/%lu bundles%@",
               (unsigned long)flagsDropped, (unsigned long)e.bundleIDs.count,
               noDumpBundles.count ? [NSString stringWithFormat:@" (no-dump: %@)", noDumpBundles] : @"");
