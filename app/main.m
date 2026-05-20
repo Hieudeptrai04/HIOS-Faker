@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.28";
+static NSString *const kAppVersion = @"2.4.29";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6317,7 +6317,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // dump → Zalo wiped on launch. Confirmed live 2026-05-20: dump had
             // kCryptKeyData457384682 (Hà An) + kCryptKeyData457769976 (new
             // acc), restore replayed both, Zalo wiped.
-            {
+            // v2.4.28 → v2.4.29: wrapped in @try because v2.4.28 hit
+            // -[NSURL lastPathComponent] ObjC exception in the user-initiated
+            // dispatch queue (SIGABRT via std::terminate), crashing the host
+            // mid-restore. Couldn't identify the line without dSYM; catching
+            // here keeps restore working and surfaces the failure to the log.
+            @try {
+                rlog(@"[patch] entered dump-patch block");
                 NSData *dumpData = [NSData dataWithContentsOfFile:dumpPath];
                 NSError *parseErr = nil;
                 id parsed = [NSPropertyListSerialization propertyListWithData:dumpData
@@ -6475,9 +6481,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                             [fm removeItemAtPath:patchedTmp error:nil];
                             NSLog(@"[ChangeInfoIos] restore: patched %@ dump (targetUID=%@ tripletPatched=%d nukedCryptKeys=%lu candidates=%@)",
                                   bid, targetUID, needTripletPatch, (unsigned long)nuked, uidCandidates);
+                            rlog([NSString stringWithFormat:@"[patch] wrote patched dump (triplet=%d nuked=%lu)",
+                                  needTripletPatch, (unsigned long)nuked]);
                         }
                     }
                 }
+            } @catch (NSException *ex) {
+                rlog([NSString stringWithFormat:@"[patch] EXCEPTION %@: %@", ex.name, ex.reason]);
+                NSLog(@"[ChangeInfoIos] restore: dump-patch threw %@: %@\n%@",
+                      ex.name, ex.reason, ex.callStackSymbols);
             }
 
             // Drop the restore flag via shell instead of NSFileManager.
