@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.40";
+static NSString *const kAppVersion = @"2.4.41";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3212,16 +3212,27 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     CIRRSEntry *e = _view[ip.row];
 
-    // Single card spanning the cell width with structured rows inside —
-    // no more two-card split that was getting clipped on narrow layouts.
+    // v2.4.41: cell.contentView width is reliable even when tv.bounds is
+    // 0 on the first cellForRow pass (was causing right-edge content
+    // truncation — date/IDFA/"chạm để res" appeared cut off). Pull margin
+    // off contentView and clamp to a minimum so children never get
+    // negative-x positions.
     CGFloat margin = 12;
-    CGFloat W = tv.bounds.size.width;
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(margin, 4, W - margin*2, 108)];
+    CGFloat cellW = c.contentView.bounds.size.width;
+    if (cellW <= margin * 2) cellW = tv.bounds.size.width;
+    if (cellW <= margin * 2) cellW = [UIScreen mainScreen].bounds.size.width;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(margin, 4, cellW - margin*2, 108)];
     card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     card.backgroundColor = [CITheme card];
     card.layer.cornerRadius = 12;
     card.layer.borderWidth = 1;
     card.layer.borderColor = [[CITheme blue] colorWithAlphaComponent:0.4].CGColor;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOpacity = 0.06;
+    card.layer.shadowOffset = CGSizeMake(0, 2);
+    card.layer.shadowRadius = 6;
+    c.contentView.clipsToBounds = NO;
+    c.clipsToBounds = NO;
     [c.contentView addSubview:card];
 
     // Index badge top-left
@@ -4574,6 +4585,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     UILabel     *_bannerLabel;
     UILabel     *_selectedResetLabel;
     UILabel     *_selectedRrsLabel;
+    NSMutableDictionary<NSString *, UILabel *> *_profileLabels;
 }
 
 // v2.4.36: redesigned home layout, AZInfo-style.
@@ -4684,51 +4696,36 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     UIView *profCard = [self _ciNewCard:CGRectMake(P, y, cardW, 360)];
     [sv addSubview:profCard];
 
-    UILabel *profTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 16, cardW-60, 24)];
+    UILabel *profTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 16, cardW-32, 24)];
     profTitle.text = @"Current Fake Profile";
     profTitle.font = [UIFont boldSystemFontOfSize:18];
     profTitle.textColor = [CITheme text];
     [profCard addSubview:profTitle];
 
-    UIButton *refresh = [UIButton buttonWithType:UIButtonTypeSystem];
-    refresh.frame = CGRectMake(cardW-44, 12, 32, 32);
-    if (@available(iOS 13.0, *)) {
-        [refresh setImage:[UIImage systemImageNamed:@"arrow.clockwise"] forState:UIControlStateNormal];
-    }
-    refresh.tintColor = [CITheme blue];
-    [refresh addTarget:self action:@selector(openFake) forControlEvents:UIControlEventTouchUpInside];
-    [profCard addSubview:refresh];
-
-    CIConfigManager *cm = [CIConfigManager shared];
-    NSArray *fields = @[
-        @[@"Model",    [self _fakeModelText:cm]],
-        @[@"iOS",      [self _fakeIOSText:cm]],
-        @[@"Color",    [cm stringForKey:@"DeviceColor"]      ?: @"—"],
-        @[@"Storage",  [self _fakeStorageText:cm]],
-        @[@"Region",   [cm stringForKey:@"RegionInfo"]       ?: @"—"],
-        @[@"Locale",   [cm stringForKey:@"localeIdentifier"] ?: @"—"],
-        @[@"Timezone", [cm stringForKey:@"timezoneName"]     ?: @"—"],
-        @[@"Carrier",  [self _fakeCarrierText:cm]],
-    ];
+    // Field labels — instance refs so viewWillAppear can refresh them.
+    _profileLabels = [NSMutableDictionary dictionary];
+    NSArray *keys = @[@"Model", @"iOS", @"Color", @"Storage", @"Region",
+                      @"Locale", @"Timezone", @"Carrier"];
     CGFloat rowY = 56;
-    for (NSArray *kv in fields) {
+    for (NSString *key in keys) {
         UILabel *k = [[UILabel alloc] initWithFrame:CGRectMake(16, rowY, 100, 22)];
-        k.text = kv[0];
+        k.text = key;
         k.font = [UIFont systemFontOfSize:15];
         k.textColor = [CITheme dim];
         [profCard addSubview:k];
 
         UILabel *v = [[UILabel alloc] initWithFrame:CGRectMake(120, rowY, cardW-136, 22)];
-        v.text = kv[1];
         v.font = [UIFont systemFontOfSize:15];
         v.textColor = [CITheme text];
         v.textAlignment = NSTextAlignmentRight;
         v.adjustsFontSizeToFitWidth = YES;
         v.minimumScaleFactor = 0.7;
         [profCard addSubview:v];
+        _profileLabels[key] = v;
 
         rowY += 32;
     }
+    [self refreshFakeProfile];
     y += 376;
 
     // ---- Secondary actions (kept compact) ----
@@ -5025,7 +5022,28 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     _selectedRrsLabel.text   = s ? [NSString stringWithFormat:@"đã chọn %lu app", (unsigned long)s] : @"";
 }
 
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self refreshSelectionLabels]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refreshSelectionLabels];
+    [self refreshFakeProfile];
+}
+
+// Re-reads CIConfigManager and updates the Current Fake Profile labels.
+// Called from viewDidLoad and viewWillAppear so the Home tab always
+// reflects whatever the user just set in the Settings tab — no need
+// to exit and re-enter the app.
+- (void)refreshFakeProfile {
+    if (!_profileLabels) return;
+    CIConfigManager *cm = [CIConfigManager shared];
+    _profileLabels[@"Model"]   .text = [self _fakeModelText:cm];
+    _profileLabels[@"iOS"]     .text = [self _fakeIOSText:cm];
+    _profileLabels[@"Color"]   .text = [cm stringForKey:@"DeviceColor"]      ?: @"—";
+    _profileLabels[@"Storage"] .text = [self _fakeStorageText:cm];
+    _profileLabels[@"Region"]  .text = [cm stringForKey:@"RegionInfo"]       ?: @"—";
+    _profileLabels[@"Locale"]  .text = [cm stringForKey:@"localeIdentifier"] ?: @"—";
+    _profileLabels[@"Timezone"].text = [cm stringForKey:@"timezoneName"]     ?: @"—";
+    _profileLabels[@"Carrier"] .text = [self _fakeCarrierText:cm];
+}
 
 // ----- actions -----
 - (void)textFieldDidEndEditing:(UITextField *)tf {
