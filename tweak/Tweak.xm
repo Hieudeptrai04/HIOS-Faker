@@ -2183,44 +2183,11 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 // ============================================================
 // BONUS: ZALO-SPECIFIC DEEP HOOKS
-// v2.4.43: WKWebView UA spoofing restored via runtime swizzle
-// (no compile-time WebKit linkage). Only User-Agent getter/setter
-// for now — JS injection (canvas/WebGL spoof) needs WKUserScript
-// + WKUserContentController which add more compile-time linkage
-// risk. UA alone covers the most common server-side fingerprint.
-typedef NSString *(*ci_imp_NSString_t)(id, SEL);
-typedef void (*ci_imp_void_NSString_t)(id, SEL, NSString *);
-static ci_imp_NSString_t       orig_WKWebView_customUA    = NULL;
-static ci_imp_void_NSString_t  orig_WKWebView_setCustomUA = NULL;
-
-static NSString *ci_WKWebView_customUA(id self, SEL _cmd) {
-    if (!fakeLayer(@"browser")) return orig_WKWebView_customUA(self, _cmd);
-    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
-    if (ua.length) return ua;
-    return orig_WKWebView_customUA(self, _cmd);
-}
-
-static void ci_WKWebView_setCustomUA(id self, SEL _cmd, NSString *ua) {
-    if (!fakeLayer(@"browser")) { orig_WKWebView_setCustomUA(self, _cmd, ua); return; }
-    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-    orig_WKWebView_setCustomUA(self, _cmd, fakeUA.length ? fakeUA : ua);
-}
-
-static void ci_installWKWebViewHooks(void) {
-    Class wk = objc_getClass("WKWebView");
-    if (!wk) return;
-    Method setUAM = class_getInstanceMethod(wk, @selector(setCustomUserAgent:));
-    if (setUAM) {
-        orig_WKWebView_setCustomUA = (ci_imp_void_NSString_t)method_getImplementation(setUAM);
-        method_setImplementation(setUAM, (IMP)ci_WKWebView_setCustomUA);
-    }
-    Method uaM = class_getInstanceMethod(wk, @selector(customUserAgent));
-    if (uaM) {
-        orig_WKWebView_customUA = (ci_imp_NSString_t)method_getImplementation(uaM);
-        method_setImplementation(uaM, (IMP)ci_WKWebView_customUA);
-    }
-    NSLog(@"[ChangeInfoIos] WKWebView UA hooks installed");
-}
+// (WKWebView swizzle lives further down — ci_installWKWebViewHooks
+// at line ~2918 already covers initWithFrame:configuration: + customUA
+// getter/setter via runtime objc_getClass + ci_swizzleInstance, no
+// compile-time WebKit linkage. Just need to make sure it's called
+// from %ctor — see ci_installWKWebViewHooks call near the bottom.)
 
 #if 0
 %hook WKWebView
@@ -3077,9 +3044,8 @@ static void ci_installAttestHooks(void) {
                                (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
             NSLog(@"[ChangeInfoIos] LAContext hooked");
         }
-        // v2.4.43: WKWebView swizzle for Safari + embedded webview
-        // fingerprint bypass (canvas / WebGL / navigator props / UA).
-        ci_installWKWebViewHooks();
+        // v2.4.43: ci_installWKWebViewHooks() is already invoked by the
+        // main %ctor (line ~3683) — don't double-swizzle here.
     }
 }
 
