@@ -3230,6 +3230,31 @@ static void ci_WK_setCustomUA(id self, SEL _cmd, NSString *ua) {
     ((ci_wkUAset_t)orig_WK_setCustomUA)(self, _cmd, fake.length ? fake : ua);
 }
 
+// v2.4.57: WKWebView.loadRequest: rewrites every NSURLRequest before WebKit
+// sends it. Adds User-Agent header so the HTTP request line carries our
+// spoofed UA even when Safari's internal UA generation is used. The
+// existing -[NSMutableURLRequest setValue:forHTTPHeaderField:] hook only
+// fires when the app constructs a mutable request; Safari typically loads
+// immutable NSURLRequest objects so that hook misses.
+typedef id (*ci_wkLoadReq_t)(id, SEL, id);
+static IMP orig_WK_loadRequest = NULL;
+static id ci_WK_loadRequest(id self, SEL _cmd, NSURLRequest *request) {
+    if (!fakeLayer(@"browser") || !request) {
+        return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, request);
+    }
+    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
+    if (fakeUA.length) {
+        NSMutableURLRequest *mreq = [request mutableCopy];
+        if (mreq) {
+            // Skip our own NSMutableURLRequest hook (which would re-rewrite)
+            // — just call the underlying setter on the freshly created mutable.
+            [mreq setValue:fakeUA forHTTPHeaderField:@"User-Agent"];
+            return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, mreq);
+        }
+    }
+    return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, request);
+}
+
 static void ci_installWKWebViewHooks(void) {
     @autoreleasepool {
         Class wk = objc_getClass("WKWebView");
@@ -3240,7 +3265,9 @@ static void ci_installWKWebViewHooks(void) {
                            (IMP)ci_WK_getCustomUA, &orig_WK_getCustomUA);
         ci_swizzleInstance("WKWebView", @selector(setCustomUserAgent:),
                            (IMP)ci_WK_setCustomUA, &orig_WK_setCustomUA);
-        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA + JS fingerprint inject)");
+        ci_swizzleInstance("WKWebView", @selector(loadRequest:),
+                           (IMP)ci_WK_loadRequest, &orig_WK_loadRequest);
+        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA + loadRequest + JS fingerprint inject)");
     }
 }
 

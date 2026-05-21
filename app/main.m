@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.56";
+static NSString *const kAppVersion = @"2.4.57";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1315,11 +1315,18 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
     // WKWebView UA string — Apple's actual format. Build version uses
-    // underscores not dots ("18_5" not "18.5").
+    // underscores not dots ("18_5" not "18.5"). Real Safari UA includes
+    // "Version/X.Y" between "Gecko)" and "Mobile/" — without it, the UA
+    // signature is recognisably not-from-Safari and gets fingerprinted as
+    // a bot. iOS version "17.5.1" → "iPhone OS 17_5_1" + "Version/17.5".
     NSString *uaIOSVer = [iosPreset[1] stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSArray *iosParts = [iosPreset[1] componentsSeparatedByString:@"."];
+    NSString *safariVer = iosParts.count >= 2
+        ? [NSString stringWithFormat:@"%@.%@", iosParts[0], iosParts[1]]
+        : [NSString stringWithFormat:@"%@.0", iosParts.count ? iosParts[0] : @"17"];
     NSString *fakeUA = [NSString stringWithFormat:
-        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1",
-        uaIOSVer];
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/%@ Mobile/15E148 Safari/604.1",
+        uaIOSVer, safariVer];
     [cm setObject:fakeUA forKey:@"zalo_fakeWebViewUA"];
 
     // Ensure all fake layers on
