@@ -127,6 +127,20 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
     else if (strcmp(name, "kern.osproductversion") == 0 ||
              strcmp(name, "kern.osproductversionextra") == 0) { configKeyC = "systemVersion"; isOsVersion = YES; }
 
+    // v2.4.60 DIAGNOSTIC — write a marker every time osproductversion is
+    // queried. Lets us verify the hook is being entered. Remove after
+    // confirming. Path is world-writable /var/jb/tmp which any process
+    // can append to.
+    if (strcmp(name, "kern.osproductversion") == 0) {
+        FILE *mf = fopen("/var/jb/tmp/ci_osprod_hit.log", "a");
+        if (mf) {
+            NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
+            fprintf(mf, "[%ld] %s configKeyC=%s configLoaded=%d\n",
+                    (long)time(NULL), [bid UTF8String], configKeyC ?: "NULL", configLoaded);
+            fclose(mf);
+        }
+    }
+
     if (configKeyC) {
         BOOL useStr = isOsVersion ? fakeLayer(@"sysosversion") : fakeLayer(@"sysctl");
         if (useStr) {
