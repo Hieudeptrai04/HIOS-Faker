@@ -2567,69 +2567,16 @@ static NSDictionary *ci_buildProxyDictForTweak(void) {
     return cfg;
 }
 
-- (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
-    if (!fakeLayer(@"browser") || !headers) { %orig(headers); return; }
-    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-    if (!fakeUA.length) { %orig(headers); return; }
-    NSMutableDictionary *patched = [headers mutableCopy];
-    // Replace any case-variant of User-Agent with our fake.
-    for (NSString *k in [headers allKeys]) {
-        if ([k isKindOfClass:[NSString class]] &&
-            [k.lowercaseString isEqualToString:@"user-agent"]) {
-            [patched removeObjectForKey:k];
-        }
-    }
-    patched[@"User-Agent"] = fakeUA;
-    %orig([patched copy]);
-}
+// v2.4.63 REMOVED setHTTPAdditionalHeaders UA rewrite — was mutating
+// what app's URLSession sends. Apps' own UA (e.g., "Zalo/26.04.02") is
+// what they intend; don't touch it.
 
 %end
 
-%hook NSMutableURLRequest
-
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if (!fakeLayer(@"browser")) {
-        %orig(value, field);
-        return;
-    }
-    if ([field.lowercaseString isEqualToString:@"user-agent"] && value.length > 0) {
-        NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-        if (fakeUA) {
-            %orig(fakeUA, field);
-            return;
-        }
-        NSString *fakeModel = getConfigStr(@"ProductType");
-        if (fakeModel) {
-            NSRegularExpression *regex = [NSRegularExpression
-                regularExpressionWithPattern:@"iPhone\\d+,\\d+"
-                options:0 error:nil];
-            NSString *patched = [regex stringByReplacingMatchesInString:value
-                options:0
-                range:NSMakeRange(0, value.length)
-                withTemplate:fakeModel];
-            %orig(patched, field);
-            return;
-        }
-    }
-    %orig(value, field);
-}
-
-- (void)addValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if (!fakeLayer(@"browser")) {
-        %orig(value, field);
-        return;
-    }
-    if ([field.lowercaseString isEqualToString:@"user-agent"] && value.length > 0) {
-        NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-        if (fakeUA) {
-            %orig(fakeUA, field);
-            return;
-        }
-    }
-    %orig(value, field);
-}
-
-%end
+// v2.4.63 REMOVED NSMutableURLRequest hook — was running on EVERY HTTP
+// header set in target apps (Zalo, FB, etc), rewriting UA + product
+// strings. Caused noticeable lag in chat apps. Per spoof philosophy,
+// don't interfere with app's outgoing requests.
 
 // DISABLED v2.3.23: %hook NSObject on -(NSString*)name installs globally.
 // Even with the MTLDevice protocol guard, wrapping every NSObject.name call
@@ -3190,24 +3137,12 @@ static id ci_WK_init(id self, SEL _cmd, CGRect frame, id configuration) {
             NSLog(@"[ChangeInfoIos] WK init JS inject exception: %@", e);
         }
     }
-    id newWV = ((ci_wkInit_t)orig_WK_init)(self, _cmd, frame, configuration);
-    // v2.4.56: also set customUserAgent on the new WKWebView so HTTP requests
-    // carry the spoofed UA, not just navigator.userAgent. Without this, server
-    // logs see the real iOS Safari UA even though JS reports the fake.
-    if (newWV && fakeLayer(@"browser")) {
-        NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-        if (fakeUA.length) {
-            @try {
-                SEL setUA = @selector(setCustomUserAgent:);
-                if ([newWV respondsToSelector:setUA]) {
-                    ((void (*)(id, SEL, NSString *))objc_msgSend)(newWV, setUA, fakeUA);
-                }
-            } @catch (NSException *e) {
-                NSLog(@"[ChangeInfoIos] setCustomUserAgent exception: %@", e);
-            }
-        }
-    }
-    return newWV;
+    // v2.4.63 REMOVED auto-set customUserAgent on every WKWebView init.
+    // This was forcing apps' WebViews to carry our fake UA even when the
+    // app explicitly didn't want to set a custom UA. Now we only swizzle
+    // the customUserAgent GETTER so that IF the app asks for the UA, it
+    // gets the fake — but we don't auto-rewrite outgoing requests.
+    return ((ci_wkInit_t)orig_WK_init)(self, _cmd, frame, configuration);
 }
 
 typedef NSString *(*ci_wkUAget_t)(id, SEL);
@@ -3230,30 +3165,9 @@ static void ci_WK_setCustomUA(id self, SEL _cmd, NSString *ua) {
     ((ci_wkUAset_t)orig_WK_setCustomUA)(self, _cmd, fake.length ? fake : ua);
 }
 
-// v2.4.57: WKWebView.loadRequest: rewrites every NSURLRequest before WebKit
-// sends it. Adds User-Agent header so the HTTP request line carries our
-// spoofed UA even when Safari's internal UA generation is used. The
-// existing -[NSMutableURLRequest setValue:forHTTPHeaderField:] hook only
-// fires when the app constructs a mutable request; Safari typically loads
-// immutable NSURLRequest objects so that hook misses.
-typedef id (*ci_wkLoadReq_t)(id, SEL, id);
-static IMP orig_WK_loadRequest = NULL;
-static id ci_WK_loadRequest(id self, SEL _cmd, NSURLRequest *request) {
-    if (!fakeLayer(@"browser") || !request) {
-        return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, request);
-    }
-    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-    if (fakeUA.length) {
-        NSMutableURLRequest *mreq = [request mutableCopy];
-        if (mreq) {
-            // Skip our own NSMutableURLRequest hook (which would re-rewrite)
-            // — just call the underlying setter on the freshly created mutable.
-            [mreq setValue:fakeUA forHTTPHeaderField:@"User-Agent"];
-            return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, mreq);
-        }
-    }
-    return ((ci_wkLoadReq_t)orig_WK_loadRequest)(self, _cmd, request);
-}
+// v2.4.63 REMOVED ci_WK_loadRequest — mutating every NSURLRequest the app
+// asks WebKit to load is an app-layer interference. Per user spoof
+// philosophy: change device info, do NOT touch outgoing requests.
 
 static void ci_installWKWebViewHooks(void) {
     @autoreleasepool {
@@ -3265,9 +3179,8 @@ static void ci_installWKWebViewHooks(void) {
                            (IMP)ci_WK_getCustomUA, &orig_WK_getCustomUA);
         ci_swizzleInstance("WKWebView", @selector(setCustomUserAgent:),
                            (IMP)ci_WK_setCustomUA, &orig_WK_setCustomUA);
-        ci_swizzleInstance("WKWebView", @selector(loadRequest:),
-                           (IMP)ci_WK_loadRequest, &orig_WK_loadRequest);
-        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA + loadRequest + JS fingerprint inject)");
+        // v2.4.63 REMOVED loadRequest: swizzle install.
+        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA getter + JS fingerprint inject only)");
     }
 }
 

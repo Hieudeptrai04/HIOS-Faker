@@ -2025,16 +2025,14 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // v2.4.58: CFHTTPMessageSetHeaderFieldValue — universal HTTP header
-    // setter at CFNetwork layer. Every URLSession/CFURLConnection/WebKit
-    // request ultimately calls this to assemble its HTTP request. By
-    // rewriting User-Agent here we catch the Safari main-page navigation
-    // path that bypasses both customUserAgent and WKWebView.loadRequest:.
-    void *cfh_sym = dlsym(RTLD_DEFAULT, "CFHTTPMessageSetHeaderFieldValue");
-    if (cfh_sym && !orig_CFHTTPMessageSetHeaderFieldValue) {
-        MSHookFunction(cfh_sym, (void *)hooked_CFHTTPMessageSetHeaderFieldValue, (void **)&orig_CFHTTPMessageSetHeaderFieldValue);
-        NSLog(@"[ChangeInfoIos] CFHTTPMessageSetHeaderFieldValue hooked");
-    }
+    // v2.4.63 REMOVED CFHTTPMessageSetHeaderFieldValue install — this hook
+    // fired on every header set during every HTTP request in target apps,
+    // causing visible lag in Zalo (chat / scroll / send). The user's
+    // philosophy: spoof at device/OS read layer, do NOT touch app's
+    // outgoing requests. Zalo's own UA "Zalo/X.Y.Z" is what it sends,
+    // not iOS Safari UA — server-side device check uses the device info
+    // Zalo collects via UIDevice/MG/sysctl (which ARE spoofed) not the
+    // HTTP UA header. Network-layer interference was unnecessary.
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
 }
