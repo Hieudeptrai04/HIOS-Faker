@@ -3066,14 +3066,30 @@ static NSString *ci_buildWebFingerprintJS(void) {
 
     if (canvasNoise) {
         NSString *watermark = [NSString stringWithFormat:@"%08x%08x", arc4random(), arc4random()];
+        // v2.4.56: cover toDataURL + toBlob + getImageData. Canvas fingerprint
+        // libs sometimes pick toBlob (async) when toDataURL is overridden, or
+        // fall through getImageData → CRC32. All three need watermark/noise.
         [js appendFormat:@"try{var _tdu=HTMLCanvasElement.prototype.toDataURL;HTMLCanvasElement.prototype.toDataURL=function(){var ctx=this.getContext('2d');if(ctx){ctx.fillStyle='rgba(255,255,255,0.005)';ctx.fillText('%@',1,1);}return _tdu.apply(this,arguments);};}catch(e){}", watermark];
-        [js appendFormat:@"try{var _gid=CanvasRenderingContext2D.prototype.getImageData;CanvasRenderingContext2D.prototype.getImageData=function(){var d=_gid.apply(this,arguments);if(d&&d.data&&d.data.length>4){d.data[0]^=1;d.data[1]^=1;}return d;};}catch(e){}"];
+        [js appendFormat:@"try{var _tb=HTMLCanvasElement.prototype.toBlob;HTMLCanvasElement.prototype.toBlob=function(cb,type,q){var ctx=this.getContext('2d');if(ctx){ctx.fillStyle='rgba(255,255,255,0.005)';ctx.fillText('%@',1,1);}return _tb.call(this,cb,type,q);};}catch(e){}", watermark];
+        [js appendString:@"try{var _gid=CanvasRenderingContext2D.prototype.getImageData;CanvasRenderingContext2D.prototype.getImageData=function(){var d=_gid.apply(this,arguments);if(d&&d.data&&d.data.length>4){d.data[0]^=1;d.data[1]^=1;d.data[2]^=1;}return d;};}catch(e){}"];
+        // Block readPixels (WebGL canvas pixel readout — another fingerprint vector)
+        [js appendString:@"try{var _rp=WebGLRenderingContext.prototype.readPixels;WebGLRenderingContext.prototype.readPixels=function(){var r=_rp.apply(this,arguments);if(arguments[6]&&arguments[6].length){arguments[6][0]^=1;}return r;};}catch(e){}"];
     }
 
-    if (blockWebRTC) {
-        [js appendString:@"try{if(window.RTCPeerConnection)window.RTCPeerConnection=function(){return {};};}catch(e){}"];
-        [js appendString:@"try{if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){var _e=navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);navigator.mediaDevices.enumerateDevices=async function(){var d=await _e();return d.filter(function(x){return x.kind!=='audioinput'&&x.kind!=='videoinput';});};}}catch(e){}"];
-    }
+    // v2.4.56: WebGL extras — cover getSupportedExtensions (reveals real GPU
+    // capability matrix), getShaderPrecisionFormat (per-vendor precision),
+    // getContextAttributes (alpha/depth/stencil bits leak driver tier).
+    [js appendString:@"try{var _gse=WebGLRenderingContext.prototype.getSupportedExtensions;WebGLRenderingContext.prototype.getSupportedExtensions=function(){var r=_gse.call(this);return r?r.slice():['WEBGL_debug_renderer_info','OES_texture_float','OES_texture_float_linear','OES_texture_half_float','EXT_color_buffer_half_float','EXT_blend_minmax','EXT_color_buffer_float','EXT_sRGB','EXT_texture_filter_anisotropic','EXT_disjoint_timer_query','WEBGL_compressed_texture_etc','WEBGL_compressed_texture_etc1','WEBGL_compressed_texture_astc','WEBGL_compressed_texture_pvrtc','WEBGL_lose_context','EXT_frag_depth','EXT_shader_texture_lod','OES_standard_derivatives','OES_element_index_uint','OES_vertex_array_object','ANGLE_instanced_arrays','WEBGL_depth_texture','WEBGL_draw_buffers'];};}catch(e){}"];
+
+    // v2.4.56: WebRTC comprehensive stub. Default ON — fingerprint check sites
+    // probe RTCPeerConnection.createOffer to extract candidate IPs (local +
+    // STUN-discovered public). With this stub, no candidates ever gather, no
+    // IPs ever leak. Also disable getUserMedia so mic/camera enumeration
+    // doesn't expose hardware fingerprint.
+    [js appendString:@"try{var _nullRTC=function(){return {createOffer:function(){return Promise.resolve({type:'offer',sdp:''});},createAnswer:function(){return Promise.resolve({type:'answer',sdp:''});},setLocalDescription:function(){return Promise.resolve();},setRemoteDescription:function(){return Promise.resolve();},addIceCandidate:function(){return Promise.resolve();},close:function(){},addEventListener:function(){},removeEventListener:function(){},addTrack:function(){return {};},addStream:function(){},getStats:function(){return Promise.resolve(new Map());},getSenders:function(){return [];},getReceivers:function(){return [];},getTransceivers:function(){return [];},createDataChannel:function(){return {send:function(){},close:function(){},addEventListener:function(){},removeEventListener:function(){}};},onicecandidate:null,oniceconnectionstatechange:null,onicegatheringstatechange:null,ontrack:null,onnegotiationneeded:null,iceConnectionState:'new',iceGatheringState:'new',signalingState:'stable',connectionState:'new',localDescription:null,remoteDescription:null,currentLocalDescription:null,currentRemoteDescription:null,pendingLocalDescription:null,pendingRemoteDescription:null};};window.RTCPeerConnection=_nullRTC;window.webkitRTCPeerConnection=_nullRTC;window.mozRTCPeerConnection=_nullRTC;}catch(e){}"];
+    [js appendString:@"try{window.RTCDataChannel=function(){return {send:function(){},close:function(){},addEventListener:function(){},removeEventListener:function(){}};};}catch(e){}"];
+    [js appendString:@"try{if(navigator.mediaDevices){navigator.mediaDevices.getUserMedia=function(){return Promise.reject(new DOMException('NotAllowedError','NotAllowedError'));};navigator.mediaDevices.getDisplayMedia=function(){return Promise.reject(new DOMException('NotAllowedError','NotAllowedError'));};var _ed=navigator.mediaDevices.enumerateDevices?navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices):null;navigator.mediaDevices.enumerateDevices=function(){return Promise.resolve([]);};}}catch(e){}"];
+    [js appendString:@"try{var _empty=function(s,e){if(e)e(new DOMException('NotAllowedError'));};navigator.getUserMedia=_empty;navigator.webkitGetUserMedia=_empty;navigator.mozGetUserMedia=_empty;}catch(e){}"];
 
     // v2.4.47: Intl.DateTimeFormat timezone — match fake timezoneName so
     // SDKs probing Intl.DateTimeFormat().resolvedOptions().timeZone see
@@ -3174,7 +3190,24 @@ static id ci_WK_init(id self, SEL _cmd, CGRect frame, id configuration) {
             NSLog(@"[ChangeInfoIos] WK init JS inject exception: %@", e);
         }
     }
-    return ((ci_wkInit_t)orig_WK_init)(self, _cmd, frame, configuration);
+    id newWV = ((ci_wkInit_t)orig_WK_init)(self, _cmd, frame, configuration);
+    // v2.4.56: also set customUserAgent on the new WKWebView so HTTP requests
+    // carry the spoofed UA, not just navigator.userAgent. Without this, server
+    // logs see the real iOS Safari UA even though JS reports the fake.
+    if (newWV && fakeLayer(@"browser")) {
+        NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
+        if (fakeUA.length) {
+            @try {
+                SEL setUA = @selector(setCustomUserAgent:);
+                if ([newWV respondsToSelector:setUA]) {
+                    ((void (*)(id, SEL, NSString *))objc_msgSend)(newWV, setUA, fakeUA);
+                }
+            } @catch (NSException *e) {
+                NSLog(@"[ChangeInfoIos] setCustomUserAgent exception: %@", e);
+            }
+        }
+    }
+    return newWV;
 }
 
 typedef NSString *(*ci_wkUAget_t)(id, SEL);
