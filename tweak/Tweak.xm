@@ -3524,7 +3524,17 @@ static BOOL computeBundleTargeted(void) {
         kSystemDenyBundles = @[
             @"com.apple.springboard",
             @"com.apple.Preferences",
-            @"com.apple.mobilesafari",
+            // v2.4.61: REMOVED com.apple.mobilesafari + com.apple.WebKit*
+            // from denylist. They were preventing the tweak from loading
+            // into Safari/WebContent — meaning every Safari UA/JS spoof
+            // claim from v2.4.51-v2.4.60 was actually a NO-OP. Our %ctor
+            // bailed before installing any hooks. WebRTC "no leak" on
+            // browserleaks was just Safari's default permission denial,
+            // not our stub.
+            //
+            // Safari + WebContent ARE user-facing app processes (not
+            // daemons like SpringBoard), so tweaks can safely hook them.
+            // Other tweaks (Userless, JBSafariUA) successfully do this.
             @"com.apple.webapp",
             @"com.apple.mobilesms",
             @"com.apple.MobileSMS",
@@ -3538,9 +3548,10 @@ static BOOL computeBundleTargeted(void) {
             @"com.apple.coreauthd",
             @"com.apple.HealthExtensions",
             @"com.apple.Health",
-            @"com.apple.WebKit",
+            // Keep WebKit.Networking — it's the network process, hooking
+            // it can break cookie/cache management. Safari + WebContent
+            // (renderer) are the two we actually want.
             @"com.apple.WebKit.Networking",
-            @"com.apple.WebKit.WebContent",
         ];
         for (NSString *deny in kSystemDenyBundles) {
             if ([bid isEqualToString:deny]) {
