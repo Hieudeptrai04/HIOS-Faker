@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.54";
+static NSString *const kAppVersion = @"2.4.55";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4962,33 +4962,44 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:hud animated:YES completion:nil];
     [[CIConfigManager shared] syncProfileWithPublicIPCompletion:^(BOOL ok, NSString *city, NSString *country, NSString *err) {
         [hud dismissViewControllerAnimated:YES completion:^{
+            // Show coord that was set so user sees the actual values
+            id flat = [[CIConfigManager shared] objectForKey:@"latitude"];
+            id flng = [[CIConfigManager shared] objectForKey:@"longitude"];
+            id ftz  = [[CIConfigManager shared] objectForKey:@"timezoneName"];
+            NSString *coordInfo = (flat && flng)
+                ? [NSString stringWithFormat:@"\nCoord: %.4f, %.4f\nTZ: %@",
+                   [flat doubleValue], [flng doubleValue], ftz ?: @"?"]
+                : @"";
+            NSString *title = ok ? @"Đã sync xong" : @"Sync lỗi";
+            NSString *info;
             if (ok) {
-                NSString *info = [NSString stringWithFormat:@"Detected VPN exit: %@, %@\nProfile coord + TZ + country đã sync.",
-                                  city ?: @"?", country ?: @"?"];
-                UIAlertController *done = [UIAlertController alertControllerWithTitle:@"Đã sync xong"
-                                                                              message:info
-                                                                       preferredStyle:UIAlertControllerStyleAlert];
-                [done addAction:[UIAlertAction actionWithTitle:@"Mở browser check"
-                                                          style:UIAlertActionStyleDefault
-                                                        handler:^(UIAlertAction *a){
-                    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
-                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-                }]];
-                [done addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:done animated:YES completion:nil];
-                [self refreshFakeProfile];
+                info = [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nĐang khởi động lại Safari để load coord mới...",
+                        city ?: @"?", country ?: @"?", coordInfo];
             } else {
-                NSString *msg = [NSString stringWithFormat:@"Không sync được: %@\n\nVẫn mở browser check.",
-                                 err ?: @"unknown"];
-                UIAlertController *e = [UIAlertController alertControllerWithTitle:@"Sync lỗi"
-                                                                            message:msg
-                                                                     preferredStyle:UIAlertControllerStyleAlert];
-                [e addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
-                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-                }]];
-                [self presentViewController:e animated:YES completion:nil];
+                info = [NSString stringWithFormat:@"Lỗi: %@%@\n\nVẫn mở browser check.",
+                        err ?: @"unknown", coordInfo];
             }
+            UIAlertController *r = [UIAlertController alertControllerWithTitle:title message:info
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+            [self presentViewController:r animated:YES completion:^{
+                [self refreshFakeProfile];
+                // v2.4.55: terminate Safari + WebContent so next launch picks up
+                // freshly-synced coord. Tweak's ci_onRestartTarget handler does
+                // exit(0) when bundle matches Safari/WebKit.WebContent.
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFSTR("com.changeinfoios/RestartTarget"),
+                    NULL, NULL, true);
+                // Brief delay for terminate to propagate, then openURL relaunches
+                // Safari with fresh state pointing at browserleaks.
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [r dismissViewControllerAnimated:YES completion:^{
+                        NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
+                        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+                    }];
+                });
+            }];
         }];
     }];
 }
@@ -5001,15 +5012,30 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:hud animated:YES completion:nil];
     [[CIConfigManager shared] syncProfileWithPublicIPCompletion:^(BOOL ok, NSString *city, NSString *country, NSString *err) {
         [hud dismissViewControllerAnimated:YES completion:^{
+            id flat = [[CIConfigManager shared] objectForKey:@"latitude"];
+            id flng = [[CIConfigManager shared] objectForKey:@"longitude"];
+            id ftz  = [[CIConfigManager shared] objectForKey:@"timezoneName"];
+            NSString *coordInfo = (flat && flng)
+                ? [NSString stringWithFormat:@"\nCoord: %.4f, %.4f\nTZ: %@",
+                   [flat doubleValue], [flng doubleValue], ftz ?: @"?"]
+                : @"";
             NSString *t = ok ? @"Đồng bộ thành công" : @"Lỗi sync";
-            NSString *m = ok ? [NSString stringWithFormat:@"VPN exit: %@, %@\nLat/Lng + Timezone + Country đã update.",
-                                city ?: @"?", country ?: @"?"]
-                             : (err ?: @"unknown");
+            NSString *m = ok
+                ? [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nĐã restart Safari + WebContent — mở lại Safari sẽ thấy coord mới.",
+                   city ?: @"?", country ?: @"?", coordInfo]
+                : (err ?: @"unknown");
             UIAlertController *r = [UIAlertController alertControllerWithTitle:t message:m
                                                                  preferredStyle:UIAlertControllerStyleAlert];
             [r addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             [self presentViewController:r animated:YES completion:nil];
-            if (ok) [self refreshFakeProfile];
+            if (ok) {
+                [self refreshFakeProfile];
+                // Terminate Safari so next launch picks up new JS coord.
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFSTR("com.changeinfoios/RestartTarget"),
+                    NULL, NULL, true);
+            }
         }];
     }];
 }

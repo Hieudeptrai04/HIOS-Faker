@@ -726,6 +726,18 @@ static void onPrefsDarwinNotify(CFNotificationCenterRef center, void *observer, 
     NSLog(@"[ChangeInfoIos] Prefs reloaded (%lu keys)", (unsigned long)(spoofConfig ? spoofConfig.count : 0));
 }
 
+// v2.4.55: only Safari/WebKit.WebContent terminate on restart-target.
+// Used by host app to force Safari fresh-state load after sync-GPS so
+// the new coord/TZ are baked into the freshly-built WKUserScript JS.
+static void ci_onRestartTarget(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bid isEqualToString:@"com.apple.mobilesafari"] ||
+        [bid hasPrefix:@"com.apple.WebKit"]) {
+        NSLog(@"[ChangeInfoIos] restart-target: exiting %@", bid);
+        exit(0);
+    }
+}
+
 id getConfig(NSString *key) {
     if (!configLoaded) reloadConfigFromDisk();
     return spoofConfig ? spoofConfig[key] : nil;
@@ -3535,6 +3547,16 @@ static BOOL computeBundleTargeted(void) {
             CFSTR("com.changeinfoios/dump_keychain"), NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, onPrefsDarwinNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+
+        // v2.4.55: restart-target Darwin notification. Host app posts this
+        // before opening browserleaks so Safari's WKWebView re-init picks
+        // up the freshly synced coord/TZ. ci_onRestartTarget filters by
+        // bundle ID: only Safari + WebKit.WebContent terminate; other apps
+        // in our filter list (Zalo etc) ignore.
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+            ci_onRestartTarget,
+            CFSTR("com.changeinfoios/RestartTarget"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
 
         // Keychain restore: if host app dropped a restore flag (via RRS
         // restore), apply the snapshot BEFORE the host app reads any
