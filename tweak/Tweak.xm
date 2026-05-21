@@ -3549,13 +3549,15 @@ static BOOL computeBundleTargeted(void) {
             ci_dumpKeychain();
         }
 
-        // MG hook via fishhook GOT rebinding (v2.4.47+). Default ON;
-        // opt-out with _ci_skip_mg=YES via plist if a specific app
-        // crashes. The MSHookFunction install path (deleted in S1.4)
-        // was prologue-patching MG into a `brk` trap under Dopamine
-        // AMFI rules; fishhook only touches the __DATA __got slot so
-        // the original instructions stay intact.
-        if (!getConfigBool(@"_ci_skip_mg")) {
+        // MG hook via fishhook GOT rebinding (v2.4.47+).
+        // v2.4.64: now OPT-IN — default OFF. Per Zalo lag report, the
+        // fishhook adds per-call overhead on every MG read across all
+        // GOT slots in the app + its 3rd-party frameworks. UIDevice's
+        // _deviceInfoForKey: ObjC hook already covers the common path
+        // (UDID, Serial, IMEI, Wi-Fi MAC, etc.) without rebinding GOT
+        // entries. Enable via _ci_enable_mg=YES only for apps that
+        // need direct-MG fingerprint SDKs spoofed.
+        if (getConfigBool(@"_ci_enable_mg")) {
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {
                 orig_MGCopyAnswer      = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");

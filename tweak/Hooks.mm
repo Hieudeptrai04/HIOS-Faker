@@ -1043,14 +1043,23 @@ static uint64_t hooked_mach_absolute_time(void) {
 // ============================================================
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void) = NULL;
 
+// v2.4.64 PERF: cache the offset at first call. CFAbsoluteTimeGetCurrent
+// is called by EVERY animation tick, CADisplayLink callback, dispatch_after
+// timestamp — Zalo fires it thousands of times per second during scroll.
+// Steady-state cost is now: 1 ATOMIC LOAD + 1 ADD. fakeLayer/getConfig
+// are not invoked at all after the first call.
+static double g_cfabs_offset_cached = 0.0;
+static dispatch_once_t g_cfabs_offset_once;
+
 static CFAbsoluteTime hooked_CFAbsoluteTimeGetCurrent(void) {
     CFAbsoluteTime real = orig_CFAbsoluteTimeGetCurrent();
-    if (!fakeLayer(@"timing")) return real;
-    id offset = getConfig(@"zalo_timingOffset");
-    if (offset) {
-        return real + ([offset doubleValue] / 1000000000.0);
-    }
-    return real;
+    dispatch_once(&g_cfabs_offset_once, ^{
+        if (fakeLayer(@"timing")) {
+            id offset = getConfig(@"zalo_timingOffset");
+            if (offset) g_cfabs_offset_cached = [offset doubleValue] / 1000000000.0;
+        }
+    });
+    return real + g_cfabs_offset_cached;
 }
 
 // ============================================================
