@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.48";
+static NSString *const kAppVersion = @"2.4.49";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3651,9 +3651,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // entitlements.plist now ships com.apple.private.tcc.allow with
 // kTCCServicePhotos which pre-grants access — no permission dialog,
 // no TCC.db round-trip needed.
-@interface CICameraViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
-@end
-
 // ============================================================
 // SIDE MENU (hamburger)
 // ============================================================
@@ -3667,7 +3664,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // Trimmed to only working entries — placeholders ("Chức năng đang phát
     // triển") were cluttering the menu. Add new items here as they get real
     // handlers in didSelectRowAtIndexPath.
-    _items = @[@"Proxy", @"Camera"];
+    _items = @[@"Proxy"];
     self.view.backgroundColor = [CITheme bg];
     self.tableView.rowHeight = 52;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 110)];
@@ -3699,11 +3696,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *cmd = _items[ip.row];
     if ([cmd isEqualToString:@"Proxy"]) {
         CIProxyViewController *vc = [[CIProxyViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-        return;
-    }
-    if ([cmd isEqualToString:@"Camera"]) {
-        CICameraViewController *vc = [[CICameraViewController alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
         return;
     }
@@ -3953,276 +3945,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
 - (void)textFieldDidEndEditing:(UITextField *)tf { [self refreshStatus:nil error:NO]; }
-
-@end
-
-// ============================================================
-// CAMERA SPOOF CONFIG VIEW CONTROLLER
-// ============================================================
-// User picks a video from Photos; we copy it to a path the tweak can read
-// (/var/jb/etc/changeinfoios/camera_spoof.mp4 — same dir we already use
-// for tweak↔app shared state, sandboxed apps have read access there).
-// The tweak's AVCaptureVideoDataOutput delegate hook decodes that file
-// and emits its frames in place of real camera output. Affects every
-// app in the filter list; per-app gating not exposed yet.
-//
-// Photos access requires NSPhotoLibraryUsageDescription in Info.plist —
-// added alongside this controller.
-
-static NSString *const kCISpoofVideoPath = @"/var/jb/etc/changeinfoios/camera_spoof.mp4";
-
-@implementation CICameraViewController {
-    UISwitch *_enableSwitch;
-    UILabel  *_pathLabel;
-    UILabel  *_statusLabel;
-    UIButton *_pickBtn;
-    UIButton *_clearBtn;
-    UIButton *_saveBtn;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Camera giả";
-    self.view.backgroundColor = [CITheme bg];
-
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    sv.alwaysBounceVertical = YES;
-    [self.view addSubview:sv];
-
-    CGFloat W = self.view.bounds.size.width;
-    CGFloat M = 16;
-    CGFloat y = 16;
-
-    // Enable switch
-    UILabel *enLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M - 60, 32)];
-    enLbl.text = @"Bật camera giả"; enLbl.textColor = [CITheme text];
-    enLbl.font = [UIFont boldSystemFontOfSize:17];
-    [sv addSubview:enLbl];
-    _enableSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(W - M - 51, y, 51, 32)];
-    _enableSwitch.onTintColor = [CITheme orange];
-    [sv addSubview:_enableSwitch];
-    y += 50;
-
-    // Description
-    UILabel *desc = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 110)];
-    desc.text = @"Khi BẬT, mọi app trong filter list (Zalo, Telegram, …) khi mở camera/video call sẽ thấy video bạn chọn thay vì camera thật.\n\n• Audio mic vẫn thật — mute trong app nếu cần.\n• Video không cần mặt cử động liên tục, nhưng PHẢI nhìn thẳng nếu dùng cho KYC selfie.\n• Pixel buffer được copy in-place vào sample buffer thật của camera — metadata sensor vẫn còn nguyên, anti-spoof khó phát hiện.";
-    desc.numberOfLines = 0;
-    desc.textColor = [CITheme dim];
-    desc.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:desc];
-    y += 120;
-
-    // Current file path label
-    UILabel *pathHdr = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
-    pathHdr.text = @"Video đang chọn:"; pathHdr.textColor = [CITheme dim];
-    pathHdr.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:pathHdr]; y += 24;
-
-    _pathLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 44)];
-    _pathLabel.numberOfLines = 2;
-    _pathLabel.textColor = [CITheme text];
-    _pathLabel.font = [UIFont fontWithName:@"Menlo" size:12];
-    _pathLabel.backgroundColor = [CITheme card];
-    _pathLabel.layer.cornerRadius = 8;
-    _pathLabel.layer.masksToBounds = YES;
-    _pathLabel.textAlignment = NSTextAlignmentCenter;
-    [sv addSubview:_pathLabel];
-    y += 56;
-
-    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 40)];
-    _statusLabel.numberOfLines = 0;
-    _statusLabel.textColor = [CITheme dim];
-    _statusLabel.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:_statusLabel];
-    y += 50;
-
-    _pickBtn = CIBoxButton(@"Chọn video từ Photos", [CITheme blue], [CITheme blue]);
-    _pickBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_pickBtn addTarget:self action:@selector(pickTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_pickBtn];
-    y += 64;
-
-    _clearBtn = CIBoxButton(@"Xoá video đã chọn", [CITheme dim], [CITheme separator]);
-    _clearBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_clearBtn addTarget:self action:@selector(clearTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_clearBtn];
-    y += 64;
-
-    _saveBtn = CIBoxButton(@"Lưu", [UIColor whiteColor], [CITheme border]);
-    _saveBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_saveBtn];
-    y += 64;
-
-    sv.contentSize = CGSizeMake(W, y + 24);
-
-    _enableSwitch.on = [[CIConfigManager shared] boolForKey:@"cameraSpoofEnabled"];
-    [self refreshFileInfo];
-}
-
-- (void)refreshFileInfo {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:kCISpoofVideoPath]) {
-        NSDictionary *attrs = [fm attributesOfItemAtPath:kCISpoofVideoPath error:nil];
-        unsigned long long size = [attrs[NSFileSize] unsignedLongLongValue];
-        _pathLabel.text = [NSString stringWithFormat:@"%@\n(%@)", kCISpoofVideoPath, CIBytesString(size)];
-        _statusLabel.text = @"✓ Video sẵn sàng. Bật switch + Lưu để kích hoạt.";
-        _statusLabel.textColor = [CITheme green];
-    } else {
-        _pathLabel.text = @"(chưa có)";
-        _statusLabel.text = @"Chưa chọn video — tap 'Chọn video từ Photos' để bắt đầu.";
-        _statusLabel.textColor = [CITheme dim];
-    }
-}
-
-- (void)pickTapped {
-    UIImagePickerController *pic = [[UIImagePickerController alloc] init];
-    pic.sourceType = UIImagePickerControllerSourceTypeSavedPhotosAlbum;
-    pic.mediaTypes = @[@"public.movie"]; // literal UTI — avoids kUTTypeMovie symbol
-    pic.delegate = self;
-    pic.allowsEditing = NO;
-    [self presentViewController:pic animated:YES completion:nil];
-}
-
-- (void)imagePickerController:(UIImagePickerController *)picker
-didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
-    PHAsset *asset = info[UIImagePickerControllerPHAsset];
-    NSURL *fallbackURL = info[UIImagePickerControllerMediaURL];
-    [picker dismissViewControllerAnimated:YES completion:^{
-        // Picker URL lives in another container's tmp/ — sandbox denies
-        // direct access AND AVAssetExportSession init from URL. Only
-        // PhotoKit (PHImageManager.requestExportSessionForVideo:) has
-        // cross-container read access for picker selections. Use the
-        // PHAsset reference from the info dict as the primary path; URL
-        // is kept only as a safety net for environments where the asset
-        // reference is missing.
-        if (asset) {
-            self->_statusLabel.text = @"⌛ Đang import qua PhotoKit…";
-            self->_statusLabel.textColor = [CITheme dim];
-            [self importFromPHAsset:asset];
-            return;
-        }
-        if (fallbackURL) {
-            self->_statusLabel.text = @"⌛ Fallback: import qua AVAsset URL…";
-            self->_statusLabel.textColor = [CITheme dim];
-            [self importVideoFromURL:fallbackURL];
-            return;
-        }
-        self->_statusLabel.text = @"❌ Picker không trả PHAsset hay URL";
-        self->_statusLabel.textColor = [UIColor systemRedColor];
-    }];
-}
-
-- (void)importFromPHAsset:(PHAsset *)asset {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
-    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    [fm removeItemAtPath:kCISpoofVideoPath error:nil];
-
-    PHVideoRequestOptions *opts = [[PHVideoRequestOptions alloc] init];
-    opts.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
-    opts.networkAccessAllowed = YES;
-    opts.version = PHVideoRequestOptionsVersionCurrent;
-
-    __weak typeof(self) wself = self;
-    [[PHImageManager defaultManager]
-        requestExportSessionForVideo:asset
-                             options:opts
-                        exportPreset:AVAssetExportPresetPassthrough
-                       resultHandler:^(AVAssetExportSession *ex, NSDictionary *info) {
-            __strong typeof(wself) ss = wself; if (!ss) return;
-            if (!ex) {
-                NSString *info_str = [info description] ?: @"nil";
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    ss->_statusLabel.text = [NSString stringWithFormat:@"❌ PhotoKit không trả export: %@", info_str];
-                    ss->_statusLabel.textColor = [UIColor systemRedColor];
-                });
-                return;
-            }
-            ex.outputURL = [NSURL fileURLWithPath:kCISpoofVideoPath];
-            ex.outputFileType = AVFileTypeMPEG4;
-            ex.shouldOptimizeForNetworkUse = NO;
-            [ex exportAsynchronouslyWithCompletionHandler:^{
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    __strong typeof(wself) ss2 = wself; if (!ss2) return;
-                    if (ex.status == AVAssetExportSessionStatusCompleted) {
-                        [ss2 refreshFileInfo];
-                    } else {
-                        NSString *m = [NSString stringWithFormat:@"❌ Export status=%ld: %@",
-                                       (long)ex.status,
-                                       ex.error.localizedDescription ?: @"unknown"];
-                        ss2->_statusLabel.text = m;
-                        ss2->_statusLabel.textColor = [UIColor systemRedColor];
-                        NSLog(@"[ChangeInfoIos] cam spoof export FAILED status=%ld err=%@",
-                              (long)ex.status, ex.error);
-                    }
-                });
-            }];
-        }];
-}
-
-- (void)importVideoFromURL:(NSURL *)src {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = [kCISpoofVideoPath stringByDeletingLastPathComponent];
-    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    [fm removeItemAtPath:kCISpoofVideoPath error:nil];
-
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:src options:nil];
-    if (!asset || asset.tracks.count == 0) {
-        _statusLabel.text = @"❌ AVAsset không load được — file không hợp lệ";
-        _statusLabel.textColor = [UIColor systemRedColor];
-        return;
-    }
-    AVAssetExportSession *ex =
-        [AVAssetExportSession exportSessionWithAsset:asset presetName:AVAssetExportPresetPassthrough];
-    if (!ex) {
-        _statusLabel.text = @"❌ Không tạo được export session";
-        _statusLabel.textColor = [UIColor systemRedColor];
-        return;
-    }
-    ex.outputURL = [NSURL fileURLWithPath:kCISpoofVideoPath];
-    ex.outputFileType = AVFileTypeMPEG4;
-    __weak typeof(self) wself = self;
-    [ex exportAsynchronouslyWithCompletionHandler:^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(wself) ss = wself; if (!ss) return;
-            if (ex.status == AVAssetExportSessionStatusCompleted) {
-                [ss refreshFileInfo];
-            } else {
-                ss->_statusLabel.text = [NSString stringWithFormat:@"❌ URL export status=%ld: %@",
-                                         (long)ex.status, ex.error.localizedDescription ?: @"unknown"];
-                ss->_statusLabel.textColor = [UIColor systemRedColor];
-            }
-        });
-    }];
-}
-
-- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
-    [picker dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)clearTapped {
-    [[NSFileManager defaultManager] removeItemAtPath:kCISpoofVideoPath error:nil];
-    [self refreshFileInfo];
-}
-
-- (void)saveTapped {
-    [self.view endEditing:YES];
-    CIConfigManager *cm = [CIConfigManager shared];
-    [cm setObject:@(_enableSwitch.on) forKey:@"cameraSpoofEnabled"];
-    [cm setObject:kCISpoofVideoPath  forKey:@"cameraSpoofVideoPath"];
-    [cm save];
-    [cm notifyReload];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (_enableSwitch.on && ![fm fileExistsAtPath:kCISpoofVideoPath]) {
-        _statusLabel.text = @"⚠ Bật ON nhưng chưa chọn video — chọn trước, sẽ không spoof.";
-        _statusLabel.textColor = [UIColor systemOrangeColor];
-    } else {
-        _statusLabel.text = @"✓ Lưu xong. Force-kill target app + mở lại để áp dụng.";
-        _statusLabel.textColor = [CITheme green];
-    }
-}
 
 @end
 

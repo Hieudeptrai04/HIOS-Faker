@@ -649,14 +649,12 @@ static BOOL ci_isOurClass(const char *name) {
     // ship.
     static const char *ours[] = {
         "CIConfigManager",
-        "CISpoofProxyDelegate",
         "CIHomeViewController",
         "CIAppPickerViewController",
         "CIFakeSettingsViewController",
         "CIRRSManagerViewController",
         "CISideMenuViewController",
         "CIProxyViewController",
-        "CICameraViewController",
         "CIAppLister",
         "CIRRSStore",
         "CIRRSEntry",
