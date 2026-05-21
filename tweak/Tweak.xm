@@ -2624,12 +2624,38 @@ static NSError *ci_dcUnsupportedError(void) {
     return err;
 }
 
+// v2.4.44: _ci_dc_passthrough config flag controls DCDevice/AppAttest
+// behaviour. Default YES — let Apple's real Secure Enclave attestation
+// chain through so server-side validators (Zalo 2024+, banking) accept
+// the registration. Setting NO returns DCErrorFeatureUnsupported (old
+// behavior — was breaking Zalo register with error -1005).
+//
+// Tradeoff:
+//   passthrough YES (default) → registration works; AppAttest carries
+//     real hardware-bound identifier → device can be correlated across
+//     re-installs if server stores raw attestation.
+//   passthrough NO → claim feature unsupported; server-side strict
+//     apps reject; device less trackable via attestation.
+//
+// User can flip per-bundle via:
+//   plutil -replace _ci_dc_passthrough -bool false /var/mobile/Library/Preferences/com.changeinfoios.plist
+static inline BOOL ci_dcPassthrough(void) {
+    id v = getConfig(@"_ci_dc_passthrough");
+    if (v == nil) return YES;  // default ON
+    return [v boolValue];
+}
+
 static BOOL ci_DC_isSupported(id self, SEL _cmd) {
+    if (ci_dcPassthrough() && orig_DC_isSupported) return orig_DC_isSupported(self, _cmd);
     if (!fakeLayer(@"hardware")) return orig_DC_isSupported ? orig_DC_isSupported(self, _cmd) : YES;
-    return NO;  // pretend this is a pre-iPhone6s device w/o Secure Enclave attest
+    return NO;
 }
 
 static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, NSError *)) {
+    if (ci_dcPassthrough() && orig_DC_generateToken) {
+        orig_DC_generateToken(self, _cmd, (id)completion);
+        return;
+    }
     if (!fakeLayer(@"hardware")) {
         if (orig_DC_generateToken) orig_DC_generateToken(self, _cmd, (id)completion);
         return;
@@ -2638,11 +2664,16 @@ static void ci_DC_generateToken(id self, SEL _cmd, void (^completion)(NSData *, 
 }
 
 static BOOL ci_DCA_isSupported(id self, SEL _cmd) {
+    if (ci_dcPassthrough() && orig_DCA_isSupported) return orig_DCA_isSupported(self, _cmd);
     if (!fakeLayer(@"hardware")) return orig_DCA_isSupported ? orig_DCA_isSupported(self, _cmd) : YES;
     return NO;
 }
 
 static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *, NSError *)) {
+    if (ci_dcPassthrough() && orig_DCA_generateKey) {
+        orig_DCA_generateKey(self, _cmd, (id)completion);
+        return;
+    }
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_generateKey) orig_DCA_generateKey(self, _cmd, (id)completion);
         return;
@@ -2651,6 +2682,10 @@ static void ci_DCA_generateKey(id self, SEL _cmd, void (^completion)(NSString *,
 }
 
 static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
+    if (ci_dcPassthrough() && orig_DCA_attestKey) {
+        orig_DCA_attestKey(self, _cmd, keyId, hash, (id)completion);
+        return;
+    }
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_attestKey) orig_DCA_attestKey(self, _cmd, keyId, hash, (id)completion);
         return;
@@ -2664,6 +2699,10 @@ static void ci_DCA_attestKey(id self, SEL _cmd, NSString *keyId, NSData *hash, v
 // We return DCErrorFeatureUnsupported so the app's non-attest fallback
 // path runs — same logic as the other DCAppAttest methods above.
 static void ci_DCA_generateAssertion(id self, SEL _cmd, NSString *keyId, NSData *hash, void (^completion)(NSData *, NSError *)) {
+    if (ci_dcPassthrough() && orig_DCA_genAssertion) {
+        orig_DCA_genAssertion(self, _cmd, keyId, hash, (id)completion);
+        return;
+    }
     if (!fakeLayer(@"hardware")) {
         if (orig_DCA_genAssertion) orig_DCA_genAssertion(self, _cmd, keyId, hash, (id)completion);
         return;
