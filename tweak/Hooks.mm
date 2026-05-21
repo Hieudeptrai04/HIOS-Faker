@@ -237,6 +237,92 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
         }
     }
 
+    // kern.osvariant_status — iOS 14+ encoding of build flavor (customer
+    // release vs internal/debug). Apps use this to detect non-production
+    // builds. "Customer release" canonical value below makes the kernel
+    // claim a clean factory iOS build.
+    // Bits encode: hasInternalContent, hasFactoryContent, isDebuggable,
+    //              isRecovery, isReleaseType, ... (see osvariant.h)
+    if (strcmp(name, "kern.osvariant_status") == 0) {
+        if (oldlenp && *oldlenp >= sizeof(uint64_t)) {
+            // 0x70000020D = customer release, no internal, no factory, no debug
+            uint64_t v = 0x70000020DULL;
+            memcpy(oldp, &v, sizeof(uint64_t));
+            *oldlenp = sizeof(uint64_t);
+            return 0;
+        }
+    }
+
+    // kern.iossupportversion — iPad apps running on macOS via Catalyst read
+    // this to detect host iOS version. Empty string = pure iOS device.
+    if (strcmp(name, "kern.iossupportversion") == 0) {
+        const char *empty = "";
+        size_t needed = 1;
+        if (oldlenp && *oldlenp >= needed) {
+            memcpy(oldp, empty, needed);
+            *oldlenp = needed;
+            return 0;
+        }
+    }
+
+    // hw.target — sibling of hw.machine. Some private API paths read both,
+    // and a mismatch (e.g. machine=iPhone12,1 but target=iPhone10,2) is an
+    // immediate red flag. Mirror our spoofed hw.machine value.
+    if (strcmp(name, "hw.target") == 0) {
+        NSString *val = getConfigStr(@"hw_machine");
+        if (val) {
+            const char *cval = [val UTF8String];
+            size_t needed = strlen(cval) + 1;
+            if (oldlenp && *oldlenp >= needed) {
+                memcpy(oldp, cval, needed);
+                *oldlenp = needed;
+                return 0;
+            }
+        }
+    }
+
+    // kern.uuid — 36-char kernel UUID string. Persistent per device, used
+    // by some fingerprint SDKs as a stable hardware identifier. Derived
+    // deterministically from identifierForVendor so we get a stable per-
+    // profile value without needing a separate config key.
+    if (strcmp(name, "kern.uuid") == 0) {
+        NSString *idfv = getConfigStr(@"identifierForVendor");
+        if (idfv.length >= 32) {
+            // Reformat as UUID string: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+            NSString *hex = [[idfv stringByReplacingOccurrencesOfString:@"-" withString:@""]
+                              uppercaseString];
+            if (hex.length >= 32) {
+                NSString *uuidStr = [NSString stringWithFormat:@"%@-%@-%@-%@-%@",
+                                     [hex substringWithRange:NSMakeRange(0, 8)],
+                                     [hex substringWithRange:NSMakeRange(8, 4)],
+                                     [hex substringWithRange:NSMakeRange(12, 4)],
+                                     [hex substringWithRange:NSMakeRange(16, 4)],
+                                     [hex substringWithRange:NSMakeRange(20, 12)]];
+                const char *cval = [uuidStr UTF8String];
+                size_t needed = strlen(cval) + 1;
+                if (oldlenp && *oldlenp >= needed) {
+                    memcpy(oldp, cval, needed);
+                    *oldlenp = needed;
+                    return 0;
+                }
+            }
+        }
+    }
+
+    // kern.hostid — 32-bit integer host identifier. Derive deterministically
+    // from identifierForVendor so it stays stable per profile.
+    if (strcmp(name, "kern.hostid") == 0) {
+        NSString *idfv = getConfigStr(@"identifierForVendor");
+        if (idfv.length >= 8 && oldlenp && *oldlenp >= sizeof(int32_t)) {
+            const char *u = [idfv UTF8String];
+            int32_t h = 0;
+            for (int i = 0; i < 8 && u[i]; i++) h = h * 31 + (uint8_t)u[i];
+            memcpy(oldp, &h, sizeof(int32_t));
+            *oldlenp = sizeof(int32_t);
+            return 0;
+        }
+    }
+
     return ret;
 }
 
@@ -745,6 +831,65 @@ static int hooked_statfs(const char *path, struct statfs *buf) {
 }
 
 // ============================================================
+// getattrlist hook — spoof APFS volume UUID (Tier 9, v2.4.50)
+//
+// Apps bypass statfs.f_fsid by calling getattrlist() with
+//   attrList.volattr = ATTR_VOL_INFO | ATTR_VOL_UUID
+// which fills a uuid_t at &buf[sizeof(u_int32_t)]. Same identifier as
+// /System diskutil shows. Without spoof, the full 16-byte volume UUID
+// leaks through every other layer of our spoof.
+//
+// Buffer layout when volattr contains exactly INFO | UUID:
+//   [u_int32_t length][uuid_t volume_uuid]   = 4 + 16 = 20 bytes
+// Many SDKs combine UUID with other volattrs; rewriting at offset 4
+// only is correct because ATTR_VOL_INFO is the size marker (consumes
+// 0 data) and ATTR_VOL_UUID is the lowest-bit volattr Apple defines
+// so it always appears first in the data section.
+// ============================================================
+#include <sys/attr.h>
+typedef int (*getattrlist_t)(const char *path, struct attrlist *attrList, void *attrBuf, size_t attrBufSize, unsigned long options);
+static getattrlist_t orig_getattrlist = NULL;
+
+#ifndef ATTR_VOL_UUID
+#define ATTR_VOL_UUID 0x00004000
+#endif
+#ifndef ATTR_VOL_INFO
+#define ATTR_VOL_INFO 0x80000000
+#endif
+
+static int hooked_getattrlist(const char *path, struct attrlist *attrList,
+                              void *attrBuf, size_t attrBufSize, unsigned long options) {
+    int ret = orig_getattrlist ? orig_getattrlist(path, attrList, attrBuf, attrBufSize, options) : -1;
+    if (ret != 0 || !attrList || !attrBuf) return ret;
+    if (!fakeLayer(@"hardware")) return ret;
+    // Only intercept volume UUID requests.
+    if (!(attrList->volattr & ATTR_VOL_UUID)) return ret;
+    // Buffer must hold length header (4) + uuid_t (16) — refuse smaller.
+    if (attrBufSize < sizeof(u_int32_t) + sizeof(uuid_t)) return ret;
+    NSString *vUUID = getConfigStr(@"identifierForVendor");
+    if (vUUID.length < 16) return ret;
+    // Derive 16 bytes from identifierForVendor (matches f_fsid derivation
+    // so statfs.f_fsid and ATTR_VOL_UUID stay correlated per profile).
+    NSString *hex = [[vUUID stringByReplacingOccurrencesOfString:@"-" withString:@""]
+                      uppercaseString];
+    if (hex.length < 32) return ret;
+    uint8_t newUUID[16];
+    for (int i = 0; i < 16; i++) {
+        unsigned int v = 0;
+        const char *h = [[hex substringWithRange:NSMakeRange(i*2, 2)] UTF8String];
+        if (sscanf(h, "%02x", &v) == 1) newUUID[i] = (uint8_t)v;
+        else newUUID[i] = 0;
+    }
+    // Set version bits to look like a valid UUIDv4 (Apple's real volume
+    // UUIDs are RFC 4122 v4).
+    newUUID[6] = (newUUID[6] & 0x0F) | 0x40;
+    newUUID[8] = (newUUID[8] & 0x3F) | 0x80;
+    // Overwrite in place at offset sizeof(u_int32_t).
+    memcpy((uint8_t *)attrBuf + sizeof(u_int32_t), newUUID, sizeof(newUUID));
+    return 0;
+}
+
+// ============================================================
 // gethostuuid hook — return spoofed 16-byte hardware UUID.
 // ============================================================
 // `int gethostuuid(uuid_t spec, const struct timespec *wait)` — fills
@@ -926,6 +1071,45 @@ static uint32_t hooked__dyld_image_count(void) {
     // Cache hit — no walk, no allocations.
     int32_t cachedHidden = atomic_load_explicit(&s_lastHiddenCount, memory_order_relaxed);
     return count - (uint32_t)cachedHidden;
+}
+
+// ============================================================
+// _dyld_get_shared_cache_uuid hook (Tier 6, v2.4.50)
+//
+// Returns the UUID of the on-device dyld_shared_cache file. Fingerprint
+// libraries read this to derive exact iOS build identity — a value
+// pinned to the real OS leaks through every other layer of our spoof.
+//
+// Derive deterministically from the spoofed kern_osversion string so the
+// cache UUID matches the claimed OS build. Use a simple FNV-1a hash to
+// fill 16 bytes from the version+build string.
+// ============================================================
+static int (*orig__dyld_get_shared_cache_uuid)(uuid_t uuid) = NULL;
+
+static int hooked__dyld_get_shared_cache_uuid(uuid_t uuid) {
+    int ret = orig__dyld_get_shared_cache_uuid ? orig__dyld_get_shared_cache_uuid(uuid) : -1;
+    if (!uuid) return ret;
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!configLoaded) return ret;
+    if (!fakeLayer(@"sysctl")) return ret;
+
+    NSString *seed = getConfigStr(@"kern_osversion") ?: getConfigStr(@"systemVersion");
+    if (!seed.length) return ret;
+
+    const char *s = [seed UTF8String];
+    // FNV-1a fills 2× 64-bit halves with different seeds for a 16-byte UUID.
+    uint64_t h1 = 0xcbf29ce484222325ULL;
+    uint64_t h2 = 0x84222325cbf29ce4ULL;
+    for (size_t i = 0; s[i]; i++) {
+        h1 ^= (uint8_t)s[i]; h1 *= 0x100000001b3ULL;
+        h2 ^= (uint8_t)s[i] + (i & 0xFF); h2 *= 0x100000001b3ULL;
+    }
+    memcpy(uuid,     &h1, 8);
+    memcpy(uuid + 8, &h2, 8);
+    // Set version bits to look like a valid UUIDv4.
+    uuid[6] = (uuid[6] & 0x0F) | 0x40;
+    uuid[8] = (uuid[8] & 0x3F) | 0x80;
+    return 0;
 }
 
 // ============================================================
@@ -1609,6 +1793,13 @@ extern "C" void initCLvlHooks(void) {
         NSLog(@"[ChangeInfoIos] statfs hooked");
     }
 
+    // getattrlist — APFS volume UUID spoof (Tier 9, v2.4.50)
+    void *gal_sym = dlsym(RTLD_DEFAULT, "getattrlist");
+    if (gal_sym && !orig_getattrlist) {
+        MSHookFunction(gal_sym, (void *)hooked_getattrlist, (void **)&orig_getattrlist);
+        NSLog(@"[ChangeInfoIos] getattrlist hooked");
+    }
+
     // objc_getClassList — hide our tweak's classes from runtime walks.
     void *gcl_sym = dlsym(RTLD_DEFAULT, "objc_getClassList");
     if (gcl_sym && !orig_objc_getClassList) {
@@ -1677,6 +1868,16 @@ extern "C" void initCLvlHooks(void) {
     if (dyld_name_sym && !orig__dyld_get_image_name) {
         MSHookFunction(dyld_name_sym, (void *)hooked__dyld_get_image_name, (void **)&orig__dyld_get_image_name);
         NSLog(@"[ChangeInfoIos] _dyld_get_image_name hooked");
+    }
+
+    // Tier 6 — _dyld_get_shared_cache_uuid. Apps reading the dyld_shared_
+    // cache UUID can fingerprint exact iOS build. Replace with a 16-byte
+    // value derived from spoofed kern_osversion so the cache identity
+    // matches the claimed OS build.
+    void *dyld_sc_sym = dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_uuid");
+    if (dyld_sc_sym && !orig__dyld_get_shared_cache_uuid) {
+        MSHookFunction(dyld_sc_sym, (void *)hooked__dyld_get_shared_cache_uuid, (void **)&orig__dyld_get_shared_cache_uuid);
+        NSLog(@"[ChangeInfoIos] _dyld_get_shared_cache_uuid hooked");
     }
 
     // fork

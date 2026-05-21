@@ -668,11 +668,49 @@ static void ci_wipeContainerIfScheduled(void) {
         // old session keychain intact → next launch app saw old token →
         // partial-state account. Clearing here matches user expectation
         // of "fresh install equivalent".
+        //
+        // v2.4.50 (Tier 7): expand to all 5 keychain classes + shared
+        // access groups that hold cross-app server-side identity. Pure
+        // per-bundle wipe still leaves DeviceCheck tokens / iCloud account
+        // anchors / TokenKit smart card cache in shared agrp space, which
+        // is exactly how Apple's anti-fraud (and Zalo's) re-identifies the
+        // "same device with a fresh bundle install".
         g_ci_skipKeychainHook++;
-        for (NSString *cls in @[(__bridge NSString *)kSecClassGenericPassword,
-                                (__bridge NSString *)kSecClassInternetPassword]) {
+        NSArray *secClasses = @[
+            (__bridge NSString *)kSecClassGenericPassword,
+            (__bridge NSString *)kSecClassInternetPassword,
+            (__bridge NSString *)kSecClassCertificate,
+            (__bridge NSString *)kSecClassKey,
+            (__bridge NSString *)kSecClassIdentity,
+        ];
+        for (NSString *cls in secClasses) {
             NSDictionary *q = @{ (__bridge NSString *)kSecClass: cls };
             SecItemDelete((__bridge CFDictionaryRef)q);
+        }
+        // Shared access groups that participate in cross-bundle identity.
+        // Apps that read these (Mail/Messages/iCloud auth chain) won't
+        // launch from our host anyway; we're wiping them so apps under
+        // spoof see "no Apple ID anchor" = brand new device baseline.
+        NSArray *sharedAgrps = @[
+            @"com.apple.account",
+            @"com.apple.account.AppleAccount",
+            @"com.apple.identityservices.idkeychain",
+            @"com.apple.cfnetwork",
+            @"com.apple.imessage",
+            @"com.apple.facetime",
+            @"com.apple.devicecheck",
+            @"com.apple.ManagedConfiguration",
+            @"com.apple.TokenKit",
+            @"com.apple.gmsauth",
+        ];
+        for (NSString *agrp in sharedAgrps) {
+            for (NSString *cls in secClasses) {
+                NSDictionary *q = @{
+                    (__bridge NSString *)kSecClass: cls,
+                    (__bridge NSString *)kSecAttrAccessGroup: agrp,
+                };
+                SecItemDelete((__bridge CFDictionaryRef)q);
+            }
         }
         g_ci_skipKeychainHook--;
 
@@ -857,6 +895,19 @@ BOOL jbHideActive(void) {
     return %orig;
 }
 
+// Tier 5 — proximityState. Fresh device on table, screen facing up =
+// not near user's face = NO. Apps polling this for "in call" detection
+// see a normal idle device.
+- (BOOL)proximityState {
+    if (!fakeLayer(@"uiddevice")) return %orig;
+    return NO;
+}
+
+- (BOOL)isProximityMonitoringEnabled {
+    if (!fakeLayer(@"uiddevice")) return %orig;
+    return NO;
+}
+
 - (BOOL)isMultitaskingSupported {
     return YES;
 }
@@ -1019,6 +1070,27 @@ static void initMGKeyMap() {
         @"DeviceVariant":        @"DeviceVariant",
         @"DeviceVariantGUID":    @"DeviceVariantGUID",
         @"RegulatoryModelNumber": @"RegulatoryModelNumber",
+        // === Tier 2 additions (Phase 3) ===
+        // MLBSerialNumber is the Main Logic Board serial — separate from
+        // SerialNumber (device serial). Reuse SerialNumber config so they
+        // stay correlated per profile.
+        @"MLBSerialNumber":      @"SerialNumber",
+        // AirTelephonyCapability + HasBaseband flags — mirror cellular cap.
+        @"AirTelephonyCapability": @"HasCellularConnectivity",
+        // ApNonce / SEPNonce — apple-paired one-time nonces. Re-derive from
+        // identifierForVendor so they stay stable per profile but unique.
+        @"ApNonce":              @"identifierForVendor",
+        @"SEPNonce":             @"identifierForVendor",
+        // BoardSerialNumber alias used by older fingerprint libs.
+        @"BoardSerialNumber":    @"SerialNumber",
+        // PartitionType — APFS partition type ("System" vs "Data"); apps
+        // sometimes read to detect dev devices.
+        @"PartitionType":        @"PartitionType",
+        // ProductHash — short hash of ProductType; some SDKs use this.
+        @"ProductHash":          @"ProductType",
+        // Internal device family identifiers.
+        @"DeviceClassNumber":    @"ChipID",
+        @"DeviceClass":          @"DeviceClass",
     };
 }
 
@@ -1208,19 +1280,56 @@ static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
 typedef CFTypeRef (*IORegCreateCFProp_t)(mach_port_t entry, CFStringRef key, CFAllocatorRef alloc, uint32_t options);
 static IORegCreateCFProp_t orig_IORegistryEntryCreateCFProperty = NULL;
 
+// IORegistryEntrySearchCFProperty signature differs: searches recursively
+// through child entries on the given plane. Apps frequently use it instead
+// of Create to read serial-number / mlb-serial-number from device tree.
+typedef CFTypeRef (*IORegSearchCFProp_t)(mach_port_t entry, const char *plane, CFStringRef key, CFAllocatorRef alloc, uint32_t options);
+static IORegSearchCFProp_t orig_IORegistryEntrySearchCFProperty = NULL;
+
 static NSDictionary *ioKeyMap = nil;
 
 static void initIOKeyMap() {
     if (ioKeyMap) return;
     ioKeyMap = @{
-        @"IOPlatformSerialNumber": @"IOPlatformSerialNumber",
-        @"IOPlatformUUID":         @"IOPlatformUUID",
-        @"board-id":               @"IOBoardId",
-        @"product-name":           @"IOProductName",
-        @"model":                  @"IOModel",
-        @"serial-number":          @"IODeviceTreeSerial",
-        @"mlb-serial-number":      @"IODeviceTreeMLBSerial",
+        @"IOPlatformSerialNumber":      @"IOPlatformSerialNumber",
+        @"IOPlatformUUID":              @"IOPlatformUUID",
+        @"board-id":                    @"IOBoardId",
+        @"product-name":                @"IOProductName",
+        @"model":                       @"IOModel",
+        @"serial-number":               @"IODeviceTreeSerial",
+        @"mlb-serial-number":           @"IODeviceTreeMLBSerial",
+        // === Tier 3 additions (Phase 3) ===
+        // AppleARMPlatform / device-tree keys read directly by some SDKs.
+        @"region-info":                 @"RegionInfo",
+        @"region-code":                 @"RegionCode",
+        @"model-number":                @"ModelNumber",
+        @"config-number":               @"ModelNumber",
+        @"device_type":                 @"IOProductName",
+        @"target-type":                 @"IOProductName",
+        // Chip-level identifiers read via AppleAuthCP / SEP services.
+        @"chip-id":                     @"ChipID",
+        @"board":                       @"IOBoardId",
+        @"compatible":                  @"hw_machine",
+        // Reuse SerialNumber for any "*-serial" variant we missed.
+        @"system-serial-number":        @"IOPlatformSerialNumber",
     };
+}
+
+// Shared lookup so Create and Search return identical spoofed values.
+static CFTypeRef ci_ioRegistryLookup(NSString *keyStr) {
+    NSString *configKey = ioKeyMap[keyStr];
+    if (!configKey) return NULL;
+    NSString *val = getConfigStr(configKey);
+    if (!val) return NULL;
+    // serial-number / mlb-serial-number / system-serial-number are stored
+    // in the device tree as NSData (raw bytes). Other keys are NSString.
+    if ([keyStr isEqualToString:@"serial-number"] ||
+        [keyStr isEqualToString:@"mlb-serial-number"] ||
+        [keyStr isEqualToString:@"system-serial-number"]) {
+        NSData *data = [val dataUsingEncoding:NSUTF8StringEncoding];
+        return (__bridge_retained CFTypeRef)data;
+    }
+    return (__bridge_retained CFTypeRef)val;
 }
 
 static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStringRef key, CFAllocatorRef alloc, uint32_t options) {
@@ -1228,20 +1337,21 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
     if (!fakeLayer(@"hardware")) return orig_IORegistryEntryCreateCFProperty(entry, key, alloc, options);
     if (configLoaded && key) {
         initIOKeyMap();
-        NSString *keyStr = (__bridge NSString *)key;
-        NSString *configKey = ioKeyMap[keyStr];
-        if (configKey) {
-            NSString *val = getConfigStr(configKey);
-            if (val) {
-                if ([keyStr isEqualToString:@"serial-number"] || [keyStr isEqualToString:@"mlb-serial-number"]) {
-                    NSData *data = [val dataUsingEncoding:NSUTF8StringEncoding];
-                    return (__bridge_retained CFTypeRef)data;
-                }
-                return (__bridge_retained CFTypeRef)val;
-            }
-        }
+        CFTypeRef spoof = ci_ioRegistryLookup((__bridge NSString *)key);
+        if (spoof) return spoof;
     }
     return orig_IORegistryEntryCreateCFProperty(entry, key, alloc, options);
+}
+
+static CFTypeRef hooked_IORegistryEntrySearchCFProperty(mach_port_t entry, const char *plane, CFStringRef key, CFAllocatorRef alloc, uint32_t options) {
+    if (!configLoaded) reloadConfigFromDisk();
+    if (!fakeLayer(@"hardware")) return orig_IORegistryEntrySearchCFProperty(entry, plane, key, alloc, options);
+    if (configLoaded && key) {
+        initIOKeyMap();
+        CFTypeRef spoof = ci_ioRegistryLookup((__bridge NSString *)key);
+        if (spoof) return spoof;
+    }
+    return orig_IORegistryEntrySearchCFProperty(entry, plane, key, alloc, options);
 }
 
 // ============================================================
@@ -1411,6 +1521,17 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
     return %orig;
 }
 
+// Tier 5 — brightness. Real device returns whatever the user set; apps
+// reading this for anti-fraud get a varied value (so a constant suggests
+// emulator). Default to 0.5 (mid-bright, common). Override via config
+// "screenBrightness" if a profile needs to look like a specific state.
+- (CGFloat)brightness {
+    if (!fakeLayer(@"screen")) return %orig;
+    id val = getConfig(@"screenBrightness");
+    if (val) return [val floatValue];
+    return 0.5;
+}
+
 %end
 
 // ============================================================
@@ -1474,6 +1595,32 @@ static CFTypeRef hooked_IORegistryEntryCreateCFProperty(mach_port_t entry, CFStr
     return v;
 }
 
+// Tier 5 — thermalState. Fresh idle device = Nominal (cool). Apps using
+// this for anti-fraud probe "device has been running hard" return
+// Nominal/Fair = clean baseline.
+- (NSProcessInfoThermalState)thermalState {
+    if (!fakeLayer(@"processinfo")) return %orig;
+    return NSProcessInfoThermalStateNominal;
+}
+
+// Low-power mode off — fresh device with full battery wouldn't be in LPM.
+- (BOOL)isLowPowerModeEnabled {
+    if (!fakeLayer(@"processinfo")) return %orig;
+    return NO;
+}
+
+%end
+
+// Tier 5 — AVAudioSession.outputVolume. Apps read this for liveness checks
+// and audio routing fingerprints. Return a steady mid-volume so no app
+// thinks the user is in a meeting / muted / blasting audio.
+%hook AVAudioSession
+- (float)outputVolume {
+    if (!fakeLayer(@"sensor")) return %orig;
+    id val = getConfig(@"outputVolume");
+    if (val) return [val floatValue];
+    return 0.5f;
+}
 %end
 
 // ============================================================
@@ -2249,6 +2396,64 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 %end
 
+// Tier 4 — CMHeadphoneMotionManager (iOS 14+). Fresh device has no
+// AirPods paired so device-motion source is unavailable. Apps probing
+// this for "user wearing headphones" presence get NO.
+%hook CMHeadphoneMotionManager
+- (BOOL)isDeviceMotionAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
+- (BOOL)isDeviceMotionActive {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
+%end
+
+// CMPedometer — availability matrix is per-chip. iPhone 5s+ has M7+
+// motion coprocessor → step counting available. Older devices don't.
+// We return NO uniformly (cleanest "fresh device" baseline; apps that
+// require step counting just ask for permission and we'd grant nothing).
+%hook CMPedometer
++ (BOOL)isStepCountingAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isDistanceAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isFloorCountingAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isPaceAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isCadenceAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isPedometerEventTrackingAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
+%end
+
+// CMAltimeter — barometric pressure sensor. iPhone 6+ has it, older
+// devices don't. Return NO to match "no sensors active" baseline.
+%hook CMAltimeter
++ (BOOL)isRelativeAltitudeAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
++ (BOOL)isAbsoluteAltitudeAvailable {
+    if (fakeLayer(@"sensor")) return NO;
+    return %orig;
+}
+%end
+
 %hook NSUserDefaults
 
 - (id)objectForKey:(NSString *)defaultName {
@@ -2695,6 +2900,36 @@ static BOOL ci_LA_canEval(id self, SEL _cmd, NSInteger policy, NSError **error) 
     return YES;
 }
 
+// Tier 8 — LAContext.evaluatedPolicyDomainState. Apple returns a 64-byte
+// opaque blob whose value changes when the user enrolls/removes a Face/
+// Touch ID. Fingerprint libs treat it as a stable per-device biometric
+// hash. Fresh device hasn't enrolled biometrics → return a deterministic
+// blob derived from identifierForVendor so reads stay consistent across
+// sessions but unique per profile.
+typedef NSData *(*ci_imp_data_t)(id, SEL);
+static ci_imp_data_t orig_LA_evalPolicyDomainState = NULL;
+static NSData *ci_LA_evaluatedPolicyDomainState(id self, SEL _cmd) {
+    if (!fakeLayer(@"hardware")) {
+        return orig_LA_evalPolicyDomainState ? orig_LA_evalPolicyDomainState(self, _cmd) : nil;
+    }
+    NSString *seed = getConfigStr(@"identifierForVendor");
+    if (!seed.length) {
+        return orig_LA_evalPolicyDomainState ? orig_LA_evalPolicyDomainState(self, _cmd) : nil;
+    }
+    // Derive 64-byte blob via repeated SHA-flavored mixing (no crypto need —
+    // just deterministic from seed). 32 cycles of FNV-1a with rotation.
+    uint8_t buf[64];
+    const char *s = [seed UTF8String];
+    size_t sl = strlen(s);
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (int i = 0; i < 64; i++) {
+        h ^= (uint8_t)s[i % sl] + i;
+        h *= 0x100000001b3ULL;
+        buf[i] = (uint8_t)(h >> ((i & 7) * 8));
+    }
+    return [NSData dataWithBytes:buf length:sizeof(buf)];
+}
+
 // Installs an instance-method hook only when the class + selector exist
 // at runtime. Safe in processes where the framework isn't mapped: simply
 // no-ops without raising or registering a swizzle.
@@ -3080,7 +3315,9 @@ static void ci_installAttestHooks(void) {
         if (objc_getClass("LAContext")) {
             ci_swizzleInstance("LAContext", @selector(canEvaluatePolicy:error:),
                                (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
-            NSLog(@"[ChangeInfoIos] LAContext hooked");
+            ci_swizzleInstance("LAContext", @selector(evaluatedPolicyDomainState),
+                               (IMP)ci_LA_evaluatedPolicyDomainState, (IMP *)&orig_LA_evalPolicyDomainState);
+            NSLog(@"[ChangeInfoIos] LAContext hooked (canEval + evalPolicyDomainState)");
         }
         // v2.4.43: ci_installWKWebViewHooks() is already invoked by the
         // main %ctor (line ~3683) — don't double-swizzle here.
@@ -3321,7 +3558,15 @@ static BOOL computeBundleTargeted(void) {
             orig_IORegistryEntryCreateCFProperty = (IORegCreateCFProp_t)dlsym(iokitHandle, "IORegistryEntryCreateCFProperty");
             if (orig_IORegistryEntryCreateCFProperty) {
                 MSHookFunction((void *)orig_IORegistryEntryCreateCFProperty, (void *)hooked_IORegistryEntryCreateCFProperty, (void **)&orig_IORegistryEntryCreateCFProperty);
-                NSLog(@"[ChangeInfoIos] IOKit hooked");
+                NSLog(@"[ChangeInfoIos] IOKit Create hooked");
+            }
+            // IORegistryEntrySearchCFProperty (v2.4.50 Tier 3) — apps bypass
+            // Create by walking the registry plane recursively. Hook both
+            // entry points so they return the same spoofed values.
+            orig_IORegistryEntrySearchCFProperty = (IORegSearchCFProp_t)dlsym(iokitHandle, "IORegistryEntrySearchCFProperty");
+            if (orig_IORegistryEntrySearchCFProperty) {
+                MSHookFunction((void *)orig_IORegistryEntrySearchCFProperty, (void *)hooked_IORegistryEntrySearchCFProperty, (void **)&orig_IORegistryEntrySearchCFProperty);
+                NSLog(@"[ChangeInfoIos] IOKit Search hooked");
             }
         }
 
