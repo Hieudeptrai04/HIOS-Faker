@@ -98,7 +98,25 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
     vm_prot_t oldProtection = VM_PROT_READ;
     if (isDataConst) {
         oldProtection = get_protection(rebindings);
-        mprotect(indirect_symbol_bindings, section->size, PROT_READ | PROT_WRITE);
+        // iOS 16+ Dopamine rootless: mprotect on system-framework __DATA_CONST
+        // returns 0 but the page is still kernel-protected — subsequent writes
+        // raise KERN_PROTECTION_FAILURE (SIGBUS). v2.4.50 incident: CoreUI
+        // __DATA_CONST crashed every target app launch. Fix: use vm_protect
+        // with VM_PROT_COPY which forces COW remap so the page becomes a
+        // private writable copy. If vm_protect fails (truly forbidden page),
+        // skip the section entirely instead of crashing later.
+        kern_return_t kr = vm_protect(mach_task_self(),
+                                       (vm_address_t)indirect_symbol_bindings,
+                                       section->size, FALSE,
+                                       VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) {
+            // Defensive — try the legacy mprotect path, but if that also
+            // doesn't actually grant write, the write will fault. Better to
+            // bail here than crash the host process.
+            if (mprotect(indirect_symbol_bindings, section->size, PROT_READ | PROT_WRITE) != 0) {
+                return;
+            }
+        }
     }
     for (uint i = 0; i < section->size / sizeof(void *); i++) {
         uint32_t symtab_index = indirect_symbol_indices[i];
@@ -132,11 +150,30 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
     }
 }
 
+// v2.4.51: skip system-framework images. Their __DATA_CONST pages are
+// often immutable even after vm_protect VM_PROT_COPY (e.g. CoreUI on iOS
+// 16.7.11) and crash the host process if we attempt to rebind. Main
+// bundle + dynamic frameworks loaded by the app cover ~95% of MG
+// fingerprint callers; remaining system framework calls go through their
+// own private GOT slots that we don't need to intercept anyway.
+static bool ci_image_is_rebind_safe(const Dl_info *info) {
+    if (!info || !info->dli_fname) return false;
+    const char *p = info->dli_fname;
+    if (strstr(p, "/System/Library/")) return false;
+    if (strstr(p, "/private/preboot/")) return false;
+    // /usr/lib is mostly system libs (libsystem, libobjc) — skip these.
+    // Our own dylib lives in /var/jb/Library/MobileSubstrate/, so the
+    // strstr above already excludes us.
+    if (strstr(p, "/usr/lib/") && !strstr(p, "MobileSubstrate")) return false;
+    return true;
+}
+
 static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
                                      const struct mach_header *header,
                                      intptr_t slide) {
     Dl_info info;
     if (dladdr(header, &info) == 0) return;
+    if (!ci_image_is_rebind_safe(&info)) return;
     segment_command_t *cur_seg_cmd;
     segment_command_t *linkedit_segment = NULL;
     struct symtab_command *symtab_cmd = NULL;

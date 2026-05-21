@@ -51,6 +51,15 @@
 			<string>com.nhn.android.band</string>
 			<string>com.zaloapp.zalovn</string>
 			<string>com.segf4ult.joker</string>
+			<!-- v2.4.51: Safari + WebKit content process. Allows full
+			     fingerprint spoof when registering via web (Safari direct
+			     navigation to m.zalo.me / m.facebook.com / banking web).
+			     WebContent is the JS renderer process — hooking it makes
+			     navigator.userAgent / canvas / WebGL spoof apply to all
+			     Safari tabs. NEVER add com.apple.springboard or any UIKit/
+			     daemon bundle (v2.3.24 incident). -->
+			<string>com.apple.mobilesafari</string>
+			<string>com.apple.WebKit.WebContent</string>
 		</array>
 		<!-- Mode key required by ellekit 1.1.3+ for the Filter dict to
 		     match correctly. Without it, ellekit silently skips inject
