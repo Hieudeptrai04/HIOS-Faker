@@ -2183,118 +2183,43 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 // ============================================================
 // BONUS: ZALO-SPECIFIC DEEP HOOKS
-// v2.4.43: WKWebView spoofing restored via runtime method swizzle
-// (no compile-time WebKit linkage), to support Safari / embedded
-// WebView fingerprint bypass — needed because canvas / WebGL /
-// navigator props were leaking real device GPU + UA. Installed
-// from %ctor only when objc_getClass("WKWebView") is non-NULL, so
-// non-WebKit hosts skip safely.
-static IMP orig_WKWebView_init = NULL;
-static IMP orig_WKWebView_setCustomUA = NULL;
-static IMP orig_WKWebView_customUA = NULL;
-
-static NSString *ci_wkInjectionJS(void) {
-    NSString *vendor       = getConfigStr(@"web_glVendor")    ?: @"Apple Inc.";
-    NSString *renderer     = getConfigStr(@"web_glRenderer")  ?: @"Apple GPU";
-    NSString *canvasNoise  = getConfigStr(@"web_canvasNoise") ?: @"hios_spoof";
-    NSString *coreJs = [NSString stringWithFormat:@"\
-        const _getParam = WebGLRenderingContext.prototype.getParameter;\
-        WebGLRenderingContext.prototype.getParameter = function(p) {\
-            if (p === 37445) return '%@';\
-            if (p === 37446) return '%@';\
-            return _getParam.call(this, p);\
-        };\
-        if (window.WebGL2RenderingContext) {\
-            const _gp2 = WebGL2RenderingContext.prototype.getParameter;\
-            WebGL2RenderingContext.prototype.getParameter = function(p) {\
-                if (p === 37445) return '%@';\
-                if (p === 37446) return '%@';\
-                return _gp2.call(this, p);\
-            };\
-        }\
-        const _toDataURL = HTMLCanvasElement.prototype.toDataURL;\
-        HTMLCanvasElement.prototype.toDataURL = function() {\
-            var ctx = this.getContext('2d');\
-            if (ctx) { ctx.fillStyle='rgba(255,255,255,0.01)'; ctx.fillText('%@',1,1); }\
-            return _toDataURL.apply(this, arguments);\
-        };\
-    ", vendor, renderer, vendor, renderer, canvasNoise];
-
-    NSString *rtcJs = @"";
-    if (fakeLayer(@"webrtc")) {
-        rtcJs = @"if(window.RTCPeerConnection){window.RTCPeerConnection=function(){return {};};}\
-        if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){\
-        const oldEnum=navigator.mediaDevices.enumerateDevices;\
-        navigator.mediaDevices.enumerateDevices=async function(){\
-        const devs=await oldEnum.call(this);\
-        return devs.filter(function(d){return d.kind!=='audioinput'&&d.kind!=='videoinput';});};}";
-    }
-    return [NSString stringWithFormat:@"try {%@%@} catch(e) {}", coreJs, rtcJs];
-}
-
-static id ci_WKWebView_init(id self, SEL _cmd, CGRect frame, id config) {
-    if (fakeLayer(@"browser") && config) {
-        id wfGate = getConfig(@"web_fakeEnabled");
-        BOOL allow = (wfGate == nil) || [wfGate boolValue];
-        if (allow) {
-            Class wkUccCls = objc_getClass("WKUserContentController");
-            Class wkScriptCls = objc_getClass("WKUserScript");
-            if (wkUccCls && wkScriptCls) {
-                id ucc = ((id(*)(id, SEL))objc_msgSend)(config, @selector(userContentController));
-                if (!ucc) {
-                    ucc = ((id(*)(id, SEL))objc_msgSend)([wkUccCls alloc], @selector(init));
-                    ((void(*)(id, SEL, id))objc_msgSend)(config, @selector(setUserContentController:), ucc);
-                }
-                NSString *js = ci_wkInjectionJS();
-                // WKUserScriptInjectionTimeAtDocumentStart = 0
-                id script = ((id(*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)
-                    ([wkScriptCls alloc], @selector(initWithSource:injectionTime:forMainFrameOnly:),
-                     js, (NSInteger)0, (BOOL)NO);
-                ((void(*)(id, SEL, id))objc_msgSend)(ucc, @selector(addUserScript:), script);
-            }
-        }
-    }
-    return ((id(*)(id, SEL, CGRect, id))orig_WKWebView_init)(self, _cmd, frame, config);
-}
+// v2.4.43: WKWebView UA spoofing restored via runtime swizzle
+// (no compile-time WebKit linkage). Only User-Agent getter/setter
+// for now — JS injection (canvas/WebGL spoof) needs WKUserScript
+// + WKUserContentController which add more compile-time linkage
+// risk. UA alone covers the most common server-side fingerprint.
+typedef NSString *(*ci_imp_NSString_t)(id, SEL);
+typedef void (*ci_imp_void_NSString_t)(id, SEL, NSString *);
+static ci_imp_NSString_t       orig_WKWebView_customUA    = NULL;
+static ci_imp_void_NSString_t  orig_WKWebView_setCustomUA = NULL;
 
 static NSString *ci_WKWebView_customUA(id self, SEL _cmd) {
-    if (!fakeLayer(@"browser")) return ((NSString *(*)(id, SEL))orig_WKWebView_customUA)(self, _cmd);
+    if (!fakeLayer(@"browser")) return orig_WKWebView_customUA(self, _cmd);
     NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
     if (ua.length) return ua;
-    return ((NSString *(*)(id, SEL))orig_WKWebView_customUA)(self, _cmd);
+    return orig_WKWebView_customUA(self, _cmd);
 }
 
 static void ci_WKWebView_setCustomUA(id self, SEL _cmd, NSString *ua) {
-    if (!fakeLayer(@"browser")) {
-        ((void(*)(id, SEL, NSString *))orig_WKWebView_setCustomUA)(self, _cmd, ua);
-        return;
-    }
+    if (!fakeLayer(@"browser")) { orig_WKWebView_setCustomUA(self, _cmd, ua); return; }
     NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
-    ((void(*)(id, SEL, NSString *))orig_WKWebView_setCustomUA)(self, _cmd, fakeUA.length ? fakeUA : ua);
+    orig_WKWebView_setCustomUA(self, _cmd, fakeUA.length ? fakeUA : ua);
 }
 
 static void ci_installWKWebViewHooks(void) {
     Class wk = objc_getClass("WKWebView");
     if (!wk) return;
-    SEL initSel = @selector(initWithFrame:configuration:);
-    Method initM = class_getInstanceMethod(wk, initSel);
-    if (initM) {
-        orig_WKWebView_init = method_getImplementation(initM);
-        method_setImplementation(initM, (IMP)ci_WKWebView_init);
-    }
-    SEL setUASel = @selector(setCustomUserAgent:);
-    Method setUAM = class_getInstanceMethod(wk, setUASel);
+    Method setUAM = class_getInstanceMethod(wk, @selector(setCustomUserAgent:));
     if (setUAM) {
-        orig_WKWebView_setCustomUA = method_getImplementation(setUAM);
+        orig_WKWebView_setCustomUA = (ci_imp_void_NSString_t)method_getImplementation(setUAM);
         method_setImplementation(setUAM, (IMP)ci_WKWebView_setCustomUA);
     }
-    SEL uaSel = @selector(customUserAgent);
-    Method uaM = class_getInstanceMethod(wk, uaSel);
+    Method uaM = class_getInstanceMethod(wk, @selector(customUserAgent));
     if (uaM) {
-        orig_WKWebView_customUA = method_getImplementation(uaM);
+        orig_WKWebView_customUA = (ci_imp_NSString_t)method_getImplementation(uaM);
         method_setImplementation(uaM, (IMP)ci_WKWebView_customUA);
     }
-    NSLog(@"[ChangeInfoIos] WKWebView runtime hooks installed");
+    NSLog(@"[ChangeInfoIos] WKWebView UA hooks installed");
 }
 
 #if 0
