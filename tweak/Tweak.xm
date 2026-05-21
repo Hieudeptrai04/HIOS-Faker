@@ -3093,6 +3093,36 @@ static NSString *ci_buildWebFingerprintJS(void) {
     // fonts that pin device identity. Return iOS 16 canonical list.
     [js appendString:@"try{if(document.fonts&&document.fonts.values){var _iosFonts=['.AppleSystemUIFont','.AppleSystemUIFontMonospaced','.AppleSystemUIFontRounded','.SFNS-Regular','Helvetica','Helvetica Neue','Arial','Times New Roman','Courier','Courier New','Verdana','Georgia','Trebuchet MS','Tahoma','Symbol','Zapfino','Marker Felt','Noteworthy','Snell Roundhand','Bradley Hand','Chalkduster','American Typewriter','Apple Color Emoji','Avenir','Avenir Next','Baskerville','Bodoni 72','Bodoni 72 Smallcaps','Cochin','Copperplate','Damascus','Didot','Euphemia UCAS','Futura','Geeza Pro','Georgia','Gill Sans','Heiti SC','Heiti TC','Hiragino Sans','Hiragino Sans GB','Hoefler Text','Iowan Old Style','Kailasa','Kefa','Khmer Sangam MN','Lao Sangam MN','Malayalam Sangam MN','Marion','Menlo','Optima','Palatino','Papyrus','Party LET','Savoye LET','Sinhala Sangam MN','Snell Roundhand','Tamil Sangam MN','Thonburi'];var _fakeIter=function*(){for(var i=0;i<_iosFonts.length;i++){yield {family:_iosFonts[i],style:'normal',weight:'400',stretch:'normal',unicodeRange:'U+0-10FFFF',variant:'normal',featureSettings:'normal'};}};Object.defineProperty(document.fonts,'size',{get:function(){return _iosFonts.length;}});document.fonts.values=function(){return _fakeIter();};document.fonts[Symbol.iterator]=function(){return _fakeIter();};document.fonts.forEach=function(cb){_iosFonts.forEach(function(f){cb({family:f,style:'normal',weight:'400'});});};}}catch(e){}"];
 
+    // v2.4.53: navigator.geolocation override. Some Safari/WKWebView
+    // geolocation paths use a private WKGeolocationProvider that bypasses
+    // CLLocationManager Obj-C swizzle — page sees real coords. JS-level
+    // override is belt-and-suspenders: replace getCurrentPosition/watchPosition
+    // with synchronous callbacks that return our spoofed lat/lng. Always
+    // applied even when fake_location is OFF — coords come straight from
+    // config so a missing config value falls through to original behavior.
+    id flat = getConfig(@"latitude");
+    id flng = getConfig(@"longitude");
+    id falt = getConfig(@"altitude");
+    if (flat && flng) {
+        double dLat = [flat doubleValue];
+        double dLng = [flng doubleValue];
+        double dAlt = falt ? [falt doubleValue] : 10.0;
+        // Embed values directly; small jitter every read so timestamp changes
+        // make repeated reads non-identical (mimics noisy GPS).
+        [js appendFormat:
+         @"try{if(navigator.geolocation){"
+         @"var _gp=function(success){"
+         @"if(typeof success!=='function')return;"
+         @"var jLat=(Math.random()-0.5)*1e-5,jLng=(Math.random()-0.5)*1e-5;"
+         @"success({coords:{latitude:%.7f+jLat,longitude:%.7f+jLng,accuracy:20,altitude:%.1f,altitudeAccuracy:5,heading:null,speed:null},timestamp:Date.now()});"
+         @"};"
+         @"navigator.geolocation.getCurrentPosition=function(s,e,o){try{_gp(s);}catch(x){}};"
+         @"navigator.geolocation.watchPosition=function(s,e,o){try{_gp(s);}catch(x){}return 1;};"
+         @"navigator.geolocation.clearWatch=function(id){};"
+         @"}}catch(e){}",
+         dLat, dLng, dAlt];
+    }
+
     [js appendString:@"})();"];
     return js;
 }
