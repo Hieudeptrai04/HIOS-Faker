@@ -2224,85 +2224,6 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 // compile-time WebKit linkage. Just need to make sure it's called
 // from %ctor — see ci_installWKWebViewHooks call near the bottom.)
 
-#if 0
-%hook WKWebView
-
-- (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
-    id wfGate = getConfig(@"web_fakeEnabled");
-    BOOL allowInject = (wfGate == nil) || [wfGate boolValue];
-    if (fakeLayer(@"browser") && allowInject) {
-        WKUserContentController *ucc = configuration.userContentController;
-        if (!ucc) {
-            ucc = [[WKUserContentController alloc] init];
-            configuration.userContentController = ucc;
-        }
-
-        NSString *vendor = getConfigStr(@"web_glVendor") ?: @"Apple Inc.";
-        NSString *renderer = getConfigStr(@"web_glRenderer") ?: @"Apple GPU";
-        NSString *canvasNoise = getConfigStr(@"web_canvasNoise") ?: @"zalo_spoof";
-
-        NSString *coreJs = [NSString stringWithFormat:@"\
-            const _getParam = WebGLRenderingContext.prototype.getParameter;\
-            WebGLRenderingContext.prototype.getParameter = function(p) {\
-                if (p === 37445) return '%@';\
-                if (p === 37446) return '%@';\
-                return _getParam.call(this, p);\
-            };\
-            const _getParam2 = WebGL2RenderingContext.prototype.getParameter;\
-            WebGL2RenderingContext.prototype.getParameter = function(p) {\
-                if (p === 37445) return '%@';\
-                if (p === 37446) return '%@';\
-                return _getParam2.call(this, p);\
-            };\
-            const _toDataURL = HTMLCanvasElement.prototype.toDataURL;\
-            HTMLCanvasElement.prototype.toDataURL = function() {\
-                var ctx = this.getContext('2d');\
-                if (ctx) {\
-                    ctx.fillStyle = 'rgba(255,255,255,0.01)';\
-                    ctx.fillText('%@', 1, 1);\
-                }\
-                return _toDataURL.apply(this, arguments);\
-            };\
-        ", vendor, renderer, vendor, renderer, canvasNoise];
-
-        NSString *rtcJs = @"";
-        if (fakeLayer(@"webrtc")) {
-            rtcJs = @"if(window.RTCPeerConnection){window.RTCPeerConnection=function(){return {};};}\
-            if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){\
-            const oldEnum=navigator.mediaDevices.enumerateDevices;\
-            navigator.mediaDevices.enumerateDevices=async function(){\
-            const devs=await oldEnum.call(this);\
-            return devs.filter(function(d){return d.kind!=='audioinput'&&d.kind!=='videoinput';});};}";
-        }
-
-        NSString *js = [NSString stringWithFormat:@"try {%@%@} catch(e) {}", coreJs, rtcJs];
-        WKUserScript *script = [[WKUserScript alloc] initWithSource:js injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO];
-        [ucc addUserScript:script];
-    }
-    return %orig(frame, configuration);
-}
-
-- (NSString *)customUserAgent {
-    if (!fakeLayer(@"browser")) return %orig;
-    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
-    return ua ?: %orig;
-}
-
-- (void)setCustomUserAgent:(NSString *)userAgent {
-    if (!fakeLayer(@"browser")) {
-        %orig(userAgent);
-        return;
-    }
-    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
-    if (ua) {
-        %orig(ua);
-    } else {
-        %orig(userAgent);
-    }
-}
-
-%end
-#endif // WKWebView hook disabled
 
 %hook CMMotionManager
 
@@ -3658,76 +3579,19 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
             ci_dumpKeychain();
         }
 
-        // v2.4.35: removed sqlite3 fishhook installation (was blocking
-        // Zalo's session-write paths and breaking swipe-kill resume).
-
-        // EMERGENCY KILL-SWITCH: MG install hardcoded OFF until we
-        // diagnose the trampoline / libMobileGestalt iOS 16.7 interaction
-        // that gave us the recursive ellekit.portLoop SIGBUS at
-        // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic during Zalo
-        // scene init (3+ confirmed crashes today). The user's keychain
-        // backup test re-hit the same crash because Reset Data overwrites
-        // /var/jb/etc/changeinfoios/config.plist from in-memory _cfg, and
-        // the SSH-set _ci_skip_mg flag wasn't persisted on the host-app
-        // side — so on next reset the gate flipped back, MG hooks
-        // installed, Zalo crashed again.
-        // Until we have a real fix, force-skip via condition that's
-        // always true: read both the SSH override (still wired so we can
-        // re-test selectively) AND a hardcoded default-true. UIDevice /
-        // IOReg / sysctl / DC / WK / location hooks remain active, so
-        // spoof depth is good — only ProductType / HardwareModel /
-        // UniqueChipID through MGCopyAnswer falls through to real values.
-        // PERMANENTLY DISABLED on iOS 16.7.11.
-        // Crash signature: Zalo at launch hits brk 1 inside MGCopyAnswer
-        // (Firebase/GUL Crashlytics init path), watchdog kills process
-        // after 19s. Root cause: substrate's MSHookFunction patches MG
-        // prologue with a branch instruction; on iOS 16.7.11 with our
-        // jailbreak's amfi/codesign rules, that patched prologue ends
-        // up decoding as `brk` (or Apple inserts a brk-trap when the
-        // function is found modified). Either way the hooked path is
-        // broken and there's no clean fix at user-space.
-        //
-        // Earlier crash chain ("post-register stack overflow") had the
-        // same root cause — Zalo's profile-load path hit MG → brk → some
-        // retry in the runtime → infinite loop → stack guard.
-        //
-        // Trade-off: we lose the deepest spoof layer (MG returns
-        // canonical hardware specs that fingerprint SDKs trust). The
-        // remaining 12+ layers (UIDevice / sysctl / IORegistry /
-        // CTCarrier / DCDevice / AppAttest / etc) cover the same keys
-        // at higher levels and most fingerprint libs read those first.
-        BOOL kSkipMG_HARDCODED = YES;
-        // Opt-in MG hook via fishhook GOT rebinding — avoids MSHookFunction's
-        // prologue patch that brk-traps on iOS 16.7.11. To enable in-the-field:
-        //   ssh root@iphone "/var/jb/usr/bin/plutil -replace _ci_use_mg_fishhook \
-        //     -bool true /var/mobile/Library/Preferences/com.changeinfoios.plist"
-        // then respring. Caveats:
-        //   1. Only intercepts calls through __DATA __la_symbol_ptr / __got
-        //      (static linkage). Calls via dlsym(RTLD_DEFAULT,"MGCopyAnswer")
-        //      bypass — UIDevice._deviceInfoForKey: hook is the safety net.
-        //   2. Newly-loaded dylibs after %ctor are caught via
-        //      _dyld_register_func_for_add_image inside rebind_symbols, but
-        //      our rebinding metadata must outlive %ctor — keep static.
-        //   3. AppAttest / Crashlytics / Firebase typically use static link →
-        //      fishhook intercepts these. Manual probe SDKs may not.
-        // v2.4.47: enable MG fishhook by default after stripping NSLog +
-        // synchronized blocks from the hot path (those were the real
-        // crash trigger — thread-local guard caught re-entrance, but the
-        // NSMutableSet/NSLog work inside the guarded region still re-
-        // entered MG via ASL/libtrace allocations, accumulating recursion
-        // depth → SIGBUS at stack guard page on Zalo init).
-        // Escape hatch: set _ci_skip_mg=YES via plist to disable.
-        BOOL useFishhook = !getConfigBool(@"_ci_skip_mg");
-        if (useFishhook && !getConfigBool(@"_ci_skip_mg")) {
-            // dlopen MG so dlsym below gives us the real entry points to
-            // call from inside our hooked_* functions (orig_* pointers).
+        // MG hook via fishhook GOT rebinding (v2.4.47+). Default ON;
+        // opt-out with _ci_skip_mg=YES via plist if a specific app
+        // crashes. The MSHookFunction install path (deleted in S1.4)
+        // was prologue-patching MG into a `brk` trap under Dopamine
+        // AMFI rules; fishhook only touches the __DATA __got slot so
+        // the original instructions stay intact.
+        if (!getConfigBool(@"_ci_skip_mg")) {
             void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
             if (mgHandle) {
                 orig_MGCopyAnswer      = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
                 orig_MGGetBoolAnswer   = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
                 orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
                 if (orig_MGCopyAnswer) {
-                    // Must outlive %ctor — fishhook keeps a pointer.
                     static struct rebinding mgRebindings[3];
                     int n = 0;
                     mgRebindings[n++] = (struct rebinding){
@@ -3744,42 +3608,9 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
                         };
                     }
                     int rc = rebind_symbols(mgRebindings, n);
-                    NSLog(@"[ChangeInfoIos] MG hooked via fishhook (n=%d rc=%d)", n, rc);
-                } else {
-                    NSLog(@"[ChangeInfoIos] MG fishhook: MGCopyAnswer dlsym failed");
+                    NSLog(@"[ChangeInfoIos] MG fishhook installed (n=%d rc=%d)", n, rc);
                 }
             }
-        } else if (!kSkipMG_HARDCODED && !getConfigBool(@"_ci_skip_mg")) {
-            // Legacy MSHookFunction path — kept for opt-in regression testing
-            // on iOS < 16.7 where the brk trap doesn't trigger. NOT used by
-            // default; toggle by flipping kSkipMG_HARDCODED to NO above AND
-            // leaving _ci_use_mg_fishhook unset.
-            void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
-            if (mgHandle) {
-                orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer");
-                if (!orig_MGCopyAnswer)
-                    orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(mgHandle, "MGCopyAnswer_internal");
-                if (orig_MGCopyAnswer) {
-                    MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer, (void **)&orig_MGCopyAnswer);
-                    NSLog(@"[ChangeInfoIos] MGCopyAnswer hooked (MSHook)");
-                } else {
-                    NSLog(@"[ChangeInfoIos] MGCopyAnswer symbol not found");
-                }
-
-                orig_MGGetBoolAnswer = (MGGetBoolAnswer_t)dlsym(mgHandle, "MGGetBoolAnswer");
-                if (orig_MGGetBoolAnswer) {
-                    MSHookFunction((void *)orig_MGGetBoolAnswer, (void *)hooked_MGGetBoolAnswer, (void **)&orig_MGGetBoolAnswer);
-                    NSLog(@"[ChangeInfoIos] MGGetBoolAnswer hooked (MSHook)");
-                }
-
-                orig_MGGetStringAnswer = (MGGetStringAnswer_t)dlsym(mgHandle, "MGGetStringAnswer");
-                if (orig_MGGetStringAnswer) {
-                    MSHookFunction((void *)orig_MGGetStringAnswer, (void *)hooked_MGGetStringAnswer, (void **)&orig_MGGetStringAnswer);
-                    NSLog(@"[ChangeInfoIos] MGGetStringAnswer hooked (MSHook)");
-                }
-            }
-        } else {
-            NSLog(@"[ChangeInfoIos] MG hook skipped (kSkipMG_HARDCODED=YES, _ci_use_mg_fishhook unset)");
         }
 
         void *iokitHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
