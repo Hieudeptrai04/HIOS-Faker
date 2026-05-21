@@ -2183,14 +2183,120 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 // ============================================================
 // BONUS: ZALO-SPECIFIC DEEP HOOKS
-// ============================================================
-// DISABLED v2.3.23: WKWebView hook pulls in WebKit classes
-// (WKUserScript, WKUserContentController) that need full WebKit framework
-// to be linked at dylib load time. Under rootless, WebKit may not be
-// dyld-shared-cache visible from arbitrary tweak targets, so substrate
-// silently rejects the whole dylib. Re-enable after confirming main
-// inject path works, and move the WebKit code behind a dlopen()/objc_getClass
-// runtime lookup so dylib load never touches WebKit symbols directly.
+// v2.4.43: WKWebView spoofing restored via runtime method swizzle
+// (no compile-time WebKit linkage), to support Safari / embedded
+// WebView fingerprint bypass — needed because canvas / WebGL /
+// navigator props were leaking real device GPU + UA. Installed
+// from %ctor only when objc_getClass("WKWebView") is non-NULL, so
+// non-WebKit hosts skip safely.
+static IMP orig_WKWebView_init = NULL;
+static IMP orig_WKWebView_setCustomUA = NULL;
+static IMP orig_WKWebView_customUA = NULL;
+
+static NSString *ci_wkInjectionJS(void) {
+    NSString *vendor       = getConfigStr(@"web_glVendor")    ?: @"Apple Inc.";
+    NSString *renderer     = getConfigStr(@"web_glRenderer")  ?: @"Apple GPU";
+    NSString *canvasNoise  = getConfigStr(@"web_canvasNoise") ?: @"hios_spoof";
+    NSString *coreJs = [NSString stringWithFormat:@"\
+        const _getParam = WebGLRenderingContext.prototype.getParameter;\
+        WebGLRenderingContext.prototype.getParameter = function(p) {\
+            if (p === 37445) return '%@';\
+            if (p === 37446) return '%@';\
+            return _getParam.call(this, p);\
+        };\
+        if (window.WebGL2RenderingContext) {\
+            const _gp2 = WebGL2RenderingContext.prototype.getParameter;\
+            WebGL2RenderingContext.prototype.getParameter = function(p) {\
+                if (p === 37445) return '%@';\
+                if (p === 37446) return '%@';\
+                return _gp2.call(this, p);\
+            };\
+        }\
+        const _toDataURL = HTMLCanvasElement.prototype.toDataURL;\
+        HTMLCanvasElement.prototype.toDataURL = function() {\
+            var ctx = this.getContext('2d');\
+            if (ctx) { ctx.fillStyle='rgba(255,255,255,0.01)'; ctx.fillText('%@',1,1); }\
+            return _toDataURL.apply(this, arguments);\
+        };\
+    ", vendor, renderer, vendor, renderer, canvasNoise];
+
+    NSString *rtcJs = @"";
+    if (fakeLayer(@"webrtc")) {
+        rtcJs = @"if(window.RTCPeerConnection){window.RTCPeerConnection=function(){return {};};}\
+        if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){\
+        const oldEnum=navigator.mediaDevices.enumerateDevices;\
+        navigator.mediaDevices.enumerateDevices=async function(){\
+        const devs=await oldEnum.call(this);\
+        return devs.filter(function(d){return d.kind!=='audioinput'&&d.kind!=='videoinput';});};}";
+    }
+    return [NSString stringWithFormat:@"try {%@%@} catch(e) {}", coreJs, rtcJs];
+}
+
+static id ci_WKWebView_init(id self, SEL _cmd, CGRect frame, id config) {
+    if (fakeLayer(@"browser") && config) {
+        id wfGate = getConfig(@"web_fakeEnabled");
+        BOOL allow = (wfGate == nil) || [wfGate boolValue];
+        if (allow) {
+            Class wkUccCls = objc_getClass("WKUserContentController");
+            Class wkScriptCls = objc_getClass("WKUserScript");
+            if (wkUccCls && wkScriptCls) {
+                id ucc = ((id(*)(id, SEL))objc_msgSend)(config, @selector(userContentController));
+                if (!ucc) {
+                    ucc = ((id(*)(id, SEL))objc_msgSend)([wkUccCls alloc], @selector(init));
+                    ((void(*)(id, SEL, id))objc_msgSend)(config, @selector(setUserContentController:), ucc);
+                }
+                NSString *js = ci_wkInjectionJS();
+                // WKUserScriptInjectionTimeAtDocumentStart = 0
+                id script = ((id(*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)
+                    ([wkScriptCls alloc], @selector(initWithSource:injectionTime:forMainFrameOnly:),
+                     js, (NSInteger)0, (BOOL)NO);
+                ((void(*)(id, SEL, id))objc_msgSend)(ucc, @selector(addUserScript:), script);
+            }
+        }
+    }
+    return ((id(*)(id, SEL, CGRect, id))orig_WKWebView_init)(self, _cmd, frame, config);
+}
+
+static NSString *ci_WKWebView_customUA(id self, SEL _cmd) {
+    if (!fakeLayer(@"browser")) return ((NSString *(*)(id, SEL))orig_WKWebView_customUA)(self, _cmd);
+    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
+    if (ua.length) return ua;
+    return ((NSString *(*)(id, SEL))orig_WKWebView_customUA)(self, _cmd);
+}
+
+static void ci_WKWebView_setCustomUA(id self, SEL _cmd, NSString *ua) {
+    if (!fakeLayer(@"browser")) {
+        ((void(*)(id, SEL, NSString *))orig_WKWebView_setCustomUA)(self, _cmd, ua);
+        return;
+    }
+    NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
+    ((void(*)(id, SEL, NSString *))orig_WKWebView_setCustomUA)(self, _cmd, fakeUA.length ? fakeUA : ua);
+}
+
+static void ci_installWKWebViewHooks(void) {
+    Class wk = objc_getClass("WKWebView");
+    if (!wk) return;
+    SEL initSel = @selector(initWithFrame:configuration:);
+    Method initM = class_getInstanceMethod(wk, initSel);
+    if (initM) {
+        orig_WKWebView_init = method_getImplementation(initM);
+        method_setImplementation(initM, (IMP)ci_WKWebView_init);
+    }
+    SEL setUASel = @selector(setCustomUserAgent:);
+    Method setUAM = class_getInstanceMethod(wk, setUASel);
+    if (setUAM) {
+        orig_WKWebView_setCustomUA = method_getImplementation(setUAM);
+        method_setImplementation(setUAM, (IMP)ci_WKWebView_setCustomUA);
+    }
+    SEL uaSel = @selector(customUserAgent);
+    Method uaM = class_getInstanceMethod(wk, uaSel);
+    if (uaM) {
+        orig_WKWebView_customUA = method_getImplementation(uaM);
+        method_setImplementation(uaM, (IMP)ci_WKWebView_customUA);
+    }
+    NSLog(@"[ChangeInfoIos] WKWebView runtime hooks installed");
+}
+
 #if 0
 %hook WKWebView
 
@@ -3046,6 +3152,9 @@ static void ci_installAttestHooks(void) {
                                (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
             NSLog(@"[ChangeInfoIos] LAContext hooked");
         }
+        // v2.4.43: WKWebView swizzle for Safari + embedded webview
+        // fingerprint bypass (canvas / WebGL / navigator props / UA).
+        ci_installWKWebViewHooks();
     }
 }
 
@@ -3593,10 +3702,10 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         //      our rebinding metadata must outlive %ctor — keep static.
         //   3. AppAttest / Crashlytics / Firebase typically use static link →
         //      fishhook intercepts these. Manual probe SDKs may not.
-        // v2.4.42: enable fishhook MG path by default. Config flag
-        // _ci_skip_mg still works as an escape hatch if a specific app
-        // shows the SIGBUS regression with this path active.
-        BOOL useFishhook = !getConfigBool(@"_ci_skip_mg");
+        // v2.4.43: rollback v2.4.42 — MG fishhook bật default crash Zalo
+        // (cùng SIGBUS chain). Tắt lại default, chỉ ai opt-in via
+        // _ci_use_mg_fishhook=YES mới chạy.
+        BOOL useFishhook = getConfigBool(@"_ci_use_mg_fishhook");
         if (useFishhook && !getConfigBool(@"_ci_skip_mg")) {
             // dlopen MG so dlsym below gives us the real entry points to
             // call from inside our hooked_* functions (orig_* pointers).
