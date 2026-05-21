@@ -118,6 +118,14 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
     else if (strcmp(name, "kern.hostname")  == 0) configKeyC = "kern_hostname";
     else if (strcmp(name, "kern.osversion") == 0) { configKeyC = "kern_osversion"; isOsVersion = YES; }
     else if (strcmp(name, "kern.osrelease") == 0) configKeyC = "kern_osrelease";
+    // v2.4.59: kern.osproductversion — THIS is what WebCore reads to build
+    // the Safari User-Agent's "iPhone OS X_Y_Z" + "Version/X.Y" substring.
+    // Different from kern.osversion (build number like 20H360); this is the
+    // marketing dotted version like "16.7.11" or "17.5.1". Without spoofing
+    // here, Safari's UA reflects the REAL iOS version on the wire even
+    // though navigator.userAgent (JS) is spoofed.
+    else if (strcmp(name, "kern.osproductversion") == 0 ||
+             strcmp(name, "kern.osproductversionextra") == 0) { configKeyC = "systemVersion"; isOsVersion = YES; }
 
     if (configKeyC) {
         BOOL useStr = isOsVersion ? fakeLayer(@"sysosversion") : fakeLayer(@"sysctl");
