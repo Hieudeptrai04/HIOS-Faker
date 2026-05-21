@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.51";
+static NSString *const kAppVersion = @"2.4.52";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4507,6 +4507,48 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     y += 72;
 
+    // ---- Check Fingerprint shortcut (v2.4.52) ----
+    // Opens browserleaks.com/ip in Safari so user can verify spoof live.
+    // Safari is in our filter plist so canvas/WebGL/UA/IP-locale all
+    // come through the spoofed values.
+    UIView *checkCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
+    [sv addSubview:checkCard];
+    UIButton *checkBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    checkBtn.frame = CGRectMake(0, 0, cardW, 64);
+    [checkBtn addTarget:self action:@selector(openFingerprintCheck) forControlEvents:UIControlEventTouchUpInside];
+    [checkCard addSubview:checkBtn];
+    UILabel *checkIcon = [[UILabel alloc] initWithFrame:CGRectMake(16, 14, 36, 36)];
+    if (@available(iOS 13.0, *)) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+        UIImageView *iv = [[UIImageView alloc] initWithImage:
+            [[UIImage systemImageNamed:@"network" withConfiguration:cfg]
+             imageWithTintColor:[CITheme blue] renderingMode:UIImageRenderingModeAlwaysOriginal]];
+        iv.frame = CGRectMake(16, 17, 30, 30);
+        [checkCard addSubview:iv];
+    } else {
+        checkIcon.text = @"🔎"; checkIcon.font = [UIFont systemFontOfSize:24];
+        [checkCard addSubview:checkIcon];
+    }
+    UILabel *checkTitle = [[UILabel alloc] initWithFrame:CGRectMake(60, 10, cardW-80, 22)];
+    checkTitle.text = @"Check Fingerprint";
+    checkTitle.font = [UIFont boldSystemFontOfSize:16];
+    checkTitle.textColor = [CITheme text];
+    [checkCard addSubview:checkTitle];
+    UILabel *checkSub = [[UILabel alloc] initWithFrame:CGRectMake(60, 32, cardW-80, 20)];
+    checkSub.text = @"browserleaks.com — verify spoof live";
+    checkSub.font = [UIFont systemFontOfSize:13];
+    checkSub.textColor = [CITheme dim];
+    [checkCard addSubview:checkSub];
+    if (@available(iOS 13.0, *)) {
+        UIImageView *chev = [[UIImageView alloc] initWithImage:
+            [[UIImage systemImageNamed:@"chevron.right"]
+             imageWithTintColor:[CITheme dim] renderingMode:UIImageRenderingModeAlwaysOriginal]];
+        chev.frame = CGRectMake(cardW-26, 24, 10, 16);
+        [checkCard addSubview:chev];
+    }
+
+    y += 80;
+
     // ---- App-target chips (visible state of pickers) ----
     UIView *pickRow = [self _ciNewCard:CGRectMake(P, y, cardW, 120)];
     [sv addSubview:pickRow];
@@ -4846,6 +4888,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     vc.title = [NSString stringWithFormat:@"%lu RRS", (unsigned long)[[CIRRSStore shared] entries].count];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     [self presentViewController:nav animated:YES completion:nil];
+}
+
+// v2.4.52: open browserleaks.com/ip in Safari. Tweak is filtered into
+// com.apple.mobilesafari + WebKit.WebContent so the page will see fully
+// spoofed UA / canvas / WebGL / IP-locale matching the current profile.
+- (void)openFingerprintCheck {
+    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
+    if (!url) return;
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
 // View tags inside the progress HUD — fetched by updateHUD:step:title:subtitle:
