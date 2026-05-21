@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.53";
+static NSString *const kAppVersion = @"2.4.54";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -80,6 +80,8 @@ static NSString *CIRRSDir(void) {
 - (void)setObject:(id)value forKey:(NSString *)key;
 - (void)save;
 - (void)notifyReload;
+- (void)syncProfileWithPublicIPCompletion:(void(^)(BOOL success, NSString *city,
+                                                     NSString *country, NSString *err))completion;
 - (NSArray<NSString *> *)targetBundles;
 - (void)setTargetBundles:(NSArray *)arr;
 - (NSArray<NSString *> *)rrsBundles;
@@ -277,6 +279,56 @@ static NSString *CIRRSDir(void) {
     CFStringRef name = (__bridge CFStringRef)kNotifyReload;
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          name, NULL, NULL, true);
+}
+
+// v2.4.54: pull public IP geolocation (ipinfo.io) and sync profile coord,
+// timezone, country code to match. Use case: user changes Shadowrocket VPN
+// exit → app auto-detects new exit IP → updates lat/lng/timezone so
+// browser geolocation, IP geo, and locale all show the SAME location
+// (no "VPN in Vung Tau but GPS in Hanoi" leak).
+//
+// Network call is async; completion fires on main queue with detected
+// city/country + spoof updated flag. Failure (no internet, ipinfo down)
+// reports error but leaves profile untouched.
+- (void)syncProfileWithPublicIPCompletion:(void(^)(BOOL success, NSString *city,
+                                                     NSString *country, NSString *err))completion {
+    NSURL *url = [NSURL URLWithString:@"https://ipinfo.io/json"];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.timeoutInterval = 8.0;
+    [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    [req setValue:@"HIOSFaker/2.4" forHTTPHeaderField:@"User-Agent"];
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        void (^finish)(BOOL, NSString *, NSString *, NSString *) = ^(BOOL ok, NSString *c, NSString *cc, NSString *e) {
+            if (!completion) return;
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(ok, c, cc, e); });
+        };
+        if (err || !data) { finish(NO, nil, nil, err.localizedDescription ?: @"network"); return; }
+        NSError *jerr = nil;
+        NSDictionary *j = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jerr];
+        if (jerr || ![j isKindOfClass:[NSDictionary class]]) {
+            finish(NO, nil, nil, jerr.localizedDescription ?: @"parse"); return;
+        }
+        NSString *loc = j[@"loc"];     // "lat,lng"
+        NSString *city = j[@"city"];
+        NSString *country = j[@"country"];  // ISO country code
+        NSString *tz = j[@"timezone"];
+        NSArray *parts = [loc isKindOfClass:[NSString class]] ? [loc componentsSeparatedByString:@","] : nil;
+        if (parts.count != 2) { finish(NO, city, country, @"missing loc"); return; }
+        double lat = [parts[0] doubleValue];
+        double lng = [parts[1] doubleValue];
+        if (lat == 0 && lng == 0) { finish(NO, city, country, @"zero coord"); return; }
+        // Update — keep numeric type for lat/lng (tweak reads as NSNumber).
+        [self setObject:@(lat) forKey:@"latitude"];
+        [self setObject:@(lng) forKey:@"longitude"];
+        if (tz.length) [self setObject:tz forKey:@"timezoneName"];
+        if (country.length) [self setObject:country forKey:@"localeCountryCode"];
+        // Refresh altitude to a plausible value (city default = sea-level + small).
+        [self setObject:@(15.0) forKey:@"altitude"];
+        [self save];
+        finish(YES, city, country, nil);
+    }];
+    [task resume];
 }
 
 - (NSArray<NSString *> *)targetBundles {
@@ -4507,45 +4559,51 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     y += 72;
 
-    // ---- Check Fingerprint shortcut (v2.4.52) ----
-    // Opens browserleaks.com/ip in Safari so user can verify spoof live.
-    // Safari is in our filter plist so canvas/WebGL/UA/IP-locale all
-    // come through the spoofed values.
-    UIView *checkCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
-    [sv addSubview:checkCard];
-    UIButton *checkBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    checkBtn.frame = CGRectMake(0, 0, cardW, 64);
-    [checkBtn addTarget:self action:@selector(openFingerprintCheck) forControlEvents:UIControlEventTouchUpInside];
-    [checkCard addSubview:checkBtn];
-    UILabel *checkIcon = [[UILabel alloc] initWithFrame:CGRectMake(16, 14, 36, 36)];
+    // ---- VPN Sync + Check Fingerprint card (v2.4.54) ----
+    // Sync GPS+TZ+country với VPN exit IP, rồi mở browserleaks để verify.
+    UIView *syncCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
+    [sv addSubview:syncCard];
+    UIButton *syncBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    syncBtn.frame = CGRectMake(0, 0, cardW/2, 64);
+    [syncBtn addTarget:self action:@selector(syncGPSWithVPN) forControlEvents:UIControlEventTouchUpInside];
+    [syncCard addSubview:syncBtn];
     if (@available(iOS 13.0, *)) {
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
         UIImageView *iv = [[UIImageView alloc] initWithImage:
+            [[UIImage systemImageNamed:@"location.fill.viewfinder" withConfiguration:cfg]
+             imageWithTintColor:[CITheme orange] renderingMode:UIImageRenderingModeAlwaysOriginal]];
+        iv.frame = CGRectMake(14, 17, 30, 30);
+        [syncBtn addSubview:iv];
+    }
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW/2-60, 22)];
+    st.text = @"Sync GPS với VPN"; st.font = [UIFont boldSystemFontOfSize:14]; st.textColor = [CITheme text];
+    [syncBtn addSubview:st];
+    UILabel *ss = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW/2-60, 20)];
+    ss.text = @"ipinfo.io → coord/TZ"; ss.font = [UIFont systemFontOfSize:11]; ss.textColor = [CITheme dim];
+    [syncBtn addSubview:ss];
+
+    UIView *divSync = [[UIView alloc] initWithFrame:CGRectMake(cardW/2, 12, 0.5, 40)];
+    divSync.backgroundColor = [CITheme separator];
+    [syncCard addSubview:divSync];
+
+    UIButton *checkBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    checkBtn.frame = CGRectMake(cardW/2, 0, cardW/2, 64);
+    [checkBtn addTarget:self action:@selector(openFingerprintCheck) forControlEvents:UIControlEventTouchUpInside];
+    [syncCard addSubview:checkBtn];
+    if (@available(iOS 13.0, *)) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+        UIImageView *iv2 = [[UIImageView alloc] initWithImage:
             [[UIImage systemImageNamed:@"network" withConfiguration:cfg]
              imageWithTintColor:[CITheme blue] renderingMode:UIImageRenderingModeAlwaysOriginal]];
-        iv.frame = CGRectMake(16, 17, 30, 30);
-        [checkCard addSubview:iv];
-    } else {
-        checkIcon.text = @"🔎"; checkIcon.font = [UIFont systemFontOfSize:24];
-        [checkCard addSubview:checkIcon];
+        iv2.frame = CGRectMake(14, 17, 30, 30);
+        [checkBtn addSubview:iv2];
     }
-    UILabel *checkTitle = [[UILabel alloc] initWithFrame:CGRectMake(60, 10, cardW-80, 22)];
-    checkTitle.text = @"Check Fingerprint";
-    checkTitle.font = [UIFont boldSystemFontOfSize:16];
-    checkTitle.textColor = [CITheme text];
-    [checkCard addSubview:checkTitle];
-    UILabel *checkSub = [[UILabel alloc] initWithFrame:CGRectMake(60, 32, cardW-80, 20)];
-    checkSub.text = @"browserleaks.com — verify spoof live";
-    checkSub.font = [UIFont systemFontOfSize:13];
-    checkSub.textColor = [CITheme dim];
-    [checkCard addSubview:checkSub];
-    if (@available(iOS 13.0, *)) {
-        UIImageView *chev = [[UIImageView alloc] initWithImage:
-            [[UIImage systemImageNamed:@"chevron.right"]
-             imageWithTintColor:[CITheme dim] renderingMode:UIImageRenderingModeAlwaysOriginal]];
-        chev.frame = CGRectMake(cardW-26, 24, 10, 16);
-        [checkCard addSubview:chev];
-    }
+    UILabel *ct = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW/2-60, 22)];
+    ct.text = @"Check Fingerprint"; ct.font = [UIFont boldSystemFontOfSize:14]; ct.textColor = [CITheme text];
+    [checkBtn addSubview:ct];
+    UILabel *cs = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW/2-60, 20)];
+    cs.text = @"sync + browserleaks"; cs.font = [UIFont systemFontOfSize:11]; cs.textColor = [CITheme dim];
+    [checkBtn addSubview:cs];
 
     y += 80;
 
@@ -4893,10 +4951,67 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // v2.4.52: open browserleaks.com/ip in Safari. Tweak is filtered into
 // com.apple.mobilesafari + WebKit.WebContent so the page will see fully
 // spoofed UA / canvas / WebGL / IP-locale matching the current profile.
+//
+// v2.4.54: sync profile coord/timezone/locale with VPN exit IP FIRST,
+// then open Safari. Otherwise user with VN VPN + Hanoi-profile coord
+// gets browserleaks showing Hanoi GPS while VPN says somewhere else.
 - (void)openFingerprintCheck {
-    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
-    if (!url) return;
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Đang đồng bộ vị trí với VPN..."
+                                                                  message:@"\n"
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:hud animated:YES completion:nil];
+    [[CIConfigManager shared] syncProfileWithPublicIPCompletion:^(BOOL ok, NSString *city, NSString *country, NSString *err) {
+        [hud dismissViewControllerAnimated:YES completion:^{
+            if (ok) {
+                NSString *info = [NSString stringWithFormat:@"Detected VPN exit: %@, %@\nProfile coord + TZ + country đã sync.",
+                                  city ?: @"?", country ?: @"?"];
+                UIAlertController *done = [UIAlertController alertControllerWithTitle:@"Đã sync xong"
+                                                                              message:info
+                                                                       preferredStyle:UIAlertControllerStyleAlert];
+                [done addAction:[UIAlertAction actionWithTitle:@"Mở browser check"
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *a){
+                    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
+                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+                }]];
+                [done addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:done animated:YES completion:nil];
+                [self refreshFakeProfile];
+            } else {
+                NSString *msg = [NSString stringWithFormat:@"Không sync được: %@\n\nVẫn mở browser check.",
+                                 err ?: @"unknown"];
+                UIAlertController *e = [UIAlertController alertControllerWithTitle:@"Sync lỗi"
+                                                                            message:msg
+                                                                     preferredStyle:UIAlertControllerStyleAlert];
+                [e addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                    NSURL *url = [NSURL URLWithString:@"https://browserleaks.com/ip"];
+                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+                }]];
+                [self presentViewController:e animated:YES completion:nil];
+            }
+        }];
+    }];
+}
+
+// v2.4.54: explicit Sync GPS button — same logic without opening browser.
+- (void)syncGPSWithVPN {
+    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Đang sync GPS với VPN..."
+                                                                  message:@"\n"
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:hud animated:YES completion:nil];
+    [[CIConfigManager shared] syncProfileWithPublicIPCompletion:^(BOOL ok, NSString *city, NSString *country, NSString *err) {
+        [hud dismissViewControllerAnimated:YES completion:^{
+            NSString *t = ok ? @"Đồng bộ thành công" : @"Lỗi sync";
+            NSString *m = ok ? [NSString stringWithFormat:@"VPN exit: %@, %@\nLat/Lng + Timezone + Country đã update.",
+                                city ?: @"?", country ?: @"?"]
+                             : (err ?: @"unknown");
+            UIAlertController *r = [UIAlertController alertControllerWithTitle:t message:m
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+            [r addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:r animated:YES completion:nil];
+            if (ok) [self refreshFakeProfile];
+        }];
+    }];
 }
 
 // View tags inside the progress HUD — fetched by updateHUD:step:title:subtitle:
