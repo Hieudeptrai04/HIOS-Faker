@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.37";
+static NSString *const kAppVersion = @"2.4.38";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2980,7 +2980,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         UILabel *summary = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, pill.bounds.size.width - 44, 40)];
         summary.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         summary.font = [CITheme body];
-        summary.textColor = [UIColor whiteColor];
+        summary.textColor = [CITheme text];
         summary.textAlignment = NSTextAlignmentCenter;
         summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", r.options[lo], r.options[hi]];
         summary.userInteractionEnabled = NO;
@@ -2989,7 +2989,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(pill.bounds.size.width - 28, 8, 20, 24)];
         chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         chev.text = expanded ? @"˅" : @"›";
-        chev.textColor = [UIColor whiteColor];
+        chev.textColor = [CITheme orange];
         chev.textAlignment = NSTextAlignmentCenter;
         chev.font = [UIFont boldSystemFontOfSize:18];
         chev.userInteractionEnabled = NO;
@@ -3054,7 +3054,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UILabel *l = [reusingView isKindOfClass:[UILabel class]] ? (UILabel *)reusingView : [[UILabel alloc] init];
     NSArray *opts = objc_getAssociatedObject(pv, @"ciRangeOptions");
     l.text = (row >= 0 && (NSUInteger)row < opts.count) ? opts[row] : @"";
-    l.textColor = [UIColor whiteColor];
+    l.textColor = [CITheme text];
     l.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
     l.textAlignment = NSTextAlignmentCenter;
     l.adjustsFontSizeToFitWidth = YES;
@@ -6875,35 +6875,31 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 
     // v2.4.37: bottom tab bar — Home / Backups / Settings (AZInfo-style).
+    // Set tabBarItem on the ROOT view controller, not the nav stack, so
+    // UINavigationController doesn't override the title with topViewController.title.
     CIHomeViewController *home = [[CIHomeViewController alloc] init];
     UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:home];
-    if (@available(iOS 13.0, *)) {
-        homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home"
-            image:[UIImage systemImageNamed:@"house"]
-            selectedImage:[UIImage systemImageNamed:@"house.fill"]];
-    } else {
-        homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:nil tag:0];
-    }
+    home.tabBarItem = (@available(iOS 13.0, *))
+        ? [[UITabBarItem alloc] initWithTitle:@"Home"
+              image:[UIImage systemImageNamed:@"house"]
+              selectedImage:[UIImage systemImageNamed:@"house.fill"]]
+        : [[UITabBarItem alloc] initWithTitle:@"Home" image:nil tag:0];
 
     CIRRSManagerViewController *backups = [[CIRRSManagerViewController alloc] init];
     UINavigationController *backupsNav = [[UINavigationController alloc] initWithRootViewController:backups];
-    if (@available(iOS 13.0, *)) {
-        backupsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Backups"
-            image:[UIImage systemImageNamed:@"archivebox"]
-            selectedImage:[UIImage systemImageNamed:@"archivebox.fill"]];
-    } else {
-        backupsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Backups" image:nil tag:1];
-    }
+    backups.tabBarItem = (@available(iOS 13.0, *))
+        ? [[UITabBarItem alloc] initWithTitle:@"Backups"
+              image:[UIImage systemImageNamed:@"archivebox"]
+              selectedImage:[UIImage systemImageNamed:@"archivebox.fill"]]
+        : [[UITabBarItem alloc] initWithTitle:@"Backups" image:nil tag:1];
 
     CIFakeSettingsViewController *settings = [[CIFakeSettingsViewController alloc] initWithStyle:UITableViewStyleGrouped];
     UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
-    if (@available(iOS 13.0, *)) {
-        settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings"
-            image:[UIImage systemImageNamed:@"gearshape"]
-            selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]];
-    } else {
-        settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings" image:nil tag:2];
-    }
+    settings.tabBarItem = (@available(iOS 13.0, *))
+        ? [[UITabBarItem alloc] initWithTitle:@"Settings"
+              image:[UIImage systemImageNamed:@"gearshape"]
+              selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]]
+        : [[UITabBarItem alloc] initWithTitle:@"Settings" image:nil tag:2];
 
     UITabBarController *tab = [[UITabBarController alloc] init];
     tab.viewControllers = @[homeNav, backupsNav, settingsNav];
