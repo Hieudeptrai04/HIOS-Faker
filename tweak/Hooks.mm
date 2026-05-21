@@ -327,6 +327,35 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
 }
 
 // ============================================================
+// CFHTTPMessageSetHeaderFieldValue hook (v2.4.58)
+//
+// Universal CFNetwork header setter — every HTTP request from
+// URLSession, NSURLConnection, WebKit/Safari etc. calls this to
+// assemble the request. We rewrite User-Agent to zalo_fakeWebViewUA
+// so the bytes-on-wire UA matches the spoofed iOS version.
+// ============================================================
+#import <CFNetwork/CFHTTPMessage.h>
+typedef Boolean (*CFHTTPMessageSetHeaderFieldValue_t)(CFHTTPMessageRef message, CFStringRef headerField, CFStringRef value);
+CFHTTPMessageSetHeaderFieldValue_t orig_CFHTTPMessageSetHeaderFieldValue = NULL;
+
+extern "C" Boolean hooked_CFHTTPMessageSetHeaderFieldValue(CFHTTPMessageRef message,
+                                                            CFStringRef headerField,
+                                                            CFStringRef value) {
+    if (!fakeLayer(@"browser") || !headerField || !orig_CFHTTPMessageSetHeaderFieldValue) {
+        return orig_CFHTTPMessageSetHeaderFieldValue(message, headerField, value);
+    }
+    NSString *field = (__bridge NSString *)headerField;
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+        NSString *fakeUA = getConfigStr(@"zalo_fakeWebViewUA");
+        if (fakeUA.length) {
+            return orig_CFHTTPMessageSetHeaderFieldValue(message, headerField,
+                                                          (__bridge CFStringRef)fakeUA);
+        }
+    }
+    return orig_CFHTTPMessageSetHeaderFieldValue(message, headerField, value);
+}
+
+// ============================================================
 // uname hook
 // ============================================================
 static int (*orig_uname)(struct utsname *name) = NULL;
@@ -1972,6 +2001,17 @@ extern "C" void initCLvlHooks(void) {
             MSHookFunction(dlsym_sym, (void *)hooked_dlsym, (void **)&orig_dlsym);
             NSLog(@"[ChangeInfoIos] dlsym hooked");
         }
+    }
+
+    // v2.4.58: CFHTTPMessageSetHeaderFieldValue — universal HTTP header
+    // setter at CFNetwork layer. Every URLSession/CFURLConnection/WebKit
+    // request ultimately calls this to assemble its HTTP request. By
+    // rewriting User-Agent here we catch the Safari main-page navigation
+    // path that bypasses both customUserAgent and WKWebView.loadRequest:.
+    void *cfh_sym = dlsym(RTLD_DEFAULT, "CFHTTPMessageSetHeaderFieldValue");
+    if (cfh_sym && !orig_CFHTTPMessageSetHeaderFieldValue) {
+        MSHookFunction(cfh_sym, (void *)hooked_CFHTTPMessageSetHeaderFieldValue, (void **)&orig_CFHTTPMessageSetHeaderFieldValue);
+        NSLog(@"[ChangeInfoIos] CFHTTPMessageSetHeaderFieldValue hooked");
     }
 
     NSLog(@"[ChangeInfoIos] All C-level hooks initialized");
