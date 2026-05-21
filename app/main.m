@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.45";
+static NSString *const kAppVersion = @"2.4.46";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5158,7 +5158,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     //   fillLayer  — same circle, strokeEnd animates 0 → step/total
     // A third layer (spinLayer) is a thin rotating arc on top of the fill
     // for a constant "alive" indicator while the step is sleeping for I/O.
-    UIView *root = self.view.window ?: self.view;
+    // v2.4.46: prefer the app's key window so the HUD shows even when
+    // restoreEntry: is invoked from a different tab (RRS Backups tab
+    // calls Home VC's restoreEntry, but Home's view isn't loaded yet →
+    // self.view.window was nil → HUD never visible).
+    UIView *root = self.view.window;
+    if (!root) {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { root = w; break; }
+        }
+        if (!root) root = [UIApplication sharedApplication].windows.firstObject;
+    }
+    if (!root) root = self.view;
     UIView *dim = [[UIView alloc] initWithFrame:root.bounds];
     dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.70];
     dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
