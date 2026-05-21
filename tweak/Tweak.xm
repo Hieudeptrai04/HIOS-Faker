@@ -3593,7 +3593,10 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         //      our rebinding metadata must outlive %ctor — keep static.
         //   3. AppAttest / Crashlytics / Firebase typically use static link →
         //      fishhook intercepts these. Manual probe SDKs may not.
-        BOOL useFishhook = getConfigBool(@"_ci_use_mg_fishhook");
+        // v2.4.42: enable fishhook MG path by default. Config flag
+        // _ci_skip_mg still works as an escape hatch if a specific app
+        // shows the SIGBUS regression with this path active.
+        BOOL useFishhook = !getConfigBool(@"_ci_skip_mg");
         if (useFishhook && !getConfigBool(@"_ci_skip_mg")) {
             // dlopen MG so dlsym below gives us the real entry points to
             // call from inside our hooked_* functions (orig_* pointers).
