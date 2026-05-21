@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.36";
+static NSString *const kAppVersion = @"2.4.37";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4587,9 +4587,17 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     self.view.backgroundColor = [CITheme bg];
     self.title = @"HIOS Faker";
 
-    self.navigationItem.rightBarButtonItem =
+    self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithImage:[self menuIcon] style:UIBarButtonItemStylePlain
                                         target:self action:@selector(openMenu)];
+    if (@available(iOS 13.0, *)) {
+        UIImage *logoutImg = [[UIImage systemImageNamed:@"rectangle.portrait.and.arrow.right"]
+                              imageWithTintColor:[CITheme blue]
+                              renderingMode:UIImageRenderingModeAlwaysOriginal];
+        self.navigationItem.rightBarButtonItem =
+            [[UIBarButtonItem alloc] initWithImage:logoutImg style:UIBarButtonItemStylePlain
+                                            target:self action:@selector(openMenu)];
+    }
 
     UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
     sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -4695,11 +4703,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     NSArray *fields = @[
         @[@"Model",    [self _fakeModelText:cm]],
         @[@"iOS",      [self _fakeIOSText:cm]],
-        @[@"Color",    [cm stringForKey:@"DeviceColor"]    ?: @"—"],
+        @[@"Color",    [cm stringForKey:@"DeviceColor"]      ?: @"—"],
         @[@"Storage",  [self _fakeStorageText:cm]],
-        @[@"Region",   [cm stringForKey:@"RegionInfo"]     ?: @"—"],
+        @[@"Region",   [cm stringForKey:@"RegionInfo"]       ?: @"—"],
         @[@"Locale",   [cm stringForKey:@"localeIdentifier"] ?: @"—"],
-        @[@"Timezone", [cm stringForKey:@"timezone"]       ?: @"—"],
+        @[@"Timezone", [cm stringForKey:@"timezoneName"]     ?: @"—"],
         @[@"Carrier",  [self _fakeCarrierText:cm]],
     ];
     CGFloat rowY = 56;
@@ -4867,10 +4875,19 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
 
 - (NSString *)_fakeCarrierText:(CIConfigManager *)cm {
     NSString *mcc = [cm stringForKey:@"carrierMCC"];
-    NSString *mnc = [cm stringForKey:@"carrierISO"];
+    NSString *mnc = [cm stringForKey:@"carrierMNC"];
+    NSString *iso = [cm stringForKey:@"carrierISO"];
     NSString *name = [cm stringForKey:@"carrierName"];
-    if (mcc.length && mnc.length) return [NSString stringWithFormat:@"%@ / %@%@",
-                                          mcc, mnc, name.length ? [@" (" stringByAppendingFormat:@"%@)", name] : @""];
+    if (mcc.length && mnc.length) {
+        return name.length
+            ? [NSString stringWithFormat:@"%@ / %@ (%@)", mcc, mnc, name]
+            : [NSString stringWithFormat:@"%@ / %@", mcc, mnc];
+    }
+    if (mcc.length && iso.length) {
+        return name.length
+            ? [NSString stringWithFormat:@"%@ / %@ (%@)", mcc, iso, name]
+            : [NSString stringWithFormat:@"%@ / %@", mcc, iso];
+    }
     if (name.length) return name;
     return @"—";
 }
@@ -6856,10 +6873,49 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+
+    // v2.4.37: bottom tab bar — Home / Backups / Settings (AZInfo-style).
     CIHomeViewController *home = [[CIHomeViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:home];
-    nav.navigationBar.prefersLargeTitles = NO;
-    self.window.rootViewController = nav;
+    UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:home];
+    if (@available(iOS 13.0, *)) {
+        homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home"
+            image:[UIImage systemImageNamed:@"house"]
+            selectedImage:[UIImage systemImageNamed:@"house.fill"]];
+    } else {
+        homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:nil tag:0];
+    }
+
+    CIRRSManagerViewController *backups = [[CIRRSManagerViewController alloc] init];
+    UINavigationController *backupsNav = [[UINavigationController alloc] initWithRootViewController:backups];
+    if (@available(iOS 13.0, *)) {
+        backupsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Backups"
+            image:[UIImage systemImageNamed:@"archivebox"]
+            selectedImage:[UIImage systemImageNamed:@"archivebox.fill"]];
+    } else {
+        backupsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Backups" image:nil tag:1];
+    }
+
+    CIFakeSettingsViewController *settings = [[CIFakeSettingsViewController alloc] initWithStyle:UITableViewStyleGrouped];
+    UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
+    if (@available(iOS 13.0, *)) {
+        settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings"
+            image:[UIImage systemImageNamed:@"gearshape"]
+            selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]];
+    } else {
+        settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Settings" image:nil tag:2];
+    }
+
+    UITabBarController *tab = [[UITabBarController alloc] init];
+    tab.viewControllers = @[homeNav, backupsNav, settingsNav];
+    tab.tabBar.tintColor = [CITheme blue];
+    if (@available(iOS 15.0, *)) {
+        UITabBarAppearance *ta = [[UITabBarAppearance alloc] init];
+        [ta configureWithOpaqueBackground];
+        ta.backgroundColor = [CITheme card];
+        tab.tabBar.standardAppearance = ta;
+        tab.tabBar.scrollEdgeAppearance = ta;
+    }
+    self.window.rootViewController = tab;
     self.window.backgroundColor = [CITheme bg];
     [self.window makeKeyAndVisible];
     return YES;
