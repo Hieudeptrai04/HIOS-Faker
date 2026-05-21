@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.44";
+static NSString *const kAppVersion = @"2.4.45";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3455,19 +3455,50 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) {
-        // Defer to the host VC that owns RRS creation (CIHomeViewController
-        // exposes -restoreEntry:). The presenting VC chain reaches it via
-        // presentingViewController.
-        UIViewController *presenter = self.presentingViewController;
-        if ([presenter isKindOfClass:[UINavigationController class]]) {
-            presenter = [(UINavigationController *)presenter topViewController];
-        }
-        // Dismiss ourselves first so the HUD shows on the home screen.
-        [self dismissViewControllerAnimated:YES completion:^{
-            if ([presenter respondsToSelector:@selector(restoreEntry:)]) {
-                [presenter performSelector:@selector(restoreEntry:) withObject:e];
+        // v2.4.45: RRS list is now a tab (UITabBarController), not a modal,
+        // so presentingViewController is nil → previous lookup returned no
+        // target and restoreEntry: was never invoked (user reported
+        // "ấn restore nhưng ko restore" on v2.4.44). Walk three locations:
+        //   1) tabBarController.viewControllers[0]'s nav root (Home tab)
+        //   2) presentingViewController chain (legacy modal flow)
+        //   3) self if we're inline-pushed
+        // First responder that implements -restoreEntry: wins.
+        UIViewController *target = nil;
+        UITabBarController *tab = self.tabBarController;
+        if (tab && tab.viewControllers.count > 0) {
+            UIViewController *first = tab.viewControllers.firstObject;
+            if ([first isKindOfClass:[UINavigationController class]]) {
+                first = [(UINavigationController *)first viewControllers].firstObject;
             }
-        }];
+            if ([first respondsToSelector:@selector(restoreEntry:)]) {
+                target = first;
+            }
+        }
+        if (!target) {
+            UIViewController *presenter = self.presentingViewController;
+            if ([presenter isKindOfClass:[UINavigationController class]]) {
+                presenter = [(UINavigationController *)presenter topViewController];
+            }
+            if ([presenter respondsToSelector:@selector(restoreEntry:)]) {
+                target = presenter;
+            }
+        }
+        if (!target && [self respondsToSelector:@selector(restoreEntry:)]) {
+            target = self;
+        }
+        // Switch to Home tab so the HUD is visible while restore runs.
+        if (tab && target == tab.viewControllers.firstObject) {
+            tab.selectedIndex = 0;
+        }
+        if (target) {
+            [target performSelector:@selector(restoreEntry:) withObject:e];
+        } else {
+            UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Lỗi"
+                message:@"Không tìm thấy handler restore. Mở tab Home trước rồi quay lại Backups và thử lại."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:err animated:YES completion:nil];
+        }
     }]];
     [self presentViewController:a animated:YES completion:nil];
 }
