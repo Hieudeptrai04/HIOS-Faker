@@ -662,9 +662,24 @@ static void ci_wipeContainerIfScheduled(void) {
                 if ([fm removeItemAtPath:[full stringByAppendingPathComponent:item] error:&err]) removed++;
             }
         }
+        // v2.4.47: also wipe the bundle's keychain entries (generic +
+        // internet password classes). Previously only wiped during restore
+        // flow via ci_restoreKeychainIfFlagged. Pure Reset Data left the
+        // old session keychain intact → next launch app saw old token →
+        // partial-state account. Clearing here matches user expectation
+        // of "fresh install equivalent".
+        g_ci_skipKeychainHook++;
+        for (NSString *cls in @[(__bridge NSString *)kSecClassGenericPassword,
+                                (__bridge NSString *)kSecClassInternetPassword]) {
+            NSDictionary *q = @{ (__bridge NSString *)kSecClass: cls };
+            SecItemDelete((__bridge CFDictionaryRef)q);
+        }
+        g_ci_skipKeychainHook--;
+
         [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
             atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSLog(@"[ChangeInfoIos] Wiped %@ (counter=%lld, items=%lu)", bid, counter, (unsigned long)removed);
+        NSLog(@"[ChangeInfoIos] Wiped %@ (counter=%lld, items=%lu, keychain cleared)",
+              bid, counter, (unsigned long)removed);
     }
 }
 
@@ -1092,36 +1107,17 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
         }
     }
 
-    // Verbose-per-call logging was causing device-wide lag: MGCopyAnswer
-    // is invoked thousands of times/sec across every process we inject.
-    // Log each (key, path) the FIRST time only — enough to diagnose which
-    // properties an app reads without flooding syslog.
-    static NSMutableSet *loggedSpoof = nil;
-    static NSMutableSet *loggedPass  = nil;
-    static dispatch_once_t logOnce;
-    dispatch_once(&logOnce, ^{
-        loggedSpoof = [NSMutableSet new];
-        loggedPass  = [NSMutableSet new];
-    });
-
+    // v2.4.47: stripped ALL NSLog + @synchronized + NSMutableSet from the
+    // hot path. NSLog enters CFLog → ASL → libtrace which calls MG for
+    // syslog prefix → re-enters our hook → thread-local guard catches but
+    // each pass still does CFString work, multiplying cost. NSMutableSet
+    // operations may allocate, allocations on some iOS versions trigger
+    // metadata lookups that touch MG. Zero-alloc hot path = stable hook.
     if (result) {
-        @synchronized (loggedSpoof) {
-            if (![loggedSpoof containsObject:key]) {
-                [loggedSpoof addObject:key];
-                NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] SPOOFED (first)", key);
-            }
-        }
         g_ci_inMGHook = 0;
         return result;
     }
-
     CFTypeRef orig = orig_MGCopyAnswer(property);
-    @synchronized (loggedPass) {
-        if (![loggedPass containsObject:key]) {
-            [loggedPass addObject:key];
-            NSLog(@"[ChangeInfoIos] MGCopyAnswer[%@] passthrough (first)", key);
-        }
-    }
     g_ci_inMGHook = 0;
     return orig;
 }
@@ -1764,19 +1760,58 @@ static NSDictionary *ci_spoofSystemVersionDict(NSDictionary *orig) {
 
 static const char kCIApnsOrigKey = 0;
 
+// v2.4.47: per-bundle persistent APNs token. Auto-generate + cache so
+// each target app gets a STABLE-but-unique 32-byte token across launches
+// (matches Apple's real behavior — same device returns same APNs token
+// to the same app until iOS re-issues on uninstall+reinstall, but
+// different apps get different tokens). Single-config approach made
+// every app on the device share one fake token, which lets servers
+// correlate "Zalo and Facebook see the same APNs hash → same device."
+//
+//   Lookup order:
+//     1) `apnsTokenSpoof` in config (manual override, hex 64-char)
+//     2) /var/jb/etc/changeinfoios/apns_<bid>.dat (per-bundle cache)
+//     3) Generate fresh random 32 bytes, persist to (2), return
+//
+//   On Reset Data the host deletes /var/jb/etc/changeinfoios/apns_*.dat
+//   so next launch generates a brand-new fake token (= new device illusion).
 static NSData *ci_apnsSpoofTokenData(void) {
+    // 1) Explicit override via config (kept for backwards-compat)
     NSString *hex = getConfigStr(@"apnsTokenSpoof");
-    if (hex.length < 64) return nil;
-    NSMutableData *out = [NSMutableData dataWithCapacity:32];
-    for (NSUInteger i = 0; i + 2 <= hex.length && out.length < 32; i += 2) {
-        unsigned int v = 0;
-        const char *p = [[hex substringWithRange:NSMakeRange(i, 2)] UTF8String];
-        if (sscanf(p, "%02x", &v) == 1) {
-            uint8_t b = (uint8_t)v;
-            [out appendBytes:&b length:1];
+    if (hex.length >= 64) {
+        NSMutableData *out = [NSMutableData dataWithCapacity:32];
+        for (NSUInteger i = 0; i + 2 <= hex.length && out.length < 32; i += 2) {
+            unsigned int v = 0;
+            const char *p = [[hex substringWithRange:NSMakeRange(i, 2)] UTF8String];
+            if (sscanf(p, "%02x", &v) == 1) {
+                uint8_t b = (uint8_t)v;
+                [out appendBytes:&b length:1];
+            }
         }
+        if (out.length == 32) return out;
     }
-    return out.length == 32 ? out : nil;
+
+    // 2) Per-bundle persistent file in app's Library/Caches (sandbox-writable,
+    //    survives launches, wiped by Clear Data + Kill Apps).
+    NSArray *libDirs = NSSearchPathForDirectoriesInDomains(
+        NSCachesDirectory, NSUserDomainMask, YES);
+    NSString *cacheDir = [libDirs.firstObject
+        stringByAppendingPathComponent:@"ChangeInfoIos"];
+    if (cacheDir.length == 0) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:cacheDir withIntermediateDirectories:YES
+                   attributes:nil error:nil];
+    NSString *path = [cacheDir stringByAppendingPathComponent:@"apns_token.dat"];
+    NSData *cached = [NSData dataWithContentsOfFile:path];
+    if (cached.length == 32) return cached;
+
+    // 3) Generate fresh 32-byte token, persist
+    NSMutableData *fresh = [NSMutableData dataWithLength:32];
+    if (SecRandomCopyBytes(kSecRandomDefault, 32, fresh.mutableBytes) != errSecSuccess) {
+        arc4random_buf(fresh.mutableBytes, 32);
+    }
+    [fresh writeToFile:path atomically:YES];
+    return fresh;
 }
 
 static void ci_apnsHookedImpl(id self, SEL _cmd, UIApplication *app, NSData *originalToken) {
@@ -2371,6 +2406,15 @@ static NSDictionary *ci_buildProxyDictForTweak(void) {
     NSURLSessionConfiguration *cfg = %orig;
     NSDictionary *p = ci_buildProxyDictForTweak();
     if (cfg && p) cfg.connectionProxyDictionary = p;
+    // v2.4.47: optionally force TLS 1.2 only (partial JA3 spoof). When
+    // _ci_force_tls12=YES, ClientHello signature shifts to match older
+    // iOS pattern. Doesn't fully randomize JA3 (cipher order is hard-coded
+    // in Security.framework) but partial match is enough to pass servers
+    // that fingerprint by TLS version + extension set.
+    if (cfg && getConfigBool(@"_ci_force_tls12")) {
+        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+        cfg.TLSMaximumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+    }
     return cfg;
 }
 
@@ -2378,6 +2422,10 @@ static NSDictionary *ci_buildProxyDictForTweak(void) {
     NSURLSessionConfiguration *cfg = %orig;
     NSDictionary *p = ci_buildProxyDictForTweak();
     if (cfg && p) cfg.connectionProxyDictionary = p;
+    if (cfg && getConfigBool(@"_ci_force_tls12")) {
+        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+        cfg.TLSMaximumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+    }
     return cfg;
 }
 
@@ -2858,6 +2906,36 @@ static NSString *ci_buildWebFingerprintJS(void) {
         [js appendString:@"try{if(window.RTCPeerConnection)window.RTCPeerConnection=function(){return {};};}catch(e){}"];
         [js appendString:@"try{if(navigator.mediaDevices&&navigator.mediaDevices.enumerateDevices){var _e=navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);navigator.mediaDevices.enumerateDevices=async function(){var d=await _e();return d.filter(function(x){return x.kind!=='audioinput'&&x.kind!=='videoinput';});};}}catch(e){}"];
     }
+
+    // v2.4.47: Intl.DateTimeFormat timezone — match fake timezoneName so
+    // SDKs probing Intl.DateTimeFormat().resolvedOptions().timeZone see
+    // the same value as Foundation NSTimeZone. Most JS fingerprint libs
+    // use Intl as the cross-browser canonical timezone source.
+    NSString *fakeTZ = getConfigStr(@"timezoneName") ?: @"Asia/Ho_Chi_Minh";
+    [js appendFormat:@"try{var _Intl=window.Intl;if(_Intl&&_Intl.DateTimeFormat){var _DTF=_Intl.DateTimeFormat;var _wrap=function(){var i=new _DTF(arguments[0]||undefined,arguments[1]||undefined);var _ro=i.resolvedOptions.bind(i);i.resolvedOptions=function(){var r=_ro();r.timeZone='%@';return r;};return i;};_wrap.prototype=_DTF.prototype;_wrap.supportedLocalesOf=_DTF.supportedLocalesOf;window.Intl.DateTimeFormat=_wrap;}}catch(e){}", fakeTZ];
+
+    // Override Date.prototype.getTimezoneOffset() so legacy code (pre-Intl
+    // fingerprint libs) also reads our fake timezone. Compute offset from
+    // tz name via a single lookup at JS load (-420 min for Asia/Ho_Chi_Minh,
+    // -480 for Singapore, +300 for US Eastern, etc.). Negative because
+    // JS convention is (UTC - local) so a +7 zone returns -420.
+    NSInteger tzOffsetMin = -420;  // default VN
+    if ([fakeTZ hasPrefix:@"America/New_York"] || [fakeTZ hasPrefix:@"America/Toronto"]) tzOffsetMin = 300;
+    else if ([fakeTZ hasPrefix:@"America/Los_Angeles"] || [fakeTZ hasPrefix:@"America/Vancouver"]) tzOffsetMin = 480;
+    else if ([fakeTZ hasPrefix:@"America/Chicago"]) tzOffsetMin = 360;
+    else if ([fakeTZ hasPrefix:@"Europe/London"]) tzOffsetMin = 0;
+    else if ([fakeTZ hasPrefix:@"Europe/Paris"] || [fakeTZ hasPrefix:@"Europe/Berlin"]) tzOffsetMin = -60;
+    else if ([fakeTZ hasPrefix:@"Asia/Tokyo"] || [fakeTZ hasPrefix:@"Asia/Seoul"]) tzOffsetMin = -540;
+    else if ([fakeTZ hasPrefix:@"Asia/Singapore"] || [fakeTZ hasPrefix:@"Asia/Shanghai"] || [fakeTZ hasPrefix:@"Asia/Hong_Kong"]) tzOffsetMin = -480;
+    else if ([fakeTZ hasPrefix:@"Asia/Bangkok"] || [fakeTZ hasPrefix:@"Asia/Jakarta"] || [fakeTZ hasPrefix:@"Asia/Ho_Chi_Minh"]) tzOffsetMin = -420;
+    else if ([fakeTZ hasPrefix:@"Australia/Sydney"]) tzOffsetMin = -600;
+    [js appendFormat:@"try{Date.prototype.getTimezoneOffset=function(){return %ld;};}catch(e){}", (long)tzOffsetMin];
+
+    // v2.4.47: document.fonts iterator — limit to safe iOS system fonts
+    // so fingerprint libs can't enumerate jailbreak font installs (e.g.
+    // user installed custom fonts via Filza) and can't probe for unusual
+    // fonts that pin device identity. Return iOS 16 canonical list.
+    [js appendString:@"try{if(document.fonts&&document.fonts.values){var _iosFonts=['.AppleSystemUIFont','.AppleSystemUIFontMonospaced','.AppleSystemUIFontRounded','.SFNS-Regular','Helvetica','Helvetica Neue','Arial','Times New Roman','Courier','Courier New','Verdana','Georgia','Trebuchet MS','Tahoma','Symbol','Zapfino','Marker Felt','Noteworthy','Snell Roundhand','Bradley Hand','Chalkduster','American Typewriter','Apple Color Emoji','Avenir','Avenir Next','Baskerville','Bodoni 72','Bodoni 72 Smallcaps','Cochin','Copperplate','Damascus','Didot','Euphemia UCAS','Futura','Geeza Pro','Georgia','Gill Sans','Heiti SC','Heiti TC','Hiragino Sans','Hiragino Sans GB','Hoefler Text','Iowan Old Style','Kailasa','Kefa','Khmer Sangam MN','Lao Sangam MN','Malayalam Sangam MN','Marion','Menlo','Optima','Palatino','Papyrus','Party LET','Savoye LET','Sinhala Sangam MN','Snell Roundhand','Tamil Sangam MN','Thonburi'];var _fakeIter=function*(){for(var i=0;i<_iosFonts.length;i++){yield {family:_iosFonts[i],style:'normal',weight:'400',stretch:'normal',unicodeRange:'U+0-10FFFF',variant:'normal',featureSettings:'normal'};}};Object.defineProperty(document.fonts,'size',{get:function(){return _iosFonts.length;}});document.fonts.values=function(){return _fakeIter();};document.fonts[Symbol.iterator]=function(){return _fakeIter();};document.fonts.forEach=function(cb){_iosFonts.forEach(function(f){cb({family:f,style:'normal',weight:'400'});});};}}catch(e){}"];
 
     [js appendString:@"})();"];
     return js;
@@ -3632,10 +3710,14 @@ static BOOL ci_copyPlanesIntoBuffer(CVPixelBufferRef src, CVPixelBufferRef dst) 
         //      our rebinding metadata must outlive %ctor — keep static.
         //   3. AppAttest / Crashlytics / Firebase typically use static link →
         //      fishhook intercepts these. Manual probe SDKs may not.
-        // v2.4.43: rollback v2.4.42 — MG fishhook bật default crash Zalo
-        // (cùng SIGBUS chain). Tắt lại default, chỉ ai opt-in via
-        // _ci_use_mg_fishhook=YES mới chạy.
-        BOOL useFishhook = getConfigBool(@"_ci_use_mg_fishhook");
+        // v2.4.47: enable MG fishhook by default after stripping NSLog +
+        // synchronized blocks from the hot path (those were the real
+        // crash trigger — thread-local guard caught re-entrance, but the
+        // NSMutableSet/NSLog work inside the guarded region still re-
+        // entered MG via ASL/libtrace allocations, accumulating recursion
+        // depth → SIGBUS at stack guard page on Zalo init).
+        // Escape hatch: set _ci_skip_mg=YES via plist to disable.
+        BOOL useFishhook = !getConfigBool(@"_ci_skip_mg");
         if (useFishhook && !getConfigBool(@"_ci_skip_mg")) {
             // dlopen MG so dlsym below gives us the real entry points to
             // call from inside our hooked_* functions (orig_* pointers).

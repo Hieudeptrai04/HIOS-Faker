@@ -728,6 +728,21 @@ static int hooked_statfs(const char *path, struct statfs *buf) {
     buf->f_blocks = total / bsize;
     buf->f_bfree  = (total - usage) / bsize;
     buf->f_bavail = buf->f_bfree;
+
+    // v2.4.47: spoof APFS volume UUID via f_fsid. Same identifier readable
+    // via statfs("/") survives container recreation otherwise → persistent
+    // device fingerprint. Derive from identifierForVendor config so it's
+    // stable per-fake-device but changes after Reset Data (host writes a
+    // new vendor UUID in config on reset).
+    NSString *vUUID = getConfigStr(@"identifierForVendor");
+    if (vUUID.length >= 16) {
+        const char *u = vUUID.UTF8String;
+        uint32_t a = 0, b = 0;
+        for (int i = 0; i < 8; i++)  a = a * 31 + (uint8_t)u[i];
+        for (int i = 8; i < 16; i++) b = b * 31 + (uint8_t)u[i];
+        buf->f_fsid.val[0] = (int32_t)a;
+        buf->f_fsid.val[1] = (int32_t)b;
+    }
     return ret;
 }
 
