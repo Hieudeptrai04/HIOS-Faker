@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.35";
+static NSString *const kAppVersion = @"2.4.36";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2037,14 +2037,15 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
 
 @implementation CITheme
 + (UIColor *)rgb:(NSUInteger)h { return [UIColor colorWithRed:((h>>16)&0xFF)/255.0 green:((h>>8)&0xFF)/255.0 blue:(h&0xFF)/255.0 alpha:1.0]; }
-+ (UIColor *)bg        { return [self rgb:0x0F1624]; }    // deep navy
-+ (UIColor *)card      { return [self rgb:0x1B2438]; }    // card navy
-+ (UIColor *)text      { return [UIColor whiteColor]; }
-+ (UIColor *)dim       { return [self rgb:0x9AA4B8]; }
-+ (UIColor *)orange    { return [self rgb:0xFF9F1A]; }    // accent
-+ (UIColor *)blue      { return [self rgb:0x4FA8FF]; }
-+ (UIColor *)separator { return [self rgb:0x2A344D]; }
-+ (UIColor *)border    { return [self rgb:0xFF9F1A]; }
+// v2.4.36 light theme — modeled after AZInfo-style market tools.
++ (UIColor *)bg        { return [self rgb:0xF2F3F5]; }    // soft grey page background
++ (UIColor *)card      { return [UIColor whiteColor]; }   // white cards
++ (UIColor *)text      { return [self rgb:0x1C1C1E]; }    // near-black text
++ (UIColor *)dim       { return [self rgb:0x8E8E93]; }    // iOS system grey
++ (UIColor *)orange    { return [self rgb:0xFF9500]; }    // iOS system orange
++ (UIColor *)blue      { return [self rgb:0x007AFF]; }    // iOS system blue
++ (UIColor *)separator { return [self rgb:0xE5E5EA]; }
++ (UIColor *)border    { return [self rgb:0xD1D1D6]; }
 + (UIColor *)green     { return [self rgb:0x34C759]; }    // iOS system green
 + (UIColor *)red       { return [self rgb:0xFF3B30]; }    // iOS system red
 + (UIFont  *)h1        { return [UIFont boldSystemFontOfSize:22]; }
@@ -4575,6 +4576,12 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     UILabel     *_selectedRrsLabel;
 }
 
+// v2.4.36: redesigned home layout, AZInfo-style.
+// Top: phone-info card (icon + model + iOS + version + Rootless badge).
+// Middle: two action buttons (Clear Data + Kill Apps / Backup Apps).
+// Below: Current Fake Profile card (read-only summary of the fake state).
+// The old multi-step picker card + RRS row + note field moved to other
+// tabs/menu. Backup/restore is intentionally minimal here.
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
@@ -4584,129 +4591,288 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
         [[UIBarButtonItem alloc] initWithImage:[self menuIcon] style:UIBarButtonItemStylePlain
                                         target:self action:@selector(openMenu)];
 
-    // Tap outside the keyboard to dismiss it. Required when the user types
-    // an account label in _noteField and wants to tap a button — without
-    // this gesture the keyboard sits on top of the buttons.
-    UITapGestureRecognizer *dismiss = [[UITapGestureRecognizer alloc]
-        initWithTarget:self action:@selector(dismissKeyboard)];
-    dismiss.cancelsTouchesInView = NO; // don't swallow taps on buttons
-    [self.view addGestureRecognizer:dismiss];
-
     UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
     sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     sv.alwaysBounceVertical = YES;
+    sv.backgroundColor = [CITheme bg];
     [self.view addSubview:sv];
 
     CGFloat W = self.view.bounds.size.width;
-    CGFloat y = 12;
-    CGFloat P = 12;
+    CGFloat y = 16;
+    CGFloat P = 16;
+    CGFloat cardW = W - 2*P;
 
-    _bannerLabel = [[UILabel alloc] initWithFrame:CGRectMake(P, y, W-2*P, 22)];
-    _bannerLabel.text = CIDeviceBanner();
-    _bannerLabel.font = [UIFont systemFontOfSize:14];
-    _bannerLabel.textColor = [CITheme text];
-    [sv addSubview:_bannerLabel];
-    y += 30;
+    // ---- Phone info card ----
+    UIView *phoneCard = [self _ciNewCard:CGRectMake(P, y, cardW, 150)];
+    [sv addSubview:phoneCard];
 
-    UIButton *b1 = CIBoxButton(@"Backup\n+\nReset Data", [CITheme orange], [CITheme border]);
-    b1.frame = CGRectMake(P, y, (W-3*P)/2, 96);
-    [b1 addTarget:self action:@selector(saveAndReset) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:b1];
+    UIImageView *phoneIcon = [[UIImageView alloc] initWithFrame:CGRectMake(16, 16, 70, 118)];
+    if (@available(iOS 13.0, *)) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:64 weight:UIImageSymbolWeightRegular];
+        phoneIcon.image = [[UIImage systemImageNamed:@"iphone" withConfiguration:cfg]
+                            imageWithTintColor:[CITheme blue] renderingMode:UIImageRenderingModeAlwaysOriginal];
+    }
+    phoneIcon.contentMode = UIViewContentModeScaleAspectFit;
+    [phoneCard addSubview:phoneIcon];
 
-    UIButton *b2 = CIBoxButton(@"Reset Data", [CITheme orange], [CITheme border]);
-    b2.frame = CGRectMake((W-P)/2+P/2, y, (W-3*P)/2, 96);
-    [b2 addTarget:self action:@selector(resetData) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:b2];
-    y += 110;
+    struct utsname u; uname(&u);
+    NSString *realModel = [NSString stringWithUTF8String:u.machine];
+    NSString *realIOS   = [UIDevice currentDevice].systemVersion;
+    NSString *realName  = [self _humanModelName:realModel];
 
-    UIButton *dbg = [UIButton buttonWithType:UIButtonTypeSystem];
-    dbg.frame = CGRectMake(P, y, W-2*P, 44);
-    [dbg setTitle:@"📋 Xem thông tin máy fake" forState:UIControlStateNormal];
-    [dbg setTitleColor:[CITheme blue] forState:UIControlStateNormal];
-    dbg.titleLabel.font = [CITheme h2];
-    dbg.backgroundColor = [CITheme card];
-    dbg.layer.cornerRadius = 10;
-    dbg.layer.borderWidth = 1;
-    dbg.layer.borderColor = [CITheme border].CGColor;
-    [dbg addTarget:self action:@selector(showFakeInfoReport) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:dbg];
-    y += 56;
+    UILabel *nameLbl = [[UILabel alloc] initWithFrame:CGRectMake(100, 22, cardW-220, 28)];
+    nameLbl.text = realName;
+    nameLbl.font = [UIFont boldSystemFontOfSize:22];
+    nameLbl.textColor = [CITheme text];
+    [phoneCard addSubview:nameLbl];
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(P, y, W-2*P, 180)];
-    card.backgroundColor = [CITheme card];
-    card.layer.cornerRadius = 14;
-    card.layer.shadowColor = [UIColor blackColor].CGColor;
-    card.layer.shadowOffset = CGSizeMake(0, 4);
-    card.layer.shadowOpacity = 0.25;
-    card.layer.shadowRadius = 8;
-    [sv addSubview:card];
+    UILabel *modelLbl = [[UILabel alloc] initWithFrame:CGRectMake(100, 56, cardW-110, 20)];
+    modelLbl.text = [NSString stringWithFormat:@"Model: %@", realModel];
+    modelLbl.font = [UIFont systemFontOfSize:14];
+    modelLbl.textColor = [CITheme dim];
+    [phoneCard addSubview:modelLbl];
 
-    [self addCardRow:@"1 Chọn App RESET!" detail:@"(chưa chọn)" y:0 parent:card action:@selector(pickResetApps) labelOut:&_selectedResetLabel];
-    [self addCardRow:@"2 Chọn App lưu RRS" detail:@"" y:60 parent:card action:@selector(pickRRSApps) labelOut:&_selectedRrsLabel];
-    [self addCardRow:@"3 Chọn Fake (version, model, name, carrier,...)" detail:@"" y:120 parent:card action:@selector(openFake) labelOut:NULL];
-    y += 192;
+    UILabel *iosLbl = [[UILabel alloc] initWithFrame:CGRectMake(100, 78, cardW-110, 20)];
+    iosLbl.text = [NSString stringWithFormat:@"iOS: %@", realIOS];
+    iosLbl.font = [UIFont systemFontOfSize:14];
+    iosLbl.textColor = [CITheme dim];
+    [phoneCard addSubview:iosLbl];
 
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(P, y, W-2*P, 22)];
-    hint.text = @"INFO FAKE";
-    hint.textAlignment = NSTextAlignmentCenter;
-    hint.font = [CITheme h2]; hint.textColor = [CITheme orange];
-    [sv addSubview:hint];
-    y += 30;
+    UILabel *verLbl = [[UILabel alloc] initWithFrame:CGRectMake(100, 100, cardW-110, 20)];
+    verLbl.text = [NSString stringWithFormat:@"Version: %@", kAppVersion];
+    verLbl.font = [UIFont systemFontOfSize:14];
+    verLbl.textColor = [CITheme dim];
+    [phoneCard addSubview:verLbl];
 
-    UIView *bottomRow = [[UIView alloc] initWithFrame:CGRectMake(P, y, W-2*P, 60)];
-    bottomRow.backgroundColor = [CITheme card];
-    bottomRow.layer.cornerRadius = 14;
-    bottomRow.layer.shadowColor = [UIColor blackColor].CGColor;
-    bottomRow.layer.shadowOffset = CGSizeMake(0, 4);
-    bottomRow.layer.shadowOpacity = 0.25;
-    bottomRow.layer.shadowRadius = 8;
-    [sv addSubview:bottomRow];
-    UIButton *manage = [UIButton buttonWithType:UIButtonTypeSystem];
-    manage.frame = CGRectMake(0, 0, (W-2*P)/2, 60);
-    [manage setTitle:@"Quản lý RRS" forState:UIControlStateNormal];
-    [manage setTitleColor:[CITheme orange] forState:UIControlStateNormal];
-    manage.titleLabel.font = [CITheme h2];
-    [manage addTarget:self action:@selector(openRRS) forControlEvents:UIControlEventTouchUpInside];
-    [bottomRow addSubview:manage];
-    UIView *div = [[UIView alloc] initWithFrame:CGRectMake((W-2*P)/2, 10, 1, 40)];
-    div.backgroundColor = [CITheme separator]; [bottomRow addSubview:div];
-    UIButton *restore = [UIButton buttonWithType:UIButtonTypeSystem];
-    restore.frame = CGRectMake((W-2*P)/2, 0, (W-2*P)/2, 60);
-    [restore setTitle:@"Restore nhanh" forState:UIControlStateNormal];
-    [restore setTitleColor:[CITheme blue] forState:UIControlStateNormal];
-    restore.titleLabel.font = [CITheme h2];
-    [restore addTarget:self action:@selector(quickRestore) forControlEvents:UIControlEventTouchUpInside];
-    [bottomRow addSubview:restore];
+    UILabel *rootBadge = [[UILabel alloc] initWithFrame:CGRectMake(cardW-100, 16, 84, 30)];
+    rootBadge.text = @"Rootless";
+    rootBadge.textAlignment = NSTextAlignmentCenter;
+    rootBadge.font = [UIFont boldSystemFontOfSize:13];
+    rootBadge.textColor = [UIColor whiteColor];
+    rootBadge.backgroundColor = [CITheme blue];
+    rootBadge.layer.cornerRadius = 15;
+    rootBadge.layer.masksToBounds = YES;
+    [phoneCard addSubview:rootBadge];
+
+    y += 166;
+
+    // ---- Action buttons row ----
+    CGFloat btnW = (cardW - P)/2;
+    CGFloat btnH = 96;
+
+    UIButton *clearBtn = [self _ciActionButton:@"Clear Data\n+ Kill Apps" color:[CITheme orange]];
+    clearBtn.frame = CGRectMake(P, y, btnW, btnH);
+    [clearBtn addTarget:self action:@selector(resetData) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:clearBtn];
+
+    UIButton *backupBtn = [self _ciActionButton:@"Backup\nApps" color:[CITheme blue]];
+    backupBtn.frame = CGRectMake(P+btnW+P, y, btnW, btnH);
+    [backupBtn addTarget:self action:@selector(saveAndReset) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:backupBtn];
+
+    y += btnH + 20;
+
+    // ---- Current Fake Profile card ----
+    UIView *profCard = [self _ciNewCard:CGRectMake(P, y, cardW, 360)];
+    [sv addSubview:profCard];
+
+    UILabel *profTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 16, cardW-60, 24)];
+    profTitle.text = @"Current Fake Profile";
+    profTitle.font = [UIFont boldSystemFontOfSize:18];
+    profTitle.textColor = [CITheme text];
+    [profCard addSubview:profTitle];
+
+    UIButton *refresh = [UIButton buttonWithType:UIButtonTypeSystem];
+    refresh.frame = CGRectMake(cardW-44, 12, 32, 32);
+    if (@available(iOS 13.0, *)) {
+        [refresh setImage:[UIImage systemImageNamed:@"arrow.clockwise"] forState:UIControlStateNormal];
+    }
+    refresh.tintColor = [CITheme blue];
+    [refresh addTarget:self action:@selector(openFake) forControlEvents:UIControlEventTouchUpInside];
+    [profCard addSubview:refresh];
+
+    CIConfigManager *cm = [CIConfigManager shared];
+    NSArray *fields = @[
+        @[@"Model",    [self _fakeModelText:cm]],
+        @[@"iOS",      [self _fakeIOSText:cm]],
+        @[@"Color",    [cm stringForKey:@"DeviceColor"]    ?: @"—"],
+        @[@"Storage",  [self _fakeStorageText:cm]],
+        @[@"Region",   [cm stringForKey:@"RegionInfo"]     ?: @"—"],
+        @[@"Locale",   [cm stringForKey:@"localeIdentifier"] ?: @"—"],
+        @[@"Timezone", [cm stringForKey:@"timezone"]       ?: @"—"],
+        @[@"Carrier",  [self _fakeCarrierText:cm]],
+    ];
+    CGFloat rowY = 56;
+    for (NSArray *kv in fields) {
+        UILabel *k = [[UILabel alloc] initWithFrame:CGRectMake(16, rowY, 100, 22)];
+        k.text = kv[0];
+        k.font = [UIFont systemFontOfSize:15];
+        k.textColor = [CITheme dim];
+        [profCard addSubview:k];
+
+        UILabel *v = [[UILabel alloc] initWithFrame:CGRectMake(120, rowY, cardW-136, 22)];
+        v.text = kv[1];
+        v.font = [UIFont systemFontOfSize:15];
+        v.textColor = [CITheme text];
+        v.textAlignment = NSTextAlignmentRight;
+        v.adjustsFontSizeToFitWidth = YES;
+        v.minimumScaleFactor = 0.7;
+        [profCard addSubview:v];
+
+        rowY += 32;
+    }
+    y += 376;
+
+    // ---- Secondary actions (kept compact) ----
+    UIView *bottomCard = [self _ciNewCard:CGRectMake(P, y, cardW, 56)];
+    [sv addSubview:bottomCard];
+
+    UIButton *rrsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    rrsBtn.frame = CGRectMake(0, 0, cardW/2, 56);
+    [rrsBtn setTitle:@"Quản lý RRS" forState:UIControlStateNormal];
+    [rrsBtn setTitleColor:[CITheme orange] forState:UIControlStateNormal];
+    rrsBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [rrsBtn addTarget:self action:@selector(openRRS) forControlEvents:UIControlEventTouchUpInside];
+    [bottomCard addSubview:rrsBtn];
+
+    UIView *divLine = [[UIView alloc] initWithFrame:CGRectMake(cardW/2, 10, 1, 36)];
+    divLine.backgroundColor = [CITheme separator];
+    [bottomCard addSubview:divLine];
+
+    UIButton *quickBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    quickBtn.frame = CGRectMake(cardW/2, 0, cardW/2, 56);
+    [quickBtn setTitle:@"Restore nhanh" forState:UIControlStateNormal];
+    [quickBtn setTitleColor:[CITheme blue] forState:UIControlStateNormal];
+    quickBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [quickBtn addTarget:self action:@selector(quickRestore) forControlEvents:UIControlEventTouchUpInside];
+    [bottomCard addSubview:quickBtn];
+
     y += 72;
 
-    _noteField = [[UITextField alloc] initWithFrame:CGRectMake(P, y, W-2*P, 48)];
-    // Renamed 2026-05-07: this is now the per-account RRS label (e.g.
-    // "Acc Hung 0001"). Used to identify which environment to restore.
-    // Hint shows the new auto-fill pattern: brand keyword + phone digits.
-    // createRRSForBundles extracts these into accountKind + accountLabel
-    // so the RRS list can show structured info. Free-text still works
-    // (everything goes into `note`) — auto-fill is best-effort.
-    _noteField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"Tên / acc (vd: Zalo 0912345678 hoặc FB ...)"
-        attributes:@{NSForegroundColorAttributeName: [CITheme dim]}];
-    _noteField.borderStyle = UITextBorderStyleNone;
-    _noteField.backgroundColor = [CITheme card];
-    _noteField.textColor = [CITheme text];
-    _noteField.layer.cornerRadius = 12;
-    _noteField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 0)];
-    _noteField.leftViewMode = UITextFieldViewModeAlways;
-    _noteField.delegate = self;
-    _noteField.text = [[CIConfigManager shared] stringForKey:@"rrsNote"];
-    [sv addSubview:_noteField];
-    y += 60;
+    // ---- App-target chips (visible state of pickers) ----
+    UIView *pickRow = [self _ciNewCard:CGRectMake(P, y, cardW, 120)];
+    [sv addSubview:pickRow];
 
-    UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(P, y, W-2*P, 30)];
-    foot.text = @"telegram:Houselis"; foot.textAlignment = NSTextAlignmentCenter;
-    foot.textColor = [CITheme blue]; foot.font = [CITheme h2];
+    UIButton *pickReset = [UIButton buttonWithType:UIButtonTypeCustom];
+    pickReset.frame = CGRectMake(0, 0, cardW, 60);
+    [pickReset addTarget:self action:@selector(pickResetApps) forControlEvents:UIControlEventTouchUpInside];
+    [pickRow addSubview:pickReset];
+    UILabel *pr1 = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, cardW-32, 22)];
+    pr1.text = @"Apps Reset"; pr1.font = [UIFont boldSystemFontOfSize:15]; pr1.textColor = [CITheme text];
+    [pickReset addSubview:pr1];
+    _selectedResetLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 30, cardW-32, 20)];
+    _selectedResetLabel.font = [UIFont systemFontOfSize:13]; _selectedResetLabel.textColor = [CITheme dim];
+    [pickReset addSubview:_selectedResetLabel];
+
+    UIView *sep1 = [[UIView alloc] initWithFrame:CGRectMake(16, 60, cardW-32, 0.5)];
+    sep1.backgroundColor = [CITheme separator]; [pickRow addSubview:sep1];
+
+    UIButton *pickRRS = [UIButton buttonWithType:UIButtonTypeCustom];
+    pickRRS.frame = CGRectMake(0, 60, cardW, 60);
+    [pickRRS addTarget:self action:@selector(pickRRSApps) forControlEvents:UIControlEventTouchUpInside];
+    [pickRow addSubview:pickRRS];
+    UILabel *pr2 = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, cardW-32, 22)];
+    pr2.text = @"Apps Backup"; pr2.font = [UIFont boldSystemFontOfSize:15]; pr2.textColor = [CITheme text];
+    [pickRRS addSubview:pr2];
+    _selectedRrsLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 30, cardW-32, 20)];
+    _selectedRrsLabel.font = [UIFont systemFontOfSize:13]; _selectedRrsLabel.textColor = [CITheme dim];
+    [pickRRS addSubview:_selectedRrsLabel];
+
+    y += 136;
+
+    UILabel *foot = [[UILabel alloc] initWithFrame:CGRectMake(P, y, cardW, 30)];
+    foot.text = @"telegram: Houselis"; foot.textAlignment = NSTextAlignmentCenter;
+    foot.textColor = [CITheme dim]; foot.font = [UIFont systemFontOfSize:13];
     [sv addSubview:foot];
     y += 42;
 
     sv.contentSize = CGSizeMake(W, y);
+
+    // hidden field — keep for compatibility with existing action methods
+    // that read [CIConfigManager rrsNote]; surfaced inside RRS list now.
+    _noteField = [[UITextField alloc] init];
+    _noteField.delegate = self;
+
     [self refreshSelectionLabels];
+}
+
+// ---- helpers for the new layout ----
+
+- (UIView *)_ciNewCard:(CGRect)frame {
+    UIView *v = [[UIView alloc] initWithFrame:frame];
+    v.backgroundColor = [CITheme card];
+    v.layer.cornerRadius = 14;
+    v.layer.shadowColor = [UIColor blackColor].CGColor;
+    v.layer.shadowOffset = CGSizeMake(0, 2);
+    v.layer.shadowOpacity = 0.05;
+    v.layer.shadowRadius = 6;
+    return v;
+}
+
+- (UIButton *)_ciActionButton:(NSString *)title color:(UIColor *)color {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+    b.titleLabel.numberOfLines = 0;
+    b.titleLabel.textAlignment = NSTextAlignmentCenter;
+    b.backgroundColor = color;
+    b.layer.cornerRadius = 16;
+    b.layer.shadowColor = color.CGColor;
+    b.layer.shadowOffset = CGSizeMake(0, 4);
+    b.layer.shadowOpacity = 0.2;
+    b.layer.shadowRadius = 8;
+    return b;
+}
+
+- (NSString *)_humanModelName:(NSString *)machine {
+    if ([machine hasPrefix:@"iPhone8,"]) return @"iPhone 6s";
+    if ([machine hasPrefix:@"iPhone9,"]) return @"iPhone 7";
+    if ([machine hasPrefix:@"iPhone10,"]) return @"iPhone 8";
+    if ([machine hasPrefix:@"iPhone11,"]) return @"iPhone XS";
+    if ([machine hasPrefix:@"iPhone12,"]) return @"iPhone 11";
+    if ([machine hasPrefix:@"iPhone13,"]) return @"iPhone 12";
+    if ([machine hasPrefix:@"iPhone14,"]) return @"iPhone 13";
+    if ([machine hasPrefix:@"iPhone15,"]) return @"iPhone 14";
+    if ([machine hasPrefix:@"iPhone16,"]) return @"iPhone 15";
+    return machine;
+}
+
+- (NSString *)_fakeModelText:(CIConfigManager *)cm {
+    NSString *name = [cm stringForKey:@"MarketingName"];
+    NSString *model = [cm stringForKey:@"ProductType"];
+    if (name.length && model.length) return [NSString stringWithFormat:@"%@ (%@)", name, model];
+    if (name.length) return name;
+    if (model.length) return model;
+    return @"—";
+}
+
+- (NSString *)_fakeIOSText:(CIConfigManager *)cm {
+    NSString *ver = [cm stringForKey:@"systemVersion"];
+    NSString *build = [cm stringForKey:@"BuildVersion"];
+    if (ver.length && build.length) return [NSString stringWithFormat:@"%@ (%@)", ver, build];
+    if (ver.length) return ver;
+    return @"—";
+}
+
+- (NSString *)_fakeStorageText:(CIConfigManager *)cm {
+    id v = [cm objectForKey:@"DiskUsage"];
+    if ([v isKindOfClass:[NSNumber class]]) {
+        long long bytes = [(NSNumber *)v longLongValue];
+        if (bytes >= 1024LL*1024*1024) return [NSString stringWithFormat:@"%lld GB", bytes/(1024LL*1024*1024)];
+    }
+    if ([v isKindOfClass:[NSString class]]) return (NSString *)v;
+    return @"—";
+}
+
+- (NSString *)_fakeCarrierText:(CIConfigManager *)cm {
+    NSString *mcc = [cm stringForKey:@"carrierMCC"];
+    NSString *mnc = [cm stringForKey:@"carrierISO"];
+    NSString *name = [cm stringForKey:@"carrierName"];
+    if (mcc.length && mnc.length) return [NSString stringWithFormat:@"%@ / %@%@",
+                                          mcc, mnc, name.length ? [@" (" stringByAppendingFormat:@"%@)", name] : @""];
+    if (name.length) return name;
+    return @"—";
 }
 
 - (UIImage *)menuIcon {
