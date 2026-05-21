@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.39";
+static NSString *const kAppVersion = @"2.4.40";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4908,6 +4908,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
             @"iPad14,1": @"iPad mini (6th gen)", @"iPad14,2": @"iPad mini (6th gen)",
             @"iPad14,3": @"iPad Pro 11\" (4th gen)", @"iPad14,4": @"iPad Pro 11\" (4th gen)",
             @"iPad14,5": @"iPad Pro 12.9\" (6th gen)", @"iPad14,6": @"iPad Pro 12.9\" (6th gen)",
+            @"iPad14,8": @"iPad Air 11\" (M2)", @"iPad14,9": @"iPad Air 11\" (M2)",
+            @"iPad14,10": @"iPad Air 13\" (M2)", @"iPad14,11": @"iPad Air 13\" (M2)",
+            @"iPad16,1": @"iPad mini (7th gen)", @"iPad16,2": @"iPad mini (7th gen)",
+            @"iPad16,3": @"iPad Pro 11\" (M4)", @"iPad16,4": @"iPad Pro 11\" (M4)",
+            @"iPad16,5": @"iPad Pro 13\" (M4)", @"iPad16,6": @"iPad Pro 13\" (M4)",
             // iPod touch
             @"iPod1,1": @"iPod touch",       @"iPod2,1": @"iPod touch (2nd gen)",
             @"iPod3,1": @"iPod touch (3rd gen)", @"iPod4,1": @"iPod touch (4th gen)",
