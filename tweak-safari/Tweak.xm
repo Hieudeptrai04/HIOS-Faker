@@ -151,6 +151,85 @@ static void ci_swizzleProcessInfo(void) {
     ci_safariMark("nspi_swizzled");
 }
 
+// v2.5.14: WKWebView UA-related private methods. Force every WKWebView in
+// Safari to report our fake UA, regardless of Safari's own UA build logic.
+typedef NSString *(*ci_imp_ua_t)(id, SEL);
+static ci_imp_ua_t orig_wk_customUA   = NULL;
+static ci_imp_ua_t orig_wk__userAgent = NULL;
+static ci_imp_ua_t orig_wk__systemUA  = NULL;
+static ci_imp_ua_t orig_NSURLReq_valueForHeader = NULL;
+
+static NSString *ci_fakeFullUA(void) {
+    return ci_safariConfigString(@"zalo_fakeWebViewUA");
+}
+
+static NSString *hooked_wk_customUA(id self, SEL _cmd) {
+    NSString *fake = ci_fakeFullUA();
+    if (fake.length) { ci_safariMark("wk_customua_fake"); return fake; }
+    return orig_wk_customUA ? orig_wk_customUA(self, _cmd) : nil;
+}
+
+static NSString *hooked_wk__userAgent(id self, SEL _cmd) {
+    NSString *fake = ci_fakeFullUA();
+    if (fake.length) { ci_safariMark("wk__userAgent_fake"); return fake; }
+    return orig_wk__userAgent ? orig_wk__userAgent(self, _cmd) : nil;
+}
+
+static NSString *hooked_wk__systemUA(id self, SEL _cmd) {
+    NSString *fake = ci_fakeFullUA();
+    if (fake.length) { ci_safariMark("wk__systemUA_fake"); return fake; }
+    return orig_wk__systemUA ? orig_wk__systemUA(self, _cmd) : nil;
+}
+
+typedef NSString *(*ci_nsurlreq_valhdr_t)(id, SEL, NSString *);
+static NSString *hooked_NSURLReq_valueForHeader(id self, SEL _cmd, NSString *field) {
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+        NSString *fake = ci_fakeFullUA();
+        if (fake.length) { ci_safariMark("nsurlreq_ua_fake"); return fake; }
+    }
+    return orig_NSURLReq_valueForHeader ?
+        ((ci_nsurlreq_valhdr_t)orig_NSURLReq_valueForHeader)(self, _cmd, field) : nil;
+}
+
+static void ci_swizzleAllUAGetters(void) {
+    Class wk = objc_getClass("WKWebView");
+    if (wk) {
+        // public customUserAgent getter — override to ALWAYS return fake
+        Method m1 = class_getInstanceMethod(wk, @selector(customUserAgent));
+        if (m1) {
+            orig_wk_customUA = (ci_imp_ua_t)method_getImplementation(m1);
+            method_setImplementation(m1, (IMP)hooked_wk_customUA);
+            ci_safariMark("wk_customua_swizzled");
+        }
+        // private _userAgent getter
+        SEL selUA = NSSelectorFromString(@"_userAgent");
+        Method m2 = class_getInstanceMethod(wk, selUA);
+        if (m2) {
+            orig_wk__userAgent = (ci_imp_ua_t)method_getImplementation(m2);
+            method_setImplementation(m2, (IMP)hooked_wk__userAgent);
+            ci_safariMark("wk__userAgent_swizzled");
+        }
+        // private +_systemUserAgent class method
+        SEL selSysUA = NSSelectorFromString(@"_systemUserAgent");
+        Method m3 = class_getClassMethod(wk, selSysUA);
+        if (m3) {
+            orig_wk__systemUA = (ci_imp_ua_t)method_getImplementation(m3);
+            method_setImplementation(m3, (IMP)hooked_wk__systemUA);
+            ci_safariMark("wk__systemUA_swizzled");
+        }
+    }
+    // NSURLRequest valueForHTTPHeaderField — return fake when asked for UA
+    Class req = objc_getClass("NSURLRequest");
+    if (req) {
+        Method m4 = class_getInstanceMethod(req, @selector(valueForHTTPHeaderField:));
+        if (m4) {
+            orig_NSURLReq_valueForHeader = (ci_imp_ua_t)method_getImplementation(m4);
+            method_setImplementation(m4, (IMP)hooked_NSURLReq_valueForHeader);
+            ci_safariMark("nsurlreq_swizzled");
+        }
+    }
+}
+
 // v2.5.9 ROLLBACK open()/openat() hooks — caused Safari to crash. Each
 // global syscall hook fires on every file open in Safari (thousands/sec)
 // and even tiny ABI mismatches in variadic forwarding break the process.
@@ -316,6 +395,8 @@ static void ci_safari_early_ctor(void) {
         ci_swizzleSystemVersion();
         // v2.5.10: NSProcessInfo.operatingSystemVersionString swizzle.
         ci_swizzleProcessInfo();
+        // v2.5.14: WKWebView UA-getters + NSURLRequest header readback.
+        ci_swizzleAllUAGetters();
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
         // to redirect. WebKit may read this plist directly via
