@@ -3379,19 +3379,16 @@ static BOOL computeBundleTargeted(void) {
         // for any process on this denylist. The list mirrors the system-app
         // bundles whose loop tightness or framework reach makes them unsafe
         // to wrap with hundreds of Logos hooks at once.
-        // v2.5.1: REMOVED Safari + WebContent from denylist again. After
-        // dropping WKWebView swizzle + UIPasteboard + canOpenURL gate +
-        // making MG fishhook opt-in (default OFF), the surviving hook
-        // surface is read-only device API spoof only. Safari should be
-        // able to load it without crashing.
-        //
-        // If Safari STILL crashes after install, add back via SSH:
-        //   echo 'com.apple.mobilesafari' >> /var/jb/etc/changeinfoios/_safe_deny.txt
-        // (TODO: implement runtime deny via that file)
+        // v2.5.2 ROLLBACK: v2.5.1 removed Safari from denylist again.
+        // Result: Safari STILL crashes despite full app-layer hook cleanup.
+        // The remaining read-only %hook surface is still too invasive for
+        // Safari's special process model. Restore denylist; Safari UA fake
+        // would require separate sidecar dylib (planned, deferred).
         static NSArray *kSystemDenyBundles = nil;
         kSystemDenyBundles = @[
             @"com.apple.springboard",
             @"com.apple.Preferences",
+            @"com.apple.mobilesafari",
             @"com.apple.webapp",
             @"com.apple.mobilesms",
             @"com.apple.MobileSMS",
@@ -3405,7 +3402,9 @@ static BOOL computeBundleTargeted(void) {
             @"com.apple.coreauthd",
             @"com.apple.HealthExtensions",
             @"com.apple.Health",
-            @"com.apple.WebKit.Networking",   // network process - still excluded
+            @"com.apple.WebKit",
+            @"com.apple.WebKit.Networking",
+            @"com.apple.WebKit.WebContent",
         ];
         for (NSString *deny in kSystemDenyBundles) {
             if ([bid isEqualToString:deny]) {
