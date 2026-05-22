@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.4.64";
+static NSString *const kAppVersion = @"2.5.0";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2051,8 +2051,28 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
         //   Documents/UpResult,UpTemp,DownTemp  upload/download state queues
         //   Documents/zinstant_apps     mini-app cache (Zalo's in-app browser)
         //   Documents/services          runtime service state
+        // v2.5.0: REPLACED blanket "Library/Caches" exclude with precise
+        // sub-directory excludes. The blanket exclude was DROPPING
+        // /Library/Caches/ChangeInfoIos/apns_token.dat — our per-bundle
+        // persistent fake APNs token. Without that file in backup, restore
+        // re-generates a NEW fake token → server-side Zalo sees a
+        // different push token than at backup time → session invalidated
+        // → login screen, despite all keychain + filesystem being correctly
+        // restored. Confirmed root cause via /var/jb/etc/changeinfoios/
+        // restoreEntry.log + per-bundle restore.log showing 30/30
+        // keychain entries restored but app still asked login.
+        //
+        // Excludes here target ONLY large-but-regeneratable cache dirs.
+        // Library/Caches/ChangeInfoIos/ + smaller auth-bearing caches stay.
         kExcludes = @[
-            @"Library/Caches",
+            @"Library/Caches/com.apple.WebKit",
+            @"Library/Caches/Snapshots",
+            @"Library/Caches/com.apple.nsurlsessiond",
+            @"Library/Caches/ZALO_RAM_FILE_CACHE",
+            @"Library/Caches/zinstant",
+            @"Library/Caches/com.firebase.installations",
+            @"Library/Caches/google_firebase_messaging",
+            @"Library/Caches/Mapbox",
             @"Library/Saved Application State",
             @"Documents/Logs",
             @"Documents/LogSocket",
