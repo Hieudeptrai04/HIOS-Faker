@@ -195,6 +195,45 @@ static NSString *hooked_NSURLReq_valueForHeader(id self, SEL _cmd, NSString *fie
         ((ci_nsurlreq_valhdr_t)orig_NSURLReq_valueForHeader)(self, _cmd, field) : nil;
 }
 
+// v2.5.18: NSBundle.objectForInfoDictionaryKey swizzle. WebKit may
+// read Safari version from MobileSafari's Info.plist via this method.
+typedef id (*ci_imp_infodict_t)(id, SEL, NSString *);
+static ci_imp_infodict_t orig_objForInfoDict = NULL;
+
+static id hooked_objForInfoDictKey(id self, SEL _cmd, NSString *key) {
+    if ([key isEqualToString:@"CFBundleShortVersionString"] ||
+        [key isEqualToString:@"CFBundleVersion"]) {
+        // Only spoof when called on Safari's bundle
+        NSString *bid = [(NSBundle *)self bundleIdentifier];
+        if ([bid isEqualToString:@"com.apple.mobilesafari"] ||
+            [bid hasPrefix:@"com.apple.WebKit"]) {
+            NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
+            if (fakeUA.length) {
+                NSRegularExpression *re = [NSRegularExpression
+                    regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
+                NSTextCheckingResult *r = [re firstMatchInString:fakeUA options:0
+                                                          range:NSMakeRange(0, fakeUA.length)];
+                if (r && r.numberOfRanges >= 2) {
+                    NSString *ver = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+                    ci_safariMark("nsbundle_safariver_fake");
+                    return ver;
+                }
+            }
+        }
+    }
+    return orig_objForInfoDict ? orig_objForInfoDict(self, _cmd, key) : nil;
+}
+
+static void ci_swizzleNSBundle(void) {
+    Class cls = objc_getClass("NSBundle");
+    if (!cls) return;
+    Method m = class_getInstanceMethod(cls, @selector(objectForInfoDictionaryKey:));
+    if (!m) return;
+    orig_objForInfoDict = (ci_imp_infodict_t)method_getImplementation(m);
+    method_setImplementation(m, (IMP)hooked_objForInfoDictKey);
+    ci_safariMark("nsbundle_swizzled");
+}
+
 static void ci_swizzleAllUAGetters(void) {
     Class wk = objc_getClass("WKWebView");
     if (wk) {
@@ -530,6 +569,8 @@ static void ci_safari_early_ctor(void) {
         ci_swizzleProcessInfo();
         // v2.5.14: WKWebView UA-getters + NSURLRequest header readback.
         ci_swizzleAllUAGetters();
+        // v2.5.18: NSBundle.objectForInfoDictionaryKey for Safari version
+        ci_swizzleNSBundle();
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
         // to redirect. WebKit may read this plist directly via
