@@ -328,6 +328,131 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 // v2.5.12: priority 101 to ensure we load BEFORE WebKit framework's
 // static initializers run. WebKit caches iOS version at framework init;
 // to spoof, our hook must be installed BEFORE that cache fills.
+// v2.5.15: runtime memory patch of WebKit's compile-time UA template
+// strings. Same trick market tools use, but in-memory (no on-disk patch
+// = no trustcache update needed).
+//
+// Walks every loaded image's __TEXT __cstring section, looks for known
+// fixed UA substrings ("Mobile/15E148", "Version/16.6.1",
+// "AppleWebKit/605.1.15"), and overwrites them with our random values
+// of EXACTLY the same length so neighboring relocations stay correct.
+
+#import <mach-o/loader.h>
+#import <mach/mach.h>
+#import <mach/vm_map.h>
+
+static void ci_patchStringInRange(const uint8_t *base, size_t size,
+                                   const char *needle, const char *replacement) {
+    size_t nlen = strlen(needle);
+    size_t rlen = strlen(replacement);
+    if (nlen != rlen) return; // must be same length
+    if (nlen == 0 || nlen > size) return;
+    for (size_t i = 0; i + nlen <= size; i++) {
+        if (memcmp(base + i, needle, nlen) == 0) {
+            uintptr_t addr = (uintptr_t)(base + i);
+            uintptr_t page = addr & ~((uintptr_t)0xFFF);
+            kern_return_t kr = vm_protect(mach_task_self(),
+                                           page, 0x1000, FALSE,
+                                           VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+            if (kr == KERN_SUCCESS) {
+                memcpy((void *)addr, replacement, rlen);
+                vm_protect(mach_task_self(), page, 0x1000, FALSE,
+                           VM_PROT_READ | VM_PROT_EXECUTE);
+                ci_safariMark("ua_string_patched");
+            }
+        }
+    }
+}
+
+static void ci_patchUAStringsInAllImages(void) {
+    NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
+    if (!fakeUA.length) return;
+
+    // Extract our fake substrings to use as replacements (must match
+    // length of original). Parse fakeUA for the parts we want to inject.
+    // Original WebKit: "AppleWebKit/605.1.15" (21 bytes), "Version/16.6.1"
+    // (14 bytes), "Mobile/15E148" (13 bytes).
+    NSRegularExpression *reWK = [NSRegularExpression
+        regularExpressionWithPattern:@"AppleWebKit/(\\d+\\.\\d+\\.\\d+)"
+                              options:0 error:nil];
+    NSRegularExpression *reVer = [NSRegularExpression
+        regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)"
+                              options:0 error:nil];
+    NSRegularExpression *reMob = [NSRegularExpression
+        regularExpressionWithPattern:@"Mobile/([0-9A-Z]{6})"
+                              options:0 error:nil];
+
+    NSString *fakeWK  = nil, *fakeVer = nil, *fakeMob = nil;
+    NSTextCheckingResult *r;
+    r = [reWK firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+    if (r && r.numberOfRanges >= 2) fakeWK = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+    r = [reVer firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+    if (r && r.numberOfRanges >= 2) fakeVer = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+    r = [reMob firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+    if (r && r.numberOfRanges >= 2) fakeMob = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+
+    // Build replacement strings of EXACT length matching real WebKit ones.
+    char repWK[32]   = {0};
+    char repVer[32]  = {0};
+    char repMob[32]  = {0};
+    BOOL haveWK = NO, haveVer = NO, haveMob = NO;
+    if (fakeWK && fakeWK.length == 8) {  // "605.1.15" = 8 chars
+        snprintf(repWK, sizeof(repWK), "AppleWebKit/%s", [fakeWK UTF8String]);
+        haveWK = (strlen(repWK) == strlen("AppleWebKit/605.1.15"));
+    }
+    if (fakeVer && fakeVer.length >= 5 && fakeVer.length <= 8) {
+        // "Version/16.6.1" = 14 bytes; our fakeVer "17.5.1" = 6, pad differently.
+        // Simplest: only patch when lengths match. Skip otherwise.
+        if (fakeVer.length == 6) {  // X.Y.Z
+            snprintf(repVer, sizeof(repVer), "Version/%s", [fakeVer UTF8String]);
+            haveVer = (strlen(repVer) == strlen("Version/16.6.1"));
+        }
+    }
+    if (fakeMob && fakeMob.length == 6) {  // "15E148" = 6 chars
+        snprintf(repMob, sizeof(repMob), "Mobile/%s", [fakeMob UTF8String]);
+        haveMob = (strlen(repMob) == strlen("Mobile/15E148"));
+    }
+
+    if (!haveWK && !haveVer && !haveMob) {
+        ci_safariMark("ua_no_matching_lengths");
+        return;
+    }
+
+    // Walk each loaded image's __TEXT __cstring section
+    uint32_t imgCount = _dyld_image_count();
+    for (uint32_t i = 0; i < imgCount; i++) {
+        const struct mach_header *header = _dyld_get_image_header(i);
+        const char *name = _dyld_get_image_name(i);
+        if (!header || !name) continue;
+        // Only patch system frameworks that might contain Safari UA strings
+        if (!strstr(name, "WebKit") && !strstr(name, "WebCore") &&
+            !strstr(name, "MobileSafari")) continue;
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
+        const struct load_command *lc = (const struct load_command *)cur;
+        uint32_t ncmds = header->ncmds;
+        for (uint32_t j = 0; j < ncmds; j++) {
+            if (lc->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+                if (strcmp(seg->segname, "__TEXT") == 0) {
+                    const struct section_64 *sect = (const struct section_64 *)((uintptr_t)seg + sizeof(struct segment_command_64));
+                    for (uint32_t k = 0; k < seg->nsects; k++) {
+                        if (strcmp(sect[k].sectname, "__cstring") == 0) {
+                            const uint8_t *base = (const uint8_t *)(sect[k].addr + slide);
+                            size_t size = sect[k].size;
+                            if (haveWK)  ci_patchStringInRange(base, size, "AppleWebKit/605.1.15", repWK);
+                            if (haveVer) ci_patchStringInRange(base, size, "Version/16.6.1",       repVer);
+                            if (haveMob) ci_patchStringInRange(base, size, "Mobile/15E148",        repMob);
+                        }
+                    }
+                }
+            }
+            lc = (const struct load_command *)((uintptr_t)lc + lc->cmdsize);
+        }
+    }
+    ci_safariMark("ua_patch_pass_done");
+}
+
 __attribute__((constructor(101)))
 static void ci_safari_early_ctor(void) {
     @autoreleasepool {
@@ -353,6 +478,11 @@ static void ci_safari_early_ctor(void) {
         }
         // Pre-load config so hook returns valid value on FIRST call
         (void)ci_safariConfigString(@"systemVersion");
+
+        // v2.5.15: scan + patch UA string literals in WebKit memory.
+        // This is what market tools do but in-memory (no disk patch +
+        // trustcache hassle).
+        ci_patchUAStringsInAllImages();
     }
 }
 
