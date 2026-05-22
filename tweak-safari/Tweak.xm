@@ -234,6 +234,40 @@ static void ci_swizzleNSBundle(void) {
     ci_safariMark("nsbundle_swizzled");
 }
 
+// v2.5.19: CFBundleGetValueForInfoDictionaryKey — low-level CF API
+// that WebKit may use to read Safari version directly, bypassing NSBundle.
+typedef CFTypeRef (*CFBundleGetVal_t)(CFBundleRef bundle, CFStringRef key);
+static CFBundleGetVal_t orig_CFBundleGetValueForInfoDictionaryKey = NULL;
+
+static CFTypeRef hooked_CFBundleGetValueForInfoDictionaryKey(CFBundleRef bundle, CFStringRef key) {
+    if (key && bundle) {
+        NSString *k = (__bridge NSString *)key;
+        if ([k isEqualToString:@"CFBundleShortVersionString"] ||
+            [k isEqualToString:@"CFBundleVersion"]) {
+            // Check if bundle is Safari/WebKit
+            CFStringRef bidCF = CFBundleGetIdentifier(bundle);
+            NSString *bid = bidCF ? (__bridge NSString *)bidCF : nil;
+            if ([bid isEqualToString:@"com.apple.mobilesafari"] ||
+                [bid hasPrefix:@"com.apple.WebKit"]) {
+                NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
+                if (fakeUA.length) {
+                    NSRegularExpression *re = [NSRegularExpression
+                        regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
+                    NSTextCheckingResult *r = [re firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+                    if (r && r.numberOfRanges >= 2) {
+                        ci_safariMark("cfbundle_safariver_fake");
+                        static NSString *cached = nil;
+                        cached = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+                        return (__bridge CFTypeRef)cached;
+                    }
+                }
+            }
+        }
+    }
+    return orig_CFBundleGetValueForInfoDictionaryKey ?
+        orig_CFBundleGetValueForInfoDictionaryKey(bundle, key) : NULL;
+}
+
 static void ci_swizzleAllUAGetters(void) {
     Class wk = objc_getClass("WKWebView");
     if (wk) {
@@ -427,7 +461,8 @@ static void ci_patchUAStringsInAllImages(void) {
     char repVer[32]  = {0};
     char repVerBare[32] = {0};
     char repMob[32]  = {0};
-    BOOL haveWK = NO, haveVer = NO, haveMob = NO;
+    char repSafariWK[32] = {0};  // v2.5.19: "Safari/604.1" patch
+    BOOL haveWK = NO, haveVer = NO, haveMob = NO, haveSafariWK = NO;
     if (fakeWK && fakeWK.length == 8) {
         snprintf(repWK, sizeof(repWK), "AppleWebKit/%s", [fakeWK UTF8String]);
         haveWK = (strlen(repWK) == strlen("AppleWebKit/605.1.15"));
@@ -441,8 +476,12 @@ static void ci_patchUAStringsInAllImages(void) {
         snprintf(repMob, sizeof(repMob), "Mobile/%s", [fakeMob UTF8String]);
         haveMob = (strlen(repMob) == strlen("Mobile/15E148"));
     }
+    // v2.5.19: Safari/604.1 patch — randomize last digit each profile
+    int safariBuildMinor = arc4random_uniform(3);  // 0/1/2
+    snprintf(repSafariWK, sizeof(repSafariWK), "Safari/604.%d", safariBuildMinor);
+    haveSafariWK = (strlen(repSafariWK) == strlen("Safari/604.1"));
 
-    if (!haveWK && !haveVer && !haveMob) {
+    if (!haveWK && !haveVer && !haveMob && !haveSafariWK) {
         ci_safariMark("ua_no_matching_lengths");
         return;
     }
@@ -481,10 +520,10 @@ static void ci_patchUAStringsInAllImages(void) {
                             if (haveWK)  ci_patchStringInRange(base, size, "AppleWebKit/605.1.15", repWK);
                             if (haveVer) {
                                 ci_patchStringInRange(base, size, "Version/16.6.1", repVer);
-                                // Also try bare "16.6.1" — Version/ literal might be separate token
                                 ci_patchStringInRange(base, size, "16.6.1", repVerBare);
                             }
-                            if (haveMob) ci_patchStringInRange(base, size, "Mobile/15E148", repMob);
+                            if (haveMob)       ci_patchStringInRange(base, size, "Mobile/15E148", repMob);
+                            if (haveSafariWK)  ci_patchStringInRange(base, size, "Safari/604.1", repSafariWK);
                         }
                     }
                 }
@@ -571,6 +610,13 @@ static void ci_safari_early_ctor(void) {
         ci_swizzleAllUAGetters();
         // v2.5.18: NSBundle.objectForInfoDictionaryKey for Safari version
         ci_swizzleNSBundle();
+        // v2.5.19: CFBundleGetValueForInfoDictionaryKey low-level CF hook
+        void *cfbSym = dlsym(RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
+        if (cfbSym && !orig_CFBundleGetValueForInfoDictionaryKey) {
+            MSHookFunction(cfbSym, (void *)hooked_CFBundleGetValueForInfoDictionaryKey,
+                           (void **)&orig_CFBundleGetValueForInfoDictionaryKey);
+            if (orig_CFBundleGetValueForInfoDictionaryKey) ci_safariMark("cfbundle_get_installed");
+        }
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
         // to redirect. WebKit may read this plist directly via
