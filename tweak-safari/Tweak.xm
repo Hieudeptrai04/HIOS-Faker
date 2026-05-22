@@ -62,17 +62,37 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     if (strcmp(name, "kern.osproductversion") != 0 &&
         strcmp(name, "kern.osproductversionextra") != 0) return ret;
 
+    // v2.5.4 diag — confirm hook fires
+    extern void ci_safariMark(const char *tag);
+    ci_safariMark("osprod_hit");
+
     NSString *fakeVer = ci_safariConfigString(@"systemVersion");
-    if (!fakeVer.length) return ret;
+    if (!fakeVer.length) { ci_safariMark("config_empty"); return ret; }
     const char *cval = [fakeVer UTF8String];
-    if (!cval) return ret;
+    if (!cval) { ci_safariMark("utf8_nil"); return ret; }
     size_t needed = strlen(cval) + 1;
     if (*oldlenp >= needed) {
         memcpy(oldp, cval, needed);
         *oldlenp = needed;
+        ci_safariMark("returned_fake");
         return 0;
     }
+    ci_safariMark("buffer_too_small");
     return ret;
+}
+
+// v2.5.4 diagnostic helpers — write marker files to confirm load + hook fire.
+static void ci_safariMark(const char *tag) {
+    @autoreleasepool {
+        NSString *dir = NSTemporaryDirectory();
+        if (!dir.length) return;
+        NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
+        NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n",
+                            [NSDate date],
+                            [[NSBundle mainBundle] bundleIdentifier] ?: @"?"];
+        FILE *f = fopen([path UTF8String], "a");
+        if (f) { fputs([stamp UTF8String], f); fclose(f); }
+    }
 }
 
 %ctor {
@@ -84,12 +104,20 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
             ![bid hasPrefix:@"com.apple.WebKit"]) {
             return;
         }
+        ci_safariMark("ctor_entered");
 
         void *sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
-        if (sym && !orig_sysctlbyname) {
-            MSHookFunction(sym, (void *)hooked_sysctlbyname,
-                           (void **)&orig_sysctlbyname);
-            NSLog(@"[ChangeInfoIosSafari] sysctlbyname hooked in %@", bid);
+        if (!sym) { ci_safariMark("dlsym_failed"); return; }
+        if (orig_sysctlbyname) { ci_safariMark("already_hooked"); return; }
+
+        MSHookFunction(sym, (void *)hooked_sysctlbyname,
+                       (void **)&orig_sysctlbyname);
+        if (orig_sysctlbyname) {
+            ci_safariMark("hook_installed");
+        } else {
+            ci_safariMark("hook_failed");
         }
+        NSLog(@"[ChangeInfoIosSafari] sysctlbyname hooked in %@ (orig=%p)",
+              bid, (void *)orig_sysctlbyname);
     }
 }
