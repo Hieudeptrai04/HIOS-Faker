@@ -494,13 +494,12 @@ static void ci_patchUAStringsInAllImages(void) {
         const struct mach_header *header = _dyld_get_image_header(i);
         const char *name = _dyld_get_image_name(i);
         if (!header || !name) continue;
-        // v2.5.20: scan ALL system framework images, not just WebKit-related.
-        // Safari/604.1 string is in SafariFoundation or similar binary we
-        // weren't including before. Skip only Apple's tiny stub dylibs +
-        // our own to avoid wasted work.
-        if (strstr(name, "/libdispatch") ||
-            strstr(name, "/libsystem_") ||
-            strstr(name, "ChangeInfoIos")) continue;
+        // v2.5.21 ROLLBACK: scan only WebKit + MobileSafari + SafariShared.
+        // v2.5.20 scanned ALL system frameworks → caused device hang
+        // (each Logos-injected dylib's ctor patched system framework
+        // strings, racing each other + breaking unrelated apps).
+        if (!strstr(name, "WebKit") && !strstr(name, "WebCore") &&
+            !strstr(name, "MobileSafari") && !strstr(name, "SafariShared")) continue;
         intptr_t slide = _dyld_get_image_vmaddr_slide(i);
         uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
         const struct load_command *lc = (const struct load_command *)cur;
