@@ -2035,18 +2035,13 @@ static void ci_swizzleApnsOnDelegate(Class cls) {
 
 %hook UIApplication
 
-- (BOOL)canOpenURL:(NSURL *)url {
-    if (jbHideActive() && url) {
-        NSString *scheme = [url scheme];
-        NSArray *blocked = @[@"cydia", @"sileo", @"zbra", @"filza", @"undecimus",
-                            @"activator", @"flex"];
-        for (NSString *s in blocked) {
-            if ([scheme isEqualToString:s]) return NO;
-        }
-    }
-    return %orig;
-}
+// v2.5.1 REMOVED canOpenURL gate — was returning NO for JB-related
+// schemes (cydia://, sileo://, etc.). Apps that probe these URLs
+// usually don't care for register flow. Returning NO interferes with
+// legitimate app logic if user has Cydia installed.
 
+// KEEP setDelegate hook — needed to swizzle APNs callback for restore
+// to preserve push token across backup/restore cycles (per v2.5.0 fix).
 - (void)setDelegate:(id<UIApplicationDelegate>)delegate {
     %orig(delegate);
     if (delegate) {
@@ -2331,49 +2326,8 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 }
 %end
 
-%hook UIPasteboard
-
-+ (UIPasteboard *)generalPasteboard {
-    if (!jbHideActive() && !fakeLayer(@"tracking_pasteboard")) return %orig;
-    return %orig;
-}
-
-- (NSArray<NSString *> *)strings {
-    if (fakeLayer(@"tracking_pasteboard") && getConfigBool(@"clearPasteboard")) {
-        return @[];
-    }
-    return %orig;
-}
-
-- (NSString *)string {
-    if (fakeLayer(@"tracking_pasteboard") && getConfigBool(@"clearPasteboard")) {
-        return nil;
-    }
-    return %orig;
-}
-
-- (BOOL)hasStrings {
-    if (fakeLayer(@"tracking_pasteboard") && getConfigBool(@"clearPasteboard")) {
-        return NO;
-    }
-    return %orig;
-}
-
-- (BOOL)hasURLs {
-    if (fakeLayer(@"tracking_pasteboard") && getConfigBool(@"clearPasteboard")) {
-        return NO;
-    }
-    return %orig;
-}
-
-- (NSArray<NSURL *> *)URLs {
-    if (fakeLayer(@"tracking_pasteboard") && getConfigBool(@"clearPasteboard")) {
-        return @[];
-    }
-    return %orig;
-}
-
-%end
+// v2.5.1 REMOVED UIPasteboard hide — was interfering with user's paste
+// workflow. Per spoof philosophy, device-level read API only.
 
 // ============================================================
 // BONUS: ZALO-SPECIFIC DEEP HOOKS
@@ -3169,20 +3123,12 @@ static void ci_WK_setCustomUA(id self, SEL _cmd, NSString *ua) {
 // asks WebKit to load is an app-layer interference. Per user spoof
 // philosophy: change device info, do NOT touch outgoing requests.
 
-static void ci_installWKWebViewHooks(void) {
-    @autoreleasepool {
-        Class wk = objc_getClass("WKWebView");
-        if (!wk) return; // app does not link WebKit; skip silently
-        ci_swizzleInstance("WKWebView", @selector(initWithFrame:configuration:),
-                           (IMP)ci_WK_init, &orig_WK_init);
-        ci_swizzleInstance("WKWebView", @selector(customUserAgent),
-                           (IMP)ci_WK_getCustomUA, &orig_WK_getCustomUA);
-        ci_swizzleInstance("WKWebView", @selector(setCustomUserAgent:),
-                           (IMP)ci_WK_setCustomUA, &orig_WK_setCustomUA);
-        // v2.4.63 REMOVED loadRequest: swizzle install.
-        NSLog(@"[ChangeInfoIos] WKWebView hooked (UA getter + JS fingerprint inject only)");
-    }
-}
+// v2.5.1 REMOVED ci_installWKWebViewHooks entirely — JS injection and
+// customUserAgent swizzle were app-layer interference per user spoof
+// philosophy. App's WebViews see real navigator.* values; device-level
+// spoof via UIDevice/sysctl/MG still applies for the host process's
+// device reads.
+static void ci_installWKWebViewHooks(void) { /* no-op v2.5.1 */ }
 
 // CTSubscriber.phoneNumber — re-enabled via runtime swizzle (Logos %hook
 // disabled in v2.3.23 because the class symbol isn't always loaded and
@@ -3433,16 +3379,19 @@ static BOOL computeBundleTargeted(void) {
         // for any process on this denylist. The list mirrors the system-app
         // bundles whose loop tightness or framework reach makes them unsafe
         // to wrap with hundreds of Logos hooks at once.
-        // v2.4.62 ROLLBACK: v2.4.61 removed Safari + WebContent from this
-        // denylist to fix UA spoof. Result: Safari crash on launch.
-        // Restored to v2.4.60 behavior. Safari UA spoof needs a different
-        // approach (partial-load mode that only installs sysctl hook,
-        // not the full hook surface) — TODO v2.4.63+.
+        // v2.5.1: REMOVED Safari + WebContent from denylist again. After
+        // dropping WKWebView swizzle + UIPasteboard + canOpenURL gate +
+        // making MG fishhook opt-in (default OFF), the surviving hook
+        // surface is read-only device API spoof only. Safari should be
+        // able to load it without crashing.
+        //
+        // If Safari STILL crashes after install, add back via SSH:
+        //   echo 'com.apple.mobilesafari' >> /var/jb/etc/changeinfoios/_safe_deny.txt
+        // (TODO: implement runtime deny via that file)
         static NSArray *kSystemDenyBundles = nil;
         kSystemDenyBundles = @[
             @"com.apple.springboard",
             @"com.apple.Preferences",
-            @"com.apple.mobilesafari",
             @"com.apple.webapp",
             @"com.apple.mobilesms",
             @"com.apple.MobileSMS",
@@ -3456,9 +3405,7 @@ static BOOL computeBundleTargeted(void) {
             @"com.apple.coreauthd",
             @"com.apple.HealthExtensions",
             @"com.apple.Health",
-            @"com.apple.WebKit",
-            @"com.apple.WebKit.Networking",
-            @"com.apple.WebKit.WebContent",
+            @"com.apple.WebKit.Networking",   // network process - still excluded
         ];
         for (NSString *deny in kSystemDenyBundles) {
             if ([bid isEqualToString:deny]) {
