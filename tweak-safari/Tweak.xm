@@ -16,8 +16,11 @@
 // WKWebView, customUserAgent, NSURLRequest, or any HTTP-layer plumbing.
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <sys/sysctl.h>
 #import <dlfcn.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 #import <substrate.h>
 
 // MSHookFunction prototype (from libsubstrate)
@@ -85,6 +88,36 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     return orig_MGCopyAnswer(property);
 }
 
+// v2.5.6: UIDevice.systemVersion swizzle. WebKit on iOS calls
+// `[[UIDevice currentDevice] systemVersion]` to build UA's "iPhone OS X_Y_Z"
+// substring. UIDevice underneath reads via CFCopyServerVersionDictionary
+// (private CF). Easier to swizzle UIDevice at Obj-C runtime than to hook
+// the private CF function.
+typedef NSString *(*ci_orig_systemVersion_t)(id, SEL);
+static ci_orig_systemVersion_t orig_systemVersion = NULL;
+
+static NSString *hooked_systemVersion(id self, SEL _cmd) {
+    ci_safariMark("uidevice_sysver_hit");
+    NSString *fake = ci_safariConfigString(@"systemVersion");
+    if (fake.length) {
+        ci_safariMark("uidevice_sysver_fake");
+        return fake;
+    }
+    return orig_systemVersion ? orig_systemVersion(self, _cmd) : @"17.0";
+}
+
+static void ci_swizzleSystemVersion(void) {
+    Class cls = objc_getClass("UIDevice");
+    if (!cls) { ci_safariMark("uidevice_class_missing"); return; }
+    Method m = class_getInstanceMethod(cls, @selector(systemVersion));
+    if (!m) { ci_safariMark("uidevice_method_missing"); return; }
+    IMP cur = method_getImplementation(m);
+    if (cur == (IMP)hooked_systemVersion) { ci_safariMark("uidevice_already_swizzled"); return; }
+    orig_systemVersion = (ci_orig_systemVersion_t)cur;
+    method_setImplementation(m, (IMP)hooked_systemVersion);
+    ci_safariMark("uidevice_swizzled");
+}
+
 // sysctlbyname hook — only intercepts kern.osproductversion.
 typedef int (*sysctlbyname_t)(const char *name, void *oldp, size_t *oldlenp,
                               void *newp, size_t newlen);
@@ -137,9 +170,8 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
             else                   ci_safariMark("hook_failed");
         }
 
-        // (2) MGCopyAnswer hook — for ProductVersion. v2.5.5: this is what
-        // WebKit on iOS actually uses to build the UA string. dlopen MG
-        // explicitly because Safari may not have it in dyld cache yet.
+        // (2) MGCopyAnswer hook — for ProductVersion (kept from v2.5.5; some
+        // SDKs DO use MG even though WebKit's main UA build path doesn't).
         void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
         if (mgHandle) {
             void *mgSym = dlsym(mgHandle, "MGCopyAnswer");
@@ -153,6 +185,11 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
             ci_safariMark("mg_dlopen_failed");
         }
 
-        NSLog(@"[ChangeInfoIosSafari] sysctl+MG hooked in %@", bid);
+        // (3) v2.5.6: UIDevice.systemVersion swizzle. WebKit's iOS
+        // UserAgent builder calls -[UIDevice systemVersion]. This is the
+        // actual lever that controls "iPhone OS X_Y_Z" in the UA.
+        ci_swizzleSystemVersion();
+
+        NSLog(@"[ChangeInfoIosSafari] sysctl + MG + UIDevice.systemVersion hooked in %@", bid);
     }
 }
