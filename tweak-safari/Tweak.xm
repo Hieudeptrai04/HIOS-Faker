@@ -18,6 +18,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <sys/sysctl.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -118,6 +121,64 @@ static void ci_swizzleSystemVersion(void) {
     ci_safariMark("uidevice_swizzled");
 }
 
+// v2.5.7: SystemVersion.plist redirect.
+//
+// WebKit on iOS likely uses _CFCopySystemVersionDictionary which reads
+// /System/Library/CoreServices/SystemVersion.plist via open(). We
+// pre-build a fake plist with our spoofed ProductVersion + Build, then
+// hook open() to redirect any read of the real path to our tmp file.
+//
+// This is the same trick the main dylib uses for AIDA64 spoof, ported
+// here for sidecar's minimal scope.
+static char g_safariFakeSysVerPath[256] = {0};
+static const char *kRealSysVerPath = "/System/Library/CoreServices/SystemVersion.plist";
+
+static void ci_safariBuildFakeSysVer(void) {
+    @autoreleasepool {
+        NSString *fakeProductVer = ci_safariConfigString(@"systemVersion");
+        if (!fakeProductVer.length) return;
+        NSString *fakeBuild = ci_safariConfigString(@"kern_osversion") ?: @"21A340";
+        NSDictionary *dict = @{
+            @"ProductBuildVersion": fakeBuild,
+            @"ProductCopyright":    @"1983-2024 Apple Inc.",
+            @"ProductName":         @"iPhone OS",
+            @"ProductVersion":      fakeProductVer,
+        };
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (!tmpDir.length) return;
+        NSString *tmpPath = [tmpDir stringByAppendingPathComponent:@"hios_safari_SystemVersion.plist"];
+        NSError *err = nil;
+        NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict
+                        format:NSPropertyListXMLFormat_v1_0 options:0 error:&err];
+        if (!data) { ci_safariMark("sysver_serialize_failed"); return; }
+        if ([data writeToFile:tmpPath atomically:YES]) {
+            strncpy(g_safariFakeSysVerPath, [tmpPath UTF8String], sizeof(g_safariFakeSysVerPath)-1);
+            ci_safariMark("sysver_plist_built");
+        } else {
+            ci_safariMark("sysver_write_failed");
+        }
+    }
+}
+
+typedef int (*open_t)(const char *path, int flags, ...);
+static open_t orig_open = NULL;
+
+static int hooked_open(const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    // Redirect SystemVersion.plist reads to our fake
+    if (path && g_safariFakeSysVerPath[0] && strcmp(path, kRealSysVerPath) == 0) {
+        ci_safariMark("sysver_open_redirected");
+        return orig_open(g_safariFakeSysVerPath, flags, mode);
+    }
+    return orig_open(path, flags, mode);
+}
+
 // sysctlbyname hook — only intercepts kern.osproductversion.
 typedef int (*sysctlbyname_t)(const char *name, void *oldp, size_t *oldlenp,
                               void *newp, size_t newlen);
@@ -185,11 +246,20 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
             ci_safariMark("mg_dlopen_failed");
         }
 
-        // (3) v2.5.6: UIDevice.systemVersion swizzle. WebKit's iOS
-        // UserAgent builder calls -[UIDevice systemVersion]. This is the
-        // actual lever that controls "iPhone OS X_Y_Z" in the UA.
+        // (3) v2.5.6: UIDevice.systemVersion swizzle.
         ci_swizzleSystemVersion();
 
-        NSLog(@"[ChangeInfoIosSafari] sysctl + MG + UIDevice.systemVersion hooked in %@", bid);
+        // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
+        // to redirect. WebKit may read this plist directly via
+        // _CFCopySystemVersionDictionary to build UA.
+        ci_safariBuildFakeSysVer();
+        void *openSym = dlsym(RTLD_DEFAULT, "open");
+        if (openSym && !orig_open) {
+            MSHookFunction(openSym, (void *)hooked_open, (void **)&orig_open);
+            if (orig_open) ci_safariMark("open_installed");
+            else           ci_safariMark("open_failed");
+        }
+
+        NSLog(@"[ChangeInfoIosSafari] sysctl + MG + UIDevice + open(SysVer) hooked in %@", bid);
     }
 }
