@@ -494,8 +494,13 @@ static void ci_patchUAStringsInAllImages(void) {
         const struct mach_header *header = _dyld_get_image_header(i);
         const char *name = _dyld_get_image_name(i);
         if (!header || !name) continue;
-        if (!strstr(name, "WebKit") && !strstr(name, "WebCore") &&
-            !strstr(name, "MobileSafari") && !strstr(name, "SafariShared")) continue;
+        // v2.5.20: scan ALL system framework images, not just WebKit-related.
+        // Safari/604.1 string is in SafariFoundation or similar binary we
+        // weren't including before. Skip only Apple's tiny stub dylibs +
+        // our own to avoid wasted work.
+        if (strstr(name, "/libdispatch") ||
+            strstr(name, "/libsystem_") ||
+            strstr(name, "ChangeInfoIos")) continue;
         intptr_t slide = _dyld_get_image_vmaddr_slide(i);
         uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
         const struct load_command *lc = (const struct load_command *)cur;
