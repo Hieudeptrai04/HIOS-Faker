@@ -368,19 +368,12 @@ static void ci_patchUAStringsInAllImages(void) {
     NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
     if (!fakeUA.length) return;
 
-    // Extract our fake substrings to use as replacements (must match
-    // length of original). Parse fakeUA for the parts we want to inject.
-    // Original WebKit: "AppleWebKit/605.1.15" (21 bytes), "Version/16.6.1"
-    // (14 bytes), "Mobile/15E148" (13 bytes).
     NSRegularExpression *reWK = [NSRegularExpression
-        regularExpressionWithPattern:@"AppleWebKit/(\\d+\\.\\d+\\.\\d+)"
-                              options:0 error:nil];
+        regularExpressionWithPattern:@"AppleWebKit/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
     NSRegularExpression *reVer = [NSRegularExpression
-        regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)"
-                              options:0 error:nil];
+        regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
     NSRegularExpression *reMob = [NSRegularExpression
-        regularExpressionWithPattern:@"Mobile/([0-9A-Z]{6})"
-                              options:0 error:nil];
+        regularExpressionWithPattern:@"Mobile/([0-9A-Z]{6})" options:0 error:nil];
 
     NSString *fakeWK  = nil, *fakeVer = nil, *fakeMob = nil;
     NSTextCheckingResult *r;
@@ -391,24 +384,21 @@ static void ci_patchUAStringsInAllImages(void) {
     r = [reMob firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
     if (r && r.numberOfRanges >= 2) fakeMob = [fakeUA substringWithRange:[r rangeAtIndex:1]];
 
-    // Build replacement strings of EXACT length matching real WebKit ones.
     char repWK[32]   = {0};
     char repVer[32]  = {0};
+    char repVerBare[32] = {0};
     char repMob[32]  = {0};
     BOOL haveWK = NO, haveVer = NO, haveMob = NO;
-    if (fakeWK && fakeWK.length == 8) {  // "605.1.15" = 8 chars
+    if (fakeWK && fakeWK.length == 8) {
         snprintf(repWK, sizeof(repWK), "AppleWebKit/%s", [fakeWK UTF8String]);
         haveWK = (strlen(repWK) == strlen("AppleWebKit/605.1.15"));
     }
-    if (fakeVer && fakeVer.length >= 5 && fakeVer.length <= 8) {
-        // "Version/16.6.1" = 14 bytes; our fakeVer "17.5.1" = 6, pad differently.
-        // Simplest: only patch when lengths match. Skip otherwise.
-        if (fakeVer.length == 6) {  // X.Y.Z
-            snprintf(repVer, sizeof(repVer), "Version/%s", [fakeVer UTF8String]);
-            haveVer = (strlen(repVer) == strlen("Version/16.6.1"));
-        }
+    if (fakeVer && fakeVer.length == 6) {
+        snprintf(repVer, sizeof(repVer), "Version/%s", [fakeVer UTF8String]);
+        snprintf(repVerBare, sizeof(repVerBare), "%s", [fakeVer UTF8String]);
+        haveVer = (strlen(repVer) == strlen("Version/16.6.1"));
     }
-    if (fakeMob && fakeMob.length == 6) {  // "15E148" = 6 chars
+    if (fakeMob && fakeMob.length == 6) {
         snprintf(repMob, sizeof(repMob), "Mobile/%s", [fakeMob UTF8String]);
         haveMob = (strlen(repMob) == strlen("Mobile/15E148"));
     }
@@ -418,15 +408,16 @@ static void ci_patchUAStringsInAllImages(void) {
         return;
     }
 
-    // Walk each loaded image's __TEXT __cstring section
+    // v2.5.17: scan BOTH __cstring (string literals) AND __const (const data
+    // with embedded strings). Also try bare "16.6.1" pattern in case
+    // Version/ literal is split from version number in binary layout.
     uint32_t imgCount = _dyld_image_count();
     for (uint32_t i = 0; i < imgCount; i++) {
         const struct mach_header *header = _dyld_get_image_header(i);
         const char *name = _dyld_get_image_name(i);
         if (!header || !name) continue;
-        // Only patch system frameworks that might contain Safari UA strings
         if (!strstr(name, "WebKit") && !strstr(name, "WebCore") &&
-            !strstr(name, "MobileSafari")) continue;
+            !strstr(name, "MobileSafari") && !strstr(name, "SafariShared")) continue;
         intptr_t slide = _dyld_get_image_vmaddr_slide(i);
         uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
         const struct load_command *lc = (const struct load_command *)cur;
@@ -434,15 +425,27 @@ static void ci_patchUAStringsInAllImages(void) {
         for (uint32_t j = 0; j < ncmds; j++) {
             if (lc->cmd == LC_SEGMENT_64) {
                 const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
-                if (strcmp(seg->segname, "__TEXT") == 0) {
+                BOOL isText = strcmp(seg->segname, "__TEXT") == 0;
+                BOOL isDataConst = strcmp(seg->segname, "__DATA_CONST") == 0;
+                if (isText || isDataConst) {
                     const struct section_64 *sect = (const struct section_64 *)((uintptr_t)seg + sizeof(struct segment_command_64));
                     for (uint32_t k = 0; k < seg->nsects; k++) {
-                        if (strcmp(sect[k].sectname, "__cstring") == 0) {
+                        const char *sn = sect[k].sectname;
+                        // Scan all string-bearing sections
+                        if (strcmp(sn, "__cstring") == 0 ||
+                            strcmp(sn, "__const") == 0 ||
+                            strcmp(sn, "__objc_methname") == 0 ||
+                            strcmp(sn, "__objc_classname") == 0 ||
+                            strcmp(sn, "__os_log") == 0) {
                             const uint8_t *base = (const uint8_t *)(sect[k].addr + slide);
                             size_t size = sect[k].size;
                             if (haveWK)  ci_patchStringInRange(base, size, "AppleWebKit/605.1.15", repWK);
-                            if (haveVer) ci_patchStringInRange(base, size, "Version/16.6.1",       repVer);
-                            if (haveMob) ci_patchStringInRange(base, size, "Mobile/15E148",        repMob);
+                            if (haveVer) {
+                                ci_patchStringInRange(base, size, "Version/16.6.1", repVer);
+                                // Also try bare "16.6.1" — Version/ literal might be separate token
+                                ci_patchStringInRange(base, size, "16.6.1", repVerBare);
+                            }
+                            if (haveMob) ci_patchStringInRange(base, size, "Mobile/15E148", repMob);
                         }
                     }
                 }
