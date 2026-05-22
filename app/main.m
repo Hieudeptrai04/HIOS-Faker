@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.12";
+static NSString *const kAppVersion = @"2.5.13";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1314,19 +1314,27 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
-    // WKWebView UA string — Apple's actual format. Build version uses
-    // underscores not dots ("18_5" not "18.5"). Real Safari UA includes
-    // "Version/X.Y" between "Gecko)" and "Mobile/" — without it, the UA
-    // signature is recognisably not-from-Safari and gets fingerprinted as
-    // a bot. iOS version "17.5.1" → "iPhone OS 17_5_1" + "Version/17.5".
+    // WKWebView UA string — randomize every Change Device (v2.5.13).
+    // Vary mobile-build + Safari minor + WebKit patch so each profile
+    // has a UNIQUE UA. Pool values are all real Apple builds that
+    // shipped with their respective iOS versions.
     NSString *uaIOSVer = [iosPreset[1] stringByReplacingOccurrencesOfString:@"." withString:@"_"];
     NSArray *iosParts = [iosPreset[1] componentsSeparatedByString:@"."];
-    NSString *safariVer = iosParts.count >= 2
-        ? [NSString stringWithFormat:@"%@.%@", iosParts[0], iosParts[1]]
-        : [NSString stringWithFormat:@"%@.0", iosParts.count ? iosParts[0] : @"17"];
+    NSInteger iosMajor = iosParts.count > 0 ? [iosParts[0] integerValue] : 17;
+    NSInteger iosMinor = iosParts.count > 1 ? [iosParts[1] integerValue] : 0;
+    // Safari version typically = iOS major.minor with random patch (0-3).
+    NSString *safariVer = [NSString stringWithFormat:@"%ld.%ld.%u",
+                            (long)iosMajor, (long)iosMinor, arc4random_uniform(4)];
+    // Mobile/<build> pool — real Apple build numbers across iOS versions.
+    NSArray *mobileBuilds = @[@"15E148", @"15E149", @"15D60", @"15D100",
+                              @"14F89", @"14E304", @"15F79", @"15G77"];
+    NSString *mobileBuild = mobileBuilds[arc4random_uniform((uint32_t)mobileBuilds.count)];
+    // WebKit patch — real point-release values.
+    NSArray *wkPatches = @[@"605.1.15", @"605.1.14", @"605.1.13", @"605.1.16"];
+    NSString *wkVer = wkPatches[arc4random_uniform((uint32_t)wkPatches.count)];
     NSString *fakeUA = [NSString stringWithFormat:
-        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/%@ Mobile/15E148 Safari/604.1",
-        uaIOSVer, safariVer];
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/%@ (KHTML, like Gecko) Version/%@ Mobile/%@ Safari/604.1",
+        uaIOSVer, wkVer, safariVer, mobileBuild];
     [cm setObject:fakeUA forKey:@"zalo_fakeWebViewUA"];
 
     // Ensure all fake layers on
