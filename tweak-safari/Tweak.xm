@@ -25,6 +25,10 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <substrate.h>
+#import <mach-o/loader.h>
+#import <mach-o/dyld.h>
+#import <mach/mach.h>
+#import <mach/vm_map.h>
 
 // MSHookFunction prototype (from libsubstrate)
 #ifdef __cplusplus
@@ -336,10 +340,6 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 // fixed UA substrings ("Mobile/15E148", "Version/16.6.1",
 // "AppleWebKit/605.1.15"), and overwrites them with our random values
 // of EXACTLY the same length so neighboring relocations stay correct.
-
-#import <mach-o/loader.h>
-#import <mach/mach.h>
-#import <mach/vm_map.h>
 
 static void ci_patchStringInRange(const uint8_t *base, size_t size,
                                    const char *needle, const char *replacement) {
