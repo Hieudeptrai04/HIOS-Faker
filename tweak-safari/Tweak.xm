@@ -62,6 +62,29 @@ static NSString *ci_safariConfigString(NSString *key) {
     return nil;
 }
 
+// v2.5.5: MGCopyAnswer hook. WebKit on iOS calls MGCopyAnswer("ProductVersion")
+// to get iOS marketing version for the UA string — NOT sysctlbyname (despite
+// what WebKit source code shows; iOS-specific override uses MG).
+typedef CFTypeRef (*MGCopyAnswer_t)(CFStringRef property);
+static MGCopyAnswer_t orig_MGCopyAnswer = NULL;
+
+static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
+    if (!property) return orig_MGCopyAnswer(property);
+    NSString *key = (__bridge NSString *)property;
+    // Only spoof iOS-version-related keys; everything else passthrough.
+    if ([key isEqualToString:@"ProductVersion"] ||
+        [key isEqualToString:@"BuildVersion"] ||
+        [key isEqualToString:@"ProductBuildVersion"] ||
+        [key isEqualToString:@"SoftwareBundleVersion"]) {
+        NSString *fake = ci_safariConfigString(@"systemVersion");
+        if (fake.length) {
+            ci_safariMark("mg_productversion_hit");
+            return (__bridge_retained CFTypeRef)fake;
+        }
+    }
+    return orig_MGCopyAnswer(property);
+}
+
 // sysctlbyname hook — only intercepts kern.osproductversion.
 typedef int (*sysctlbyname_t)(const char *name, void *oldp, size_t *oldlenp,
                               void *newp, size_t newlen);
@@ -105,18 +128,31 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         }
         ci_safariMark("ctor_entered");
 
+        // (1) sysctlbyname hook — for kern.osproductversion
         void *sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
-        if (!sym) { ci_safariMark("dlsym_failed"); return; }
-        if (orig_sysctlbyname) { ci_safariMark("already_hooked"); return; }
-
-        MSHookFunction(sym, (void *)hooked_sysctlbyname,
-                       (void **)&orig_sysctlbyname);
-        if (orig_sysctlbyname) {
-            ci_safariMark("hook_installed");
-        } else {
-            ci_safariMark("hook_failed");
+        if (sym && !orig_sysctlbyname) {
+            MSHookFunction(sym, (void *)hooked_sysctlbyname,
+                           (void **)&orig_sysctlbyname);
+            if (orig_sysctlbyname) ci_safariMark("hook_installed");
+            else                   ci_safariMark("hook_failed");
         }
-        NSLog(@"[ChangeInfoIosSafari] sysctlbyname hooked in %@ (orig=%p)",
-              bid, (void *)orig_sysctlbyname);
+
+        // (2) MGCopyAnswer hook — for ProductVersion. v2.5.5: this is what
+        // WebKit on iOS actually uses to build the UA string. dlopen MG
+        // explicitly because Safari may not have it in dyld cache yet.
+        void *mgHandle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+        if (mgHandle) {
+            void *mgSym = dlsym(mgHandle, "MGCopyAnswer");
+            if (mgSym && !orig_MGCopyAnswer) {
+                MSHookFunction(mgSym, (void *)hooked_MGCopyAnswer,
+                               (void **)&orig_MGCopyAnswer);
+                if (orig_MGCopyAnswer) ci_safariMark("mg_installed");
+                else                   ci_safariMark("mg_failed");
+            }
+        } else {
+            ci_safariMark("mg_dlopen_failed");
+        }
+
+        NSLog(@"[ChangeInfoIosSafari] sysctl+MG hooked in %@", bid);
     }
 }
