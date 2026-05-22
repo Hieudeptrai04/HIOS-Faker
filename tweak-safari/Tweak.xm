@@ -121,6 +121,36 @@ static void ci_swizzleSystemVersion(void) {
     ci_safariMark("uidevice_swizzled");
 }
 
+// v2.5.10: NSProcessInfo.operatingSystemVersionString swizzle.
+// WebKit may use this as fallback when CFCopySystemVersionDictionary
+// returns something it doesn't like.
+typedef NSString *(*ci_orig_osverstr_t)(id, SEL);
+static ci_orig_osverstr_t orig_osVersionString = NULL;
+
+static NSString *hooked_osVersionString(id self, SEL _cmd) {
+    ci_safariMark("nsprocinfo_osverstr_hit");
+    NSString *fake = ci_safariConfigString(@"systemVersion");
+    if (fake.length) {
+        ci_safariMark("nsprocinfo_osverstr_fake");
+        return [NSString stringWithFormat:@"Version %@ (Build %@)",
+                fake,
+                ci_safariConfigString(@"kern_osversion") ?: @"21A340"];
+    }
+    return orig_osVersionString ? orig_osVersionString(self, _cmd) : @"";
+}
+
+static void ci_swizzleProcessInfo(void) {
+    Class cls = objc_getClass("NSProcessInfo");
+    if (!cls) { ci_safariMark("nspi_class_missing"); return; }
+    Method m = class_getInstanceMethod(cls, @selector(operatingSystemVersionString));
+    if (!m) { ci_safariMark("nspi_method_missing"); return; }
+    IMP cur = method_getImplementation(m);
+    if (cur == (IMP)hooked_osVersionString) { ci_safariMark("nspi_already_swizzled"); return; }
+    orig_osVersionString = (ci_orig_osverstr_t)cur;
+    method_setImplementation(m, (IMP)hooked_osVersionString);
+    ci_safariMark("nspi_swizzled");
+}
+
 // v2.5.9 ROLLBACK open()/openat() hooks — caused Safari to crash. Each
 // global syscall hook fires on every file open in Safari (thousands/sec)
 // and even tiny ABI mismatches in variadic forwarding break the process.
@@ -137,11 +167,17 @@ static CFDictionaryRef ci_buildFakeSysVerDict(void) {
     NSString *fakeProductVer = ci_safariConfigString(@"systemVersion");
     if (!fakeProductVer.length) return NULL;
     NSString *fakeBuild = ci_safariConfigString(@"kern_osversion") ?: @"21A340";
+    // v2.5.10: extend with ALL keys real iOS SystemVersion.plist has.
+    // WebKit may read ProductUserVisibleVersion instead of ProductVersion.
     NSDictionary *d = @{
-        @"ProductBuildVersion": fakeBuild,
-        @"ProductCopyright":    @"1983-2024 Apple Inc.",
-        @"ProductName":         @"iPhone OS",
-        @"ProductVersion":      fakeProductVer,
+        @"ProductName":                @"iPhone OS",
+        @"ProductVersion":             fakeProductVer,
+        @"ProductUserVisibleVersion":  fakeProductVer,
+        @"ProductBuildVersion":        fakeBuild,
+        @"BuildID":                    @"00000000-0000-0000-0000-000000000000",
+        @"ProductCopyright":           @"1983-2024 Apple Inc.",
+        @"iOSSupportVersion":          fakeProductVer,
+        @"ReleaseType":                @"User",
     };
     return (CFDictionaryRef)CFBridgingRetain([d copy]);
 }
@@ -229,6 +265,8 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
         // (3) v2.5.6: UIDevice.systemVersion swizzle.
         ci_swizzleSystemVersion();
+        // v2.5.10: NSProcessInfo.operatingSystemVersionString swizzle.
+        ci_swizzleProcessInfo();
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
         // to redirect. WebKit may read this plist directly via
