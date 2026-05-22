@@ -162,21 +162,31 @@ static void ci_safariBuildFakeSysVer(void) {
 
 typedef int (*open_t)(const char *path, int flags, ...);
 static open_t orig_open = NULL;
+typedef int (*openat_t)(int dirfd, const char *path, int flags, ...);
+static openat_t orig_openat = NULL;
 
 static int hooked_open(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
-        va_list ap;
-        va_start(ap, flags);
-        mode = (mode_t)va_arg(ap, int);
-        va_end(ap);
+        va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
     }
-    // Redirect SystemVersion.plist reads to our fake
     if (path && g_safariFakeSysVerPath[0] && strcmp(path, kRealSysVerPath) == 0) {
         ci_safariMark("sysver_open_redirected");
         return orig_open(g_safariFakeSysVerPath, flags, mode);
     }
     return orig_open(path, flags, mode);
+}
+
+static int hooked_openat(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
+    }
+    if (path && g_safariFakeSysVerPath[0] && strcmp(path, kRealSysVerPath) == 0) {
+        ci_safariMark("sysver_openat_redirected");
+        return orig_openat(dirfd, g_safariFakeSysVerPath, flags, mode);
+    }
+    return orig_openat(dirfd, path, flags, mode);
 }
 
 // sysctlbyname hook — only intercepts kern.osproductversion.
@@ -258,6 +268,12 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
             MSHookFunction(openSym, (void *)hooked_open, (void **)&orig_open);
             if (orig_open) ci_safariMark("open_installed");
             else           ci_safariMark("open_failed");
+        }
+        void *openatSym = dlsym(RTLD_DEFAULT, "openat");
+        if (openatSym && !orig_openat) {
+            MSHookFunction(openatSym, (void *)hooked_openat, (void **)&orig_openat);
+            if (orig_openat) ci_safariMark("openat_installed");
+            else             ci_safariMark("openat_failed");
         }
 
         NSLog(@"[ChangeInfoIosSafari] sysctl + MG + UIDevice + open(SysVer) hooked in %@", bid);
