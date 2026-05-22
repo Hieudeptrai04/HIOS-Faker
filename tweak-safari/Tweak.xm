@@ -121,72 +121,43 @@ static void ci_swizzleSystemVersion(void) {
     ci_safariMark("uidevice_swizzled");
 }
 
-// v2.5.7: SystemVersion.plist redirect.
+// v2.5.9 ROLLBACK open()/openat() hooks — caused Safari to crash. Each
+// global syscall hook fires on every file open in Safari (thousands/sec)
+// and even tiny ABI mismatches in variadic forwarding break the process.
 //
-// WebKit on iOS likely uses _CFCopySystemVersionDictionary which reads
-// /System/Library/CoreServices/SystemVersion.plist via open(). We
-// pre-build a fake plist with our spoofed ProductVersion + Build, then
-// hook open() to redirect any read of the real path to our tmp file.
-//
-// This is the same trick the main dylib uses for AIDA64 spoof, ported
-// here for sidecar's minimal scope.
-static char g_safariFakeSysVerPath[256] = {0};
-static const char *kRealSysVerPath = "/System/Library/CoreServices/SystemVersion.plist";
+// Alternative approach: hook _CFCopySystemVersionDictionary directly.
+// This is a higher-level CF API that returns the cached dict. Hooking
+// it returns our fake dict on first call → dispatch_once caches it.
 
-static void ci_safariBuildFakeSysVer(void) {
-    @autoreleasepool {
-        NSString *fakeProductVer = ci_safariConfigString(@"systemVersion");
-        if (!fakeProductVer.length) return;
-        NSString *fakeBuild = ci_safariConfigString(@"kern_osversion") ?: @"21A340";
-        NSDictionary *dict = @{
-            @"ProductBuildVersion": fakeBuild,
-            @"ProductCopyright":    @"1983-2024 Apple Inc.",
-            @"ProductName":         @"iPhone OS",
-            @"ProductVersion":      fakeProductVer,
-        };
-        NSString *tmpDir = NSTemporaryDirectory();
-        if (!tmpDir.length) return;
-        NSString *tmpPath = [tmpDir stringByAppendingPathComponent:@"hios_safari_SystemVersion.plist"];
-        NSError *err = nil;
-        NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict
-                        format:NSPropertyListXMLFormat_v1_0 options:0 error:&err];
-        if (!data) { ci_safariMark("sysver_serialize_failed"); return; }
-        if ([data writeToFile:tmpPath atomically:YES]) {
-            strncpy(g_safariFakeSysVerPath, [tmpPath UTF8String], sizeof(g_safariFakeSysVerPath)-1);
-            ci_safariMark("sysver_plist_built");
-        } else {
-            ci_safariMark("sysver_write_failed");
-        }
-    }
+typedef CFDictionaryRef (*CFCopySysVerDict_t)(void);
+static CFCopySysVerDict_t orig__CFCopySystemVersionDictionary = NULL;
+static CFCopySysVerDict_t orig__CFCopyServerVersionDictionary = NULL;
+
+static CFDictionaryRef ci_buildFakeSysVerDict(void) {
+    NSString *fakeProductVer = ci_safariConfigString(@"systemVersion");
+    if (!fakeProductVer.length) return NULL;
+    NSString *fakeBuild = ci_safariConfigString(@"kern_osversion") ?: @"21A340";
+    NSDictionary *d = @{
+        @"ProductBuildVersion": fakeBuild,
+        @"ProductCopyright":    @"1983-2024 Apple Inc.",
+        @"ProductName":         @"iPhone OS",
+        @"ProductVersion":      fakeProductVer,
+    };
+    return (CFDictionaryRef)CFBridgingRetain([d copy]);
 }
 
-typedef int (*open_t)(const char *path, int flags, ...);
-static open_t orig_open = NULL;
-typedef int (*openat_t)(int dirfd, const char *path, int flags, ...);
-static openat_t orig_openat = NULL;
-
-static int hooked_open(const char *path, int flags, ...) {
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
-    }
-    if (path && g_safariFakeSysVerPath[0] && strcmp(path, kRealSysVerPath) == 0) {
-        ci_safariMark("sysver_open_redirected");
-        return orig_open(g_safariFakeSysVerPath, flags, mode);
-    }
-    return orig_open(path, flags, mode);
+static CFDictionaryRef hooked__CFCopySystemVersionDictionary(void) {
+    ci_safariMark("cf_sysver_hit");
+    CFDictionaryRef fake = ci_buildFakeSysVerDict();
+    if (fake) { ci_safariMark("cf_sysver_fake"); return fake; }
+    return orig__CFCopySystemVersionDictionary ? orig__CFCopySystemVersionDictionary() : NULL;
 }
 
-static int hooked_openat(int dirfd, const char *path, int flags, ...) {
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
-    }
-    if (path && g_safariFakeSysVerPath[0] && strcmp(path, kRealSysVerPath) == 0) {
-        ci_safariMark("sysver_openat_redirected");
-        return orig_openat(dirfd, g_safariFakeSysVerPath, flags, mode);
-    }
-    return orig_openat(dirfd, path, flags, mode);
+static CFDictionaryRef hooked__CFCopyServerVersionDictionary(void) {
+    ci_safariMark("cf_servver_hit");
+    CFDictionaryRef fake = ci_buildFakeSysVerDict();
+    if (fake) { ci_safariMark("cf_servver_fake"); return fake; }
+    return orig__CFCopyServerVersionDictionary ? orig__CFCopyServerVersionDictionary() : NULL;
 }
 
 // sysctlbyname hook — only intercepts kern.osproductversion.
@@ -262,18 +233,25 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
         // to redirect. WebKit may read this plist directly via
         // _CFCopySystemVersionDictionary to build UA.
-        ci_safariBuildFakeSysVer();
-        void *openSym = dlsym(RTLD_DEFAULT, "open");
-        if (openSym && !orig_open) {
-            MSHookFunction(openSym, (void *)hooked_open, (void **)&orig_open);
-            if (orig_open) ci_safariMark("open_installed");
-            else           ci_safariMark("open_failed");
+        // v2.5.9: hook CF version-dict APIs directly (safer than open()).
+        void *sysVerSym = dlsym(RTLD_DEFAULT, "_CFCopySystemVersionDictionary");
+        if (sysVerSym && !orig__CFCopySystemVersionDictionary) {
+            MSHookFunction(sysVerSym, (void *)hooked__CFCopySystemVersionDictionary,
+                           (void **)&orig__CFCopySystemVersionDictionary);
+            if (orig__CFCopySystemVersionDictionary) ci_safariMark("cf_sysver_installed");
+            else                                     ci_safariMark("cf_sysver_failed");
+        } else {
+            ci_safariMark("cf_sysver_symbol_missing");
         }
-        void *openatSym = dlsym(RTLD_DEFAULT, "openat");
-        if (openatSym && !orig_openat) {
-            MSHookFunction(openatSym, (void *)hooked_openat, (void **)&orig_openat);
-            if (orig_openat) ci_safariMark("openat_installed");
-            else             ci_safariMark("openat_failed");
+
+        void *servVerSym = dlsym(RTLD_DEFAULT, "_CFCopyServerVersionDictionary");
+        if (servVerSym && !orig__CFCopyServerVersionDictionary) {
+            MSHookFunction(servVerSym, (void *)hooked__CFCopyServerVersionDictionary,
+                           (void **)&orig__CFCopyServerVersionDictionary);
+            if (orig__CFCopyServerVersionDictionary) ci_safariMark("cf_servver_installed");
+            else                                     ci_safariMark("cf_servver_failed");
+        } else {
+            ci_safariMark("cf_servver_symbol_missing");
         }
 
         NSLog(@"[ChangeInfoIosSafari] sysctl + MG + UIDevice + open(SysVer) hooked in %@", bid);
