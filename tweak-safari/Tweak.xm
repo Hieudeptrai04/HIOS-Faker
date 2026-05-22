@@ -29,6 +29,20 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 }
 #endif
 
+// v2.5.4 diagnostic helpers — write marker files to confirm load + hook fire.
+static void ci_safariMark(const char *tag) {
+    @autoreleasepool {
+        NSString *dir = NSTemporaryDirectory();
+        if (!dir.length) return;
+        NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
+        NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n",
+                            [NSDate date],
+                            [[NSBundle mainBundle] bundleIdentifier] ?: @"?"];
+        FILE *f = fopen([path UTF8String], "a");
+        if (f) { fputs([stamp UTF8String], f); fclose(f); }
+    }
+}
+
 static NSDictionary *g_safariConfig = nil;
 static dispatch_once_t g_configOnce;
 
@@ -63,7 +77,6 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         strcmp(name, "kern.osproductversionextra") != 0) return ret;
 
     // v2.5.4 diag — confirm hook fires
-    extern void ci_safariMark(const char *tag);
     ci_safariMark("osprod_hit");
 
     NSString *fakeVer = ci_safariConfigString(@"systemVersion");
@@ -79,20 +92,6 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     }
     ci_safariMark("buffer_too_small");
     return ret;
-}
-
-// v2.5.4 diagnostic helpers — write marker files to confirm load + hook fire.
-static void ci_safariMark(const char *tag) {
-    @autoreleasepool {
-        NSString *dir = NSTemporaryDirectory();
-        if (!dir.length) return;
-        NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
-        NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n",
-                            [NSDate date],
-                            [[NSBundle mainBundle] bundleIdentifier] ?: @"?"];
-        FILE *f = fopen([path UTF8String], "a");
-        if (f) { fputs([stamp UTF8String], f); fclose(f); }
-    }
 }
 
 %ctor {
