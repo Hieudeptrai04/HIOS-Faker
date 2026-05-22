@@ -246,6 +246,37 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     return ret;
 }
 
+// v2.5.12: priority 101 to ensure we load BEFORE WebKit framework's
+// static initializers run. WebKit caches iOS version at framework init;
+// to spoof, our hook must be installed BEFORE that cache fills.
+__attribute__((constructor(101)))
+static void ci_safari_early_ctor(void) {
+    @autoreleasepool {
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
+        if (![bid isEqualToString:@"com.apple.mobilesafari"] &&
+            ![bid hasPrefix:@"com.apple.WebKit"]) {
+            return;
+        }
+        ci_safariMark("early_ctor_entered");
+
+        // Install only the critical CF hook EARLY (before WebKit cache)
+        void *sysVerSym = dlsym(RTLD_DEFAULT, "_CFCopySystemVersionDictionary");
+        if (sysVerSym && !orig__CFCopySystemVersionDictionary) {
+            MSHookFunction(sysVerSym, (void *)hooked__CFCopySystemVersionDictionary,
+                           (void **)&orig__CFCopySystemVersionDictionary);
+            if (orig__CFCopySystemVersionDictionary) ci_safariMark("early_cf_sysver_installed");
+        }
+        void *servVerSym = dlsym(RTLD_DEFAULT, "_CFCopyServerVersionDictionary");
+        if (servVerSym && !orig__CFCopyServerVersionDictionary) {
+            MSHookFunction(servVerSym, (void *)hooked__CFCopyServerVersionDictionary,
+                           (void **)&orig__CFCopyServerVersionDictionary);
+            if (orig__CFCopyServerVersionDictionary) ci_safariMark("early_cf_servver_installed");
+        }
+        // Pre-load config so hook returns valid value on FIRST call
+        (void)ci_safariConfigString(@"systemVersion");
+    }
+}
+
 %ctor {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
