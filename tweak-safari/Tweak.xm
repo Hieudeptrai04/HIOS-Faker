@@ -182,18 +182,36 @@ static CFDictionaryRef ci_buildFakeSysVerDict(void) {
     return (CFDictionaryRef)CFBridgingRetain([d copy]);
 }
 
+// v2.5.11: read-modify-return. Preserves all keys + types Apple's WebKit
+// might validate against. Only changes the version-related entries.
+static CFDictionaryRef ci_patchSysVerDict(CFDictionaryRef real) {
+    if (!real) return ci_buildFakeSysVerDict();
+    NSString *fakeProductVer = ci_safariConfigString(@"systemVersion");
+    if (!fakeProductVer.length) return real;
+    NSMutableDictionary *m = [((__bridge NSDictionary *)real) mutableCopy];
+    CFRelease(real);
+    m[@"ProductVersion"]            = fakeProductVer;
+    m[@"ProductUserVisibleVersion"] = fakeProductVer;
+    m[@"iOSSupportVersion"]         = fakeProductVer;
+    NSString *fakeBuild = ci_safariConfigString(@"kern_osversion");
+    if (fakeBuild.length) m[@"ProductBuildVersion"] = fakeBuild;
+    return (CFDictionaryRef)CFBridgingRetain([m copy]);
+}
+
 static CFDictionaryRef hooked__CFCopySystemVersionDictionary(void) {
     ci_safariMark("cf_sysver_hit");
-    CFDictionaryRef fake = ci_buildFakeSysVerDict();
-    if (fake) { ci_safariMark("cf_sysver_fake"); return fake; }
-    return orig__CFCopySystemVersionDictionary ? orig__CFCopySystemVersionDictionary() : NULL;
+    CFDictionaryRef real = orig__CFCopySystemVersionDictionary ? orig__CFCopySystemVersionDictionary() : NULL;
+    CFDictionaryRef patched = ci_patchSysVerDict(real);
+    if (patched && patched != real) ci_safariMark("cf_sysver_patched");
+    return patched;
 }
 
 static CFDictionaryRef hooked__CFCopyServerVersionDictionary(void) {
     ci_safariMark("cf_servver_hit");
-    CFDictionaryRef fake = ci_buildFakeSysVerDict();
-    if (fake) { ci_safariMark("cf_servver_fake"); return fake; }
-    return orig__CFCopyServerVersionDictionary ? orig__CFCopyServerVersionDictionary() : NULL;
+    CFDictionaryRef real = orig__CFCopyServerVersionDictionary ? orig__CFCopyServerVersionDictionary() : NULL;
+    CFDictionaryRef patched = ci_patchSysVerDict(real);
+    if (patched && patched != real) ci_safariMark("cf_servver_patched");
+    return patched;
 }
 
 // sysctlbyname hook — only intercepts kern.osproductversion.
