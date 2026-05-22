@@ -7,6 +7,7 @@ on:
       - master
     paths:
       - "tweak/**"
+      - "tweak-safari/**"
       - "app/**"
       - "helloinject/**"
       - ".github/workflows/build.yml"
