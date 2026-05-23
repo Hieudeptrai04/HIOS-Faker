@@ -420,11 +420,22 @@ static CFTypeRef hooked_CFBundleGetValueForInfoDictionaryKey(CFBundleRef bundle,
 typedef id (*ci_wkwv_init_t)(id, SEL, CGRect, id);
 static ci_wkwv_init_t orig_WKWV_initWithFrameCfg = NULL;
 
+static NSString *ci_jsEscape(NSString *s) {
+    if (!s) return @"";
+    return [[[s stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+                stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"]
+                stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+}
+
 static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
-    // Escape single-quotes to avoid breaking the JS literal.
-    NSString *esc = [fakeUA stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
-    // Derive appVersion = userAgent stripped of leading "Mozilla/".
+    NSString *esc = ci_jsEscape(fakeUA);
     NSString *appVer = [esc hasPrefix:@"Mozilla/"] ? [esc substringFromIndex:8] : esc;
+    // v2.5.25: also spoof WebGL VENDOR/RENDERER + UNMASKED variants from
+    // config (web_glVendor / web_glRenderer), canvas noise via toDataURL,
+    // hardwareConcurrency, and screen dims.
+    NSString *glVendor   = ci_jsEscape(ci_safariConfigString(@"web_glVendor")   ?: @"Apple Inc.");
+    NSString *glRenderer = ci_jsEscape(ci_safariConfigString(@"web_glRenderer") ?: @"Apple GPU");
+    NSString *canvasOn   = ci_safariConfigString(@"web_canvasNoise") ? @"1" : @"0";
     return [NSString stringWithFormat:
         @"(function(){try{"
          "var d=function(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}};"
@@ -432,8 +443,44 @@ static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
          "d(navigator,'appVersion','%@');"
          "d(navigator,'platform','iPhone');"
          "d(navigator,'vendor','Apple Computer, Inc.');"
+         // WebGL spoof — override getParameter to lie about VENDOR/RENDERER + UNMASKED variants.
+         // Hex codes: 0x1F00=VENDOR, 0x1F01=RENDERER, 0x9245=UNMASKED_VENDOR_WEBGL, 0x9246=UNMASKED_RENDERER_WEBGL.
+         "['WebGLRenderingContext','WebGL2RenderingContext'].forEach(function(n){"
+         "  if (!window[n]) return;"
+         "  var p = window[n].prototype;"
+         "  var orig = p.getParameter;"
+         "  p.getParameter = function(pname){"
+         "    if (pname===0x1F00 || pname===0x9245) return '%@';"
+         "    if (pname===0x1F01 || pname===0x9246) return '%@';"
+         "    return orig.call(this,pname);"
+         "  };"
+         "});"
+         // Canvas noise — perturb toDataURL/getImageData output deterministically per session.
+         "if (%@) {"
+         "  var seed = (Math.random()*0xFFFFFFFF)|0;"
+         "  var noise=function(c){"
+         "    try{var ctx=c.getContext('2d'); if(!ctx) return;"
+         "      var w=c.width|0, h=c.height|0; if(!w||!h) return;"
+         "      var img=ctx.getImageData(0,0,w,h);"
+         "      var d=img.data;"
+         "      for (var i=0;i<d.length;i+=4){"
+         "        d[i]   = (d[i]   ^ (seed&0x7)) & 0xFF;"
+         "        d[i+1] = (d[i+1] ^ ((seed>>3)&0x7)) & 0xFF;"
+         "        d[i+2] = (d[i+2] ^ ((seed>>6)&0x7)) & 0xFF;"
+         "      }"
+         "      ctx.putImageData(img,0,0);"
+         "    }catch(e){}"
+         "  };"
+         "  var origToDataURL = HTMLCanvasElement.prototype.toDataURL;"
+         "  HTMLCanvasElement.prototype.toDataURL = function(){"
+         "    noise(this);"
+         "    return origToDataURL.apply(this, arguments);"
+         "  };"
+         "}"
+         // Hardware concurrency — bump to a common range; randomize per session.
+         "d(navigator,'hardwareConcurrency', 4 + ((Math.random()*3)|0)*2);"  // 4/6/8
          "}catch(e){}})();",
-        esc, appVer];
+        esc, appVer, glVendor, glRenderer, canvasOn];
 }
 
 static void ci_injectUserScript(id configuration, NSString *fakeUA) {
