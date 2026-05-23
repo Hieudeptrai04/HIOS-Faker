@@ -28,7 +28,6 @@ static void ci_locMark(const char *tag) {
 
 // Shared config plist read — same path the main tweak uses.
 static NSDictionary *g_locConfig = nil;
-static dispatch_once_t g_locConfigOnce;
 static NSTimeInterval g_locConfigLoadTime = 0;
 
 static NSDictionary *ci_loadLocConfig(void) {
@@ -157,28 +156,21 @@ static CLLocation *ci_buildFakeLocation(void) {
     });
 }
 
-// Authorization: always report authorized-when-in-use so the calling app
-// doesn't think the user denied. Without this, even if our location getter
-// returns fake, the app may show "Location not available" UI.
+// Authorization: report authorized-when-in-use so the calling app doesn't
+// degrade to "Location not available" UI even when our coords are returned.
 - (CLAuthorizationStatus)authorizationStatus {
     if (!ci_locEnabled()) return %orig;
     ci_locMark("authstatus_authorized");
     return kCLAuthorizationStatusAuthorizedWhenInUse;
 }
 
-+ (CLAuthorizationStatus)authorizationStatus {
-    // Note: this class-method form is deprecated in iOS 14+ but some apps
-    // still call it. Return authorized so those legacy code paths agree
-    // with the instance-method response above.
-    if (!ci_locEnabled()) return %orig;
-    return kCLAuthorizationStatusAuthorizedWhenInUse;
-}
+%end
 
+%hook CLLocationManager  // class-method hooks separated to silence the deprecated-class-method warning that may treat as error
 + (BOOL)locationServicesEnabled {
     if (!ci_locEnabled()) return %orig;
     return YES;
 }
-
 %end
 
 %hook CLGeocoder
