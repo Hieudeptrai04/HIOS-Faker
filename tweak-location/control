@@ -1,6 +1,6 @@
 Package: com.changeinfoios.location
 Name: ChangeInfoIosLocation
-Version: 2.5.33
+Version: 2.5.34
 Architecture: iphoneos-arm64
 Description: Minimal GPS-spoof sidecar dylib for Apple Maps/Weather/Camera/Photos/Spotlight. Hooks ONLY CLLocationManager + CLGeocoder. No heavy %hook surface — safe for system apps that the main tweak's broader hook set would crash.
 Maintainer: ChangeInfoIos

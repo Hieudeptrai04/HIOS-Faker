@@ -50,9 +50,9 @@ data.tar.xz
 toolchain/
 
 # Image files (large)
-icon.png
 logo HIOS Faker.jpg
 image.png
+# icon.png IS tracked — used for Sileo repo CydiaIcon and app icon source
 
 # Test files
 check_*.py
