@@ -20,6 +20,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
+#import <MapKit/MapKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -98,9 +99,11 @@ static CLLocation *ci_buildFakeLocation(void) {
 // Delegate-method swizzle. Replaces the locations array in-flight
 // on the framework's own queue — no precondition violation.
 // ============================================================
-static NSMutableSet *g_swizzledClasses = nil;   // delegate Class objects already swizzled
+static NSMutableSet *g_swizzledClasses = nil;   // delegate Class objects already swizzled (didUpdateLocations:)
+static NSMutableSet *g_swizzledClasses2 = nil;  // ... for didUpdateToLocation:fromLocation:
 static dispatch_once_t g_swizzledOnce;
-static const void *kOrigImplKey = &kOrigImplKey;
+static const void *kOrigImplKey  = &kOrigImplKey;
+static const void *kOrigImplKey2 = &kOrigImplKey2;
 
 static void ci_locDelegateUpdates(id delegateSelf, SEL _cmd,
                                     CLLocationManager *mgr,
@@ -120,23 +123,67 @@ static void ci_locDelegateUpdates(id delegateSelf, SEL _cmd,
     if (orig) orig(delegateSelf, _cmd, mgr, forward);
 }
 
+// Deprecated single-location delegate (pre-iOS 6 but some apps still use it).
+static void ci_locDelegateUpdateTo(id delegateSelf, SEL _cmd,
+                                     CLLocationManager *mgr,
+                                     CLLocation *newLoc,
+                                     CLLocation *oldLoc) {
+    CLLocation *forward = newLoc;
+    if (ci_locEnabled()) {
+        CLLocation *fake = ci_buildFakeLocation();
+        if (fake) { forward = fake; ci_locMark("delegate_updateTo_swapped"); }
+    }
+    Class cls = object_getClass(delegateSelf);
+    NSValue *boxed = objc_getAssociatedObject(cls, kOrigImplKey2);
+    void (*orig)(id, SEL, CLLocationManager *, CLLocation *, CLLocation *) =
+        (void (*)(id, SEL, CLLocationManager *, CLLocation *, CLLocation *))[boxed pointerValue];
+    if (orig) orig(delegateSelf, _cmd, mgr, forward, oldLoc);
+}
+
 static void ci_swizzleDelegateClassIfNeeded(Class cls) {
     if (!cls) return;
-    dispatch_once(&g_swizzledOnce, ^{ g_swizzledClasses = [NSMutableSet new]; });
+    dispatch_once(&g_swizzledOnce, ^{
+        g_swizzledClasses  = [NSMutableSet new];
+        g_swizzledClasses2 = [NSMutableSet new];
+    });
+    NSString *clsName = NSStringFromClass(cls);
+    if (!clsName.length) return;
+
+    // Modern signature
     @synchronized (g_swizzledClasses) {
-        NSString *clsName = NSStringFromClass(cls);
-        if (!clsName.length) return;
-        if ([g_swizzledClasses containsObject:clsName]) return;
-        SEL sel = @selector(locationManager:didUpdateLocations:);
-        Method m = class_getInstanceMethod(cls, sel);
-        if (!m) return;
-        IMP curIMP = method_getImplementation(m);
-        if (!curIMP || curIMP == (IMP)ci_locDelegateUpdates) return;
-        NSValue *boxed = [NSValue valueWithPointer:(const void *)curIMP];
-        objc_setAssociatedObject(cls, kOrigImplKey, boxed, OBJC_ASSOCIATION_RETAIN);
-        method_setImplementation(m, (IMP)ci_locDelegateUpdates);
-        [g_swizzledClasses addObject:clsName];
-        ci_locMark("delegate_class_swizzled");
+        if (![g_swizzledClasses containsObject:clsName]) {
+            SEL sel = @selector(locationManager:didUpdateLocations:);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                IMP curIMP = method_getImplementation(m);
+                if (curIMP && curIMP != (IMP)ci_locDelegateUpdates) {
+                    objc_setAssociatedObject(cls, kOrigImplKey,
+                        [NSValue valueWithPointer:(const void *)curIMP],
+                        OBJC_ASSOCIATION_RETAIN);
+                    method_setImplementation(m, (IMP)ci_locDelegateUpdates);
+                    [g_swizzledClasses addObject:clsName];
+                    ci_locMark("delegate_class_swizzled");
+                }
+            }
+        }
+    }
+    // Deprecated single-location signature
+    @synchronized (g_swizzledClasses2) {
+        if (![g_swizzledClasses2 containsObject:clsName]) {
+            SEL sel = @selector(locationManager:didUpdateToLocation:fromLocation:);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                IMP curIMP = method_getImplementation(m);
+                if (curIMP && curIMP != (IMP)ci_locDelegateUpdateTo) {
+                    objc_setAssociatedObject(cls, kOrigImplKey2,
+                        [NSValue valueWithPointer:(const void *)curIMP],
+                        OBJC_ASSOCIATION_RETAIN);
+                    method_setImplementation(m, (IMP)ci_locDelegateUpdateTo);
+                    [g_swizzledClasses2 addObject:clsName];
+                    ci_locMark("delegate_class2_swizzled");
+                }
+            }
+        }
     }
 }
 
@@ -150,26 +197,26 @@ static void ci_swizzleDelegateIfNeeded(id delegate) {
 // that were set before our setDelegate: hook installed (apps that build
 // the CLLocationManager from a static initializer or +load method).
 static void ci_swizzleAllExistingDelegates(void) {
-    SEL sel = @selector(locationManager:didUpdateLocations:);
+    SEL sel1 = @selector(locationManager:didUpdateLocations:);
+    SEL sel2 = @selector(locationManager:didUpdateToLocation:fromLocation:);
     unsigned int classCount = 0;
     Class *classes = objc_copyClassList(&classCount);
     if (!classes) return;
     NSUInteger swizzled = 0;
     for (unsigned int i = 0; i < classCount; i++) {
         Class cls = classes[i];
-        // class_getInstanceMethod walks the inheritance chain — we only want
-        // classes that DIRECTLY implement the selector, so use the methodList
-        // probe to avoid double-swizzling parent classes.
         unsigned int methodCount = 0;
         Method *methods = class_copyMethodList(cls, &methodCount);
-        BOOL directlyImplements = NO;
+        BOOL has1 = NO, has2 = NO;
         if (methods) {
             for (unsigned int j = 0; j < methodCount; j++) {
-                if (method_getName(methods[j]) == sel) { directlyImplements = YES; break; }
+                SEL s = method_getName(methods[j]);
+                if (s == sel1) has1 = YES;
+                if (s == sel2) has2 = YES;
             }
             free(methods);
         }
-        if (directlyImplements) {
+        if (has1 || has2) {
             ci_swizzleDelegateClassIfNeeded(cls);
             swizzled++;
         }
@@ -228,6 +275,57 @@ static void ci_swizzleAllExistingDelegates(void) {
     } else {
         %orig;
     }
+}
+
+%end
+
+// ============================================================
+// v2.5.32: MapKit MKMapView + MKUserLocation hooks. Apple Maps and
+// any app embedding MKMapView display the user's position via
+// MKUserLocation, which has its own internal CLLocationManager
+// subscription that runs AFTER our setDelegate: hook installed but
+// BEFORE our delegate sweep covers its delegate class. Hook the
+// MKUserLocation getters directly so the blue dot shows our fake
+// coordinate regardless of how MKMapView fetches its location.
+// ============================================================
+%hook MKUserLocation
+
+- (CLLocation *)location {
+    if (!ci_locEnabled()) return %orig;
+    CLLocation *fake = ci_buildFakeLocation();
+    if (fake) { ci_locMark("mkuserloc_location_fake"); return fake; }
+    return %orig;
+}
+
+- (CLLocationCoordinate2D)coordinate {
+    if (!ci_locEnabled()) return %orig;
+    CLLocation *fake = ci_buildFakeLocation();
+    if (fake) { ci_locMark("mkuserloc_coord_fake"); return fake.coordinate; }
+    return %orig;
+}
+
+%end
+
+%hook MKMapView
+
+- (MKUserLocation *)userLocation {
+    MKUserLocation *real = %orig;
+    if (ci_locEnabled() && real) {
+        CLLocation *fake = ci_buildFakeLocation();
+        if (fake) {
+            // Try KVC update so MKMapView's internal observers see the change.
+            // MKUserLocation.location is publicly readonly but internally KVC-writable.
+            @try {
+                [real setValue:fake forKey:@"location"];
+                ci_locMark("mkmapview_userloc_kvc_set");
+            } @catch (NSException *e) {
+                // Fall back to just letting the MKUserLocation getter hook above
+                // intercept the next read.
+                ci_locMark("mkmapview_userloc_kvc_fail");
+            }
+        }
+    }
+    return real;
 }
 
 %end
