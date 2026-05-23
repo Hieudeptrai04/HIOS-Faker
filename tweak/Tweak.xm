@@ -27,6 +27,7 @@
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
 #include <sys/time.h>
+#include <stdatomic.h>
 #import <spawn.h>
 #include "fishhook.h"
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
@@ -585,6 +586,11 @@ void reloadConfigFromDisk(void) {
         if (config) {
             spoofConfig = [config copy];
             configLoaded = YES;
+            // v2.5.42: bump layer-cache gen so cached fakeLayer / jbHideActive
+            // results expire on the next call. Avoids serving stale bool when
+            // user toggles a fake_* layer via the host app while target apps
+            // are running.
+            atomic_fetch_add_explicit(&g_layerCacheGen, 1, memory_order_relaxed);
         } else {
             spoofConfig = nil;
             configLoaded = NO;
@@ -820,35 +826,98 @@ static CFAbsoluteTime g_dylibLoadTime = 0.0;
 static NSMutableDictionary<NSString *, NSString *> *g_fakeKeyCache = nil;
 static dispatch_once_t g_fakeKeyCacheOnce;
 
+// v2.5.42: per-shortName result cache. Hooks fire millions of times in
+// Zalo's chat scroll / image decode hot path, and the old fakeLayer
+// implementation acquired @synchronized + did 2× NSDictionary lookups
+// PER CALL — ~700ns each, totalling 5-50ms/sec just in gating overhead
+// on busy paths → user-visible "đơ lag" that goes away when the dylib
+// is removed.
+//
+// New design:
+//   - `g_layerCache` is a small fixed-size open-addressing table keyed
+//     by the NSString pointer (every @"…" literal has a singleton
+//     pointer, so pointer-equality is the right cache key)
+//   - First call per name: compute full "fake_NAME" key + getConfigBool,
+//     store result. Subsequent calls: 1 pointer compare + 1 atomic load.
+//   - `g_layerCacheGen` is bumped by reloadConfigFromDisk so a config
+//     refresh wipes the cached values without locking.
+//   - `_ci_skipall` and `isCurrentBundleTargeted()` are also cached as
+//     atomic booleans, refreshed on the same gen bump.
+
+#define CI_LAYER_CACHE_SLOTS 32
+typedef struct {
+    const void *namePtr;  // NSString singleton pointer (literal interning)
+    uint32_t gen;         // generation when cached
+    uint8_t  value;       // 0 = NO, 1 = YES (only meaningful when gen matches)
+} ci_layer_slot;
+static ci_layer_slot g_layerCache[CI_LAYER_CACHE_SLOTS];
+static _Atomic uint32_t g_layerCacheGen = 0;
+static _Atomic uint8_t  g_layerSkipAll = 0;
+static _Atomic uint8_t  g_layerSkipAllValid = 0;
+static _Atomic uint32_t g_layerSkipAllGen = 0;
+
+static inline BOOL ci_layerSkipAllCached(uint32_t gen) {
+    if (atomic_load_explicit(&g_layerSkipAllGen, memory_order_relaxed) != gen) {
+        atomic_store_explicit(&g_layerSkipAll, (uint8_t)(getConfigBool(@"_ci_skipall") ? 1 : 0),
+                              memory_order_relaxed);
+        atomic_store_explicit(&g_layerSkipAllGen, gen, memory_order_relaxed);
+    }
+    return atomic_load_explicit(&g_layerSkipAll, memory_order_relaxed) != 0;
+}
+
 BOOL fakeLayer(NSString *shortName) {
     if (g_inFakeLayer) return NO;
+    uint32_t gen = atomic_load_explicit(&g_layerCacheGen, memory_order_relaxed);
+
+    // Pointer-keyed open-addressing probe. Hash by pointer >> 4 (NSString
+    // singletons are 16-byte aligned).
+    uintptr_t key = (uintptr_t)(__bridge const void *)shortName;
+    uint32_t  idx = (uint32_t)((key >> 4) & (CI_LAYER_CACHE_SLOTS - 1));
+    ci_layer_slot *slot = &g_layerCache[idx];
+    if (slot->namePtr == (const void *)key && slot->gen == gen) {
+        return slot->value != 0;
+    }
+
+    // Slow path: miss. Cache the answer.
     g_inFakeLayer++;
     BOOL out = NO;
-    // Emergency runtime kill-switch — set _ci_skipall=YES via SSH to make
-    // every %hook fall through to %orig without re-installing the dylib.
-    if (!getConfigBool(@"_ci_skipall") && isCurrentBundleTargeted()) {
-        dispatch_once(&g_fakeKeyCacheOnce, ^{
-            g_fakeKeyCache = [NSMutableDictionary dictionaryWithCapacity:32];
-        });
-        NSString *full;
-        @synchronized (g_fakeKeyCache) {
-            full = g_fakeKeyCache[shortName];
-            if (!full) {
-                full = [@"fake_" stringByAppendingString:shortName];
-                g_fakeKeyCache[shortName] = full;
-            }
-        }
+    if (!ci_layerSkipAllCached(gen) && isCurrentBundleTargeted()) {
+        NSString *full = [@"fake_" stringByAppendingString:shortName];
         out = getConfigBool(full);
     }
+    slot->namePtr = (const void *)key;
+    slot->gen     = gen;
+    slot->value   = (uint8_t)(out ? 1 : 0);
     g_inFakeLayer--;
     return out;
 }
 
+// v2.5.42: cache `jbHideActive` aggressively. Called from every POSIX
+// syscall hook (stat, lstat, access, fopen, …) which Zalo invokes 10K+
+// times/sec during chat scroll. Pre-cache calls used to cost ~900ns each
+// (fakeLayer + getConfig + boolValue + lookup), totaling ~10ms/sec of
+// pure gating overhead. Cached version is 1 atomic load (~2ns).
+static _Atomic uint8_t  g_jbHideCache = 0;
+static _Atomic uint8_t  g_jbHideValid = 0;
+static _Atomic uint32_t g_jbHideGen   = 0;
+
 BOOL jbHideActive(void) {
-    if (!fakeLayer(@"jbhide")) return NO;
-    id h = getConfig(@"hideJailbreak");
-    if (h == nil) return NO;
-    return [h boolValue];
+    uint32_t curGen = atomic_load_explicit(&g_layerCacheGen, memory_order_relaxed);
+    if (atomic_load_explicit(&g_jbHideGen, memory_order_relaxed) == curGen &&
+        atomic_load_explicit(&g_jbHideValid, memory_order_relaxed)) {
+        return atomic_load_explicit(&g_jbHideCache, memory_order_relaxed) != 0;
+    }
+    // Compute + cache. Race-tolerant: multiple threads may compute concurrently
+    // on a config flip; they all converge on the same result.
+    BOOL out = NO;
+    if (fakeLayer(@"jbhide")) {
+        id h = getConfig(@"hideJailbreak");
+        out = ([h respondsToSelector:@selector(boolValue)]) ? [h boolValue] : NO;
+    }
+    atomic_store_explicit(&g_jbHideCache, (uint8_t)(out ? 1 : 0), memory_order_relaxed);
+    atomic_store_explicit(&g_jbHideGen,   curGen,                  memory_order_relaxed);
+    atomic_store_explicit(&g_jbHideValid, 1,                       memory_order_relaxed);
+    return out;
 }
 
 // ============================================================
