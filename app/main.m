@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.40";
+static NSString *const kAppVersion = @"2.5.41";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1499,17 +1499,38 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSString *src = applied ? @"PROXY_OK" : (forceRandomVN ? @"RANDOM_VN" : @"FALLBACK_VN");
     [cm setObject:src forKey:@"_ci_geo_source"];
     if (!applied) {
-        // Central Vietnam anchor (near Da Nang) so 999km disk covers all of VN.
-        const double kVNLat = 16.0, kVNLon = 107.0;
-        double radius = 999.0;
-        id rv = [cm objectForKey:@"vn_radiusKm"];
-        if ([rv respondsToSelector:@selector(doubleValue)]) {
-            double r = [rv doubleValue];
-            if (r > 0) radius = r;
+        // v2.5.41: Random VN city — pick from a curated pool of 10 major
+        // VN cities + 3km intra-city jitter. Pre-v2.5.41 used a 999km
+        // disk centered on Da Nang (16N, 107E) which bled HEAVILY into
+        // Laos / NE Thailand / Cambodia. User saw GPS 17.42N 103.24E
+        // (Savannakhet, Laos) → Zalo server detects IP-VN + GPS-LAOS
+        // mismatch → account locked on registration.
+        // Pool guarantees every spoof lands INSIDE Vietnam, and the
+        // city-appropriate altitude (Đà Lạt 1500m, ven biển 3-10m) lines
+        // up with realistic device elevation.
+        static NSArray *vnCities = nil;
+        if (!vnCities) {
+            vnCities = @[
+                @[@"Hà Nội",          @21.028511, @105.804817, @18.0],
+                @[@"TP. Hồ Chí Minh", @10.762622, @106.660172, @19.0],
+                @[@"Đà Nẵng",         @16.054407, @108.202164, @7.0],
+                @[@"Hải Phòng",       @20.844912, @106.688084, @5.0],
+                @[@"Cần Thơ",         @10.045162, @105.746857, @4.0],
+                @[@"Nha Trang",       @12.238791, @109.196749, @8.0],
+                @[@"Huế",             @16.463713, @107.590866, @10.0],
+                @[@"Vũng Tàu",        @10.346110, @107.084580, @3.0],
+                @[@"Đà Lạt",          @11.940419, @108.458313, @1500.0],
+                @[@"Buôn Ma Thuột",   @12.666667, @108.050003, @536.0],
+            ];
         }
+        NSArray *city = vnCities[arc4random_uniform((uint32_t)vnCities.count)];
+        double clat = [city[1] doubleValue];
+        double clon = [city[2] doubleValue];
+        double calt = [city[3] doubleValue];
         double lat = 0, lon = 0;
-        ci_jitterCoordKm(kVNLat, kVNLon, radius, &lat, &lon);
-        double alt = ci_randDouble(5.0, 180.0);
+        ci_jitterCoordKm(clat, clon, 3.0, &lat, &lon);
+        double alt = calt + ci_randDouble(0.0, 20.0);
+        NSLog(@"[ChangeInfoIos] Random VN city pick: %@ → (%.4f, %.4f)", city[0], lat, lon);
         [cm setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
         [cm setObject:[NSString stringWithFormat:@"%.6f", lon] forKey:@"longitude"];
         [cm setObject:[NSString stringWithFormat:@"%.2f", alt] forKey:@"altitude"];
