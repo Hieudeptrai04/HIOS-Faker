@@ -845,15 +845,15 @@ static dispatch_once_t g_fakeKeyCacheOnce;
 
 #define CI_LAYER_CACHE_SLOTS 32
 typedef struct {
-    const void *namePtr;  // NSString singleton pointer (literal interning)
-    uint32_t gen;         // generation when cached
-    uint8_t  value;       // 0 = NO, 1 = YES (only meaningful when gen matches)
+    __unsafe_unretained NSString *name;  // ARC-bypass: we only ever compare
+                                          // pointers, never deref the string.
+    uint32_t gen;
+    uint8_t  value;
 } ci_layer_slot;
 static ci_layer_slot g_layerCache[CI_LAYER_CACHE_SLOTS];
+
 // v2.5.43: use plain volatile + __sync builtins instead of C11 _Atomic so
 // Tweak.xm (compiled as Objective-C / gnu99 by default) builds clean.
-// Hooks.mm uses _Atomic fine because it's ObjC++ which defaults to a
-// newer C++ standard, but the .m path here needs the older builtins.
 static volatile uint32_t g_layerCacheGen = 0;
 static volatile uint8_t  g_layerSkipAll = 0;
 static volatile uint32_t g_layerSkipAllGen = 0;
@@ -870,27 +870,25 @@ static inline BOOL ci_layerSkipAllCached(uint32_t gen) {
 BOOL fakeLayer(NSString *shortName) {
     if (g_inFakeLayer) return NO;
     uint32_t gen = g_layerCacheGen;
-
-    // Pointer-keyed open-addressing probe. Every @"…" literal is interned
-    // by the linker so its NSString singleton has a stable pointer; hash by
-    // ptr >> 4 (singletons are 16-byte aligned).
-    uintptr_t key = (uintptr_t)(__bridge const void *)shortName;
+    // Pointer-keyed open-addressing probe (NSString literals are interned
+    // → stable singleton pointer per @"…" so identity compare is the right
+    // cache key). Hash by (pointer >> 4) — singletons are 16-byte aligned.
+    uintptr_t key = (uintptr_t)shortName;
     uint32_t  idx = (uint32_t)((key >> 4) & (CI_LAYER_CACHE_SLOTS - 1));
     ci_layer_slot *slot = &g_layerCache[idx];
-    if (slot->namePtr == (const void *)key && slot->gen == gen) {
+    if (slot->name == shortName && slot->gen == gen) {
         return slot->value != 0;
     }
-
-    // Slow path: cache miss. Compute and store.
+    // Cache miss — compute, store.
     g_inFakeLayer++;
     BOOL out = NO;
     if (!ci_layerSkipAllCached(gen) && isCurrentBundleTargeted()) {
         NSString *full = [@"fake_" stringByAppendingString:shortName];
         out = getConfigBool(full);
     }
-    slot->namePtr = (const void *)key;
-    slot->gen     = gen;
-    slot->value   = (uint8_t)(out ? 1 : 0);
+    slot->name  = shortName;
+    slot->gen   = gen;
+    slot->value = (uint8_t)(out ? 1 : 0);
     g_inFakeLayer--;
     return out;
 }
