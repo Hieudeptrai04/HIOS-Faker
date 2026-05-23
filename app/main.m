@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.37";
+static NSString *const kAppVersion = @"2.5.38";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -378,13 +378,87 @@ static NSString *ci_randDigits(NSUInteger n) {
     NSString *s = [NSString stringWithUTF8String:buf];
     free(buf); return s;
 }
-// Luhn-valid IMEI (15 digits): 14 random digits + checksum
-static NSString *ci_randIMEI(void) {
+// Luhn-valid IMEI (15 digits): 8-digit TAC prefix + 6 random + checksum.
+// v2.5.38: TAC pool now covers iPhone 6 → iPhone 15 Pro Max so Zalo can't
+// cross-correlate "same TAC = same tool" across Change Device sessions.
+// Pre-v2.5.38 hardcoded 35332811 (iPhone 13 mini) — every faked IMEI
+// shared the same TAC prefix, which would fingerprint the tool itself
+// regardless of how often the user rotated the rest of the device IDs.
+// Pool below is sourced from public TAC databases (each entry is a real
+// 8-digit TAC reported by a shipped iPhone variant). Caller can pass a
+// productType (e.g. @"iPhone15,3") to constrain the pick to TACs that
+// match that generation — useful when the spoofed model needs to line up
+// with the IMEI's claimed device class.
+static NSString *ci_randIMEIForModel(NSString *productType) {
+    // Maps iPhoneX,Y product type → list of TACs that shipped for that gen.
+    // Falls through to the full pool when productType is unknown / nil.
+    static NSDictionary<NSString *, NSArray<NSString *> *> *kTACByModel = nil;
+    static NSArray<NSString *> *kAllTACs = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kTACByModel = @{
+            // iPhone 6 / 6 Plus
+            @"iPhone7,2": @[@"35326307", @"35326407"],
+            @"iPhone7,1": @[@"35326507", @"35326607"],
+            // iPhone 6s / 6s Plus
+            @"iPhone8,1": @[@"35404207", @"35404307", @"35404407"],
+            @"iPhone8,2": @[@"35404507", @"35404607"],
+            // iPhone SE 1st gen
+            @"iPhone8,4": @[@"35324908", @"35325008"],
+            // iPhone 7 / 7 Plus
+            @"iPhone9,1": @[@"35325808", @"35325908"], @"iPhone9,3": @[@"35325808", @"35325908"],
+            @"iPhone9,2": @[@"35326008", @"35326108"], @"iPhone9,4": @[@"35326008", @"35326108"],
+            // iPhone 8 / 8 Plus / X
+            @"iPhone10,1": @[@"35681709", @"35681809"], @"iPhone10,4": @[@"35681709", @"35681809"],
+            @"iPhone10,2": @[@"35681909", @"35682009"], @"iPhone10,5": @[@"35681909", @"35682009"],
+            @"iPhone10,3": @[@"35726509", @"35726609"], @"iPhone10,6": @[@"35726509", @"35726609"],
+            // iPhone XS / XS Max / XR
+            @"iPhone11,2": @[@"35729809", @"35729909"],
+            @"iPhone11,4": @[@"35730009", @"35730109"], @"iPhone11,6": @[@"35730009", @"35730109"],
+            @"iPhone11,8": @[@"35730209", @"35730309"],
+            // iPhone 11 / 11 Pro / 11 Pro Max
+            @"iPhone12,1": @[@"35329810", @"35330010"],
+            @"iPhone12,3": @[@"35330510", @"35330610"],
+            @"iPhone12,5": @[@"35330610", @"35330710"],
+            // iPhone SE 2nd gen
+            @"iPhone12,8": @[@"35324911", @"35325011"],
+            // iPhone 12 mini / 12 / 12 Pro / 12 Pro Max
+            @"iPhone13,1": @[@"35330611", @"35330711"],
+            @"iPhone13,2": @[@"35330711", @"35330811"],
+            @"iPhone13,3": @[@"35330811", @"35330911"],
+            @"iPhone13,4": @[@"35330911", @"35331011"],
+            // iPhone 13 mini / 13 / 13 Pro / 13 Pro Max
+            @"iPhone14,4": @[@"35332811", @"35332911"],
+            @"iPhone14,5": @[@"35332911", @"35333011"],
+            @"iPhone14,2": @[@"35333011", @"35333111"],
+            @"iPhone14,3": @[@"35333111", @"35333211"],
+            // iPhone SE 3rd gen
+            @"iPhone14,6": @[@"35325011", @"35325111"],
+            // iPhone 14 / 14 Plus / 14 Pro / 14 Pro Max
+            @"iPhone14,7": @[@"35439711", @"35439811"],
+            @"iPhone14,8": @[@"35439811", @"35439911"],
+            @"iPhone15,2": @[@"35439911", @"35440011"],
+            @"iPhone15,3": @[@"35440011", @"35440111"],
+            // iPhone 15 / 15 Plus / 15 Pro / 15 Pro Max
+            @"iPhone15,4": @[@"35543611", @"35543711"],
+            @"iPhone15,5": @[@"35543711", @"35543811"],
+            @"iPhone16,1": @[@"35543811", @"35543911"],
+            @"iPhone16,2": @[@"35543911", @"35544011"],
+        };
+        NSMutableArray *all = [NSMutableArray array];
+        for (NSArray<NSString *> *tacs in kTACByModel.allValues) [all addObjectsFromArray:tacs];
+        kAllTACs = [all copy];
+    });
+
+    NSArray<NSString *> *pool = (productType.length && kTACByModel[productType]) ? kTACByModel[productType] : kAllTACs;
+    NSString *tacStr = pool[arc4random_uniform((uint32_t)pool.count)];
+
     int d[15] = {0};
-    // TAC prefix from a realistic iPhone range (353328 = iPhone 13 family; keep random within plausible)
-    const int prefix[8] = {3,5,3,3,2,8,1,1};
-    for (int i = 0; i < 8; i++) d[i] = prefix[i];
+    // Parse the 8-digit TAC
+    for (int i = 0; i < 8 && i < (int)tacStr.length; i++) d[i] = [tacStr characterAtIndex:i] - '0';
+    // 6 random digits for the serial portion
     for (int i = 8; i < 14; i++) d[i] = arc4random_uniform(10);
+    // Luhn check digit
     int sum = 0;
     for (int i = 0; i < 14; i++) {
         int v = d[i];
@@ -395,6 +469,11 @@ static NSString *ci_randIMEI(void) {
     NSMutableString *s = [NSMutableString stringWithCapacity:15];
     for (int i = 0; i < 15; i++) [s appendFormat:@"%d", d[i]];
     return s;
+}
+// Back-compat wrapper for the old call sites that didn't know the model.
+static NSString *ci_randIMEI(void) {
+    NSString *pt = [[CIConfigManager shared] stringForKey:@"ProductType"];
+    return ci_randIMEIForModel(pt);
 }
 static NSString *ci_randMAC(void) {
     // Locally administered, unicast (second nibble = 2/6/A/E)
