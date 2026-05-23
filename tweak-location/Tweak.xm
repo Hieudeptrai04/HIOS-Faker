@@ -306,29 +306,20 @@ static void ci_swizzleAllExistingDelegates(void) {
 
 %end
 
-%hook MKMapView
-
-- (MKUserLocation *)userLocation {
-    MKUserLocation *real = %orig;
-    if (ci_locEnabled() && real) {
-        CLLocation *fake = ci_buildFakeLocation();
-        if (fake) {
-            // Try KVC update so MKMapView's internal observers see the change.
-            // MKUserLocation.location is publicly readonly but internally KVC-writable.
-            @try {
-                [real setValue:fake forKey:@"location"];
-                ci_locMark("mkmapview_userloc_kvc_set");
-            } @catch (NSException *e) {
-                // Fall back to just letting the MKUserLocation getter hook above
-                // intercept the next read.
-                ci_locMark("mkmapview_userloc_kvc_fail");
-            }
-        }
-    }
-    return real;
-}
-
-%end
+// v2.5.40: REMOVED the MKMapView.userLocation KVC mutation.
+//
+// v2.5.32 set [userLocation setValue:fake forKey:@"location"] inside the
+// userLocation getter hook. That triggered MKUserLocation's internal KVO
+// observers, which Maps responds to by re-reading mapView.userLocation,
+// which re-enters our hook, which calls setValue again, ... unbounded
+// recursion. iPhone X stack guard at 0x16f378000 hits → EXC_BAD_ACCESS /
+// SIGSEGV. Confirmed live in /var/mobile/Library/Logs/CrashReporter/
+// Maps-2026-05-23-154309.ips and 4 earlier crashes within minutes.
+//
+// The MKUserLocation getter hooks above (location + coordinate) are
+// sufficient on their own: when Maps reads mapView.userLocation.location
+// or .coordinate, the getter returns our fake. No KVC mutation needed,
+// no observer chain to trigger.
 
 %ctor {
     @autoreleasepool {

@@ -57,18 +57,26 @@ static void ci_safariMark(const char *tag) {
 }
 
 static NSDictionary *g_safariConfig = nil;
-static dispatch_once_t g_configOnce;
+static NSTimeInterval g_configLoadTime = 0;
 
+// v2.5.40: 5-second TTL reload so a Change Device that happens AFTER
+// Safari already launched is picked up without restarting Safari.
+// Pre-v2.5.40 dispatch_once meant Safari was stuck with stale coords /
+// stale fake UA forever — user reported browserleak still showing Hà
+// Nội after Sync GPS to Sơn La because Safari's JS injection was
+// still reading the cached Hà Nội from g_safariConfig.
 static NSString *ci_safariConfigString(NSString *key) {
-    dispatch_once(&g_configOnce, ^{
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!g_safariConfig || (now - g_configLoadTime) >= 5.0) {
         @autoreleasepool {
-            // Read tweak's shared config plist. Path is world-readable
-            // (chmod 0666 from postinst). NSDictionary handles both XML
-            // and binary plist formats automatically.
-            g_safariConfig = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/jb/etc/changeinfoios/config.plist"];
+            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:
+                                @"/var/jb/etc/changeinfoios/config.plist"];
+            if (d) {
+                g_safariConfig = d;
+                g_configLoadTime = now;
+            }
         }
-    });
+    }
     id val = g_safariConfig ? g_safariConfig[key] : nil;
     if ([val isKindOfClass:[NSString class]]) return val;
     if (val) return [NSString stringWithFormat:@"%@", val];
