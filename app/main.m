@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.34";
+static NSString *const kAppVersion = @"2.5.35";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5620,6 +5620,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [names addObject:synthetic.name];
     }
 
+    // v2.5.35: extend background execution so iOS doesn't suspend us mid-
+    // tar (8s keychain-dump poll + 60-70MB tar of Zalo containers can
+    // easily exceed the default 5s grace period if the user navigates
+    // away). Same regression fix as restoreEntry above.
+    __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
+    bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"ci_rrs_backup_reset"
+        expirationHandler:^{
+            NSLog(@"[ChangeInfoIos] backup/reset: bg task EXPIRING");
+            if (bgTask != UIBackgroundTaskInvalid) {
+                [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+                bgTask = UIBackgroundTaskInvalid;
+            }
+        }];
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Step-by-step with visible progress. Each step takes ~1-2s minimum
         // so the user can read what's happening on screen.
@@ -5886,6 +5900,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
             [self alert:t msg:body];
         }];
+
+        // Release UIBackgroundTask now that backup/reset finished.
+        if (bgTask != UIBackgroundTaskInvalid) {
+            UIBackgroundTaskIdentifier t2 = bgTask;
+            bgTask = UIBackgroundTaskInvalid;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[UIApplication sharedApplication] endBackgroundTask:t2];
+            });
+        }
     });
 }
 
@@ -6268,7 +6291,28 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSDictionary *tarAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tar error:nil];
     unsigned long long tarSize = [tarAttrs[NSFileSize] unsignedLongLongValue];
 
-    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore..."];
+    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore... (KHÔNG tắt app)"];
+
+    // v2.5.35: wrap restore in UIBackgroundTask so iOS keeps the host app
+    // alive while cp -a copies ~35MB across Documents/Library/tmp.
+    // Without this, if the user switches away (or even taps the home bar
+    // hint mid-restore), iOS suspends the process within seconds → cp
+    // hangs partial → step5 fires HOURS later when user reopens the app,
+    // finds no fresh keychain dump → flag NOT dropped → Zalo launches
+    // with partial data → wipes profile.sqlite → blank login. This was
+    // root cause of the May 22 12:20:52 / 13:07 / 14:09 incidents per
+    // restoreEntry.log: step3 cp lines missing entirely, then step5
+    // logged 13 hours later with NO DUMP.
+    __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
+    bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"ci_restore"
+        expirationHandler:^{
+            NSLog(@"[ChangeInfoIos] restore: bg task EXPIRING — iOS killing soon");
+            if (bgTask != UIBackgroundTaskInvalid) {
+                [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+                bgTask = UIBackgroundTaskInvalid;
+            }
+        }];
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Forensic log — appended to /var/jb/etc/changeinfoios/restoreEntry.log
         // so SSH can read it even after respring kills the host process.
@@ -7012,6 +7056,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [self alert:title msg:msg];
             }];
         });
+
+        // Release the UIBackgroundTask so iOS can suspend normally after we
+        // finish. Without this, the host app would keep the bg slot until
+        // iOS times it out — fine but wasteful.
+        if (bgTask != UIBackgroundTaskInvalid) {
+            UIBackgroundTaskIdentifier t = bgTask;
+            bgTask = UIBackgroundTaskInvalid;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[UIApplication sharedApplication] endBackgroundTask:t];
+            });
+        }
     });
 }
 
