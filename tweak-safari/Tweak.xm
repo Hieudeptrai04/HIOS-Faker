@@ -41,26 +41,18 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 #endif
 
 // v2.5.4 diagnostic helpers — write marker files to confirm load + hook fire.
-// v2.5.22: ALSO write to shared system path so we can see WebContent markers
-// (NSTemporaryDirectory is per-sandbox, hides cross-process activity).
+// Writes to per-process tmp (NSTemporaryDirectory). v2.5.22 added a shared
+// system-path write but the Safari/WebContent sandbox blocks it — removed
+// in v2.5.24.
 static void ci_safariMark(const char *tag) {
     @autoreleasepool {
         NSString *dir = NSTemporaryDirectory();
+        if (!dir.length) return;
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
-        if (dir.length) {
-            NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
-            NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n", [NSDate date], bid];
-            FILE *f = fopen([path UTF8String], "a");
-            if (f) { fputs([stamp UTF8String], f); fclose(f); }
-        }
-        // Shared log accessible from any process. /tmp is writable from
-        // both Safari + WebContent sandboxes on Dopamine rootless.
-        FILE *sf = fopen("/var/mobile/Library/Caches/ChangeInfoIos/safari_marks.log", "a");
-        if (sf) {
-            fprintf(sf, "%s [%s] %s\n", [[[NSDate date] description] UTF8String],
-                    [bid UTF8String], tag);
-            fclose(sf);
-        }
+        NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
+        NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n", [NSDate date], bid];
+        FILE *f = fopen([path UTF8String], "a");
+        if (f) { fputs([stamp UTF8String], f); fclose(f); }
     }
 }
 
@@ -417,9 +409,83 @@ static CFTypeRef hooked_CFBundleGetValueForInfoDictionaryKey(CFBundleRef bundle,
         orig_CFBundleGetValueForInfoDictionaryKey(bundle, key) : NULL;
 }
 
+// v2.5.24: hook WKWebView init to FORCE-SET customUserAgent + inject
+// a WKUserScript at document-start that overrides navigator.userAgent,
+// navigator.appVersion, navigator.platform, navigator.vendor.
+//
+// Without this, JS-visible navigator.userAgent leaks the real Version/16.6.1
+// (because WebKit caches the auto-built UA at process start, BEFORE our CF
+// hooks fire — see v2.5.19-23 history). Setting customUserAgent on each
+// WKWebView overrides at the WebKit-internal level too.
+typedef id (*ci_wkwv_init_t)(id, SEL, CGRect, id);
+static ci_wkwv_init_t orig_WKWV_initWithFrameCfg = NULL;
+
+static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
+    // Escape single-quotes to avoid breaking the JS literal.
+    NSString *esc = [fakeUA stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+    // Derive appVersion = userAgent stripped of leading "Mozilla/".
+    NSString *appVer = [esc hasPrefix:@"Mozilla/"] ? [esc substringFromIndex:8] : esc;
+    return [NSString stringWithFormat:
+        @"(function(){try{"
+         "var d=function(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}};"
+         "d(navigator,'userAgent','%@');"
+         "d(navigator,'appVersion','%@');"
+         "d(navigator,'platform','iPhone');"
+         "d(navigator,'vendor','Apple Computer, Inc.');"
+         "}catch(e){}})();",
+        esc, appVer];
+}
+
+static void ci_injectUserScript(id configuration, NSString *fakeUA) {
+    if (!configuration || !fakeUA.length) return;
+    @try {
+        SEL selUCC = @selector(userContentController);
+        if (![configuration respondsToSelector:selUCC]) return;
+        id ucc = ((id(*)(id, SEL))objc_msgSend)(configuration, selUCC);
+        if (!ucc) return;
+        Class scriptCls = objc_getClass("WKUserScript");
+        if (!scriptCls) return;
+        NSString *js = ci_buildNavigatorOverrideJS(fakeUA);
+        // WKUserScriptInjectionTimeAtDocumentStart = 0 (NSInteger enum)
+        id raw = [scriptCls alloc];
+        id script = ((id(*)(id, SEL, NSString *, NSInteger, BOOL))objc_msgSend)(
+            raw,
+            @selector(initWithSource:injectionTime:forMainFrameOnly:),
+            js, (NSInteger)0, NO);
+        if (script) {
+            ((void(*)(id, SEL, id))objc_msgSend)(ucc, @selector(addUserScript:), script);
+            ci_safariMark("wkucc_userscript_added");
+        }
+    } @catch (NSException *ex) {
+        ci_safariMark("userscript_inject_exception");
+    }
+}
+
+static id hooked_WKWV_initWithFrameCfg(id self, SEL _cmd, CGRect frame, id configuration) {
+    // Inject user script BEFORE init so it's in the config before first navigation.
+    NSString *fake = ci_fakeFullUA();
+    if (fake.length && configuration) {
+        ci_injectUserScript(configuration, fake);
+    }
+    id result = orig_WKWV_initWithFrameCfg ?
+        orig_WKWV_initWithFrameCfg(self, _cmd, frame, configuration) : self;
+    if (result && fake.length && [result respondsToSelector:@selector(setCustomUserAgent:)]) {
+        ((void(*)(id, SEL, NSString *))objc_msgSend)(result, @selector(setCustomUserAgent:), fake);
+        ci_safariMark("wkwv_init_setCustomUA");
+    }
+    return result;
+}
+
 static void ci_swizzleAllUAGetters(void) {
     Class wk = objc_getClass("WKWebView");
     if (wk) {
+        // v2.5.24: hook initWithFrame:configuration: to force-set customUA
+        Method mInit = class_getInstanceMethod(wk, @selector(initWithFrame:configuration:));
+        if (mInit) {
+            orig_WKWV_initWithFrameCfg = (ci_wkwv_init_t)method_getImplementation(mInit);
+            method_setImplementation(mInit, (IMP)hooked_WKWV_initWithFrameCfg);
+            ci_safariMark("wkwv_init_swizzled");
+        }
         // public customUserAgent getter — override to ALWAYS return fake
         Method m1 = class_getInstanceMethod(wk, @selector(customUserAgent));
         if (m1) {
