@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.30";
+static NSString *const kAppVersion = @"2.5.31";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1399,19 +1399,26 @@ static NSUInteger ci_randomizeIdentities(void) {
     //     (tiny ~2km jitter) so IP and GPS stay coherent.
     //   • Proxy OFF / no internet → fetch fails → random point inside Vietnam
     //     within `vn_radiusKm` (default 999km from central VN), VN carrier bundle.
-    NSString *apiURL = [cm stringForKey:@"ip_api_url"];
-    NSDictionary *geo = ci_fetchProxyGeo(apiURL);
-    BOOL applied = ci_applyGeoFromIPAPI(geo);
+    // v2.5.31: gps_random_vn_mode toggle. When ON, the user explicitly
+    // wants different cities per Change Device — skip proxy-IP geo and
+    // jump straight to the VN-wide randomization branch. Useful when
+    // the user is roaming VN-internal (proxy=HN but they want Sài Gòn,
+    // Đà Nẵng, etc. for variety). Off by default so the IP-coherent
+    // anti-detection path stays the default.
+    BOOL applied = NO;
+    id randVNFlag = [cm objectForKey:@"gps_random_vn_mode"];
+    BOOL forceRandomVN = ([randVNFlag isKindOfClass:[NSNumber class]]) ? [randVNFlag boolValue] : NO;
+    if (!forceRandomVN) {
+        NSString *apiURL = [cm stringForKey:@"ip_api_url"];
+        NSDictionary *geo = ci_fetchProxyGeo(apiURL);
+        applied = ci_applyGeoFromIPAPI(geo);
+    }
     // Visible flag for the user to verify geo flow took the right path.
-    // PROXY_OK = ip-api responded → GPS/locale/carrier all pulled from
-    //   the IP that ip-api saw (which is your Shadowrocket exit IF the
-    //   VPN is routing this app's traffic).
-    // FALLBACK_VN = ip-api timed out / unreachable → defaulted to random
-    //   point in Vietnam + Vietnamese carrier. DANGEROUS if your VPN
-    //   exit is in another country: GPS says VN, IP says US → instant
-    //   ban on register. If you see this AND your Shadowrocket is on a
-    //   non-VN exit, DO NOT register — fix VPN routing first.
-    [cm setObject:(applied ? @"PROXY_OK" : @"FALLBACK_VN") forKey:@"_ci_geo_source"];
+    //   PROXY_OK    = ip-api responded → GPS/locale/carrier pulled from proxy IP
+    //   FALLBACK_VN = ip-api timed out → random VN city
+    //   RANDOM_VN   = gps_random_vn_mode toggle is ON → intentionally random VN
+    NSString *src = applied ? @"PROXY_OK" : (forceRandomVN ? @"RANDOM_VN" : @"FALLBACK_VN");
+    [cm setObject:src forKey:@"_ci_geo_source"];
     if (!applied) {
         // Central Vietnam anchor (near Da Nang) so 999km disk covers all of VN.
         const double kVNLat = 16.0, kVNLon = 107.0;
@@ -2814,6 +2821,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C header:@"4. Check IP Address"]];
     [_rows addObject:[C note:@"Chọn server: ip-api.com" indent:24]];
     [_rows addObject:[C toggle:@"4.1 Fake GPS Location" key:@"fake_location" indent:24]];
+    // v2.5.31: random VN city per Change Device. OFF (default) = pin GPS to
+    // proxy IP (IP/GPS coherent, anti-detection). ON = ignore proxy, pick
+    // random VN coords every Change Device — Maps/Weather show different
+    // VN cities each session. Use only if you accept the IP/GPS mismatch
+    // risk (banking/register flows prefer OFF).
+    [_rows addObject:[C toggle:@"4.1b Random VN city mỗi Change Device" key:@"gps_random_vn_mode" indent:24]];
     [_rows addObject:[C text:@"Latitude"  key:@"latitude"  placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Longitude" key:@"longitude" placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Altitude"  key:@"altitude"  placeholder:@"0" indent:48]];
@@ -4642,6 +4655,32 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     y += 80;
 
+    // v2.5.31: 🎲 Random VN City NOW button — single tap to randomize coords
+    // to a different VN city (Hà Nội ↔ Sài Gòn ↔ Đà Nẵng ↔ Hải Phòng ↔
+    // Cần Thơ ↔ Nha Trang ↔ Huế etc.) without touching proxy state.
+    UIView *randCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
+    [sv addSubview:randCard];
+    UIButton *randBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    randBtn.frame = CGRectMake(0, 0, cardW, 64);
+    [randBtn addTarget:self action:@selector(randomVNCityNow) forControlEvents:UIControlEventTouchUpInside];
+    [randCard addSubview:randBtn];
+    if (@available(iOS 13.0, *)) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+        UIImageView *iv3 = [[UIImageView alloc] initWithImage:
+            [[UIImage systemImageNamed:@"dice.fill" withConfiguration:cfg]
+             imageWithTintColor:[CITheme green] renderingMode:UIImageRenderingModeAlwaysOriginal]];
+        iv3.frame = CGRectMake(14, 17, 30, 30);
+        [randBtn addSubview:iv3];
+    }
+    UILabel *rt = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW-60, 22)];
+    rt.text = @"🎲 Random VN City NOW"; rt.font = [UIFont boldSystemFontOfSize:14]; rt.textColor = [CITheme text];
+    [randBtn addSubview:rt];
+    UILabel *rs = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW-60, 20)];
+    rs.text = @"Maps/Weather → random VN city"; rs.font = [UIFont systemFontOfSize:11]; rs.textColor = [CITheme dim];
+    [randBtn addSubview:rs];
+
+    y += 80;
+
     // ---- App-target chips (visible state of pickers) ----
     UIView *pickRow = [self _ciNewCard:CGRectMake(P, y, cardW, 120)];
     [sv addSubview:pickRow];
@@ -5037,6 +5076,55 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             }];
         }];
     }];
+}
+
+// v2.5.31: random VN city — instant action, no proxy involvement.
+// Picks one of 10 major VN cities + small intra-city jitter (~3km).
+// Updates lat/lng/altitude/timezone/country in the config + reloads
+// running tweak hooks via Darwin notification so Maps/Weather see the
+// change without app respring.
+- (void)randomVNCityNow {
+    static NSArray *cities = nil;
+    if (!cities) {
+        cities = @[
+            // name, lat, lng, altitude(m approx)
+            @[@"Hà Nội",          @21.028511, @105.804817, @18.0],
+            @[@"TP. Hồ Chí Minh", @10.762622, @106.660172, @19.0],
+            @[@"Đà Nẵng",         @16.054407, @108.202164, @7.0],
+            @[@"Hải Phòng",       @20.844912, @106.688084, @5.0],
+            @[@"Cần Thơ",         @10.045162, @105.746857, @4.0],
+            @[@"Nha Trang",       @12.238791, @109.196749, @8.0],
+            @[@"Huế",             @16.463713, @107.590866, @10.0],
+            @[@"Vũng Tàu",        @10.346110, @107.084580, @3.0],
+            @[@"Đà Lạt",          @11.940419, @108.458313, @1500.0],
+            @[@"Buôn Ma Thuột",   @12.666667, @108.050003, @536.0],
+        ];
+    }
+    NSArray *pick = cities[arc4random_uniform((uint32_t)cities.count)];
+    double clat = [pick[1] doubleValue];
+    double clon = [pick[2] doubleValue];
+    double calt = [pick[3] doubleValue];
+    double lat = 0, lng = 0;
+    ci_jitterCoordKm(clat, clon, 3.0, &lat, &lng);
+
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
+    [cm setObject:[NSString stringWithFormat:@"%.6f", lng] forKey:@"longitude"];
+    [cm setObject:[NSString stringWithFormat:@"%.2f", calt + ((double)arc4random_uniform(20))] forKey:@"altitude"];
+    [cm setObject:@"Asia/Ho_Chi_Minh" forKey:@"timezoneName"];
+    [cm setObject:@"VN" forKey:@"localeCountryCode"];
+    [cm setObject:@(YES) forKey:@"fake_location"];
+    [cm setObject:@(YES) forKey:@"locationEnabled"];
+    [cm setObject:@"RANDOM_VN_BUTTON" forKey:@"_ci_geo_source"];
+    [cm save];  // save calls notifyReload internally
+
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"GPS đã đổi"
+                         message:[NSString stringWithFormat:@"Vị trí mới: %@\nCoord: %.4f, %.4f\nMở Maps/Weather sẽ thấy %@",
+                                    pick[0], lat, lng, pick[0]]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 // v2.4.54: explicit Sync GPS button — same logic without opening browser.
