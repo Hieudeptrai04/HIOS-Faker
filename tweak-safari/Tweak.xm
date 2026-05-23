@@ -17,6 +17,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <CFNetwork/CFNetwork.h>
 #import <sys/sysctl.h>
 #import <sys/stat.h>
 #import <fcntl.h>
@@ -203,6 +204,84 @@ static NSString *hooked_NSURLReq_valueForHeader(id self, SEL _cmd, NSString *fie
     }
     return orig_NSURLReq_valueForHeader ?
         ((ci_nsurlreq_valhdr_t)orig_NSURLReq_valueForHeader)(self, _cmd, field) : nil;
+}
+
+// v2.5.23: NSMutableURLRequest setValue:forHTTPHeaderField: SETTER hook.
+// When WebKit Networking builds the outgoing HTTP request and sets UA,
+// we rewrite the value with our fake. This is the LAST gate before the
+// request goes out — works even if UA built by an unhooked code path.
+typedef void (*ci_nsurlreq_setval_t)(id, SEL, NSString *, NSString *);
+static ci_nsurlreq_setval_t orig_NSMutReq_setValueForHeader = NULL;
+static ci_nsurlreq_setval_t orig_NSMutReq_addValueForHeader = NULL;
+
+static void hooked_NSMutReq_setValueForHeader(id self, SEL _cmd, NSString *value, NSString *field) {
+    if (field && [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+        NSString *fake = ci_fakeFullUA();
+        if (fake.length) {
+            ci_safariMark("nsmutreq_setua_fake");
+            if (orig_NSMutReq_setValueForHeader)
+                orig_NSMutReq_setValueForHeader(self, _cmd, fake, field);
+            return;
+        }
+    }
+    if (orig_NSMutReq_setValueForHeader)
+        orig_NSMutReq_setValueForHeader(self, _cmd, value, field);
+}
+
+static void hooked_NSMutReq_addValueForHeader(id self, SEL _cmd, NSString *value, NSString *field) {
+    if (field && [field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+        NSString *fake = ci_fakeFullUA();
+        if (fake.length) {
+            ci_safariMark("nsmutreq_addua_fake");
+            if (orig_NSMutReq_addValueForHeader)
+                orig_NSMutReq_addValueForHeader(self, _cmd, fake, field);
+            return;
+        }
+    }
+    if (orig_NSMutReq_addValueForHeader)
+        orig_NSMutReq_addValueForHeader(self, _cmd, value, field);
+}
+
+static void ci_swizzleNSURLReqSetters(void) {
+    Class mr = objc_getClass("NSMutableURLRequest");
+    if (mr) {
+        Method m = class_getInstanceMethod(mr, @selector(setValue:forHTTPHeaderField:));
+        if (m) {
+            orig_NSMutReq_setValueForHeader = (ci_nsurlreq_setval_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)hooked_NSMutReq_setValueForHeader);
+            ci_safariMark("nsmutreq_setval_swizzled");
+        }
+        Method m2 = class_getInstanceMethod(mr, @selector(addValue:forHTTPHeaderField:));
+        if (m2) {
+            orig_NSMutReq_addValueForHeader = (ci_nsurlreq_setval_t)method_getImplementation(m2);
+            method_setImplementation(m2, (IMP)hooked_NSMutReq_addValueForHeader);
+            ci_safariMark("nsmutreq_addval_swizzled");
+        }
+    }
+}
+
+// v2.5.23: CFHTTPMessageSetHeaderFieldValue — CFNetwork low-level hook.
+// CFHTTPMessage is what NSURLRequest is backed by; some code paths
+// (notably WebKit's network process) bypass NSURLRequest and call
+// CFHTTPMessageSetHeaderFieldValue directly.
+typedef void (*CFHTTPMsgSetHdr_t)(CFHTTPMessageRef msg, CFStringRef field, CFStringRef value);
+static CFHTTPMsgSetHdr_t orig_CFHTTPMessageSetHeaderFieldValue = NULL;
+
+static void hooked_CFHTTPMessageSetHeaderFieldValue(CFHTTPMessageRef msg, CFStringRef field, CFStringRef value) {
+    if (field) {
+        NSString *f = (__bridge NSString *)field;
+        if ([f caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+            NSString *fake = ci_fakeFullUA();
+            if (fake.length) {
+                ci_safariMark("cfhttpmsg_setua_fake");
+                if (orig_CFHTTPMessageSetHeaderFieldValue)
+                    orig_CFHTTPMessageSetHeaderFieldValue(msg, field, (__bridge CFStringRef)fake);
+                return;
+            }
+        }
+    }
+    if (orig_CFHTTPMessageSetHeaderFieldValue)
+        orig_CFHTTPMessageSetHeaderFieldValue(msg, field, value);
 }
 
 // v2.5.18: NSBundle.objectForInfoDictionaryKey swizzle. WebKit may
@@ -704,6 +783,18 @@ static void ci_safari_early_ctor(void) {
             MSHookFunction(vsSym, (void *)hooked_CFBundleCopyVersionString,
                            (void **)&orig_CFBundleCopyVersionString);
             if (orig_CFBundleCopyVersionString) ci_safariMark("cfbundle_copyverstr_installed");
+        }
+
+        // v2.5.23: NSMutableURLRequest setValue/addValue SETTER hooks +
+        // CFHTTPMessageSetHeaderFieldValue (CFNetwork layer). Rewrites
+        // the User-Agent header at the LAST gate before the request
+        // goes out — works even if WebKit built UA via an unhooked path.
+        ci_swizzleNSURLReqSetters();
+        void *cfMsgSym = dlsym(RTLD_DEFAULT, "CFHTTPMessageSetHeaderFieldValue");
+        if (cfMsgSym && !orig_CFHTTPMessageSetHeaderFieldValue) {
+            MSHookFunction(cfMsgSym, (void *)hooked_CFHTTPMessageSetHeaderFieldValue,
+                           (void **)&orig_CFHTTPMessageSetHeaderFieldValue);
+            if (orig_CFHTTPMessageSetHeaderFieldValue) ci_safariMark("cfhttpmsg_set_installed");
         }
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
