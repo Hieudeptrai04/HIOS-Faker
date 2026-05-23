@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.36";
+static NSString *const kAppVersion = @"2.5.37";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5616,7 +5616,25 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     if (resetBids.count == 0) {
         [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
     }
-    NSArray<NSString *> *rrsBids = backup ? [[CIConfigManager shared] rrsBundles] : nil;
+    // v2.5.37: auto-include Safari + Maps + Weather in BOTH backup and
+    // wipe (was wipe-only). User asked not to need to tick them — they
+    // ride along with every Change Device so their state restores too.
+    // Concretely backup captures Safari bookmarks/history, Maps saved
+    // places + search history, Weather saved cities.
+    NSArray<NSString *> *kSystemAutoBackup = @[
+        @"com.apple.mobilesafari",
+        @"com.apple.Maps",
+        @"com.apple.weather",
+    ];
+    NSMutableArray<NSString *> *rrsBidsM = [NSMutableArray array];
+    if (backup) {
+        NSArray<NSString *> *userRrs = [[CIConfigManager shared] rrsBundles] ?: @[];
+        [rrsBidsM addObjectsFromArray:userRrs];
+        for (NSString *sb in kSystemAutoBackup) {
+            if (![rrsBidsM containsObject:sb]) [rrsBidsM addObject:sb];
+        }
+    }
+    NSArray<NSString *> *rrsBids = backup ? [rrsBidsM copy] : nil;
     if (backup && rrsBids.count == 0) {
         [self alert:@"Chưa chọn app lưu RRS" msg:@"Vào mục 2 để chọn app cần lưu retention."]; return;
     }
@@ -6057,10 +6075,28 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     NSMutableArray *n = [NSMutableArray array]; NSMutableArray *b = [NSMutableArray array];
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenBids = [NSMutableSet set];
     unsigned long long total = 0;
     for (CIAppInfo *a in all) if ([bids containsObject:a.bundleID]) {
-        [n addObject:a.name]; [b addObject:a.bundleID];
+        [n addObject:a.name]; [b addObject:a.bundleID]; [seenBids addObject:a.bundleID];
         if (a.containerPath) { [paths addObject:a.containerPath]; total += a.containerSize; }
+    }
+    // v2.5.37: include system apps (Safari/Maps/Weather) that CIAppLister
+    // doesn't enumerate. Without this fallback, system-app bundleIDs in
+    // `bids` would be silently dropped and the tar wouldn't contain
+    // Safari/Maps/Weather data even though they were requested.
+    for (NSString *bid in bids) {
+        if ([seenBids containsObject:bid]) continue;
+        NSString *dataPath = ci_findDataContainerForBundle(bid);
+        if (dataPath.length == 0) continue;
+        NSString *displayName = bid;
+        if      ([bid isEqualToString:@"com.apple.mobilesafari"]) displayName = @"Safari";
+        else if ([bid isEqualToString:@"com.apple.Maps"])         displayName = @"Maps";
+        else if ([bid isEqualToString:@"com.apple.weather"])      displayName = @"Weather";
+        [n addObject:displayName];
+        [b addObject:bid];
+        [paths addObject:dataPath];
+        [seenBids addObject:bid];
     }
     e.appNames = n; e.bundleIDs = b; e.totalSize = total;
 
@@ -6427,10 +6463,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                subtitle:[NSString stringWithFormat:@"%lu app sẽ bị restart sau respring",
                          (unsigned long)e.bundleIDs.count]];
         [NSThread sleepForTimeInterval:0.8];
+        // v2.5.37: known-exec map for system apps. Their cmdline doesn't
+        // contain the bundleID (just the exec path) so pkill -f <bid>
+        // misses them. killall <ExecName> is the canonical kill.
+        NSDictionary<NSString *,NSString *> *kSystemExec = @{
+            @"com.apple.mobilesafari": @"MobileSafari",
+            @"com.apple.Maps":         @"Maps",
+            @"com.apple.weather":      @"Weather",
+        };
         for (NSString *bid in e.bundleIDs) {
-            NSString *kc = [NSString stringWithFormat:
+            NSMutableString *kc = [NSMutableString string];
+            [kc appendFormat:
                 @"pkill -9 -f '/var/containers/Bundle/Application/'*'/%@' 2>/dev/null; "
-                @"pkill -9 -f '%@' 2>/dev/null", bid, bid];
+                @"pkill -9 -f '%@' 2>/dev/null; ", bid, bid];
+            NSString *sysExec = kSystemExec[bid];
+            if (sysExec.length) [kc appendFormat:@"killall -9 '%@' 2>/dev/null; ", sysExec];
             ci_run([kc UTF8String]);
         }
 
