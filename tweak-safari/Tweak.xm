@@ -436,49 +436,58 @@ static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
     NSString *glVendor   = ci_jsEscape(ci_safariConfigString(@"web_glVendor")   ?: @"Apple Inc.");
     NSString *glRenderer = ci_jsEscape(ci_safariConfigString(@"web_glRenderer") ?: @"Apple GPU");
     NSString *canvasOn   = ci_safariConfigString(@"web_canvasNoise") ? @"1" : @"0";
+    // v2.5.26: stealth-mode JS injection. Defines properties on the
+    // PROTOTYPE (Navigator.prototype) instead of the instance — that's
+    // where the native properties live, so a fingerprint script doing
+    // `Object.getOwnPropertyNames(navigator).includes('userAgent')` would
+    // see `false` (matches native Safari) instead of `true` (which would
+    // out us as a tweak). Same trick: each overridden function exposes a
+    // `toString` returning the native-looking string.
     return [NSString stringWithFormat:
         @"(function(){try{"
-         "var d=function(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}};"
-         "d(navigator,'userAgent','%@');"
-         "d(navigator,'appVersion','%@');"
-         "d(navigator,'platform','iPhone');"
-         "d(navigator,'vendor','Apple Computer, Inc.');"
-         // WebGL spoof — override getParameter to lie about VENDOR/RENDERER + UNMASKED variants.
-         // Hex codes: 0x1F00=VENDOR, 0x1F01=RENDERER, 0x9245=UNMASKED_VENDOR_WEBGL, 0x9246=UNMASKED_RENDERER_WEBGL.
+         "var dp=function(proto,key,val){try{"
+         "  var g=function(){return val;};"
+         "  try{Object.defineProperty(g,'toString',{value:function(){return 'function '+key+'() { [native code] }';},configurable:true});}catch(e){}"
+         "  Object.defineProperty(proto,key,{get:g,configurable:true});"
+         "}catch(e){}};"
+         "dp(Navigator.prototype,'userAgent','%@');"
+         "dp(Navigator.prototype,'appVersion','%@');"
+         "dp(Navigator.prototype,'platform','iPhone');"
+         "dp(Navigator.prototype,'vendor','Apple Computer, Inc.');"
+         "dp(Navigator.prototype,'hardwareConcurrency', 4 + ((Math.random()*3)|0)*2);"
+         // WebGL: override prototype's getParameter, preserve native toString.
          "['WebGLRenderingContext','WebGL2RenderingContext'].forEach(function(n){"
          "  if (!window[n]) return;"
-         "  var p = window[n].prototype;"
-         "  var orig = p.getParameter;"
-         "  p.getParameter = function(pname){"
+         "  var p=window[n].prototype;"
+         "  var orig=p.getParameter;"
+         "  var f=function(pname){"
          "    if (pname===0x1F00 || pname===0x9245) return '%@';"
          "    if (pname===0x1F01 || pname===0x9246) return '%@';"
          "    return orig.call(this,pname);"
          "  };"
+         "  try{Object.defineProperty(f,'toString',{value:function(){return 'function getParameter() { [native code] }';},configurable:true});}catch(e){}"
+         "  p.getParameter=f;"
          "});"
-         // Canvas noise — perturb toDataURL/getImageData output deterministically per session.
+         // Canvas noise — only if enabled in config.
          "if (%@) {"
-         "  var seed = (Math.random()*0xFFFFFFFF)|0;"
-         "  var noise=function(c){"
-         "    try{var ctx=c.getContext('2d'); if(!ctx) return;"
-         "      var w=c.width|0, h=c.height|0; if(!w||!h) return;"
-         "      var img=ctx.getImageData(0,0,w,h);"
-         "      var d=img.data;"
-         "      for (var i=0;i<d.length;i+=4){"
-         "        d[i]   = (d[i]   ^ (seed&0x7)) & 0xFF;"
-         "        d[i+1] = (d[i+1] ^ ((seed>>3)&0x7)) & 0xFF;"
-         "        d[i+2] = (d[i+2] ^ ((seed>>6)&0x7)) & 0xFF;"
-         "      }"
-         "      ctx.putImageData(img,0,0);"
-         "    }catch(e){}"
-         "  };"
-         "  var origToDataURL = HTMLCanvasElement.prototype.toDataURL;"
-         "  HTMLCanvasElement.prototype.toDataURL = function(){"
-         "    noise(this);"
-         "    return origToDataURL.apply(this, arguments);"
-         "  };"
+         "  var seed=(Math.random()*0xFFFFFFFF)|0;"
+         "  var noise=function(c){try{"
+         "    var ctx=c.getContext('2d'); if(!ctx) return;"
+         "    var w=c.width|0, h=c.height|0; if(!w||!h) return;"
+         "    var img=ctx.getImageData(0,0,w,h);"
+         "    var data=img.data;"
+         "    for (var i=0; i<data.length; i+=4){"
+         "      data[i]  =(data[i]  ^ (seed&0x7)) & 0xFF;"
+         "      data[i+1]=(data[i+1]^ ((seed>>3)&0x7)) & 0xFF;"
+         "      data[i+2]=(data[i+2]^ ((seed>>6)&0x7)) & 0xFF;"
+         "    }"
+         "    ctx.putImageData(img,0,0);"
+         "  }catch(e){}};"
+         "  var origToDataURL=HTMLCanvasElement.prototype.toDataURL;"
+         "  var f2=function(){noise(this); return origToDataURL.apply(this, arguments);};"
+         "  try{Object.defineProperty(f2,'toString',{value:function(){return 'function toDataURL() { [native code] }';},configurable:true});}catch(e){}"
+         "  HTMLCanvasElement.prototype.toDataURL=f2;"
          "}"
-         // Hardware concurrency — bump to a common range; randomize per session.
-         "d(navigator,'hardwareConcurrency', 4 + ((Math.random()*3)|0)*2);"  // 4/6/8
          "}catch(e){}})();",
         esc, appVer, glVendor, glRenderer, canvasOn];
 }
