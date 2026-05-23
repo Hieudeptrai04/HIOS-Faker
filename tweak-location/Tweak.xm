@@ -120,24 +120,62 @@ static void ci_locDelegateUpdates(id delegateSelf, SEL _cmd,
     if (orig) orig(delegateSelf, _cmd, mgr, forward);
 }
 
-static void ci_swizzleDelegateIfNeeded(id delegate) {
-    if (!delegate) return;
-    Class cls = object_getClass(delegate);
+static void ci_swizzleDelegateClassIfNeeded(Class cls) {
     if (!cls) return;
     dispatch_once(&g_swizzledOnce, ^{ g_swizzledClasses = [NSMutableSet new]; });
     @synchronized (g_swizzledClasses) {
-        if ([g_swizzledClasses containsObject:NSStringFromClass(cls)]) return;
+        NSString *clsName = NSStringFromClass(cls);
+        if (!clsName.length) return;
+        if ([g_swizzledClasses containsObject:clsName]) return;
         SEL sel = @selector(locationManager:didUpdateLocations:);
         Method m = class_getInstanceMethod(cls, sel);
-        if (!m) return;  // delegate doesn't implement the optional method
-        IMP origIMP = method_getImplementation(m);
-        if (!origIMP) return;
-        NSValue *boxed = [NSValue valueWithPointer:(const void *)origIMP];
+        if (!m) return;
+        IMP curIMP = method_getImplementation(m);
+        if (!curIMP || curIMP == (IMP)ci_locDelegateUpdates) return;
+        NSValue *boxed = [NSValue valueWithPointer:(const void *)curIMP];
         objc_setAssociatedObject(cls, kOrigImplKey, boxed, OBJC_ASSOCIATION_RETAIN);
         method_setImplementation(m, (IMP)ci_locDelegateUpdates);
-        [g_swizzledClasses addObject:NSStringFromClass(cls)];
+        [g_swizzledClasses addObject:clsName];
         ci_locMark("delegate_class_swizzled");
     }
+}
+
+static void ci_swizzleDelegateIfNeeded(id delegate) {
+    if (!delegate) return;
+    ci_swizzleDelegateClassIfNeeded(object_getClass(delegate));
+}
+
+// At ctor time, scan EVERY class in the process and swizzle any that
+// implement -locationManager:didUpdateLocations:. This catches delegates
+// that were set before our setDelegate: hook installed (apps that build
+// the CLLocationManager from a static initializer or +load method).
+static void ci_swizzleAllExistingDelegates(void) {
+    SEL sel = @selector(locationManager:didUpdateLocations:);
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    if (!classes) return;
+    NSUInteger swizzled = 0;
+    for (unsigned int i = 0; i < classCount; i++) {
+        Class cls = classes[i];
+        // class_getInstanceMethod walks the inheritance chain — we only want
+        // classes that DIRECTLY implement the selector, so use the methodList
+        // probe to avoid double-swizzling parent classes.
+        unsigned int methodCount = 0;
+        Method *methods = class_copyMethodList(cls, &methodCount);
+        BOOL directlyImplements = NO;
+        if (methods) {
+            for (unsigned int j = 0; j < methodCount; j++) {
+                if (method_getName(methods[j]) == sel) { directlyImplements = YES; break; }
+            }
+            free(methods);
+        }
+        if (directlyImplements) {
+            ci_swizzleDelegateClassIfNeeded(cls);
+            swizzled++;
+        }
+    }
+    free(classes);
+    if (swizzled > 0) ci_locMark("scan_swizzled_some");
 }
 
 // ============================================================
@@ -198,6 +236,16 @@ static void ci_swizzleDelegateIfNeeded(id delegate) {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
         ci_locMark("ctor_entered");
-        NSLog(@"[ChangeInfoIosLocation] v2.5.29 loaded in %@", bid);
+        // Sweep all already-loaded classes for delegates that registered
+        // before our setDelegate: hook was installed.
+        ci_swizzleAllExistingDelegates();
+        // Re-sweep after a short delay so delegates created during the
+        // app's UIScene lifecycle (which runs AFTER %ctor) also get caught.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ci_swizzleAllExistingDelegates();
+            ci_locMark("ctor_delayed_sweep_done");
+        });
+        NSLog(@"[ChangeInfoIosLocation] v2.5.30 loaded in %@", bid);
     }
 }
