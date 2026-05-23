@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.35";
+static NSString *const kAppVersion = @"2.5.36";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1525,6 +1525,66 @@ static void ci_wipeSafariDeep(void) {
         ci_run([cmd UTF8String]);
     }
     NSLog(@"[ChangeInfoIos] Safari/WebKit deep wipe: killed + %lu paths cleared",
+          (unsigned long)paths.count);
+}
+
+// v2.5.36: deep wipe for Apple Maps + Weather system-wide state. Container
+// wipe in Step 2 handles /var/mobile/Containers/Data/Application/<UUID>;
+// these apps ALSO persist data in system-wide caches that survive a
+// container wipe:
+//   Maps:     route history, downloaded offline tiles, search history,
+//             favorites, "Frequent Locations" learned from movement
+//   Weather:  saved-city list, weatherd's daemon cache (per-city forecast
+//             history), widget timeline snapshots
+// Without wiping these, opening Maps/Weather after Change Device still
+// shows "your previous routes / saved home city" — a strong identity
+// continuity signal even after Zalo/FB account swap.
+static void ci_wipeMapsWeatherDeep(void) {
+    NSArray<NSString *> *killCmds = @[
+        @"killall -9 Maps 2>/dev/null",
+        @"killall -9 Weather 2>/dev/null",
+        @"killall -9 WeatherWidget 2>/dev/null",
+        @"killall -9 WeatherPoster 2>/dev/null",
+        @"killall -9 weatherd 2>/dev/null",
+        @"killall -9 mapspushd 2>/dev/null",
+        @"killall -9 navd 2>/dev/null",
+        @"killall -9 destinationd 2>/dev/null",
+        @"killall -9 geocorrectiond 2>/dev/null",
+    ];
+    for (NSString *c in killCmds) ci_run([c UTF8String]);
+
+    NSArray<NSString *> *paths = @[
+        // Maps system caches
+        @"/var/mobile/Library/Caches/com.apple.Maps",
+        @"/var/mobile/Library/Caches/com.apple.MapKit",
+        @"/var/mobile/Library/Caches/GeoServices",
+        @"/var/mobile/Library/Caches/com.apple.geod",
+        @"/var/mobile/Library/Caches/com.apple.MobileSlideShow.Maps",
+        @"/var/mobile/Library/Maps",
+        @"/var/mobile/Library/Preferences/com.apple.Maps.plist",
+        @"/var/mobile/Library/Preferences/com.apple.MapKit.plist",
+        @"/var/mobile/Library/Preferences/com.apple.geod.plist",
+        // Weather system caches
+        @"/var/mobile/Library/Caches/com.apple.weather",
+        @"/var/mobile/Library/Caches/com.apple.weatherd",
+        @"/var/mobile/Library/Caches/WeatherDaemon",
+        @"/var/mobile/Library/Weather",
+        @"/var/mobile/Library/Preferences/com.apple.weather.plist",
+        @"/var/mobile/Library/Preferences/com.apple.weatherd.plist",
+        @"/var/mobile/Library/Preferences/com.apple.weather.tracking.plist",
+        // "Frequent / Significant locations" learned by locationd from
+        // long-term movement. Wiping these breaks the per-device location
+        // history a fresh-install device wouldn't have.
+        @"/var/mobile/Library/Caches/com.apple.routined",
+        @"/var/root/Library/Caches/locationd/clients.plist",
+    ];
+    for (NSString *p in paths) {
+        NSString *cmd = [NSString stringWithFormat:
+            @"rm -rf '%@' 2>/dev/null; rm -rf '%@/.'* 2>/dev/null; rm -rf '%@/.[!.]*' 2>/dev/null",
+            p, p, p];
+        ci_run([cmd UTF8String]);
+    }
+    NSLog(@"[ChangeInfoIos] Maps/Weather deep wipe: killed + %lu paths cleared",
           (unsigned long)paths.count);
 }
 
@@ -5581,12 +5641,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // browser-side cookie / IDFA / WebKit cache is wiped each reset (iOS
     // shares the WebKit data store across every app that uses SFSafari /
     // WKWebView, so leaving Safari behind leaks fingerprint state).
+    // v2.5.36: Maps + Weather added to auto-wipe so location history,
+    // recent searches, saved places, cached weather for previous city
+    // are all gone after Change Device — otherwise these apps still
+    // show "your last city / route / saved home" which is a strong
+    // device-continuity signal even after Zalo/FB account swap.
     NSArray *aidaBids = @[
         @"com.finalwire.aida64",
         @"com.finalwire.aida64-ios",
         @"com.blacksmith.lirum",
         @"com.umang.devicedesign",
         @"com.apple.mobilesafari",
+        @"com.apple.Maps",
+        @"com.apple.weather",
     ];
     NSMutableArray<CIAppInfo *> *fullTargets = [targets mutableCopy];
     NSMutableSet<NSString *> *addedBids = [NSMutableSet setWithArray:[targets valueForKey:@"bundleID"]];
@@ -5613,8 +5680,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         synthetic.containerPath = dataPath;
         // Fixed display name for system bundles we know about — falls back
         // to the bundleID itself if it's a less common id.
-        if ([bid isEqualToString:@"com.apple.mobilesafari"]) synthetic.name = @"Safari";
-        else                                                  synthetic.name = bid;
+        if      ([bid isEqualToString:@"com.apple.mobilesafari"]) synthetic.name = @"Safari";
+        else if ([bid isEqualToString:@"com.apple.Maps"])         synthetic.name = @"Maps";
+        else if ([bid isEqualToString:@"com.apple.weather"])      synthetic.name = @"Weather";
+        else                                                       synthetic.name = bid;
         [fullTargets addObject:synthetic];
         [addedBids addObject:bid];
         [names addObject:synthetic.name];
@@ -5687,6 +5756,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 exec = [[b executablePath] lastPathComponent];
                 if (!exec.length) exec = [b objectForInfoDictionaryKey:@"CFBundleExecutable"];
             }
+            // v2.5.36: synthetic CIAppInfo for system apps (Safari/Maps/Weather)
+            // has nil bundlePath because CIAppLister only enumerates user
+            // apps. Fall back to a known-exec map so killall actually fires.
+            if (!exec.length && a.bundleID.length) {
+                static NSDictionary *kSystemExec = nil;
+                static dispatch_once_t once;
+                dispatch_once(&once, ^{
+                    kSystemExec = @{
+                        @"com.apple.mobilesafari": @"MobileSafari",
+                        @"com.apple.Maps":         @"Maps",
+                        @"com.apple.weather":      @"Weather",
+                    };
+                });
+                exec = kSystemExec[a.bundleID];
+            }
             // IMPORTANT: do NOT pkill -f <bundleID>. That string appears in
             // the cmdline of system services (backboardd, runningboardd,
             // installd, containermanagerd, …) which all carry per-app state
@@ -5738,6 +5822,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // /var/mobile/Containers/Data/Application/<UUID>; the bulk of Safari's
         // state lives in /var/mobile/Library/Safari which is outside that.
         ci_wipeSafariDeep();
+
+        // v2.5.36: Maps + Weather have system-wide caches outside the
+        // per-app container — route history, saved cities, "Frequent
+        // Locations" — that survive Step 2's container wipe.
+        ci_wipeMapsWeatherDeep();
 
         // Cross-app residue: HTTPStorages cookies, App Group shared containers,
         // pasteboard changeCount. Apps fingerprint stale state across multiple
