@@ -436,6 +436,14 @@ static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
     NSString *glVendor   = ci_jsEscape(ci_safariConfigString(@"web_glVendor")   ?: @"Apple Inc.");
     NSString *glRenderer = ci_jsEscape(ci_safariConfigString(@"web_glRenderer") ?: @"Apple GPU");
     NSString *canvasOn   = ci_safariConfigString(@"web_canvasNoise") ? @"1" : @"0";
+    // v2.5.33: also spoof navigator.geolocation. browserleaks proved
+    // that even with CL hooks in Maps/Weather the JS API returned real
+    // coords after a few seconds (WebKit's geolocation pipeline pulls
+    // from the UI process's CL which isn't on the location-sidecar's
+    // bundle filter). Easiest fix is to lie at the JS layer directly.
+    NSString *latS = ci_safariConfigString(@"latitude")  ?: @"21.028511";
+    NSString *lngS = ci_safariConfigString(@"longitude") ?: @"105.804817";
+    NSString *altS = ci_safariConfigString(@"altitude")  ?: @"15";
     // v2.5.26: stealth-mode JS injection. Defines properties on the
     // PROTOTYPE (Navigator.prototype) instead of the instance — that's
     // where the native properties live, so a fingerprint script doing
@@ -488,8 +496,36 @@ static NSString *ci_buildNavigatorOverrideJS(NSString *fakeUA) {
          "  try{Object.defineProperty(f2,'toString',{value:function(){return 'function toDataURL() { [native code] }';},configurable:true});}catch(e){}"
          "  HTMLCanvasElement.prototype.toDataURL=f2;"
          "}"
+         // v2.5.33: navigator.geolocation override — getCurrentPosition /
+         // watchPosition / clearWatch. Returns the spoofed lat/lng from
+         // config every call. Bypasses WebKit's UI-process CL pipeline.
+         "if (navigator.geolocation) {"
+         "  var fakeCoords = function(){return {"
+         "    coords: { latitude: %@, longitude: %@,"
+         "              accuracy: 10 + Math.random()*30,"
+         "              altitude: %@, altitudeAccuracy: 5,"
+         "              heading: null, speed: null },"
+         "    timestamp: Date.now()"
+         "  };};"
+         "  var gcp = function(s,e,o){ setTimeout(function(){ if(s) try{ s(fakeCoords()); }catch(_){} }, 30); };"
+         "  var wp  = function(s,e,o){ setTimeout(function(){ if(s) try{ s(fakeCoords()); }catch(_){} }, 30); return (Math.random()*1e6)|0; };"
+         "  var cw  = function(id){};"
+         "  try{Object.defineProperty(gcp,'toString',{value:function(){return 'function getCurrentPosition() { [native code] }';},configurable:true});}catch(e){}"
+         "  try{Object.defineProperty(wp,'toString',{value:function(){return 'function watchPosition() { [native code] }';},configurable:true});}catch(e){}"
+         "  try{Object.defineProperty(cw,'toString',{value:function(){return 'function clearWatch() { [native code] }';},configurable:true});}catch(e){}"
+         "  try{"
+         "    var GP = Object.getPrototypeOf(navigator.geolocation);"
+         "    Object.defineProperty(GP, 'getCurrentPosition', { value: gcp, configurable: true });"
+         "    Object.defineProperty(GP, 'watchPosition',      { value: wp,  configurable: true });"
+         "    Object.defineProperty(GP, 'clearWatch',         { value: cw,  configurable: true });"
+         "  } catch(e) {"
+         "    navigator.geolocation.getCurrentPosition = gcp;"
+         "    navigator.geolocation.watchPosition      = wp;"
+         "    navigator.geolocation.clearWatch         = cw;"
+         "  }"
+         "}"
          "}catch(e){}})();",
-        esc, appVer, glVendor, glRenderer, canvasOn];
+        esc, appVer, glVendor, glRenderer, canvasOn, latS, lngS, altS];
 }
 
 static void ci_injectUserScript(id configuration, NSString *fakeUA) {

@@ -17,6 +17,13 @@
 			<string>com.apple.FindMy</string>
 			<string>com.apple.compass</string>
 			<string>com.apple.Compass</string>
+			<!-- v2.5.33: WebKit XPCs so geolocation calls from inside a
+			     WKWebView (including third-party app browsers) read fake
+			     coords. Safari's main process already gets the Safari
+			     sidecar but its WebContent XPC sometimes pulls location
+			     via the UI process channel that doesn't go through us. -->
+			<string>com.apple.WebKit.WebContent</string>
+			<string>com.apple.WebKit.Networking</string>
 		</array>
 		<key>Mode</key>
 		<string>Any</string>
