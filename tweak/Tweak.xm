@@ -27,7 +27,6 @@
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
 #include <sys/time.h>
-#include <stdatomic.h>
 #import <spawn.h>
 #include "fishhook.h"
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
@@ -586,11 +585,11 @@ void reloadConfigFromDisk(void) {
         if (config) {
             spoofConfig = [config copy];
             configLoaded = YES;
-            // v2.5.42: bump layer-cache gen so cached fakeLayer / jbHideActive
-            // results expire on the next call. Avoids serving stale bool when
-            // user toggles a fake_* layer via the host app while target apps
-            // are running.
-            atomic_fetch_add_explicit(&g_layerCacheGen, 1, memory_order_relaxed);
+            // v2.5.42 / .43: bump layer-cache gen so cached fakeLayer /
+            // jbHideActive results expire on the next call. Avoids serving
+            // stale bool when the user toggles a fake_* layer via the host
+            // app while target apps are running.
+            __sync_fetch_and_add(&g_layerCacheGen, 1);
         } else {
             spoofConfig = nil;
             configLoaded = NO;
@@ -851,26 +850,30 @@ typedef struct {
     uint8_t  value;       // 0 = NO, 1 = YES (only meaningful when gen matches)
 } ci_layer_slot;
 static ci_layer_slot g_layerCache[CI_LAYER_CACHE_SLOTS];
-static _Atomic uint32_t g_layerCacheGen = 0;
-static _Atomic uint8_t  g_layerSkipAll = 0;
-static _Atomic uint8_t  g_layerSkipAllValid = 0;
-static _Atomic uint32_t g_layerSkipAllGen = 0;
+// v2.5.43: use plain volatile + __sync builtins instead of C11 _Atomic so
+// Tweak.xm (compiled as Objective-C / gnu99 by default) builds clean.
+// Hooks.mm uses _Atomic fine because it's ObjC++ which defaults to a
+// newer C++ standard, but the .m path here needs the older builtins.
+static volatile uint32_t g_layerCacheGen = 0;
+static volatile uint8_t  g_layerSkipAll = 0;
+static volatile uint32_t g_layerSkipAllGen = 0;
 
 static inline BOOL ci_layerSkipAllCached(uint32_t gen) {
-    if (atomic_load_explicit(&g_layerSkipAllGen, memory_order_relaxed) != gen) {
-        atomic_store_explicit(&g_layerSkipAll, (uint8_t)(getConfigBool(@"_ci_skipall") ? 1 : 0),
-                              memory_order_relaxed);
-        atomic_store_explicit(&g_layerSkipAllGen, gen, memory_order_relaxed);
+    if (g_layerSkipAllGen != gen) {
+        g_layerSkipAll    = (uint8_t)(getConfigBool(@"_ci_skipall") ? 1 : 0);
+        __sync_synchronize();
+        g_layerSkipAllGen = gen;
     }
-    return atomic_load_explicit(&g_layerSkipAll, memory_order_relaxed) != 0;
+    return g_layerSkipAll != 0;
 }
 
 BOOL fakeLayer(NSString *shortName) {
     if (g_inFakeLayer) return NO;
-    uint32_t gen = atomic_load_explicit(&g_layerCacheGen, memory_order_relaxed);
+    uint32_t gen = g_layerCacheGen;
 
-    // Pointer-keyed open-addressing probe. Hash by pointer >> 4 (NSString
-    // singletons are 16-byte aligned).
+    // Pointer-keyed open-addressing probe. Every @"…" literal is interned
+    // by the linker so its NSString singleton has a stable pointer; hash by
+    // ptr >> 4 (singletons are 16-byte aligned).
     uintptr_t key = (uintptr_t)(__bridge const void *)shortName;
     uint32_t  idx = (uint32_t)((key >> 4) & (CI_LAYER_CACHE_SLOTS - 1));
     ci_layer_slot *slot = &g_layerCache[idx];
@@ -878,7 +881,7 @@ BOOL fakeLayer(NSString *shortName) {
         return slot->value != 0;
     }
 
-    // Slow path: miss. Cache the answer.
+    // Slow path: cache miss. Compute and store.
     g_inFakeLayer++;
     BOOL out = NO;
     if (!ci_layerSkipAllCached(gen) && isCurrentBundleTargeted()) {
@@ -897,15 +900,14 @@ BOOL fakeLayer(NSString *shortName) {
 // times/sec during chat scroll. Pre-cache calls used to cost ~900ns each
 // (fakeLayer + getConfig + boolValue + lookup), totaling ~10ms/sec of
 // pure gating overhead. Cached version is 1 atomic load (~2ns).
-static _Atomic uint8_t  g_jbHideCache = 0;
-static _Atomic uint8_t  g_jbHideValid = 0;
-static _Atomic uint32_t g_jbHideGen   = 0;
+static volatile uint8_t  g_jbHideCache = 0;
+static volatile uint8_t  g_jbHideValid = 0;
+static volatile uint32_t g_jbHideGen   = 0;
 
 BOOL jbHideActive(void) {
-    uint32_t curGen = atomic_load_explicit(&g_layerCacheGen, memory_order_relaxed);
-    if (atomic_load_explicit(&g_jbHideGen, memory_order_relaxed) == curGen &&
-        atomic_load_explicit(&g_jbHideValid, memory_order_relaxed)) {
-        return atomic_load_explicit(&g_jbHideCache, memory_order_relaxed) != 0;
+    uint32_t curGen = g_layerCacheGen;
+    if (g_jbHideGen == curGen && g_jbHideValid) {
+        return g_jbHideCache != 0;
     }
     // Compute + cache. Race-tolerant: multiple threads may compute concurrently
     // on a config flip; they all converge on the same result.
@@ -914,9 +916,10 @@ BOOL jbHideActive(void) {
         id h = getConfig(@"hideJailbreak");
         out = ([h respondsToSelector:@selector(boolValue)]) ? [h boolValue] : NO;
     }
-    atomic_store_explicit(&g_jbHideCache, (uint8_t)(out ? 1 : 0), memory_order_relaxed);
-    atomic_store_explicit(&g_jbHideGen,   curGen,                  memory_order_relaxed);
-    atomic_store_explicit(&g_jbHideValid, 1,                       memory_order_relaxed);
+    g_jbHideCache = (uint8_t)(out ? 1 : 0);
+    __sync_synchronize();
+    g_jbHideGen   = curGen;
+    g_jbHideValid = 1;
     return out;
 }
 
