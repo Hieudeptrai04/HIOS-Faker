@@ -40,16 +40,26 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 #endif
 
 // v2.5.4 diagnostic helpers — write marker files to confirm load + hook fire.
+// v2.5.22: ALSO write to shared system path so we can see WebContent markers
+// (NSTemporaryDirectory is per-sandbox, hides cross-process activity).
 static void ci_safariMark(const char *tag) {
     @autoreleasepool {
         NSString *dir = NSTemporaryDirectory();
-        if (!dir.length) return;
-        NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
-        NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n",
-                            [NSDate date],
-                            [[NSBundle mainBundle] bundleIdentifier] ?: @"?"];
-        FILE *f = fopen([path UTF8String], "a");
-        if (f) { fputs([stamp UTF8String], f); fclose(f); }
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
+        if (dir.length) {
+            NSString *path = [dir stringByAppendingFormat:@"/ci_safari_%s.txt", tag];
+            NSString *stamp = [NSString stringWithFormat:@"%@ bid=%@\n", [NSDate date], bid];
+            FILE *f = fopen([path UTF8String], "a");
+            if (f) { fputs([stamp UTF8String], f); fclose(f); }
+        }
+        // Shared log accessible from any process. /tmp is writable from
+        // both Safari + WebContent sandboxes on Dopamine rootless.
+        FILE *sf = fopen("/var/mobile/Library/Caches/ChangeInfoIos/safari_marks.log", "a");
+        if (sf) {
+            fprintf(sf, "%s [%s] %s\n", [[[NSDate date] description] UTF8String],
+                    [bid UTF8String], tag);
+            fclose(sf);
+        }
     }
 }
 
@@ -232,6 +242,66 @@ static void ci_swizzleNSBundle(void) {
     orig_objForInfoDict = (ci_imp_infodict_t)method_getImplementation(m);
     method_setImplementation(m, (IMP)hooked_objForInfoDictKey);
     ci_safariMark("nsbundle_swizzled");
+}
+
+// v2.5.22: CFBundleGetVersionNumber — returns UInt32 packed BCD (e.g. 0x16601 for 16.6.1).
+// WebKit may use this instead of string lookup. Spoof by encoding our fake version
+// as the same BCD format.
+typedef UInt32 (*CFBundleGetVerNum_t)(CFBundleRef bundle);
+static CFBundleGetVerNum_t orig_CFBundleGetVersionNumber = NULL;
+
+static UInt32 ci_packBCDVersion(NSString *ver) {
+    if (!ver.length) return 0;
+    NSArray *parts = [ver componentsSeparatedByString:@"."];
+    UInt32 major = parts.count > 0 ? (UInt32)[parts[0] integerValue] : 0;
+    UInt32 minor = parts.count > 1 ? (UInt32)[parts[1] integerValue] : 0;
+    UInt32 patch = parts.count > 2 ? (UInt32)[parts[2] integerValue] : 0;
+    // Apple BCD format: 0xMMMNNPP0 where MMM=major, NN=minor, PP=patch (roughly)
+    return (major << 24) | (minor << 16) | (patch << 8);
+}
+
+static UInt32 hooked_CFBundleGetVersionNumber(CFBundleRef bundle) {
+    if (bundle) {
+        CFStringRef bidCF = CFBundleGetIdentifier(bundle);
+        NSString *bid = bidCF ? (__bridge NSString *)bidCF : nil;
+        if ([bid isEqualToString:@"com.apple.mobilesafari"] ||
+            [bid hasPrefix:@"com.apple.WebKit"]) {
+            NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
+            NSRegularExpression *re = [NSRegularExpression
+                regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
+            NSTextCheckingResult *r = [re firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+            if (r && r.numberOfRanges >= 2) {
+                NSString *ver = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+                ci_safariMark("cfbundle_getvernum_fake");
+                return ci_packBCDVersion(ver);
+            }
+        }
+    }
+    return orig_CFBundleGetVersionNumber ? orig_CFBundleGetVersionNumber(bundle) : 0;
+}
+
+// v2.5.22: CFBundleCopyVersionString — another CF version API used by WebKit.
+typedef CFStringRef (*CFBundleCopyVerStr_t)(CFBundleRef bundle);
+static CFBundleCopyVerStr_t orig_CFBundleCopyVersionString = NULL;
+
+static CFStringRef hooked_CFBundleCopyVersionString(CFBundleRef bundle) {
+    if (bundle) {
+        CFStringRef bidCF = CFBundleGetIdentifier(bundle);
+        NSString *bid = bidCF ? (__bridge NSString *)bidCF : nil;
+        if ([bid isEqualToString:@"com.apple.mobilesafari"] ||
+            [bid hasPrefix:@"com.apple.WebKit"]) {
+            NSString *fakeUA = ci_safariConfigString(@"zalo_fakeWebViewUA");
+            NSRegularExpression *re = [NSRegularExpression
+                regularExpressionWithPattern:@"Version/(\\d+\\.\\d+\\.\\d+)" options:0 error:nil];
+            NSTextCheckingResult *r = [re firstMatchInString:fakeUA options:0 range:NSMakeRange(0, fakeUA.length)];
+            if (r && r.numberOfRanges >= 2) {
+                NSString *ver = [fakeUA substringWithRange:[r rangeAtIndex:1]];
+                ci_safariMark("cfbundle_copyverstr_fake");
+                return (CFStringRef)CFBridgingRetain([ver copy]);
+            }
+        }
+    }
+    return orig_CFBundleCopyVersionString ? orig_CFBundleCopyVersionString(bundle) : NULL;
 }
 
 // v2.5.19: CFBundleGetValueForInfoDictionaryKey — low-level CF API
@@ -620,6 +690,20 @@ static void ci_safari_early_ctor(void) {
             MSHookFunction(cfbSym, (void *)hooked_CFBundleGetValueForInfoDictionaryKey,
                            (void **)&orig_CFBundleGetValueForInfoDictionaryKey);
             if (orig_CFBundleGetValueForInfoDictionaryKey) ci_safariMark("cfbundle_get_installed");
+        }
+        // v2.5.22: CFBundleGetVersionNumber (BCD UInt32)
+        void *vnSym = dlsym(RTLD_DEFAULT, "CFBundleGetVersionNumber");
+        if (vnSym && !orig_CFBundleGetVersionNumber) {
+            MSHookFunction(vnSym, (void *)hooked_CFBundleGetVersionNumber,
+                           (void **)&orig_CFBundleGetVersionNumber);
+            if (orig_CFBundleGetVersionNumber) ci_safariMark("cfbundle_vernum_installed");
+        }
+        // v2.5.22: CFBundleCopyVersionString (CFStringRef)
+        void *vsSym = dlsym(RTLD_DEFAULT, "CFBundleCopyVersionString");
+        if (vsSym && !orig_CFBundleCopyVersionString) {
+            MSHookFunction(vsSym, (void *)hooked_CFBundleCopyVersionString,
+                           (void **)&orig_CFBundleCopyVersionString);
+            if (orig_CFBundleCopyVersionString) ci_safariMark("cfbundle_copyverstr_installed");
         }
 
         // (4) v2.5.7: pre-build fake SystemVersion.plist + hook open()
