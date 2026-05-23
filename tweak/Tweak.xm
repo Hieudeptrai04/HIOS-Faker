@@ -557,6 +557,26 @@ static void ci_onDumpKeychainNotification(CFNotificationCenterRef center,
     ci_dumpKeychain();
 }
 
+// v2.5.43: layer-cache state lives here (before reloadConfigFromDisk
+// which bumps the generation counter). fakeLayer() and jbHideActive()
+// below also read/write these via the same file-scope statics — moved
+// up here to satisfy forward-reference requirements without resorting
+// to `extern` on a `static`.
+#define CI_LAYER_CACHE_SLOTS 32
+typedef struct {
+    __unsafe_unretained NSString *name;  // ARC-bypass: identity compare only,
+                                          // never dereferenced.
+    uint32_t gen;
+    uint8_t  value;
+} ci_layer_slot;
+static ci_layer_slot     g_layerCache[CI_LAYER_CACHE_SLOTS];
+static volatile uint32_t g_layerCacheGen   = 0;
+static volatile uint8_t  g_layerSkipAll    = 0;
+static volatile uint32_t g_layerSkipAllGen = 0;
+static volatile uint8_t  g_jbHideCache     = 0;
+static volatile uint8_t  g_jbHideValid     = 0;
+static volatile uint32_t g_jbHideGen       = 0;
+
 void reloadConfigFromDisk(void) {
     @autoreleasepool {
         // Strategy 0 — sandbox-friendly shared path. Verified live via probe
@@ -843,20 +863,8 @@ static dispatch_once_t g_fakeKeyCacheOnce;
 //   - `_ci_skipall` and `isCurrentBundleTargeted()` are also cached as
 //     atomic booleans, refreshed on the same gen bump.
 
-#define CI_LAYER_CACHE_SLOTS 32
-typedef struct {
-    __unsafe_unretained NSString *name;  // ARC-bypass: we only ever compare
-                                          // pointers, never deref the string.
-    uint32_t gen;
-    uint8_t  value;
-} ci_layer_slot;
-static ci_layer_slot g_layerCache[CI_LAYER_CACHE_SLOTS];
-
-// v2.5.43: use plain volatile + __sync builtins instead of C11 _Atomic so
-// Tweak.xm (compiled as Objective-C / gnu99 by default) builds clean.
-static volatile uint32_t g_layerCacheGen = 0;
-static volatile uint8_t  g_layerSkipAll = 0;
-static volatile uint32_t g_layerSkipAllGen = 0;
+// (struct + cache globals moved above reloadConfigFromDisk to satisfy
+// forward-reference. fakeLayer / jbHideActive below share them.)
 
 static inline BOOL ci_layerSkipAllCached(uint32_t gen) {
     if (g_layerSkipAllGen != gen) {
@@ -898,10 +906,8 @@ BOOL fakeLayer(NSString *shortName) {
 // times/sec during chat scroll. Pre-cache calls used to cost ~900ns each
 // (fakeLayer + getConfig + boolValue + lookup), totaling ~10ms/sec of
 // pure gating overhead. Cached version is 1 atomic load (~2ns).
-static volatile uint8_t  g_jbHideCache = 0;
-static volatile uint8_t  g_jbHideValid = 0;
-static volatile uint32_t g_jbHideGen   = 0;
-
+// (g_jbHideCache/Valid/Gen moved up to top of file with the layer-cache
+// globals so reloadConfigFromDisk's forward reference resolves.)
 BOOL jbHideActive(void) {
     uint32_t curGen = g_layerCacheGen;
     if (g_jbHideGen == curGen && g_jbHideValid) {
