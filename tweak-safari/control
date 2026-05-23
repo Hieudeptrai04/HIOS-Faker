@@ -1,6 +1,6 @@
 Package: com.changeinfoios.safari
 Name: ChangeInfoIosSafari
-Version: 2.5.38
+Version: 2.5.39
 Architecture: iphoneos-arm64
 Description: Minimal sidecar dylib for Safari UA spoof. Hooks ONLY sysctlbyname(kern.osproductversion). No Logos %hook, no Obj-C swizzles — safe for Safari's specialized process model.
 Maintainer: ChangeInfoIos

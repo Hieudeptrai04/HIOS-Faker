@@ -643,9 +643,21 @@ static void ci_wipeContainerIfScheduled(void) {
 
         NSString *home = NSHomeDirectory();
         if (home.length == 0) return;
-        NSString *marker = [home stringByAppendingPathComponent:@".ci_last_wipe"];
+        // v2.5.39: marker MUST live inside Documents/ (or tmp/) — iOS sandbox
+        // blocks app writes to its OWN container root, so the previous path
+        // home/.ci_last_wipe could be READ but never WRITTEN successfully by
+        // the host's writeToFile: at Reset time. Net effect: marker missing
+        // every launch → counter > last (0) → wipe fired EVERY relaunch →
+        // session keychain wiped → blank login + lag. Confirmed live by
+        // SSH-listing Zalo container root after Change Device: only
+        // metadata.plist + Documents/Library/SystemData/tmp, no marker.
+        // Read order: Documents → root (backward-compat for v2.5.38 markers
+        // that ANY shell-based write may have left at the root).
+        NSString *markerDoc  = [home stringByAppendingPathComponent:@"Documents/.ci_last_wipe"];
+        NSString *markerRoot = [home stringByAppendingPathComponent:@".ci_last_wipe"];
         long long last = 0;
-        NSString *existing = [NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil];
+        NSString *existing = [NSString stringWithContentsOfFile:markerDoc encoding:NSUTF8StringEncoding error:nil];
+        if (!existing.length) existing = [NSString stringWithContentsOfFile:markerRoot encoding:NSUTF8StringEncoding error:nil];
         if (existing) last = [existing longLongValue];
         if (counter <= last) return;
 
@@ -714,10 +726,14 @@ static void ci_wipeContainerIfScheduled(void) {
         }
         g_ci_skipKeychainHook--;
 
-        [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
-            atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSLog(@"[ChangeInfoIos] Wiped %@ (counter=%lld, items=%lu, keychain cleared)",
-              bid, counter, (unsigned long)removed);
+        // v2.5.39: write to Documents/ (sandbox-allowed) instead of root.
+        // Log success/failure so future regressions surface in syslog.
+        NSError *werr = nil;
+        BOOL wok = [[NSString stringWithFormat:@"%lld", counter]
+            writeToFile:markerDoc atomically:YES
+            encoding:NSUTF8StringEncoding error:&werr];
+        NSLog(@"[ChangeInfoIos] Wiped %@ (counter=%lld, items=%lu, keychain cleared, markerWriteOK=%d err=%@)",
+              bid, counter, (unsigned long)removed, wok, werr);
     }
 }
 

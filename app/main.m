@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.38";
+static NSString *const kAppVersion = @"2.5.39";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5901,9 +5901,26 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     full, full, full];
                 ci_run([cmd UTF8String]);
             }
-            NSString *marker = [a.containerPath stringByAppendingPathComponent:@".ci_last_wipe"];
-            [[NSString stringWithFormat:@"%lld", counter] writeToFile:marker
-                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            // v2.5.39: write marker inside Documents/ so iOS sandbox lets
+            // the file land (host's writeToFile: to another app's container
+            // ROOT silently fails — observed live on Zalo 2026-05-23:
+            // marker missing → wipe re-fired every launch → keychain wipe
+            // every launch → session lost + lag). Use shell echo > to
+            // bypass any cross-container NSFileManager sandbox check.
+            // Also keep writing the root path as a backward-compat fallback
+            // so older tweak builds still see a marker.
+            NSString *docMarker  = [a.containerPath stringByAppendingPathComponent:@"Documents/.ci_last_wipe"];
+            NSString *rootMarker = [a.containerPath stringByAppendingPathComponent:@".ci_last_wipe"];
+            NSString *markCmd = [NSString stringWithFormat:
+                @"mkdir -p '%@/Documents' 2>/dev/null; "
+                @"echo '%lld' > '%@' 2>/dev/null && chmod 0644 '%@' 2>/dev/null; "
+                @"echo '%lld' > '%@' 2>/dev/null && chmod 0644 '%@' 2>/dev/null",
+                a.containerPath,
+                counter, docMarker, docMarker,
+                counter, rootMarker, rootMarker];
+            int mrc = ci_run([markCmd UTF8String]);
+            NSLog(@"[ChangeInfoIos] wipe marker for %@: rc=%d doc=%@ root=%@",
+                  a.bundleID, mrc, docMarker, rootMarker);
             wiped++;
         }
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
@@ -6827,14 +6844,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             long long counter = [counterVal respondsToSelector:@selector(longLongValue)]
                                 ? [counterVal longLongValue] : 0;
             if (counter > 0) {
-                NSString *markerPath = [container stringByAppendingPathComponent:@".ci_last_wipe"];
-                NSString *markerSafe = [markerPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                // v2.5.39: write to Documents/ AND root (backward-compat).
+                // iOS sandbox blocks app-level writes to container root,
+                // shell-cp bypasses that; tweak now also reads Documents
+                // path first per the v2.5.39 fix.
+                NSString *doc  = [[container stringByAppendingPathComponent:@"Documents/.ci_last_wipe"]
+                                    stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *root = [[container stringByAppendingPathComponent:@".ci_last_wipe"]
+                                    stringByReplacingOccurrencesOfString:@"'" withString:@""];
                 NSString *markCmd = [NSString stringWithFormat:
+                    @"mkdir -p '%@/Documents' 2>/dev/null; "
+                    @"echo %lld > '%@' && chmod 0644 '%@'; "
                     @"echo %lld > '%@' && chmod 0644 '%@'",
-                    counter, markerSafe, markerSafe];
+                    [container stringByReplacingOccurrencesOfString:@"'" withString:@""],
+                    counter, doc, doc,
+                    counter, root, root];
                 int mc = ci_run([markCmd UTF8String]);
-                NSLog(@"[ChangeInfoIos] restore: .ci_last_wipe=%lld for %@ (rc=%d)",
-                      counter, bid, mc);
+                NSLog(@"[ChangeInfoIos] restore: .ci_last_wipe=%lld for %@ (rc=%d doc=%@ root=%@)",
+                      counter, bid, mc, doc, root);
             }
 
             NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
