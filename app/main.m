@@ -16,9 +16,26 @@
 #import <notify.h>
 #import <Security/Security.h>
 #import <sys/stat.h>
+#import <sys/wait.h>
 #import <spawn.h>
 
 extern char **environ;
+
+// Forward @interface declarations — full @implementation lives further
+// down. @class alone isn't enough because MainVC calls +[AppPickerVC new].
+
+@interface CIAppInfo : NSObject
+@property (nonatomic, copy) NSString *bundleID;
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *containerPath;
+@property (nonatomic, copy) NSString *bundlePath;
+@end
+
+@interface AppPickerVC : UITableViewController
+@end
+
+@interface VerifyVC : UITableViewController
+@end
 
 // ============================================================
 // Constants
@@ -265,12 +282,6 @@ static NSString *ciRandomViettelPhone(void) {
 // ============================================================
 // App lister
 // ============================================================
-@interface CIAppInfo : NSObject
-@property (nonatomic, copy) NSString *bundleID;
-@property (nonatomic, copy) NSString *name;
-@property (nonatomic, copy) NSString *containerPath;
-@property (nonatomic, copy) NSString *bundlePath;
-@end
 @implementation CIAppInfo
 @end
 
@@ -555,7 +566,7 @@ static void ciResetContainer(CIAppInfo *app) {
 // ============================================================
 // App picker
 // ============================================================
-@interface AppPickerVC : UITableViewController
+@interface AppPickerVC ()
 @property (nonatomic, strong) NSArray<CIAppInfo *> *apps;
 @property (nonatomic, strong) NSMutableSet<NSString *> *picked;
 @end
@@ -600,7 +611,7 @@ static void ciResetContainer(CIAppInfo *app) {
 // ============================================================
 // Verify viewer — calls MGCopyAnswer to show what tweak returns
 // ============================================================
-@interface VerifyVC : UITableViewController
+@interface VerifyVC ()
 @property (nonatomic, strong) NSArray<NSArray *> *rows;  // [[label, key], ...]
 @property (nonatomic, strong) NSMutableDictionary *vals;
 @end
