@@ -212,6 +212,120 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
 }
 
 // ============================================================
+// LAYER 2: IORegistry — AIDA64-style apps read IOPlatformSerialNumber,
+// IOPlatformUUID, board-id, model, serial-number, mlb-serial-number
+// directly from IOKit registry (bypass MG). Hook both Create + Search.
+// ============================================================
+typedef CFTypeRef (*IORegCreateCFProp_t)(mach_port_t entry, CFStringRef key,
+                                          CFAllocatorRef alloc, uint32_t options);
+typedef CFTypeRef (*IORegSearchCFProp_t)(mach_port_t entry, const char *plane,
+                                          CFStringRef key, CFAllocatorRef alloc,
+                                          uint32_t options);
+static IORegCreateCFProp_t orig_IORegCreate = NULL;
+static IORegSearchCFProp_t orig_IORegSearch = NULL;
+
+static NSDictionary *g_ioKeyMap = nil;
+static void initIOKeyMap(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_ioKeyMap = @{
+            @"IOPlatformSerialNumber":@"IOPlatformSerialNumber",
+            @"IOPlatformUUID":@"IOPlatformUUID",
+            @"board-id":@"IOBoardId",
+            @"product-name":@"IOProductName",
+            @"model":@"IOModel",
+            @"serial-number":@"IODeviceTreeSerial",
+            @"mlb-serial-number":@"IODeviceTreeMLBSerial",
+            @"region-info":@"RegionInfo",
+            @"region-code":@"RegionCode",
+            @"model-number":@"ModelNumber",
+            @"config-number":@"ModelNumber",
+            @"device_type":@"IOProductName",
+            @"target-type":@"IOProductName",
+            @"chip-id":@"ChipID",
+            @"board":@"IOBoardId",
+            @"compatible":@"hw_machine",
+            @"system-serial-number":@"IOPlatformSerialNumber",
+        };
+    });
+}
+
+static CFTypeRef ci_ioLookup(NSString *keyStr) {
+    NSString *configKey = g_ioKeyMap[keyStr];
+    if (!configKey) return NULL;
+    NSString *val = getConfigStr(configKey);
+    if (!val) return NULL;
+    // Device-tree serial keys are stored as NSData (raw bytes) in IOKit.
+    if ([keyStr isEqualToString:@"serial-number"] ||
+        [keyStr isEqualToString:@"mlb-serial-number"] ||
+        [keyStr isEqualToString:@"system-serial-number"]) {
+        NSData *d = [val dataUsingEncoding:NSUTF8StringEncoding];
+        return (__bridge_retained CFTypeRef)d;
+    }
+    return (__bridge_retained CFTypeRef)val;
+}
+
+static CFTypeRef hooked_IORegCreate(mach_port_t entry, CFStringRef key,
+                                     CFAllocatorRef alloc, uint32_t options) {
+    if (key) {
+        initIOKeyMap();
+        CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+        if (sp) return sp;
+    }
+    return orig_IORegCreate(entry, key, alloc, options);
+}
+
+static CFTypeRef hooked_IORegSearch(mach_port_t entry, const char *plane,
+                                     CFStringRef key, CFAllocatorRef alloc,
+                                     uint32_t options) {
+    if (key) {
+        initIOKeyMap();
+        CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+        if (sp) return sp;
+    }
+    return orig_IORegSearch(entry, plane, key, alloc, options);
+}
+
+// ============================================================
+// LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
+// .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
+// AIDA64 + most analytics SDKs query these directly.
+// ============================================================
+%hook UIDevice
+- (NSString *)name {
+    NSString *v = getConfigStr(@"deviceName"); return v ?: %orig;
+}
+- (NSString *)model {
+    NSString *v = getConfigStr(@"deviceModel"); return v ?: %orig;
+}
+- (NSString *)localizedModel {
+    NSString *v = getConfigStr(@"localizedModel"); return v ?: %orig;
+}
+- (NSString *)systemName {
+    NSString *v = getConfigStr(@"systemName"); return v ?: %orig;
+}
+- (NSString *)systemVersion {
+    NSString *v = getConfigStr(@"systemVersion"); return v ?: %orig;
+}
+- (NSUUID *)identifierForVendor {
+    NSString *v = getConfigStr(@"identifierForVendor");
+    if (v) {
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:v];
+        if (u) return u;
+    }
+    return %orig;
+}
+- (float)batteryLevel {
+    id v = getConfig(@"batteryLevel");
+    return v ? [v floatValue] : %orig;
+}
+- (long)batteryState {
+    id v = getConfig(@"batteryState");
+    return v ? (long)[v integerValue] : %orig;
+}
+%end
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) { (void)t; reloadConfig(); }
@@ -227,9 +341,17 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         if (h) orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(h, "MGCopyAnswer");
         if (!orig_MGCopyAnswer) return;
 
-        struct rebinding r = { "MGCopyAnswer", (void *)hooked_MGCopyAnswer,
-                               (void **)&orig_MGCopyAnswer };
-        rebind_symbols(&r, 1);
+        // Hook MGCopyAnswer + IORegistry Create/Search via fishhook
+        // rebind. UIDevice hooks are handled by Logos %hook automatically.
+        struct rebinding rebs[] = {
+            { "MGCopyAnswer", (void *)hooked_MGCopyAnswer,
+              (void **)&orig_MGCopyAnswer },
+            { "IORegistryEntryCreateCFProperty", (void *)hooked_IORegCreate,
+              (void **)&orig_IORegCreate },
+            { "IORegistryEntrySearchCFProperty", (void *)hooked_IORegSearch,
+              (void **)&orig_IORegSearch },
+        };
+        rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;
