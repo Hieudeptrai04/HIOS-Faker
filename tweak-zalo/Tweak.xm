@@ -1,4 +1,4 @@
-// ChangeInfoIosZalo.dylib — v2.6.3
+// ChangeInfoIosZalo.dylib — v2.6.4 (with load + MG-install + per-call markers for debug)
 //
 // Ultra-thin device-info sidecar. Originally Zalo-only (v2.6.0), now
 // promoted to handle EVERY user-selected target app (Facebook, TikTok,
@@ -546,6 +546,17 @@ static BOOL isMGIntKey(NSString *k) {
 
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (g_inMG || !orig_MGCopyAnswer) return orig_MGCopyAnswer ? orig_MGCopyAnswer(property) : NULL;
+    // v2.6.4 marker: log first 5 calls per process. Disabled after that
+    // (would otherwise create huge files when SDKs spam MG at scroll time).
+    static int firedCount = 0;
+    if (firedCount < 5) {
+        NSString *k = property ? (__bridge NSString *)property : @"<null>";
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unk";
+        ciSidecarMark([NSString stringWithFormat:@"mgcall%d", firedCount], bid,
+            [NSString stringWithFormat:@"key=%@ gCfg=%@ hwLayer=%@",
+             k, gCfg ? @"YES" : @"NO", LAYER("hardware") ? @"YES" : @"NO"]);
+        firedCount++;
+    }
     if (!gCfg || !property)            return orig_MGCopyAnswer(property);
     if (!LAYER("hardware"))            return orig_MGCopyAnswer(property);
 
@@ -668,25 +679,50 @@ static void onPrefsNotify(CFNotificationCenterRef c, void *o, CFStringRef n,
           (unsigned long)(gCfg ? gCfg.count : 0));
 }
 
+// v2.6.4 marker helpers — write tiny files to /var/jb/etc/changeinfoios/
+// so SSH can verify what happened inside the target app process without
+// needing oslog access (iOS doesn't ship `log show` on this jailbreak).
+static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra) {
+    @try {
+        NSString *dir = @"/var/jb/etc/changeinfoios";
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil error:nil];
+        NSString *path = [NSString stringWithFormat:
+            @"%@/sidecar_%@_%@.txt", dir, kind, bid];
+        NSString *body = [NSString stringWithFormat:@"%ld\n%@\n",
+                          (long)time(NULL), extra ?: @""];
+        [body writeToFile:path atomically:YES
+                 encoding:NSUTF8StringEncoding error:nil];
+    } @catch (__unused id e) {}
+}
+
 %ctor {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
 
-        // v2.6.3 SAFETY: HARD bail on SpringBoard. The v2.6.2 sidecar
-        // crashed SpringBoard into SafeMode because BBoard / lock-screen /
-        // status-bar daemons read MGCopyAnswer dozens of times during boot
-        // BEFORE gCfg loaded from disk, and our hook's early-bail path
-        // through orig_MGCopyAnswer (still NULL at that microsecond) hit
-        // a NULL-deref. SpringBoard is also too sensitive in general —
-        // it must NEVER carry our hooks. Belt-and-braces in case a stale
-        // plist filter still includes springboard.
         if ([bid isEqualToString:@"com.apple.springboard"]) {
             NSLog(@"[ChangeInfoIosZalo] SAFETY: skipping load into SpringBoard");
             return;
         }
 
+        // v2.6.4 marker #1: ctor entered. Confirms ellekit/AMFI loaded
+        // our dylib into this bundle.
+        ciSidecarMark(@"ctor", bid, @"entered");
+
         reloadCfg();
+        // v2.6.4 marker #2: config load result. extra=N keys loaded.
+        ciSidecarMark(@"cfg", bid,
+            [NSString stringWithFormat:@"keys=%lu MarketingName=%@",
+             (unsigned long)(gCfg ? gCfg.count : 0),
+             cs(@"MarketingName") ?: @"<nil>"]);
+
         installMGHooks();
+        // v2.6.4 marker #3: MG hook install result.
+        ciSidecarMark(@"mg", bid, [NSString stringWithFormat:
+            @"copy=%p str=%p bool=%p",
+            orig_MGCopyAnswer, orig_MGGetStringAnswer, orig_MGGetBoolAnswer]);
+
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
             NULL, onPrefsNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL,
             CFNotificationSuspensionBehaviorCoalesce);
