@@ -14,7 +14,6 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
 #import <notify.h>
-#import <stdatomic.h>
 #import "fishhook.h"
 
 // ============================================================
@@ -26,18 +25,24 @@ static NSString *const kConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kReloadNote = @"com.changeinfoios.v3/ReloadConfig";
 static NSString *const kLegacyNote = @"com.changeinfoios/ReloadConfig";
 
-static _Atomic(NSDictionary *) g_config = nil;
+// Plain strong ARC pointer + dispatch_once init. NSDictionary is
+// immutable; multi-threaded reads are safe. The 8-byte aligned pointer
+// store is atomic on arm64, so a concurrent reload can never tear the
+// pointer — worst case a thread reads the previous dict for a few ns.
+// Avoid _Atomic + ARC; their interaction releases too eagerly and the
+// dylib crashes inside objc_retain when Firebase reads systemVersion
+// from a background queue (observed in AIDA64 crash log 2026-05-25).
+static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
 
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    NSDictionary *old = atomic_exchange(&g_config, d ?: @{});
-    (void)old; // ARC handles release
+    g_config = d ?: @{};
 }
 
 static inline NSDictionary *cfg(void) {
     dispatch_once(&g_loadOnce, ^{ reloadConfig(); });
-    return atomic_load(&g_config);
+    return g_config;
 }
 
 static inline id getConfig(NSString *k) { return cfg()[k]; }
