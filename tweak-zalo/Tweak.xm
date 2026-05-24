@@ -775,19 +775,26 @@ static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra) {
              (unsigned long)(gCfg ? gCfg.count : 0),
              cs(@"MarketingName") ?: @"<nil>"]);
 
-        // v2.7.2: MG fishhook + sysctlbyname are OPT-IN now (default OFF).
-        // v2.6.5/7 added them to cover AIDA64/Lirum model spoof, but the
-        // per-call trampoline added enough overhead on A11 (iPhone X) to
-        // re-introduce the "đơ đơ" lag the user fixed in v2.6.0. Default
-        // sidecar = 12 ObjC cached hooks only = v2.6.0 smoothness for ALL
-        // ticked apps. Set _ci_enable_deep_spoof=YES in config to opt
-        // a process into MG + sysctl coverage (lose smoothness gain).
-        if (cb(@"_ci_enable_deep_spoof")) {
+        // v2.7.3: per-bundle deep_spoof gate. AIDA/Lirum/DeviceDesign auto-
+        // enable MG+sysctl because their entire UX is showing device-info
+        // (real vs fake the user can SEE). Acceptable to be slightly laggy
+        // in these 3 apps since they're not register-flow apps — they're
+        // just verifiers. All OTHER target apps (Zalo, FB, TikTok, banking,
+        // etc.) stay default-OFF for smoothness, matching v2.6.0 baseline.
+        // Global force-enable still works via _ci_enable_deep_spoof=YES.
+        NSSet *verifierBids = [NSSet setWithArray:@[
+            @"com.finalwire.aida64",
+            @"com.finalwire.aida64-ios",
+            @"com.blacksmith.lirum",
+            @"com.umang.devicedesign",
+        ]];
+        BOOL wantDeep = [verifierBids containsObject:bid] || cb(@"_ci_enable_deep_spoof");
+        if (wantDeep) {
             installSysctlHook();
             installMGHooks();
-            NSLog(@"[ChangeInfoIosZalo] deep_spoof=YES: MG + sysctl hooks installed");
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=YES (verifier bundle %@ or global flag)", bid);
         } else {
-            NSLog(@"[ChangeInfoIosZalo] deep_spoof=NO (default): skipping MG + sysctl for smoothness");
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=NO (non-verifier %@): smooth mode", bid);
         }
         // v2.6.4 marker #3: MG hook install result.
         ciSidecarMark(@"mg", bid, [NSString stringWithFormat:
