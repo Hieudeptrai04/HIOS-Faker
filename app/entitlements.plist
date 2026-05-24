@@ -2,18 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>platform-application</key>
-	<true/>
-	<key>com.apple.private.security.no-sandbox</key>
-	<true/>
-	<key>com.apple.private.security.container-required</key>
-	<false/>
-	<key>com.apple.lsapplicationworkspace.RebuildApplicationDatabases</key>
-	<true/>
-	<key>com.apple.private.mobileinstall.allowedSPI</key>
-	<array>
-		<string>Browse</string>
-		<string>Lookup</string>
-	</array>
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+    <key>com.apple.private.security.container-required</key>
+    <false/>
+    <!-- Pre-grant TCC entries so iOS skips the permission dialog AND
+         Photos / Camera frameworks get access despite the app having
+         no sandbox container (TCC normally tracks per-container, so a
+         containerless app can't be granted via the standard prompt).
+         Standard pattern for jailbreak tools that need media access. -->
+    <key>com.apple.private.tcc.allow</key>
+    <array>
+        <string>kTCCServicePhotos</string>
+        <string>kTCCServicePhotosAdd</string>
+        <string>kTCCServiceCamera</string>
+        <string>kTCCServiceMicrophone</string>
+        <string>kTCCServiceMediaLibrary</string>
+    </array>
 </dict>
 </plist>
