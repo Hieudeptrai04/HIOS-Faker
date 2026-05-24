@@ -1601,64 +1601,109 @@ static CFTypeRef hooked_IORegistryEntrySearchCFProperty(mach_port_t entry, const
 // init aborted, SIGABRT. Drop the realscreen gate: if fake_screen is on
 // we spoof the whole geometry as one consistent set.
 
+// v2.5.51: per-return-value caching with gen counter. UIScreen.bounds /
+// scale / etc are called inside every UIView/CALayer layout pass — Zalo's
+// chat scroll triggers ~60fps × N cells × M layout reads = thousands of
+// invocations/sec. Even the v2.5.45 fakeLayer cache (1 ns) + 2 getConfig
+// dict lookups (60 ns) compounds visibly. Cache the FINAL CGRect/CGFloat
+// once per config-gen so steady-state cost drops to ~5 ns (read static +
+// gen compare + return).
 - (CGRect)bounds {
     if (!fakeLayer(@"screen")) return %orig;
+    static CGRect cached  = {{0,0},{0,0}};
+    static uint32_t cgen  = (uint32_t)-1;
+    static uint8_t  cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached.size.width > 0 && cached.size.height > 0) return cached;
+        return %orig;
+    }
     id w = getConfig(@"screenWidth");
     id h = getConfig(@"screenHeight");
-    if (w && h) {
-        return CGRectMake(0, 0, [w floatValue], [h floatValue]);
-    }
+    CGRect out = (w && h) ? CGRectMake(0, 0, [w floatValue], [h floatValue])
+                          : CGRectZero;
+    cached = out; cgen = gen; cvalid = 1;
+    if (out.size.width > 0 && out.size.height > 0) return out;
     return %orig;
 }
 
 - (CGRect)nativeBounds {
     if (!fakeLayer(@"screen")) return %orig;
+    static CGRect cached  = {{0,0},{0,0}};
+    static uint32_t cgen  = (uint32_t)-1;
+    static uint8_t  cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached.size.width > 0 && cached.size.height > 0) return cached;
+        return %orig;
+    }
     id w = getConfig(@"nativeScreenWidth");
     id h = getConfig(@"nativeScreenHeight");
+    CGRect out = CGRectZero;
     if (w && h) {
-        return CGRectMake(0, 0, [w floatValue], [h floatValue]);
+        out = CGRectMake(0, 0, [w floatValue], [h floatValue]);
+    } else {
+        // Synthesise from bounds × scale so nativeBounds never disagrees
+        // with bounds (UIKit asserts on mismatch).
+        id bw = getConfig(@"screenWidth");
+        id bh = getConfig(@"screenHeight");
+        id sc = getConfig(@"screenScale");
+        if (bw && bh && sc) {
+            CGFloat s = [sc floatValue];
+            out = CGRectMake(0, 0, [bw floatValue] * s, [bh floatValue] * s);
+        }
     }
-    // Fallback: derive from bounds × scale so we never return real
-    // nativeBounds when bounds is faked — that mismatch is what UIKit
-    // asserts on. Using config-driven values is preferred (consistent
-    // with the device preset) but if those keys somehow aren't set,
-    // synthesise them on the fly.
-    id bw = getConfig(@"screenWidth");
-    id bh = getConfig(@"screenHeight");
-    id sc = getConfig(@"screenScale");
-    if (bw && bh && sc) {
-        CGFloat s = [sc floatValue];
-        return CGRectMake(0, 0, [bw floatValue] * s, [bh floatValue] * s);
-    }
+    cached = out; cgen = gen; cvalid = 1;
+    if (out.size.width > 0 && out.size.height > 0) return out;
     return %orig;
 }
 
 - (CGFloat)scale {
     if (!fakeLayer(@"screen")) return %orig;
+    static CGFloat cached = 0;
+    static uint32_t cgen  = (uint32_t)-1;
+    static uint8_t  cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached > 0) return cached;
+        return %orig;
+    }
     id val = getConfig(@"screenScale");
-    if (val) return [val floatValue];
+    CGFloat out = val ? [val floatValue] : 0;
+    cached = out; cgen = gen; cvalid = 1;
+    if (out > 0) return out;
     return %orig;
 }
 
 - (CGFloat)nativeScale {
     if (!fakeLayer(@"screen")) return %orig;
+    static CGFloat cached = 0;
+    static uint32_t cgen  = (uint32_t)-1;
+    static uint8_t  cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached > 0) return cached;
+        return %orig;
+    }
     id val = getConfig(@"nativeScale");
-    if (val) return [val floatValue];
-    // Fallback to scale so nativeScale never disagrees with scale.
-    id sc = getConfig(@"screenScale");
-    if (sc) return [sc floatValue];
+    if (!val) val = getConfig(@"screenScale");  // fallback so values agree
+    CGFloat out = val ? [val floatValue] : 0;
+    cached = out; cgen = gen; cvalid = 1;
+    if (out > 0) return out;
     return %orig;
 }
 
-// Tier 5 — brightness. Real device returns whatever the user set; apps
-// reading this for anti-fraud get a varied value (so a constant suggests
-// emulator). Default to 0.5 (mid-bright, common). Override via config
-// "screenBrightness" if a profile needs to look like a specific state.
 - (CGFloat)brightness {
     if (!fakeLayer(@"screen")) return %orig;
+    static CGFloat cached = 0;
+    static uint32_t cgen  = (uint32_t)-1;
+    static uint8_t  cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) return cached;
     id val = getConfig(@"screenBrightness");
-    if (val) return [val floatValue];
-    return 0.5;
+    CGFloat out = val ? [val floatValue] : 0.5;
+    cached = out; cgen = gen; cvalid = 1;
+    return out;
 }
 
 %end
@@ -1676,15 +1721,38 @@ static CFTypeRef hooked_IORegistryEntrySearchCFProperty(mach_port_t entry, const
 
 - (NSUInteger)processorCount {
     if (!fakeLayer(@"processinfo")) return %orig;
+    // v2.5.51 cache: Foundation calls processorCount per
+    // NSOperationQueue.defaultMaxConcurrentOperationCount lookup → hot
+    // during async work bursts.
+    static NSUInteger cached = 0;
+    static uint32_t cgen = (uint32_t)-1;
+    static uint8_t cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached > 0) return cached;
+        return %orig;
+    }
     id val = getConfig(@"processorCount");
-    if (val) return ci_toUInteger(val);
+    NSUInteger out = val ? ci_toUInteger(val) : 0;
+    cached = out; cgen = gen; cvalid = 1;
+    if (out > 0) return out;
     return %orig;
 }
 
 - (unsigned long long)physicalMemory {
     if (!fakeLayer(@"processinfo")) return %orig;
+    static unsigned long long cached = 0;
+    static uint32_t cgen = (uint32_t)-1;
+    static uint8_t cvalid = 0;
+    uint32_t gen = g_layerCacheGen;
+    if (cvalid && cgen == gen) {
+        if (cached > 0) return cached;
+        return %orig;
+    }
     id val = getConfig(@"physicalMemory");
-    if (val) return ci_toULL(val);
+    unsigned long long out = val ? ci_toULL(val) : 0;
+    cached = out; cgen = gen; cvalid = 1;
+    if (out > 0) return out;
     return %orig;
 }
 
