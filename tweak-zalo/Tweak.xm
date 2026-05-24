@@ -775,8 +775,20 @@ static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra) {
              (unsigned long)(gCfg ? gCfg.count : 0),
              cs(@"MarketingName") ?: @"<nil>"]);
 
-        installSysctlHook();
-        installMGHooks();
+        // v2.7.2: MG fishhook + sysctlbyname are OPT-IN now (default OFF).
+        // v2.6.5/7 added them to cover AIDA64/Lirum model spoof, but the
+        // per-call trampoline added enough overhead on A11 (iPhone X) to
+        // re-introduce the "đơ đơ" lag the user fixed in v2.6.0. Default
+        // sidecar = 12 ObjC cached hooks only = v2.6.0 smoothness for ALL
+        // ticked apps. Set _ci_enable_deep_spoof=YES in config to opt
+        // a process into MG + sysctl coverage (lose smoothness gain).
+        if (cb(@"_ci_enable_deep_spoof")) {
+            installSysctlHook();
+            installMGHooks();
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=YES: MG + sysctl hooks installed");
+        } else {
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=NO (default): skipping MG + sysctl for smoothness");
+        }
         // v2.6.4 marker #3: MG hook install result.
         ciSidecarMark(@"mg", bid, [NSString stringWithFormat:
             @"copy=%p str=%p bool=%p",
