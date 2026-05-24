@@ -229,3 +229,31 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "HIOS Faker v3 ${VERSION} (${GITHUB_SHA::7})" \
             --notes "Automated v3 build from ${GITHUB_SHA}. Zero-injection device spoof. Install via Sileo or download below."
+
+      # Auto-upload workflow log on failure to a PUBLIC GitHub Release so
+      # debugging doesn't require any auth or API rate-limit budget.
+      - name: On failure — publish workflow log
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          mkdir -p /tmp/logs
+          curl -sL -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -o /tmp/logs.zip \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/logs"
+          unzip -o /tmp/logs.zip -d /tmp/logs/ >/dev/null 2>&1
+          find /tmp/logs -type f -name "*.txt" | sort | xargs cat > /tmp/full.log 2>/dev/null
+          [ -s /tmp/full.log ] || cp /tmp/logs.zip /tmp/full.log
+          # Show tail in the CI UI itself
+          echo "===== TAIL OF FULL LOG ====="
+          tail -200 /tmp/full.log
+          echo "===== END TAIL ====="
+          TAG="debug-fail-${GITHUB_SHA::7}-${GITHUB_RUN_ID}"
+          gh release create "$TAG" /tmp/full.log /tmp/logs.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DEBUG fail ${GITHUB_SHA::7} run=${GITHUB_RUN_ID}" \
+            --notes "Auto-uploaded failure log. SHA=${GITHUB_SHA}" \
+            --prerelease || true
+          echo "DEBUG_RELEASE_URL=https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
