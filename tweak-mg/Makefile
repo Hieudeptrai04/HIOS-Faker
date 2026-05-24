@@ -5,8 +5,8 @@ TARGET := iphone:clang:16.5:15.0
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ChangeInfoIosMG
-ChangeInfoIosMG_FILES = Tweak.xm
-ChangeInfoIosMG_CFLAGS = -fobjc-arc
-ChangeInfoIosMG_FRAMEWORKS = Foundation
+ChangeInfoIosMG_FILES = Tweak.xm fishhook.c
+ChangeInfoIosMG_CFLAGS = -fobjc-arc -Wno-error -Wno-deprecated-declarations
+ChangeInfoIosMG_FRAMEWORKS = Foundation CoreFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk

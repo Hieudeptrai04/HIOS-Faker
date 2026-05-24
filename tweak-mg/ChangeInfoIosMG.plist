@@ -4,9 +4,18 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Executables</key>
+		<key>Bundles</key>
 		<array>
-			<string>MobileGestaltHelper</string>
+			<string>vn.com.vng.zingalo</string>
+			<string>com.facebook.Facebook</string>
+			<string>com.facebook.Messenger</string>
+			<string>com.zhiliaoapp.musically</string>
+			<string>com.burbn.instagram</string>
+			<string>com.finalwire.AIDA64</string>
+			<string>com.lirum.LirumDeviceInfoLite</string>
+			<string>com.devicedesign.DeviceDesign</string>
+			<string>com.shopee.vn</string>
+			<string>vn.shopee.vnapp</string>
 		</array>
 		<key>Mode</key>
 		<string>Any</string>
