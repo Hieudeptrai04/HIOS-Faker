@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.5.51";
+static NSString *const kAppVersion = @"2.6.0";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1876,13 +1876,30 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
     ]];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
 
+    // v2.6.0: Zalo bundle IDs are handled by the dedicated ChangeInfoIosZalo
+    // sidecar (ultra-thin device-info-only spoof, no C-level hooks). The
+    // main ChangeInfoIos.dylib MUST NOT load into Zalo or both will
+    // double-spoof and the main tweak's 15+ ObjC hook overhead returns
+    // the chat-scroll lag the user paid v2.6 to eliminate. Hard-exclude.
+    NSSet *kZaloExcluded = [NSSet setWithArray:@[
+        @"com.vng.zalo",
+        @"com.zing.zalo",
+        @"vn.com.vng.zingalo",
+        @"com.zaloapp.zalovn",
+    ]];
+
     for (CIAppInfo *app in apps) {
-        if (app.bundleID.length) [bundles addObject:app.bundleID];
+        if (app.bundleID.length && ![kZaloExcluded containsObject:app.bundleID]) {
+            [bundles addObject:app.bundleID];
+        }
         if (!app.bundlePath.length) continue;
         NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
         NSString *exec = [[bundle executablePath] lastPathComponent];
         if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
-        if (exec.length) [executables addObject:exec];
+        // Skip Zalo executable too (in case bundleID matched above but exec leaks)
+        if (exec.length && ![exec isEqualToString:@"Zalo"]) {
+            [executables addObject:exec];
+        }
     }
 
     NSDictionary *filter = @{

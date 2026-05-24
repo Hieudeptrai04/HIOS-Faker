@@ -260,6 +260,43 @@ jobs:
           otool -D "$LOCATION"
           otool -L "$LOCATION"
 
+      - name: Build ChangeInfoIosZalo (v2.6.0 sidecar — ultra-thin 12-hook device-info-only spoof for Zalo)
+        run: |
+          set -euo pipefail
+          cd tweak-zalo
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          ls -lh packages/
+
+          DEB=$(ls packages/*.deb | head -1)
+          rm -rf /tmp/zalo-work
+          mkdir -p /tmp/zalo-work
+          dpkg-deb -R "$DEB" /tmp/zalo-work
+          ZALO=$(find /tmp/zalo-work -name "ChangeInfoIosZalo.dylib" | head -1)
+          test -n "$ZALO" || { echo "ERR: ChangeInfoIosZalo.dylib missing"; exit 1; }
+
+          install_name_tool -id \
+            "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosZalo.dylib" \
+            "$ZALO"
+
+          if otool -L "$ZALO" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            install_name_tool -change \
+              "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+              "/var/jb/usr/lib/libsubstrate.dylib" \
+              "$ZALO"
+          fi
+
+          ldid -S "$ZALO"
+
+          PLIST=$(find /tmp/zalo-work -name "*.plist" | grep -v DEBIAN | head -1)
+          if [ -n "$PLIST" ]; then plutil -convert xml1 "$PLIST"; fi
+
+          rm -f "$DEB"
+          dpkg-deb -Zxz -b /tmp/zalo-work "$DEB"
+          echo "=== Zalo sidecar after patch ==="
+          otool -D "$ZALO"
+          otool -L "$ZALO"
+
       - name: Build app
         id: build-app
         run: |
@@ -294,29 +331,33 @@ jobs:
           HELLO_DEB=$(ls helloinject/packages/*.deb | head -1)
           SAFARI_DEB=$(ls tweak-safari/packages/*.deb | head -1)
           LOCATION_DEB=$(ls tweak-location/packages/*.deb | head -1)
+          ZALO_DEB=$(ls tweak-zalo/packages/*.deb | head -1)
           echo "Tweak:    $TWEAK_DEB    ($(stat -f%z "$TWEAK_DEB") bytes)"
           echo "App:      $APP_DEB      ($(stat -f%z "$APP_DEB") bytes)"
           echo "Hello:    $HELLO_DEB    ($(stat -f%z "$HELLO_DEB") bytes)"
           echo "Safari:   $SAFARI_DEB   ($(stat -f%z "$SAFARI_DEB") bytes)"
           echo "Location: $LOCATION_DEB ($(stat -f%z "$LOCATION_DEB") bytes)"
+          echo "Zalo:     $ZALO_DEB     ($(stat -f%z "$ZALO_DEB") bytes)"
 
-          rm -rf combined /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract /tmp/safari-extract /tmp/location-extract
-          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract /tmp/safari-extract /tmp/location-extract
+          rm -rf combined /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract /tmp/safari-extract /tmp/location-extract /tmp/zalo-extract
+          mkdir -p combined/DEBIAN /tmp/tweak-extract /tmp/app-extract /tmp/hello-extract /tmp/safari-extract /tmp/location-extract /tmp/zalo-extract
 
           dpkg-deb -x "$TWEAK_DEB"    /tmp/tweak-extract
           dpkg-deb -x "$APP_DEB"      /tmp/app-extract
           dpkg-deb -x "$HELLO_DEB"    /tmp/hello-extract
           dpkg-deb -x "$SAFARI_DEB"   /tmp/safari-extract
           dpkg-deb -x "$LOCATION_DEB" /tmp/location-extract
+          dpkg-deb -x "$ZALO_DEB"     /tmp/zalo-extract
 
           # merge file trees — tweak + app + hello probe + Safari sidecar
-          # + Location sidecar all share /var/jb. Each sidecar lands at
-          # /var/jb/Library/MobileSubstrate/DynamicLibraries/<name>.{dylib,plist}
+          # + Location sidecar + Zalo sidecar all share /var/jb. Each sidecar
+          # lands at /var/jb/Library/MobileSubstrate/DynamicLibraries/<name>.{dylib,plist}
           cp -R /tmp/tweak-extract/.    combined/
           cp -R /tmp/app-extract/.      combined/
           cp -R /tmp/hello-extract/.    combined/
           cp -R /tmp/safari-extract/.   combined/
           cp -R /tmp/location-extract/. combined/
+          cp -R /tmp/zalo-extract/.     combined/
 
           # Some rootless loaders (Dopamine ellekit variant) scan
           # /var/jb/usr/lib/TweakInject/ instead of MobileSubstrate/DynamicLibraries/.
@@ -352,6 +393,7 @@ jobs:
           for binary in combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib \
                        combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosSafari.dylib \
                        combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosLocation.dylib \
+                       combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosZalo.dylib \
                        combined/var/jb/Library/MobileSubstrate/DynamicLibraries/HelloInject.dylib \
                        combined/var/jb/Applications/ChangeInfoIosApp.app/ChangeInfoIosApp; do
             [ -f "$binary" ] || continue
@@ -403,6 +445,7 @@ jobs:
           for f in "$MS/ChangeInfoIos.dylib"          "$MS/ChangeInfoIos.plist" \
                    "$MS/ChangeInfoIosSafari.dylib"    "$MS/ChangeInfoIosSafari.plist" \
                    "$MS/ChangeInfoIosLocation.dylib"  "$MS/ChangeInfoIosLocation.plist" \
+                   "$MS/ChangeInfoIosZalo.dylib"      "$MS/ChangeInfoIosZalo.plist" \
                    "$MS/HelloInject.dylib"            "$MS/HelloInject.plist"; do
             [ -e "$f" ] || continue
             chown root:wheel "$f" 2>/dev/null || true
