@@ -9,6 +9,7 @@ on:
       - "tweak/**"
       - "tweak-safari/**"
       - "tweak-location/**"
+      - "tweak-zalo/**"
       - "app/**"
       - "helloinject/**"
       - ".github/workflows/build.yml"
