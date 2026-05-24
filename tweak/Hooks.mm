@@ -1798,12 +1798,14 @@ extern "C" void initCLvlHooks(void) {
     NSLog(@"[ChangeInfoIos] CLvl hook gates: jbhide=%d timing=%d hw=%d net=%d sysctl=%d",
           wantJbHide, wantTiming, wantHardware, wantNetwork, wantSysctl);
 
-    // sysctlbyname — needed for hardware spoof (hw.machine, kern.osversion).
-    // v2.5.49: kept install gate (wantSysctl OR wantHardware) but caller can
-    // disable via _ci_disable_sysctl_byname=YES if they observe lag from
-    // libsystem's internal sysctl probes (Crashlytics calls hw.cpufamily +
-    // hw.ncpu on every Crashlytics report submit).
-    if ((wantSysctl || wantHardware) && !getConfigBool(@"_ci_disable_sysctl_byname")) {
+    // v2.5.50 sysctlbyname OFF by default. Per user directive "chỉ fake
+    // device thôi, ko cần hook" — UIDevice / MGCopyAnswer ObjC paths cover
+    // the values most apps actually read; libsystem's hot internal probes
+    // (Crashlytics hw.cpufamily + hw.ncpu per report submit, CoreFoundation's
+    // kern.osversion on every NSDate format) no longer carry a trampoline.
+    // Re-enable via _ci_enable_sysctlbyname=YES per device if a target SDK
+    // is observed reading hw.machine directly and detecting the mismatch.
+    if (getConfigBool(@"_ci_enable_sysctlbyname")) {
         void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
         if (!sysctl_handle) sysctl_handle = RTLD_DEFAULT;
         void *sysctl_sym = dlsym(sysctl_handle, "sysctlbyname");
@@ -1825,14 +1827,13 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // v2.5.49 stat/lstat KEPT for JB hide; access/fopen MOVED to opt-in.
-    // NSFileManager.fileExistsAtPath in Foundation calls stat under the
-    // hood — covering it lets us deny JB paths to apps using the modern
-    // ObjC API without hooking the lower-level functions. access/fopen
-    // are hit by file-cache image decode (Zalo image preview, sticker
-    // load) → ~50K calls/sec. Re-enable with _ci_enable_access_fopen=YES
-    // if a future fingerprint SDK probes paths via access(2) directly.
-    if (wantJbHide) {
+    // v2.5.50 stat/lstat OFF by default. NSFileManager hook was deleted in
+    // v2.5.50 anyway (chỉ fake device, ko cần JB hide hook). The C-level
+    // backers are the ones hit by NSFileManager so removing both layers
+    // together eliminates the entire JB-hide code path. Re-enable with
+    // _ci_enable_jb_posix=YES if an SDK is observed using stat/lstat to
+    // probe Cydia / Sileo paths.
+    if (getConfigBool(@"_ci_enable_jb_posix")) {
         void *stat_sym = dlsym(RTLD_DEFAULT, "stat");
         if (stat_sym && !orig_stat) {
             MSHookFunction(stat_sym, (void *)hooked_stat, (void **)&orig_stat);
@@ -1986,12 +1987,18 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // SecItemCopyMatching
+    // v2.5.50 SecItemCopyMatching OFF by default. The hook returned spoofed
+    // values for known device-ID keychain queries (Twitter's twclientid, etc).
+    // Per user directive, keychain spoof is out — keychain backup/restore
+    // (ci_dumpKeychain / ci_restoreKeychainIfFlagged) still works via
+    // dedicated dump/restore paths that don't depend on the runtime hook.
 #if __has_include(<Security/Security.h>)
-    void *sec_sym = dlsym(RTLD_DEFAULT, "SecItemCopyMatching");
-    if (sec_sym && !orig_SecItemCopyMatching) {
-        MSHookFunction(sec_sym, (void *)hooked_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching);
-        NSLog(@"[ChangeInfoIos] SecItemCopyMatching hooked");
+    if (getConfigBool(@"_ci_enable_sec_copy_match")) {
+        void *sec_sym = dlsym(RTLD_DEFAULT, "SecItemCopyMatching");
+        if (sec_sym && !orig_SecItemCopyMatching) {
+            MSHookFunction(sec_sym, (void *)hooked_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching);
+            NSLog(@"[ChangeInfoIos] SecItemCopyMatching hooked");
+        }
     }
 
     // ====== ROLLBACK START: Batch E install ======

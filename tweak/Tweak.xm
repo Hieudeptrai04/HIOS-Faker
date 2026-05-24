@@ -1843,98 +1843,23 @@ static NSTimeZone *ci_cachedFakeTZ(void) {
 
 %end
 
-// ============================================================
-// LAYER 11: Jailbreak Hide Hooks
-// ============================================================
-%hook NSFileManager
+// v2.5.50 REMOVED %hook NSFileManager — was the hottest ObjC hook in the
+// dylib (Zalo's chat scroll hits fileExistsAtPath thousands of times/sec
+// for image cache + sticker preview lookups). Even with cached jbHideActive
+// fast-bail, the method-table swap itself + bridging cost adds up. User
+// directive "chỉ fake device thôi đã bảo ko cần hook" — JB hide is not
+// device-level fake, it's behavioral interference with the app's I/O.
 
-// HOT PATH: Zalo / Facebook SDKs call fileExistsAtPath: hundreds of times
-// during login navigation (resource loading, cache lookups, plist probes).
-// Previous build iterated a 28-entry NSArray with hasPrefix: → ~50µs/call,
-// total ~150ms across the login transition → user-visible "3s lag" on the
-// register/login button. Pure-C ci_isHiddenJBPath defined in Hooks.mm uses
-// a precomputed prefix table + second-char gate + strncmp; ~1µs/call.
-
-- (BOOL)fileExistsAtPath:(NSString *)path {
-    if (!jbHideActive()) return %orig;
-    // User-defined override list from config — only checked if non-empty.
-    // Each call hits the C check ONCE (no NSString conversion in the loop).
-    NSArray *hiddenPaths = getConfig(@"hiddenPaths");
-    if (hiddenPaths.count > 0) {
-        for (NSString *hidden in hiddenPaths) {
-            if ([path hasPrefix:hidden]) return NO;
-        }
-    }
-    // Default JB-path table — pure C strncmp via shared helper.
-    const char *cpath = path.UTF8String;
-    if (cpath && ci_isHiddenJBPath(cpath)) return NO;
-    return %orig;
-}
-
-- (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
-    if (!jbHideActive()) return %orig;
-    const char *cpath = path.UTF8String;
-    if (cpath && ci_isHiddenJBPath(cpath)) return NO;
-    return %orig;
-}
-
-// v2.4.35: removed NSFileManager removeItemAtPath: / removeItemAtURL:
-// hooks. Were interfering with Zalo's legitimate session-write paths.
-
-%end
-
-// RE-ADDED 2026-05-12 (perf-safe): SystemVersion.plist direct-read leak.
-//
-// AIDA64 + Apple Intelligence detection libs + many device-info SDKs
-// bypass MGCopyAnswer and read /System/Library/CoreServices/SystemVersion
-// .plist directly via -[NSDictionary dictionaryWithContentsOfFile:].
-// They get ProductBuildVersion + ProductVersion straight from the OS
-// image and ignore our MG hooks. Confirmed on iPhone where AIDA64
-// reported the real Build 20H360 while our spoofed ProductVersion was
-// 16.7.1 — anti-fraud sees the mismatch and bans.
-//
-// Previous removal (commit 42a6f58) was justified at the time: the old
-// hook had no path filter and detoured EVERY plist read (Zalo's
-// register flow loads HUNDREDS of plist resources for i18n/SDK config).
-// This re-add applies a UTF-8 strstr filter as the FIRST line: if the
-// path doesn't contain "SystemVersion" we %orig and return in ~50ns,
-// well below the 1µs/call budget. Only SystemVersion plist reads pay
-// the spoof cost — about 5-10 reads per app launch, total <1ms.
-
-static inline BOOL ci_isSystemVersionPlistPath(NSString *path) {
-    if (path.length < 20) return NO;
-    const char *cpath = path.UTF8String;
-    if (!cpath) return NO;
-    // Two known canonical paths + the /var/jb mirror that rootless tools sometimes
-    // proxy reads through.
-    return strstr(cpath, "/SystemVersion.plist") != NULL ||
-           strstr(cpath, "/CoreServices/SystemVersion") != NULL;
-}
-
-static NSDictionary *ci_spoofSystemVersionDict(NSDictionary *orig) {
-    if (!orig || !fakeLayer(@"sysosversion")) return orig;
-    NSString *fakeVer   = getConfigStr(@"systemVersion");
-    NSString *fakeBuild = getConfigStr(@"BuildVersion");
-    if (!fakeVer && !fakeBuild) return orig;
-    NSMutableDictionary *m = [orig mutableCopy];
-    if (fakeVer)   m[@"ProductVersion"]      = fakeVer;
-    if (fakeBuild) m[@"ProductBuildVersion"] = fakeBuild;
-    return [m copy];
-}
-
-%hook NSDictionary
-
-+ (NSDictionary *)dictionaryWithContentsOfFile:(NSString *)path {
-    if (!ci_isSystemVersionPlistPath(path)) return %orig;  // fast path 99.9% of calls
-    return ci_spoofSystemVersionDict(%orig);
-}
-
-+ (NSDictionary *)dictionaryWithContentsOfURL:(NSURL *)url {
-    if (!ci_isSystemVersionPlistPath(url.path)) return %orig;
-    return ci_spoofSystemVersionDict(%orig);
-}
-
-%end
+// v2.5.50 REMOVED %hook NSDictionary dictionaryWithContentsOfFile. Spoofing
+// /System/Library/CoreServices/SystemVersion.plist reads is anti-fingerprint
+// scaffolding for AIDA64-style SDKs that bypass MGCopyAnswer. Zalo + the
+// user's named target apps (banking apps explicitly excluded by user) do
+// not bypass MGCopyAnswer. UIDevice.systemVersion ObjC hook + the optional
+// MGCopyAnswer fishhook (gated by _ci_enable_mg, default OFF) already
+// cover the canonical iOS API surface. Even though the path-filter
+// short-circuit was cheap (~50 ns/call), the hook installed a method-table
+// entry that every +dictionaryWithContentsOfFile: call paid bridging cost
+// on. Zalo's i18n + asset loading goes through this method.
 
 // ============================================================
 // APNS PUSH TOKEN SPOOF — break server-side device correlation.
@@ -2347,39 +2272,16 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 // CoreLocation course-from-accelerometer fallback). Zero relevance to
 // Zalo reg flow → delete entirely.
 
-%hook NSUserDefaults
-
-- (id)objectForKey:(NSString *)defaultName {
-    if (!fakeLayer(@"trackingdefaults")) return %orig;
-    if (!getConfigBool(@"keychainReset")) return %orig;
-    if (!defaultName.length) return %orig;
-    // v2.5.45: cache the tracking-key list AND its lowercase form as
-    // statics. Pre-v2.5.45 alloc'd a fresh NSArray + called
-    // -lowercaseString on each of 15 keys on EVERY -objectForKey: call.
-    // NSUserDefaults is hit thousands of times per second by Firebase /
-    // Crashlytics / Zalo's analytics SDK during launch + chat scroll —
-    // ~30K calls/sec × ~5µs/call = ~150ms/sec of wasted CPU = obvious
-    // lag.  Static + dispatch_once = compute once per process.
-    static NSArray<NSString *> *kTrackingLC = nil;
-    static dispatch_once_t trackOnce;
-    dispatch_once(&trackOnce, ^{
-        NSArray *raw = @[@"device_id", @"device_token", @"udid",
-                         @"device_uuid", @"kdeviceid", @"uniqueidentifier",
-                         @"advertising_id", @"installation_id",
-                         @"twclientid", @"twdeviceid", @"tw_device",
-                         @"twitter_device", @"client_device_id",
-                         @"persistentdeviceid", @"tw_inapp_install_id"];
-        // Source list is already all-lowercase — store as-is.
-        kTrackingLC = [raw copy];
-    });
-    NSString *lc = defaultName.lowercaseString;
-    for (NSString *k in kTrackingLC) {
-        if ([lc containsString:k]) return nil;
-    }
-    return %orig;
-}
-
-%end
+// v2.5.50 REMOVED %hook NSUserDefaults. Was nil-ing 15 tracking keys
+// (device_id / advertising_id / installation_id / etc) that Firebase
+// Crashlytics + Zalo SDK probe on every analytics event. Even with
+// dispatch_once-cached lowercase key list, each call iterated 15 keys
+// + containsString match → ~5 µs/call × 30K calls/sec = 150 ms/sec
+// pure overhead during chat scroll, even before considering the
+// method-table bridge. Removing means Zalo SDK can read its own
+// stored device_id (set at first launch from UIDevice.identifierForVendor
+// → already spoofed by our UIDevice hook). The cross-account de-correlation
+// benefit is gone, but lag dies — user's stated priority.
 
 // Build an NSURLSession proxy dict from the user's saved Proxy section.
 // Same key set as the host app's ci_proxyConfigOrNil() so behaviour stays
@@ -3188,36 +3090,51 @@ static void ci_installAttestHooks(void) {
                                (IMP *)&orig_CTSubscriber_mobileNetworkCode);
             NSLog(@"[ChangeInfoIos] CTSubscriber.phoneNumber+uniqueIdentifier+subscriberID+MCC+MNC hooked");
         }
-        if (objc_getClass("PKPushRegistry")) {
-            ci_swizzleInstance("PKPushRegistry", @selector(pushTokenForType:),
-                               (IMP)ci_PKPushRegistry_pushTokenForType,
-                               (IMP *)&orig_PKPushRegistry_pushTokenForType);
-            NSLog(@"[ChangeInfoIos] PKPushRegistry.pushTokenForType: hooked (VoIP)");
+        // v2.5.50 ALL APP-MUTATING ATTEST SWIZZLES GATED to opt-in.
+        //   PKPushRegistry.pushTokenForType — fakes the VoIP push token Zalo
+        //     hands to its server. Server-side reject can lock account.
+        //   DCDevice / DCAppAttestService — fakes Apple's signed anti-fraud
+        //     tokens. Apple's server cross-checks; bad token = harder ban.
+        //   LAContext.canEvaluatePolicy — fakes biometric availability;
+        //     Zalo's "save login with FaceID" silently breaks if hooked.
+        // Per user directive "chỉ fake device thôi", these are out by default.
+        // Re-enable per-swizzle via the named config keys.
+        if (getConfigBool(@"_ci_enable_pk_push")) {
+            if (objc_getClass("PKPushRegistry")) {
+                ci_swizzleInstance("PKPushRegistry", @selector(pushTokenForType:),
+                                   (IMP)ci_PKPushRegistry_pushTokenForType,
+                                   (IMP *)&orig_PKPushRegistry_pushTokenForType);
+                NSLog(@"[ChangeInfoIos] PKPushRegistry.pushTokenForType: hooked (VoIP)");
+            }
         }
-        if (objc_getClass("DCDevice")) {
-            ci_swizzleInstance("DCDevice", @selector(isSupported),
-                               (IMP)ci_DC_isSupported, (IMP *)&orig_DC_isSupported);
-            ci_swizzleInstance("DCDevice", @selector(generateTokenWithCompletionHandler:),
-                               (IMP)ci_DC_generateToken, (IMP *)&orig_DC_generateToken);
-            NSLog(@"[ChangeInfoIos] DCDevice hooked");
+        if (getConfigBool(@"_ci_enable_dc_device")) {
+            if (objc_getClass("DCDevice")) {
+                ci_swizzleInstance("DCDevice", @selector(isSupported),
+                                   (IMP)ci_DC_isSupported, (IMP *)&orig_DC_isSupported);
+                ci_swizzleInstance("DCDevice", @selector(generateTokenWithCompletionHandler:),
+                                   (IMP)ci_DC_generateToken, (IMP *)&orig_DC_generateToken);
+                NSLog(@"[ChangeInfoIos] DCDevice hooked");
+            }
+            if (objc_getClass("DCAppAttestService")) {
+                ci_swizzleInstance("DCAppAttestService", @selector(isSupported),
+                                   (IMP)ci_DCA_isSupported, (IMP *)&orig_DCA_isSupported);
+                ci_swizzleInstance("DCAppAttestService", @selector(generateKeyWithCompletionHandler:),
+                                   (IMP)ci_DCA_generateKey, (IMP *)&orig_DCA_generateKey);
+                ci_swizzleInstance("DCAppAttestService", @selector(attestKey:clientDataHash:completionHandler:),
+                                   (IMP)ci_DCA_attestKey, (IMP *)&orig_DCA_attestKey);
+                ci_swizzleInstance("DCAppAttestService", @selector(generateAssertion:clientDataHash:completionHandler:),
+                                   (IMP)ci_DCA_generateAssertion, (IMP *)&orig_DCA_genAssertion);
+                NSLog(@"[ChangeInfoIos] DCAppAttestService hooked (incl. assertion)");
+            }
         }
-        if (objc_getClass("DCAppAttestService")) {
-            ci_swizzleInstance("DCAppAttestService", @selector(isSupported),
-                               (IMP)ci_DCA_isSupported, (IMP *)&orig_DCA_isSupported);
-            ci_swizzleInstance("DCAppAttestService", @selector(generateKeyWithCompletionHandler:),
-                               (IMP)ci_DCA_generateKey, (IMP *)&orig_DCA_generateKey);
-            ci_swizzleInstance("DCAppAttestService", @selector(attestKey:clientDataHash:completionHandler:),
-                               (IMP)ci_DCA_attestKey, (IMP *)&orig_DCA_attestKey);
-            ci_swizzleInstance("DCAppAttestService", @selector(generateAssertion:clientDataHash:completionHandler:),
-                               (IMP)ci_DCA_generateAssertion, (IMP *)&orig_DCA_genAssertion);
-            NSLog(@"[ChangeInfoIos] DCAppAttestService hooked (incl. assertion)");
-        }
-        if (objc_getClass("LAContext")) {
-            ci_swizzleInstance("LAContext", @selector(canEvaluatePolicy:error:),
-                               (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
-            ci_swizzleInstance("LAContext", @selector(evaluatedPolicyDomainState),
-                               (IMP)ci_LA_evaluatedPolicyDomainState, (IMP *)&orig_LA_evalPolicyDomainState);
-            NSLog(@"[ChangeInfoIos] LAContext hooked (canEval + evalPolicyDomainState)");
+        if (getConfigBool(@"_ci_enable_lacontext")) {
+            if (objc_getClass("LAContext")) {
+                ci_swizzleInstance("LAContext", @selector(canEvaluatePolicy:error:),
+                                   (IMP)ci_LA_canEval, (IMP *)&orig_LA_canEval);
+                ci_swizzleInstance("LAContext", @selector(evaluatedPolicyDomainState),
+                                   (IMP)ci_LA_evaluatedPolicyDomainState, (IMP *)&orig_LA_evalPolicyDomainState);
+                NSLog(@"[ChangeInfoIos] LAContext hooked (canEval + evalPolicyDomainState)");
+            }
         }
         // v2.4.43: ci_installWKWebViewHooks() is already invoked by the
         // main %ctor (line ~3683) — don't double-swizzle here.
