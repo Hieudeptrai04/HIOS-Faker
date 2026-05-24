@@ -1,4 +1,4 @@
-// ChangeInfoIosZalo.dylib — v2.6.4 (with load + MG-install + per-call markers for debug)
+// ChangeInfoIosZalo.dylib — v2.6.5 (adds sysctlbyname for Lirum/AIDA hw.machine spoof)
 //
 // Ultra-thin device-info sidecar. Originally Zalo-only (v2.6.0), now
 // promoted to handle EVERY user-selected target app (Facebook, TikTok,
@@ -39,6 +39,9 @@
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <substrate.h>
+#import <sys/sysctl.h>
+#import <errno.h>
+#import <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -634,6 +637,74 @@ static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
     return orig_MGGetStringAnswer(property);
 }
 
+// ============================================================
+// sysctlbyname — for Lirum / AIDA64 hw.machine + kern.osversion probes
+//
+// These device-info apps bypass MGCopyAnswer and read hw.machine /
+// hw.model / kern.osversion via the BSD sysctlbyname C function. With
+// a fast bail on non-target keys, the trampoline cost on libsystem's
+// internal sysctl calls (hw.ncpu, etc) stays negligible.
+// ============================================================
+typedef int (*sysctlbyname_t)(const char *, void *, size_t *, void *, size_t);
+static sysctlbyname_t orig_sysctlbyname = NULL;
+
+static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
+                                void *newp, size_t newlen) {
+    if (!orig_sysctlbyname) {
+        return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : -1;
+    }
+    // Ultra-fast bail: only intercept ~6 known fingerprint keys. Every
+    // other libsystem internal sysctl gets a single memcmp + passthrough.
+    if (!name || !gCfg) {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    NSString *spoofVal = nil;
+    NSString *cfgKey   = nil;
+    // hw.machine = "iPhone10,3" (XS) / "iPhone11,6" (XS Max) — primary anti-fraud read
+    if (strcmp(name, "hw.machine") == 0)               { cfgKey = @"ProductType";     }
+    else if (strcmp(name, "hw.model") == 0)            { cfgKey = @"HardwareModel";   }
+    else if (strcmp(name, "hw.product") == 0)          { cfgKey = @"ProductType";     }
+    else if (strcmp(name, "hw.target") == 0)           { cfgKey = @"HardwareModel";   }
+    else if (strcmp(name, "kern.osproductversion") == 0) { cfgKey = @"systemVersion"; }
+    else if (strcmp(name, "kern.osversion") == 0)      { cfgKey = @"BuildVersion";    }
+    else if (strcmp(name, "kern.bootargs") == 0)       { cfgKey = nil; /* skip, real */ }
+    else {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    if (cfgKey) spoofVal = cs(cfgKey);
+    if (!spoofVal.length) {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    const char *cstr = [spoofVal UTF8String];
+    if (!cstr) {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    size_t need = strlen(cstr) + 1;
+    if (!oldp) {
+        // Probe call: caller asks for required size
+        if (oldlenp) *oldlenp = need;
+        return 0;
+    }
+    if (oldlenp && *oldlenp < need) {
+        // Buffer too small — return ENOMEM-ish
+        if (oldlenp) *oldlenp = need;
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(oldp, cstr, need);
+    if (oldlenp) *oldlenp = need;
+    return 0;
+}
+
+static void installSysctlHook(void) {
+    void *sysctl_sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
+    if (sysctl_sym && !orig_sysctlbyname) {
+        MSHookFunction(sysctl_sym, (void *)hooked_sysctlbyname,
+                       (void **)&orig_sysctlbyname);
+        NSLog(@"[ChangeInfoIosZalo] sysctlbyname hooked");
+    }
+}
+
 static void installMGHooks(void) {
     void *h = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
     if (!h) return;
@@ -720,6 +791,7 @@ static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra) {
              (unsigned long)(gCfg ? gCfg.count : 0),
              cs(@"MarketingName") ?: @"<nil>"]);
 
+        installSysctlHook();
         installMGHooks();
         // v2.6.4 marker #3: MG hook install result.
         ciSidecarMark(@"mg", bid, [NSString stringWithFormat:
