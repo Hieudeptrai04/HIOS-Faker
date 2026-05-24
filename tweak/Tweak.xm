@@ -1743,118 +1743,21 @@ static CFTypeRef hooked_IORegistryEntrySearchCFProperty(mach_port_t entry, const
 // Tier 5 — AVAudioSession.outputVolume. Apps read this for liveness checks
 // and audio routing fingerprints. Return a steady mid-volume so no app
 // thinks the user is in a meeting / muted / blasting audio.
-%hook AVAudioSession
-- (float)outputVolume {
-    if (!fakeLayer(@"sensor")) return %orig;
-    id val = getConfig(@"outputVolume");
-    if (val) return [val floatValue];
-    return 0.5f;
-}
-%end
+// v2.5.48 REMOVED %hook AVAudioSession.outputVolume — Zalo reg does not
+// probe audio volume; was just noise for SDKs that fingerprint OS state.
+// Hook fires on every UI music control update → unnecessary trampoline.
 
-// ============================================================
-// LAYER 9: GPS Location Hooks
-// ============================================================
-static CLLocation *buildFakeLocation(void) {
-    id lat = getConfig(@"latitude");
-    id lng = getConfig(@"longitude");
-    id alt = getConfig(@"altitude");
-    if (!lat || !lng) return nil;
-
-    CLLocationCoordinate2D coord;
-    coord.latitude = [lat doubleValue];
-    coord.longitude = [lng doubleValue];
-    double altitude = alt ? [alt doubleValue] : 10.0;
-
-    // Micro-jitter (~5 cm) every read — mimics noisy GPS sensor; the large
-    // resettable jitter is already baked into lat/lng by the host app on Reset.
-    double jitterLat = ((double)(arc4random_uniform(100)) - 50.0) / 1000000.0;
-    double jitterLng = ((double)(arc4random_uniform(100)) - 50.0) / 1000000.0;
-    coord.latitude += jitterLat;
-    coord.longitude += jitterLng;
-
-    id acc    = getConfig(@"locationAccuracy");
-    id spdV   = getConfig(@"locationSpeed");
-    id crsV   = getConfig(@"locationCourse");
-    double hAcc   = acc  ? [acc doubleValue]  : (5.0 + arc4random_uniform(30));
-    double speed  = spdV ? [spdV doubleValue] : 0.0;
-    double course = crsV ? [crsV doubleValue] : (double)(arc4random_uniform(360));
-
-    CLLocation *loc = [[CLLocation alloc]
-        initWithCoordinate:coord
-        altitude:altitude
-        horizontalAccuracy:hAcc
-        verticalAccuracy:hAcc * 1.5
-        course:course
-        speed:speed
-        timestamp:[NSDate date]];
-    return loc;
-}
-
-%hook CLLocationManager
-
-- (CLLocation *)location {
-    if (!fakeLayer(@"location")) return %orig;
-    if (!getConfigBool(@"locationEnabled")) return %orig;
-    CLLocation *fake = buildFakeLocation();
-    return fake ?: %orig;
-}
-
-- (void)startUpdatingLocation {
-    %orig;
-    if (fakeLayer(@"location") && getConfigBool(@"locationEnabled") && self.delegate) {
-        CLLocation *fake = buildFakeLocation();
-        if (fake && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self.delegate locationManager:self didUpdateLocations:@[fake]];
-            });
-        }
-    }
-}
-
-- (void)startMonitoringSignificantLocationChanges {
-    %orig;
-    if (fakeLayer(@"location") && getConfigBool(@"locationEnabled") && self.delegate) {
-        CLLocation *fake = buildFakeLocation();
-        if (fake && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self.delegate locationManager:self didUpdateLocations:@[fake]];
-            });
-        }
-    }
-}
-
-- (void)requestLocation {
-    if (fakeLayer(@"location") && getConfigBool(@"locationEnabled") && self.delegate) {
-        CLLocation *fake = buildFakeLocation();
-        if (fake && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self.delegate locationManager:self didUpdateLocations:@[fake]];
-            });
-            return;
-        }
-    }
-    %orig;
-}
-
-%end
-
-%hook CLGeocoder
-
-- (void)reverseGeocodeLocation:(CLLocation *)location completionHandler:(void (^)(NSArray *placemarks, NSError *error))completionHandler {
-    if (!fakeLayer(@"location") || !getConfigBool(@"locationEnabled")) {
-        %orig;
-        return;
-    }
-    CLLocation *fake = buildFakeLocation();
-    if (fake) {
-        %orig(fake, completionHandler);
-    } else {
-        %orig;
-    }
-}
-
-%end
+// v2.5.48 REMOVED %hook CLLocationManager + %hook CLGeocoder from main tweak.
+// The dedicated ChangeInfoIosLocation sidecar dylib (loaded into Zalo +
+// system apps via its own plist filter) ALREADY hooks these two classes
+// with synthetic delegate dispatch logic. Having both the main tweak AND
+// the sidecar hooking CLLocationManager in the same process caused double
+// delegate-callbacks → Zalo perceived "location changed twice" → re-runs
+// reverse-geocoding twice → visible lag in chat scroll while location
+// services are active. Remove duplicate; sidecar is the canonical owner.
+// buildFakeLocation helper was deleted with the hooks; sidecar dylib has
+// its own copy in tweak-location/Tweak.xm and never depended on the main
+// tweak's symbol.
 
 // ============================================================
 // LAYER 10: Locale / Timezone Hooks
@@ -2194,22 +2097,10 @@ static void ci_swizzleApnsOnDelegate(Class cls) {
 
 %end
 
-// ============================================================
-// APP STORE RECEIPT BLOCKER — Apple ID hash leak prevention.
-// ============================================================
-// `[NSBundle.mainBundle appStoreReceiptURL]` returns a URL to a binary
-// receipt blob iOS provisions per (Apple ID + bundle). The blob contains
-// hashed account identifiers; backend SDKs (AppsFlyer, Branch) sometimes
-// upload it for "fraud verification". Two Zalo accounts on the same
-// Apple ID upload the same hash → server correlates. Returning nil
-// makes apps fall through to "no receipt" handling (App Store unsigned
-// dev builds do this normally), no Apple ID hash leaves the device.
-%hook NSBundle
-- (NSURL *)appStoreReceiptURL {
-    if (fakeLayer(@"keychain")) return nil;
-    return %orig;
-}
-%end
+// v2.5.48 REMOVED %hook NSBundle.appStoreReceiptURL — Zalo does not check
+// the App Store receipt during reg; it's an AppsFlyer/Branch-specific anti-
+// fraud probe that doesn't apply here. App-mutating hook serves no purpose
+// for the Zalo flow → delete entirely.
 
 // ============================================================
 // WEBRTC ICE candidate filter — strip local IP from SDP.
@@ -2443,125 +2334,18 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 %end
 
-// ============================================================
-// iCLOUD KEY-VALUE STORE BLOCKER — break iCloud-keyed correlation.
-// ============================================================
-// NSUbiquitousKeyValueStore is per-Apple-ID iCloud KVS. SDKs cache
-// install IDs / install timestamps there so reinstall under same Apple
-// ID resurrects the prior identity. Return empty/nil so the app sees
-// a fresh KVS each Reset.
-%hook NSUbiquitousKeyValueStore
-- (id)objectForKey:(NSString *)key {
-    if (fakeLayer(@"keychain")) return nil;
-    return %orig;
-}
-- (NSString *)stringForKey:(NSString *)key {
-    if (fakeLayer(@"keychain")) return nil;
-    return %orig;
-}
-- (NSData *)dataForKey:(NSString *)key {
-    if (fakeLayer(@"keychain")) return nil;
-    return %orig;
-}
-- (NSDictionary *)dictionaryRepresentation {
-    if (fakeLayer(@"keychain")) return @{};
-    return %orig;
-}
-%end
+// v2.5.48 REMOVED %hook NSUbiquitousKeyValueStore — Zalo does not store
+// install IDs in iCloud KVS. Hook was generic anti-correlation
+// scaffolding for SDKs that don't apply here. App-mutating + zero
+// benefit for Zalo reg → delete.
 
-// v2.5.1 REMOVED UIPasteboard hide — was interfering with user's paste
-// workflow. Per spoof philosophy, device-level read API only.
-
-// ============================================================
-// BONUS: ZALO-SPECIFIC DEEP HOOKS
-// (WKWebView swizzle lives further down — ci_installWKWebViewHooks
-// at line ~2918 already covers initWithFrame:configuration: + customUA
-// getter/setter via runtime objc_getClass + ci_swizzleInstance, no
-// compile-time WebKit linkage. Just need to make sure it's called
-// from %ctor — see ci_installWKWebViewHooks call near the bottom.)
-
-
-%hook CMMotionManager
-
-- (BOOL)isAccelerometerAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-
-- (BOOL)isGyroAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-
-- (BOOL)isMagnetometerAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-
-- (BOOL)isDeviceMotionAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-
-%end
-
-// Tier 4 — CMHeadphoneMotionManager (iOS 14+). Fresh device has no
-// AirPods paired so device-motion source is unavailable. Apps probing
-// this for "user wearing headphones" presence get NO.
-%hook CMHeadphoneMotionManager
-- (BOOL)isDeviceMotionAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-- (BOOL)isDeviceMotionActive {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-%end
-
-// CMPedometer — availability matrix is per-chip. iPhone 5s+ has M7+
-// motion coprocessor → step counting available. Older devices don't.
-// We return NO uniformly (cleanest "fresh device" baseline; apps that
-// require step counting just ask for permission and we'd grant nothing).
-%hook CMPedometer
-+ (BOOL)isStepCountingAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isDistanceAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isFloorCountingAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isPaceAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isCadenceAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isPedometerEventTrackingAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-%end
-
-// CMAltimeter — barometric pressure sensor. iPhone 6+ has it, older
-// devices don't. Return NO to match "no sensors active" baseline.
-%hook CMAltimeter
-+ (BOOL)isRelativeAltitudeAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-+ (BOOL)isAbsoluteAltitudeAvailable {
-    if (fakeLayer(@"sensor")) return NO;
-    return %orig;
-}
-%end
+// v2.5.48 REMOVED %hook CMMotionManager / %hook CMHeadphoneMotionManager /
+// %hook CMPedometer / %hook CMAltimeter — Zalo does not probe motion
+// sensors during reg or chat. These hooks installed 14 ObjC method
+// trampolines that fire whenever any UI library checks sensor
+// availability (e.g. parallax tilts on iOS lock-screen widgets,
+// CoreLocation course-from-accelerometer fallback). Zero relevance to
+// Zalo reg flow → delete entirely.
 
 %hook NSUserDefaults
 

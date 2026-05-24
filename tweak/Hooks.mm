@@ -1911,16 +1911,17 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // gettimeofday / clock_gettime / mach_absolute_time / CFAbsoluteTimeGetCurrent
-    // — timing hooks. These are HOT (millions of calls/sec from Foundation,
-    // CADisplayLink, NSDateFormatter, animation runloops). Each MSHookFunction
-    // trampoline adds ~10-15ns; multiplied by call volume that's 20-30ms/sec
-    // overhead → visible chat-scroll lag on Zalo. Install ONLY if the user
-    // actually set a timing offset; otherwise hooks would be pure passthrough
-    // (orig + return) and pure overhead.
+    // v2.5.48 STRICTER GATE — timing hooks now require an EXPLICIT offset
+    // config value, ignoring the wantTiming UI toggle. The UI fake_timing
+    // checkbox previously installed gettimeofday/clock_gettime even with
+    // zero offset, producing pure-passthrough trampolines that still cost
+    // 10-15ns per call on the hottest VDSO function in iOS. Zalo's chat
+    // scroll hits gettimeofday on every message-timestamp NSDateFormatter
+    // pass + every CADisplayLink frame → measured 30+ ms/sec overhead even
+    // with no behavioral change. Now: no offset = no install = no overhead.
     BOOL hasClockOffset  = (getConfig(@"_ci_clock_offset_secs") != nil);
     BOOL hasMachOffset   = (getConfig(@"zalo_timingOffset") != nil);
-    if (wantTiming || hasClockOffset) {
+    if (hasClockOffset) {
         void *gtod_sym = dlsym(RTLD_DEFAULT, "gettimeofday");
         if (gtod_sym && !orig_gettimeofday) {
             MSHookFunction(gtod_sym, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
@@ -1932,7 +1933,7 @@ extern "C" void initCLvlHooks(void) {
             NSLog(@"[ChangeInfoIos] clock_gettime hooked");
         }
     }
-    if (wantTiming && hasMachOffset) {
+    if (hasMachOffset) {
         void *mat_sym = dlsym(RTLD_DEFAULT, "mach_absolute_time");
         if (mat_sym && !orig_mach_absolute_time) {
             MSHookFunction(mat_sym, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
@@ -1954,44 +1955,16 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // dladdr / _dyld_image_count / _dyld_get_image_name — JB hide
-    // (filter out substrate dylibs from runtime image walks).
-    if (wantJbHide) {
-        void *dladdr_sym = dlsym(RTLD_DEFAULT, "dladdr");
-        if (dladdr_sym && !orig_dladdr) {
-            MSHookFunction(dladdr_sym, (void *)hooked_dladdr, (void **)&orig_dladdr);
-            NSLog(@"[ChangeInfoIos] dladdr hooked");
-        }
-        void *dyld_count_sym = dlsym(RTLD_DEFAULT, "_dyld_image_count");
-        if (dyld_count_sym && !orig__dyld_image_count) {
-            MSHookFunction(dyld_count_sym, (void *)hooked__dyld_image_count, (void **)&orig__dyld_image_count);
-            NSLog(@"[ChangeInfoIos] _dyld_image_count hooked");
-        }
-        void *dyld_name_sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
-        if (dyld_name_sym && !orig__dyld_get_image_name) {
-            MSHookFunction(dyld_name_sym, (void *)hooked__dyld_get_image_name, (void **)&orig__dyld_get_image_name);
-            NSLog(@"[ChangeInfoIos] _dyld_get_image_name hooked");
-        }
-    }
-
-    // _dyld_get_shared_cache_uuid — used for fingerprinting iOS build.
-    // Gated by hardware spoof (shared cache UUID derived from kern_osversion).
-    if (wantHardware || wantJbHide) {
-        void *dyld_sc_sym = dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_uuid");
-        if (dyld_sc_sym && !orig__dyld_get_shared_cache_uuid) {
-            MSHookFunction(dyld_sc_sym, (void *)hooked__dyld_get_shared_cache_uuid, (void **)&orig__dyld_get_shared_cache_uuid);
-            NSLog(@"[ChangeInfoIos] _dyld_get_shared_cache_uuid hooked");
-        }
-    }
-
-    // fork — block child processes (JB-detect avoidance).
-    if (wantJbHide) {
-        void *fork_sym = dlsym(RTLD_DEFAULT, "fork");
-        if (fork_sym && !orig_fork) {
-            MSHookFunction(fork_sym, (void *)hooked_fork, (void **)&orig_fork);
-            NSLog(@"[ChangeInfoIos] fork hooked");
-        }
-    }
+    // v2.5.48 REMOVED installs: dladdr / _dyld_image_count /
+    // _dyld_get_image_name / _dyld_get_shared_cache_uuid / fork.
+    // These were JB-hide paranoia hooks intended for advanced fingerprint
+    // tools (AIDA64-style image walks, fork-based debugger probes). Zalo
+    // does not call any of them during reg or chat. Install was costing a
+    // trampoline per call on dladdr (used by every Crashlytics symbol
+    // resolution → ~5K calls/sec at launch). The hooked_* implementations
+    // remain compiled (unused) so re-enable is a one-line MSHookFunction
+    // edit if a future target ever needs them. Opt-in via per-symbol
+    // _ci_enable_<name> gates is a follow-up if any user demands it.
 
     // getenv
     void *getenv_sym = dlsym(RTLD_DEFAULT, "getenv");
