@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.6.9";
+static NSString *const kAppVersion = @"2.7.0";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5800,22 +5800,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     if (resetBids.count == 0) {
         [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
     }
-    // v2.5.37: auto-include Safari + Maps + Weather in BOTH backup and
-    // wipe (was wipe-only). User asked not to need to tick them — they
-    // ride along with every Change Device so their state restores too.
-    // Concretely backup captures Safari bookmarks/history, Maps saved
-    // places + search history, Weather saved cities.
-    NSArray<NSString *> *kSystemAutoBackup = @[
-        @"com.apple.mobilesafari",
-        @"com.apple.Maps",
-        @"com.apple.weather",
-    ];
+    // v2.7.0 — RESPECT USER TICKS for RRS backup too. Pre-v2.7.0 the code
+    // force-added Safari/Maps/Weather to the backup set even if user
+    // unticked them in the RRS picker. Same family of bug as the reset
+    // auto-include — now gated behind autoIncludeVerifiers (default OFF).
     NSMutableArray<NSString *> *rrsBidsM = [NSMutableArray array];
     if (backup) {
         NSArray<NSString *> *userRrs = [[CIConfigManager shared] rrsBundles] ?: @[];
         [rrsBidsM addObjectsFromArray:userRrs];
-        for (NSString *sb in kSystemAutoBackup) {
-            if (![rrsBidsM containsObject:sb]) [rrsBidsM addObject:sb];
+        if ([[CIConfigManager shared] boolForKey:@"autoIncludeVerifiers"]) {
+            NSArray<NSString *> *kSystemAutoBackup = @[
+                @"com.apple.mobilesafari",
+                @"com.apple.Maps",
+                @"com.apple.weather",
+            ];
+            for (NSString *sb in kSystemAutoBackup) {
+                if (![rrsBidsM containsObject:sb]) [rrsBidsM addObject:sb];
+            }
         }
     }
     NSArray<NSString *> *rrsBids = backup ? [rrsBidsM copy] : nil;
@@ -5837,58 +5838,55 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Bắt đầu change dữ liệu...";
     UIView *hud = [self showHUDWithTitle:title];
 
-    // Build full target list: user-selected apps + auto-include the device
-    // verifiers (AIDA / Lirum / DeviceDesign) so the user can immediately
-    // open one to confirm the spoof landed, plus Mobile Safari so all the
-    // browser-side cookie / IDFA / WebKit cache is wiped each reset (iOS
-    // shares the WebKit data store across every app that uses SFSafari /
-    // WKWebView, so leaving Safari behind leaks fingerprint state).
-    // v2.5.36: Maps + Weather added to auto-wipe so location history,
-    // recent searches, saved places, cached weather for previous city
-    // are all gone after Change Device — otherwise these apps still
-    // show "your last city / route / saved home" which is a strong
-    // device-continuity signal even after Zalo/FB account swap.
-    NSArray *aidaBids = @[
-        @"com.finalwire.aida64",
-        @"com.finalwire.aida64-ios",
-        @"com.blacksmith.lirum",
-        @"com.umang.devicedesign",
-        @"com.apple.mobilesafari",
-        @"com.apple.Maps",
-        @"com.apple.weather",
-    ];
+    // v2.7.0 — RESPECT USER TICKS. Pre-v2.7.0 the code auto-included
+    // AIDA64 / Lirum / DeviceDesign / Safari / Maps / Weather regardless
+    // of the user's selection in the picker. User reported: "tôi bỏ tích
+    // trong app reset mà sao nó vẫn tự change". The auto-include was the
+    // root cause — unticked bundles still got wiped + retweaked because
+    // they were force-added here.
+    //
+    // New behaviour: fullTargets = exactly the apps the user ticked. To
+    // re-enable the verifier auto-include explicitly, the user can toggle
+    // `autoIncludeVerifiers` = YES in Fake Settings — when set, the old
+    // force-add logic runs. Default OFF so unticking always wins.
     NSMutableArray<CIAppInfo *> *fullTargets = [targets mutableCopy];
     NSMutableSet<NSString *> *addedBids = [NSMutableSet setWithArray:[targets valueForKey:@"bundleID"]];
-    for (CIAppInfo *a in all) {
-        if ([aidaBids containsObject:a.bundleID] && ![addedBids containsObject:a.bundleID]) {
-            [fullTargets addObject:a];
-            [addedBids addObject:a.bundleID];
-            [names addObject:a.name ?: a.bundleID];
-        }
-    }
 
-    // CIAppLister only enumerates 3rd-party apps under
-    // /var/containers/Bundle/Application — system apps like Mobile Safari
-    // live in /Applications/ and never appear in the list. For the
-    // auto-included BIDs, fall back to scanning /var/mobile/Containers/
-    // Data/Application for the matching data container so we can still
-    // wipe their cache / cookies / WebKit data.
-    for (NSString *bid in aidaBids) {
-        if ([addedBids containsObject:bid]) continue;
-        NSString *dataPath = ci_findDataContainerForBundle(bid);
-        if (dataPath.length == 0) continue;
-        CIAppInfo *synthetic = [CIAppInfo new];
-        synthetic.bundleID = bid;
-        synthetic.containerPath = dataPath;
-        // Fixed display name for system bundles we know about — falls back
-        // to the bundleID itself if it's a less common id.
-        if      ([bid isEqualToString:@"com.apple.mobilesafari"]) synthetic.name = @"Safari";
-        else if ([bid isEqualToString:@"com.apple.Maps"])         synthetic.name = @"Maps";
-        else if ([bid isEqualToString:@"com.apple.weather"])      synthetic.name = @"Weather";
-        else                                                       synthetic.name = bid;
-        [fullTargets addObject:synthetic];
-        [addedBids addObject:bid];
-        [names addObject:synthetic.name];
+    if ([[CIConfigManager shared] boolForKey:@"autoIncludeVerifiers"]) {
+        NSArray *aidaBids = @[
+            @"com.finalwire.aida64",
+            @"com.finalwire.aida64-ios",
+            @"com.blacksmith.lirum",
+            @"com.umang.devicedesign",
+            @"com.apple.mobilesafari",
+            @"com.apple.Maps",
+            @"com.apple.weather",
+        ];
+        for (CIAppInfo *a in all) {
+            if ([aidaBids containsObject:a.bundleID] && ![addedBids containsObject:a.bundleID]) {
+                [fullTargets addObject:a];
+                [addedBids addObject:a.bundleID];
+                [names addObject:a.name ?: a.bundleID];
+            }
+        }
+        for (NSString *bid in aidaBids) {
+            if ([addedBids containsObject:bid]) continue;
+            NSString *dataPath = ci_findDataContainerForBundle(bid);
+            if (dataPath.length == 0) continue;
+            CIAppInfo *synthetic = [CIAppInfo new];
+            synthetic.bundleID = bid;
+            synthetic.containerPath = dataPath;
+            if      ([bid isEqualToString:@"com.apple.mobilesafari"]) synthetic.name = @"Safari";
+            else if ([bid isEqualToString:@"com.apple.Maps"])         synthetic.name = @"Maps";
+            else if ([bid isEqualToString:@"com.apple.weather"])      synthetic.name = @"Weather";
+            else                                                       synthetic.name = bid;
+            [fullTargets addObject:synthetic];
+            [addedBids addObject:bid];
+            [names addObject:synthetic.name];
+        }
+        NSLog(@"[ChangeInfoIos] autoIncludeVerifiers=YES: added %lu verifier bundles", (unsigned long)(fullTargets.count - targets.count));
+    } else {
+        NSLog(@"[ChangeInfoIos] autoIncludeVerifiers=NO (default): processing exactly %lu ticked apps", (unsigned long)fullTargets.count);
     }
 
     // v2.5.35: extend background execution so iOS doesn't suspend us mid-
