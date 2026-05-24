@@ -14,6 +14,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
 #import <notify.h>
+#import <stdatomic.h>
 #import "fishhook.h"
 
 // ============================================================
