@@ -50,6 +50,9 @@ void MSHookFunction(void *symbol, void *replace, void **result);
 
 static NSDictionary *gCfg = nil;
 
+// Forward decl — definition near %ctor (debug-marker helper).
+static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra);
+
 static NSString *cs(NSString *k) {
     id v = gCfg[k];
     return [v isKindOfClass:[NSString class]] ? v : nil;
