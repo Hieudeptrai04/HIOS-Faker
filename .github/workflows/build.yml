@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - master
-      - main
+      - v3
     paths:
       - "tweak-mg/**"
       - "tweak-ct/**"
@@ -214,39 +213,12 @@ jobs:
           path: out/*.deb
           retention-days: 14
 
-      - name: Publish to Sileo repo (gh-pages)
-        if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
-        run: |
-          set -euo pipefail
-          mkdir -p repo/debs
-          cp out/*.deb repo/debs/
-          cd repo
-          dpkg-scanpackages -m debs > Packages
-          xz -k9e Packages
-          gzip -k9 Packages
-          cat > Release <<EOF
-          Origin: HIOS Faker v3
-          Label: HIOS Faker v3
-          Suite: stable
-          Version: 1.0
-          Codename: ios
-          Architectures: iphoneos-arm64
-          Components: main
-          Description: ChangeInfoIos v3 — focused device-spoof
-          EOF
-          ls -la
-
-      - name: Deploy Sileo repo to GitHub Pages
-        if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./repo
-          force_orphan: true
-          commit_message: "v3 repo deploy ${{ github.sha }}"
+      # v3 branch lives alongside v2.x master in same repo. We do NOT
+      # deploy v3 to gh-pages Sileo (would clobber v2.x repo). Install
+      # via SSH-curl from GitHub Release artifact instead.
 
       - name: Publish GitHub Release
-        if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        if: success() && github.ref == 'refs/heads/v3'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
