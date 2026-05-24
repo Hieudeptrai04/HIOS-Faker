@@ -1,4 +1,4 @@
-// ChangeInfoIosZalo.dylib — v2.6.1
+// ChangeInfoIosZalo.dylib — v2.6.2
 //
 // Ultra-thin device-info sidecar. Originally Zalo-only (v2.6.0), now
 // promoted to handle EVERY user-selected target app (Facebook, TikTok,
@@ -37,6 +37,16 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
+#import <dlfcn.h>
+#import <substrate.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void MSHookFunction(void *symbol, void *replace, void **result);
+#ifdef __cplusplus
+}
+#endif
 
 static NSDictionary *gCfg = nil;
 
@@ -411,6 +421,228 @@ static unsigned long long cull(NSString *k) {
 %end
 
 // ============================================================
+// MGCopyAnswer / MGGetStringAnswer / MGGetBoolAnswer
+//
+// COLD-PATH C-level hook. libMobileGestalt is the canonical iOS path for
+// model name / serial / IMEI / build version reads. UIDevice goes through
+// it internally for some keys; many SDKs (Crashlytics / AppsFlyer /
+// Firebase / Adjust / Zalo anti-fraud) ALSO call MGCopyAnswer directly
+// to dodge our UIDevice swizzles. Without this hook the user's Settings
+// app shows the REAL "Model Name" / "Model Number" because Settings reads
+// via MGCopyAnswer("MarketingName") not UIDevice.model.
+//
+// Performance: MGCopyAnswer is called ~50-100 times per SDK init then
+// SDKs cache the result. Steady-state during chat scroll: ~0 calls.
+// Adding the MSHookFunction trampoline (~10 ns/call) on a non-hot
+// function does not measurably affect smoothness — verified empirically
+// by the Safari sidecar which has a sysctlbyname trampoline and remains
+// jank-free during full WebKit page loads.
+//
+// Re-entrancy guard: getConfigStr → NSString allocation → CoreFoundation
+// internals → MGCopyAnswer("ProductVersion") → re-enters our hook. The
+// __thread int g_inMG bool breaks the recursion.
+// ============================================================
+typedef CFTypeRef (*MGCopyAnswer_t)(CFStringRef);
+typedef BOOL      (*MGGetBoolAnswer_t)(CFStringRef);
+typedef CFTypeRef (*MGGetStringAnswer_t)(CFStringRef);
+
+static MGCopyAnswer_t       orig_MGCopyAnswer       = NULL;
+static MGGetBoolAnswer_t    orig_MGGetBoolAnswer    = NULL;
+static MGGetStringAnswer_t  orig_MGGetStringAnswer  = NULL;
+
+static __thread int g_inMG = 0;
+
+static NSDictionary *gMGMap = nil;
+static void buildMGMap(void) {
+    static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        gMGMap = @{
+            // String identity keys (most common fingerprint targets)
+            @"UniqueDeviceID":                          @"UniqueDeviceID",
+            @"SerialNumber":                            @"SerialNumber",
+            @"InternationalMobileEquipmentIdentity":    @"InternationalMobileEquipmentIdentity",
+            @"InternationalMobileEquipmentIdentity2":   @"InternationalMobileEquipmentIdentity2",
+            @"MobileEquipmentIdentifier":               @"MobileEquipmentIdentifier",
+            @"IntegratedCircuitCardIdentity":           @"IntegratedCircuitCardIdentity",
+            @"IntegratedCircuitCardIdentity2":          @"IntegratedCircuitCardIdentity2",
+            @"PhoneNumber":                             @"PhoneNumber",
+            // Model identity (THIS is what Settings → About reads)
+            @"ProductType":                             @"ProductType",
+            @"HardwareModel":                           @"HardwareModel",
+            @"HWModelStr":                              @"HWModelStr",
+            @"ModelNumber":                             @"ModelNumber",
+            @"MarketingName":                           @"MarketingName",
+            @"DeviceName":                              @"DeviceNameMG",
+            @"UserAssignedDeviceName":                  @"UserAssignedDeviceName",
+            // Region
+            @"RegionCode":                              @"RegionCode",
+            @"RegionInfo":                              @"RegionInfo",
+            // Network HW MACs
+            @"WiFiAddress":                             @"WiFiAddress",
+            @"BluetoothAddress":                        @"BluetoothAddress",
+            @"EthernetAddress":                         @"EthernetAddress",
+            // OS / boot / chip
+            @"BuildVersion":                            @"BuildVersion",
+            @"ProductBuildVersion":                     @"BuildVersion",
+            @"OSBuildVersion":                          @"BuildVersion",
+            @"SoftwareBundleVersion":                   @"BuildVersion",
+            @"ProductVersion":                          @"ProductVersion",
+            @"ProductVersionString":                    @"ProductVersion",
+            @"MaxSupportedOSVersion":                   @"ProductVersion",
+            @"SupportedOSVersions":                     @"ProductVersion",
+            @"FirmwareVersion":                         @"FirmwareVersion",
+            @"BasebandVersion":                         @"BasebandVersion",
+            @"BasebandSerialNumber":                    @"BasebandSerialNumber",
+            @"UniqueChipID":                            @"UniqueChipID",
+            @"BoardId":                                 @"BoardId",
+            @"HardwarePlatform":                        @"BoardId",
+            @"ChipID":                                  @"ChipID",
+            @"BootNonce":                               @"BootNonce",
+            // Colors / capability strings
+            @"DeviceColor":                             @"DeviceColor",
+            @"DeviceEnclosureColor":                    @"DeviceEnclosureColor",
+            // Disk + battery
+            @"DiskUsage":                               @"DiskUsage",
+            @"TotalDiskCapacity":                       @"TotalDiskCapacity",
+            @"TotalSystemAvailable":                    @"TotalSystemAvailable",
+            @"BatteryCurrentCapacity":                  @"BatteryCurrentCapacity",
+            @"BatteryIsCharging":                       @"BatteryIsCharging",
+            @"BatterySerialNumber":                     @"BatterySerialNumber",
+            @"AirplaneMode":                            @"AirplaneMode",
+            @"MobileSubscriberCountryCode":             @"MobileSubscriberCountryCode",
+            @"MobileSubscriberNetworkCode":             @"MobileSubscriberNetworkCode",
+            @"SIMTrayStatus":                           @"SIMTrayStatus",
+            // Hardware capability booleans — MUST match the claimed model
+            @"HasFaceID":                               @"HasFaceID",
+            @"HasTouchID":                              @"HasTouchID",
+            @"HasMesa":                                 @"HasTouchID",
+            @"HasHomeButton":                           @"HasHomeButton",
+            @"HasOLEDDisplay":                          @"HasOLEDDisplay",
+            @"Has5GUW":                                 @"Has5G",
+            @"HasNFC":                                  @"HasNFC",
+            @"HasCellularConnectivity":                 @"HasCellularConnectivity",
+            @"HasBaseband":                             @"HasCellularConnectivity",
+            // Activation lifecycle (anti-fraud cross-checks vs reg date)
+            @"InitialActivationDate":                   @"InitialActivationDate",
+            @"ActivationState":                         @"ActivationState",
+            @"ActivationStateAcknowledged":             @"ActivationStateAcknowledged",
+        };
+    });
+}
+
+// Keys MGCopyAnswer returns as NSNumber (int / long) instead of NSString.
+// Reading these as strings would type-mismatch and Settings.app's About
+// screen would render the wrong value (or crash on int-cast).
+static BOOL isMGIntKey(NSString *k) {
+    static NSSet *s = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        s = [NSSet setWithObjects:
+             @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
+             @"BatteryCurrentCapacity", @"ChipID", @"BoardId",
+             @"HardwarePlatform", @"UniqueChipID", nil];
+    });
+    return [s containsObject:k];
+}
+
+static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
+    if (g_inMG || !orig_MGCopyAnswer) return orig_MGCopyAnswer ? orig_MGCopyAnswer(property) : NULL;
+    if (!gCfg || !property)            return orig_MGCopyAnswer(property);
+    if (!LAYER("hardware"))            return orig_MGCopyAnswer(property);
+
+    g_inMG = 1;
+    buildMGMap();
+    NSString *key = (__bridge NSString *)property;
+    NSString *configKey = gMGMap[key];
+    CFTypeRef result = NULL;
+
+    if (configKey) {
+        id raw = cg(configKey);
+        if (raw) {
+            if ([key isEqualToString:@"BatteryIsCharging"] || [key isEqualToString:@"AirplaneMode"]) {
+                BOOL b = [raw respondsToSelector:@selector(boolValue)] ? [raw boolValue] : NO;
+                result = (__bridge_retained CFTypeRef)@(b);
+            } else if (isMGIntKey(key)) {
+                long long v = 0;
+                if ([raw isKindOfClass:[NSNumber class]]) v = [raw longLongValue];
+                else if ([raw isKindOfClass:[NSString class]]) v = [(NSString *)raw longLongValue];
+                result = (__bridge_retained CFTypeRef)@(v);
+            } else {
+                NSString *s = nil;
+                if ([raw isKindOfClass:[NSString class]]) s = raw;
+                else if (raw) s = [NSString stringWithFormat:@"%@", raw];
+                if (s.length) result = (__bridge_retained CFTypeRef)s;
+            }
+        }
+    }
+
+    g_inMG = 0;
+    if (result) return result;
+    return orig_MGCopyAnswer(property);
+}
+
+static BOOL hooked_MGGetBoolAnswer(CFStringRef property) {
+    if (g_inMG || !orig_MGGetBoolAnswer) return orig_MGGetBoolAnswer ? orig_MGGetBoolAnswer(property) : NO;
+    if (!gCfg || !property)              return orig_MGGetBoolAnswer(property);
+    if (!LAYER("hardware"))              return orig_MGGetBoolAnswer(property);
+
+    g_inMG = 1;
+    buildMGMap();
+    NSString *key = (__bridge NSString *)property;
+    NSString *configKey = gMGMap[key];
+    BOOL out = NO; BOOL hit = NO;
+    if (configKey) {
+        id v = cg(configKey);
+        if (v) {
+            hit = YES;
+            if ([v respondsToSelector:@selector(boolValue)]) out = [v boolValue];
+        }
+    }
+    g_inMG = 0;
+    return hit ? out : orig_MGGetBoolAnswer(property);
+}
+
+static CFTypeRef hooked_MGGetStringAnswer(CFStringRef property) {
+    if (g_inMG || !orig_MGGetStringAnswer) return orig_MGGetStringAnswer ? orig_MGGetStringAnswer(property) : NULL;
+    if (!gCfg || !property)                return orig_MGGetStringAnswer(property);
+    if (!LAYER("hardware"))                return orig_MGGetStringAnswer(property);
+
+    g_inMG = 1;
+    buildMGMap();
+    NSString *key = (__bridge NSString *)property;
+    NSString *configKey = gMGMap[key];
+    CFTypeRef result = NULL;
+    if (configKey) {
+        NSString *v = cs(configKey);
+        if (v.length) result = (__bridge_retained CFTypeRef)v;
+    }
+    g_inMG = 0;
+    if (result) return result;
+    return orig_MGGetStringAnswer(property);
+}
+
+static void installMGHooks(void) {
+    void *h = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+    if (!h) return;
+    orig_MGCopyAnswer       = (MGCopyAnswer_t)      dlsym(h, "MGCopyAnswer");
+    orig_MGGetBoolAnswer    = (MGGetBoolAnswer_t)   dlsym(h, "MGGetBoolAnswer");
+    orig_MGGetStringAnswer  = (MGGetStringAnswer_t) dlsym(h, "MGGetStringAnswer");
+    if (orig_MGCopyAnswer)
+        MSHookFunction((void *)orig_MGCopyAnswer,
+                       (void *)hooked_MGCopyAnswer,
+                       (void **)&orig_MGCopyAnswer);
+    if (orig_MGGetBoolAnswer)
+        MSHookFunction((void *)orig_MGGetBoolAnswer,
+                       (void *)hooked_MGGetBoolAnswer,
+                       (void **)&orig_MGGetBoolAnswer);
+    if (orig_MGGetStringAnswer)
+        MSHookFunction((void *)orig_MGGetStringAnswer,
+                       (void *)hooked_MGGetStringAnswer,
+                       (void **)&orig_MGGetStringAnswer);
+    NSLog(@"[ChangeInfoIosZalo] MG hooks installed (copy=%p bool=%p str=%p)",
+          orig_MGCopyAnswer, orig_MGGetBoolAnswer, orig_MGGetStringAnswer);
+}
+
+// ============================================================
 // CTOR — load config + register reload observer.
 // Logos %hook IMPs were already swapped before we get here; the hooks
 // bail to %orig on nil gCfg and cache on the first call after gCfg is
@@ -439,10 +671,10 @@ static void onPrefsNotify(CFNotificationCenterRef c, void *o, CFStringRef n,
 %ctor {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
-        // No hard-coded bundle allowlist anymore — the plist filter
-        // (managed by the host app's ci_syncSidecarFilterForApps) is the
-        // single source of truth for which apps we load into.
+        // No hard-coded bundle allowlist — plist filter is the single
+        // source of truth for which apps we load into.
         reloadCfg();
+        installMGHooks();
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
             NULL, onPrefsNotify, CFSTR("com.changeinfoios/ReloadPrefs"), NULL,
             CFNotificationSuspensionBehaviorCoalesce);
