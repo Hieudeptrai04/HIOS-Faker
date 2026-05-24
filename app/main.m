@@ -340,15 +340,17 @@ static NSString *ciRandomViettelPhone(void) {
 // ============================================================
 static int ciRunShell(NSString *cmd) {
     if (!cmd.length) return -1;
-    NSString *full = [NSString stringWithFormat:@"/bin/sh -c %@",
-                      [NSString stringWithFormat:@"'%@'",
-                       [cmd stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]]];
-    NSArray *parts = [full componentsSeparatedByString:@" "];
-    char *argv[parts.count + 1];
-    for (NSUInteger i = 0; i < parts.count; i++) argv[i] = (char *)[parts[i] UTF8String];
-    argv[parts.count] = NULL;
+    // Spawn /bin/sh -c "<cmd>" — pass cmd as a SINGLE arg so shell-level
+    // quoting + spaces survive intact. Pre-fix used componentsSeparatedByString
+    // which split on every space and mangled commands like `rm -rf "a b"`.
+    const char *argv[] = {
+        "/bin/sh",
+        "-c",
+        [cmd UTF8String],
+        NULL,
+    };
     pid_t pid;
-    if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) != 0) return -1;
+    if (posix_spawn(&pid, "/bin/sh", NULL, NULL, (char *const *)argv, environ) != 0) return -1;
     int status = 0;
     waitpid(pid, &status, 0);
     return WEXITSTATUS(status);
@@ -468,11 +470,13 @@ static void ciResetContainer(CIAppInfo *app) {
 - (void)refresh {
     NSDictionary *d = [CIConfig shared].dict;
     NSArray *targets = [[CIConfig shared] targetBundles];
+    NSString *udid = d[@"UniqueDeviceID"] ?: @"";
+    NSString *udidShort = (udid.length >= 16) ? [udid substringToIndex:16] : udid;
     _currentDeviceLbl.text = [NSString stringWithFormat:
         @"📱  %@ (%@)\n🔢  UDID: %@\n📞  IMEI: %@\n🌐  Carrier: VN/Viettel  iOS %@\n☑️  Apps đã tích: %lu",
         d[@"MarketingName"] ?: @"?",
         d[@"ProductType"]   ?: @"?",
-        [d[@"UniqueDeviceID"] ?: @"" substringToIndex:MIN(16U, (unsigned)[d[@"UniqueDeviceID"] length])],
+        udidShort,
         d[@"InternationalMobileEquipmentIdentity"] ?: @"?",
         d[@"ProductVersion"] ?: @"?",
         (unsigned long)targets.count];
