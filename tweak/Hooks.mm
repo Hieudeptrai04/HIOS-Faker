@@ -1234,14 +1234,24 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
                                 [service containsString:@"TwitterKit"] ||
                                 [service containsString:@"com.x.ios"];
         if (isTwitterService) {
-            NSString *account = queryDict[(__bridge NSString *)kSecAttrAccount];
-            NSArray *deviceKeys = @[@"device_id", @"device_uuid", @"install_id",
+            // v2.5.45: hoist the deviceKeys array out of the hot path —
+            // SecItemCopyMatching is called every time an app reads keychain
+            // (Zalo session check on every API call), and we were rebuilding
+            // an 11-string NSArray + per-key lowercaseString on every match.
+            static NSArray<NSString *> *kTwDeviceKeysLC = nil;
+            static dispatch_once_t twKeysOnce;
+            dispatch_once(&twKeysOnce, ^{
+                kTwDeviceKeysLC = @[@"device_id", @"device_uuid", @"install_id",
                                     @"client_id", @"advertising_id", @"fingerprint",
-                                    @"TWClientID", @"TWDeviceID", @"kTWDevice",
+                                    @"twclientid", @"twdeviceid", @"ktwdevice",
                                     @"persistent_id", @"hardware_id"];
-            for (NSString *dk in deviceKeys) {
-                if ([account.lowercaseString containsString:dk.lowercaseString] ||
-                    [service.lowercaseString containsString:dk.lowercaseString]) {
+            });
+            NSString *account = queryDict[(__bridge NSString *)kSecAttrAccount];
+            NSString *accLC = account.lowercaseString;
+            NSString *svcLC = service.lowercaseString;
+            for (NSString *dk in kTwDeviceKeysLC) {
+                if ((accLC && [accLC containsString:dk]) ||
+                    (svcLC && [svcLC containsString:dk])) {
                     if (result) *result = NULL;
                     return errSecItemNotFound;
                 }

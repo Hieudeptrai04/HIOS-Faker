@@ -964,10 +964,19 @@ BOOL jbHideActive(void) {
 
 - (NSUUID *)identifierForVendor {
     if (!fakeLayer(@"uiddevice")) return %orig;
+    // v2.5.45: cache parsed NSUUID per config-generation. SDKs query
+    // IDFV thousands of times per session (Firebase, analytics, Zalo's
+    // device-bind); pre-cache we alloc'd a fresh NSUUID each call
+    // (~500ns parse + alloc). With the layer-cache gen counter we can
+    // invalidate transparently when the user Change Devices.
+    static NSUUID *cached = nil;
+    static uint32_t cachedGen = (uint32_t)-1;
+    uint32_t gen = g_layerCacheGen;
+    if (cached && cachedGen == gen) return cached;
     NSString *val = getConfigStr(@"identifierForVendor");
     if (val) {
-        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:val];
-        if (uuid) return uuid;
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:val];
+        if (u) { cached = u; cachedGen = gen; return u; }
     }
     return %orig;
 }
@@ -1269,10 +1278,21 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
                     result = (__bridge_retained CFTypeRef)@(getConfigBool(configKey));
                 }
             } else {
-                NSSet *mgIntKeys = [NSSet setWithObjects:
-                    @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
-                    @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform",
-                    @"UniqueChipID", nil];
+                // v2.5.45: cache mgIntKeys as a static — the previous build
+                // re-allocated this 8-string NSSet on EVERY MGCopyAnswer call
+                // (~5µs/call NSSet bring-up). SDKs (Firebase, AppsFlyer,
+                // Zalo analytics) hit MGCopyAnswer hundreds-of-thousands of
+                // times per session, so the allocation churn alone was
+                // ~2-3ms/sec of pure hook overhead → visible chat-scroll
+                // lag. Static + dispatch_once → one allocation per process.
+                static NSSet *mgIntKeys = nil;
+                static dispatch_once_t mgIntOnce;
+                dispatch_once(&mgIntOnce, ^{
+                    mgIntKeys = [NSSet setWithObjects:
+                        @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
+                        @"BatteryCurrentCapacity", @"ChipID", @"BoardId", @"HardwarePlatform",
+                        @"UniqueChipID", nil];
+                });
                 if ([mgIntKeys containsObject:key]) {
                     int64_t v = configValueAsMGInteger(configKey);
                     result = (__bridge_retained CFTypeRef)@(v);
@@ -1544,10 +1564,15 @@ static CFTypeRef hooked_IORegistryEntrySearchCFProperty(mach_port_t entry, const
 
 - (NSUUID *)advertisingIdentifier {
     if (!fakeLayer(@"ads")) return %orig;
+    // v2.5.45: gen-versioned cache, same pattern as identifierForVendor.
+    static NSUUID *cached = nil;
+    static uint32_t cachedGen = (uint32_t)-1;
+    uint32_t gen = g_layerCacheGen;
+    if (cached && cachedGen == gen) return cached;
     NSString *val = getConfigStr(@"advertisingIdentifier");
     if (val) {
-        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:val];
-        if (uuid) return uuid;
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:val];
+        if (u) { cached = u; cachedGen = gen; return u; }
     }
     return %orig;
 }
@@ -1838,9 +1863,19 @@ static CLLocation *buildFakeLocation(void) {
 
 + (NSLocale *)currentLocale {
     if (!fakeLayer(@"locale")) return %orig;
+    // v2.5.45: cache NSLocale by config-gen — UIKit / NSDateFormatter /
+    // CFLocale internals call +currentLocale aggressively during text
+    // rendering; allocating a new NSLocale every call (each one initializes
+    // CFLocale + 30+ component caches under the hood) was a significant
+    // CPU sink during chat-list layout.
+    static NSLocale *cached = nil;
+    static uint32_t cachedGen = (uint32_t)-1;
+    uint32_t gen = g_layerCacheGen;
+    if (cached && cachedGen == gen) return cached;
     NSString *identifier = getConfigStr(@"localeIdentifier");
     if (identifier) {
-        return [[NSLocale alloc] initWithLocaleIdentifier:identifier];
+        NSLocale *loc = [[NSLocale alloc] initWithLocaleIdentifier:identifier];
+        if (loc) { cached = loc; cachedGen = gen; return loc; }
     }
     return %orig;
 }
@@ -1873,24 +1908,34 @@ static CLLocation *buildFakeLocation(void) {
 
 %hook NSTimeZone
 
-+ (NSTimeZone *)localTimeZone {
-    if (!fakeLayer(@"datetime")) return %orig;
+// v2.5.45: NSTimeZone helper — single cached lookup per config gen. Both
+// +localTimeZone and +systemTimeZone serve the same fake value.
+// NSDateFormatter calls these implicitly for EVERY date format → if a
+// chat-list UI formats 50 timestamps, that's 50 +localTimeZone calls
+// per frame. Cache once per gen → effectively free thereafter.
+static NSTimeZone *ci_cachedFakeTZ(void) {
+    static NSTimeZone *cached = nil;
+    static uint32_t   cachedGen = (uint32_t)-1;
+    uint32_t gen = g_layerCacheGen;
+    if (cached && cachedGen == gen) return cached;
     NSString *tzName = getConfigStr(@"timezoneName");
     if (tzName) {
         NSTimeZone *tz = [NSTimeZone timeZoneWithName:tzName];
-        if (tz) return tz;
+        if (tz) { cached = tz; cachedGen = gen; return tz; }
     }
-    return %orig;
+    return nil;
+}
+
++ (NSTimeZone *)localTimeZone {
+    if (!fakeLayer(@"datetime")) return %orig;
+    NSTimeZone *tz = ci_cachedFakeTZ();
+    return tz ?: %orig;
 }
 
 + (NSTimeZone *)systemTimeZone {
     if (!fakeLayer(@"datetime")) return %orig;
-    NSString *tzName = getConfigStr(@"timezoneName");
-    if (tzName) {
-        NSTimeZone *tz = [NSTimeZone timeZoneWithName:tzName];
-        if (tz) return tz;
-    }
-    return %orig;
+    NSTimeZone *tz = ci_cachedFakeTZ();
+    return tz ?: %orig;
 }
 
 %end
@@ -2516,18 +2561,30 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 - (id)objectForKey:(NSString *)defaultName {
     if (!fakeLayer(@"trackingdefaults")) return %orig;
-    if (getConfigBool(@"keychainReset")) {
-        NSArray *trackingKeys = @[@"device_id", @"device_token", @"udid",
-                                 @"DEVICE_UUID", @"kDeviceId", @"UniqueIdentifier",
-                                 @"ADVERTISING_ID", @"installation_id",
-                                 @"TWClientID", @"TWDeviceID", @"tw_device",
-                                 @"twitter_device", @"client_device_id",
-                                 @"persistentDeviceID", @"tw_inapp_install_id"];
-        for (NSString *key in trackingKeys) {
-            if ([defaultName.lowercaseString containsString:key.lowercaseString]) {
-                return nil;
-            }
-        }
+    if (!getConfigBool(@"keychainReset")) return %orig;
+    if (!defaultName.length) return %orig;
+    // v2.5.45: cache the tracking-key list AND its lowercase form as
+    // statics. Pre-v2.5.45 alloc'd a fresh NSArray + called
+    // -lowercaseString on each of 15 keys on EVERY -objectForKey: call.
+    // NSUserDefaults is hit thousands of times per second by Firebase /
+    // Crashlytics / Zalo's analytics SDK during launch + chat scroll —
+    // ~30K calls/sec × ~5µs/call = ~150ms/sec of wasted CPU = obvious
+    // lag.  Static + dispatch_once = compute once per process.
+    static NSArray<NSString *> *kTrackingLC = nil;
+    static dispatch_once_t trackOnce;
+    dispatch_once(&trackOnce, ^{
+        NSArray *raw = @[@"device_id", @"device_token", @"udid",
+                         @"device_uuid", @"kdeviceid", @"uniqueidentifier",
+                         @"advertising_id", @"installation_id",
+                         @"twclientid", @"twdeviceid", @"tw_device",
+                         @"twitter_device", @"client_device_id",
+                         @"persistentdeviceid", @"tw_inapp_install_id"];
+        // Source list is already all-lowercase — store as-is.
+        kTrackingLC = [raw copy];
+    });
+    NSString *lc = defaultName.lowercaseString;
+    for (NSString *k in kTrackingLC) {
+        if ([lc containsString:k]) return nil;
     }
     return %orig;
 }
