@@ -1783,48 +1783,68 @@ static int hooked_connect(int s, const struct sockaddr *name, socklen_t namelen)
 }
 
 extern "C" void initCLvlHooks(void) {
-    // sysctlbyname
-    void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
-    if (!sysctl_handle) sysctl_handle = RTLD_DEFAULT;
-    void *sysctl_sym = dlsym(sysctl_handle, "sysctlbyname");
-    if (sysctl_sym && !orig_sysctlbyname) {
-        MSHookFunction(sysctl_sym, (void *)hooked_sysctlbyname, (void **)&orig_sysctlbyname);
-        NSLog(@"[ChangeInfoIos] sysctlbyname hooked");
+    // v2.5.46: conditional install based on fake_* layer config.
+    // Each MSHookFunction trampoline adds ~10-15ns overhead per call
+    // (function indirection + return). For HOT-path syscalls like
+    // mach_absolute_time (millions/sec) + stat (100K+/sec), even
+    // empty hook bodies cost 20-30ms/sec — exceeds the 16ms frame
+    // budget and visibly lags chat scroll. Skip installs that have no
+    // useful work to do for the current config.
+    BOOL wantJbHide    = fakeLayer(@"jbhide");      // POSIX file hooks
+    BOOL wantTiming    = fakeLayer(@"timing");      // mach_absolute_time, CF*, clock_*
+    BOOL wantHardware  = fakeLayer(@"hardware");    // sysctl, uname, hostuuid, getattrlist
+    BOOL wantNetwork   = fakeLayer(@"network");     // getifaddrs, gethostname
+    BOOL wantSysctl    = fakeLayer(@"sysctl");      // sysctl path specifically
+    NSLog(@"[ChangeInfoIos] CLvl hook gates: jbhide=%d timing=%d hw=%d net=%d sysctl=%d",
+          wantJbHide, wantTiming, wantHardware, wantNetwork, wantSysctl);
+
+    // sysctlbyname — needed for hardware spoof (hw.machine, kern.osversion).
+    // Bundle for Zalo / FB rely on sysctl values, so install if hardware OR sysctl on.
+    if (wantSysctl || wantHardware) {
+        void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
+        if (!sysctl_handle) sysctl_handle = RTLD_DEFAULT;
+        void *sysctl_sym = dlsym(sysctl_handle, "sysctlbyname");
+        if (sysctl_sym && !orig_sysctlbyname) {
+            MSHookFunction(sysctl_sym, (void *)hooked_sysctlbyname, (void **)&orig_sysctlbyname);
+            NSLog(@"[ChangeInfoIos] sysctlbyname hooked");
+        }
     }
 
-    // uname
-    void *uname_sym = dlsym(RTLD_DEFAULT, "uname");
-    if (uname_sym && !orig_uname) {
-        MSHookFunction(uname_sym, (void *)hooked_uname, (void **)&orig_uname);
-        NSLog(@"[ChangeInfoIos] uname hooked");
+    // uname — hardware fingerprint
+    if (wantHardware) {
+        void *uname_sym = dlsym(RTLD_DEFAULT, "uname");
+        if (uname_sym && !orig_uname) {
+            MSHookFunction(uname_sym, (void *)hooked_uname, (void **)&orig_uname);
+            NSLog(@"[ChangeInfoIos] uname hooked");
+        }
     }
 
-    // stat
-    void *stat_sym = dlsym(RTLD_DEFAULT, "stat");
-    if (stat_sym && !orig_stat) {
-        MSHookFunction(stat_sym, (void *)hooked_stat, (void **)&orig_stat);
-        NSLog(@"[ChangeInfoIos] stat hooked");
-    }
-
-    // lstat
-    void *lstat_sym = dlsym(RTLD_DEFAULT, "lstat");
-    if (lstat_sym && !orig_lstat) {
-        MSHookFunction(lstat_sym, (void *)hooked_lstat, (void **)&orig_lstat);
-        NSLog(@"[ChangeInfoIos] lstat hooked");
-    }
-
-    // access
-    void *access_sym = dlsym(RTLD_DEFAULT, "access");
-    if (access_sym && !orig_access) {
-        MSHookFunction(access_sym, (void *)hooked_access, (void **)&orig_access);
-        NSLog(@"[ChangeInfoIos] access hooked");
-    }
-
-    // fopen
-    void *fopen_sym = dlsym(RTLD_DEFAULT, "fopen");
-    if (fopen_sym && !orig_fopen) {
-        MSHookFunction(fopen_sym, (void *)hooked_fopen, (void **)&orig_fopen);
-        NSLog(@"[ChangeInfoIos] fopen hooked");
+    // stat / lstat / access / fopen — POSIX file metadata. ONLY used by
+    // jbhide layer (hide JB paths). Apps that don't ask "is /Applications/
+    // Cydia.app/ installed?" never benefit, and these are HOT paths
+    // (~100K calls/sec during chat scroll on apps like Zalo). Skip install
+    // if jbhide is off to eliminate the per-call trampoline overhead.
+    if (wantJbHide) {
+        void *stat_sym = dlsym(RTLD_DEFAULT, "stat");
+        if (stat_sym && !orig_stat) {
+            MSHookFunction(stat_sym, (void *)hooked_stat, (void **)&orig_stat);
+            NSLog(@"[ChangeInfoIos] stat hooked");
+        }
+        void *lstat_sym = dlsym(RTLD_DEFAULT, "lstat");
+        if (lstat_sym && !orig_lstat) {
+            MSHookFunction(lstat_sym, (void *)hooked_lstat, (void **)&orig_lstat);
+            NSLog(@"[ChangeInfoIos] lstat hooked");
+        }
+        void *access_sym = dlsym(RTLD_DEFAULT, "access");
+        if (access_sym && !orig_access) {
+            MSHookFunction(access_sym, (void *)hooked_access, (void **)&orig_access);
+            NSLog(@"[ChangeInfoIos] access hooked");
+        }
+        void *fopen_sym = dlsym(RTLD_DEFAULT, "fopen");
+        if (fopen_sym && !orig_fopen) {
+            MSHookFunction(fopen_sym, (void *)hooked_fopen, (void **)&orig_fopen);
+            NSLog(@"[ChangeInfoIos] fopen hooked");
+        }
     }
 
     // open()/openat() hooks DISABLED — caused AIDA64 / other apps to crash
@@ -1841,120 +1861,136 @@ extern "C" void initCLvlHooks(void) {
     // ProductBuildVersion via MGCopyAnswer + MGGetStringAnswer), but not
     // direct file reads. AIDA64 specifically uses direct file read.
 
-    // dlopen
-    void *dlopen_sym = dlsym(RTLD_DEFAULT, "dlopen");
-    if (dlopen_sym && !orig_dlopen) {
-        MSHookFunction(dlopen_sym, (void *)hooked_dlopen, (void **)&orig_dlopen);
-        NSLog(@"[ChangeInfoIos] dlopen hooked");
+    // dlopen — JB-hide blocks substrate dylib opens.
+    if (wantJbHide) {
+        void *dlopen_sym = dlsym(RTLD_DEFAULT, "dlopen");
+        if (dlopen_sym && !orig_dlopen) {
+            MSHookFunction(dlopen_sym, (void *)hooked_dlopen, (void **)&orig_dlopen);
+            NSLog(@"[ChangeInfoIos] dlopen hooked");
+        }
     }
 
-    // gethostname
-    // getifaddrs — spoof MAC at BSD layer
-    void *getifaddrs_sym = dlsym(RTLD_DEFAULT, "getifaddrs");
-    if (getifaddrs_sym && !orig_getifaddrs) {
-        MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
-        NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+    // getifaddrs — MAC spoof (network layer)
+    if (wantNetwork || wantHardware) {
+        void *getifaddrs_sym = dlsym(RTLD_DEFAULT, "getifaddrs");
+        if (getifaddrs_sym && !orig_getifaddrs) {
+            MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
+            NSLog(@"[ChangeInfoIos] getifaddrs hooked");
+        }
     }
 
-    // statfs — disk capacity coherence with TotalDiskCapacity spoof.
-    void *statfs_sym = dlsym(RTLD_DEFAULT, "statfs");
-    if (statfs_sym && !orig_statfs) {
-        MSHookFunction(statfs_sym, (void *)hooked_statfs, (void **)&orig_statfs);
-        NSLog(@"[ChangeInfoIos] statfs hooked");
+    // statfs — disk capacity coherence
+    if (wantHardware) {
+        void *statfs_sym = dlsym(RTLD_DEFAULT, "statfs");
+        if (statfs_sym && !orig_statfs) {
+            MSHookFunction(statfs_sym, (void *)hooked_statfs, (void **)&orig_statfs);
+            NSLog(@"[ChangeInfoIos] statfs hooked");
+        }
+
+        // getattrlist — APFS volume UUID
+        void *gal_sym = dlsym(RTLD_DEFAULT, "getattrlist");
+        if (gal_sym && !orig_getattrlist) {
+            MSHookFunction(gal_sym, (void *)hooked_getattrlist, (void **)&orig_getattrlist);
+            NSLog(@"[ChangeInfoIos] getattrlist hooked");
+        }
+
+        // gethostuuid — 16-byte hardware UUID
+        void *guuid_sym = dlsym(RTLD_DEFAULT, "gethostuuid");
+        if (guuid_sym && !orig_gethostuuid) {
+            MSHookFunction(guuid_sym, (void *)hooked_gethostuuid, (void **)&orig_gethostuuid);
+            NSLog(@"[ChangeInfoIos] gethostuuid hooked");
+        }
     }
 
-    // getattrlist — APFS volume UUID spoof (Tier 9, v2.4.50)
-    void *gal_sym = dlsym(RTLD_DEFAULT, "getattrlist");
-    if (gal_sym && !orig_getattrlist) {
-        MSHookFunction(gal_sym, (void *)hooked_getattrlist, (void **)&orig_getattrlist);
-        NSLog(@"[ChangeInfoIos] getattrlist hooked");
+    // objc_getClassList — hide tweak's classes from runtime walks (JB hide).
+    if (wantJbHide) {
+        void *gcl_sym = dlsym(RTLD_DEFAULT, "objc_getClassList");
+        if (gcl_sym && !orig_objc_getClassList) {
+            MSHookFunction(gcl_sym, (void *)hooked_objc_getClassList, (void **)&orig_objc_getClassList);
+            NSLog(@"[ChangeInfoIos] objc_getClassList hooked");
+        }
     }
 
-    // objc_getClassList — hide our tweak's classes from runtime walks.
-    void *gcl_sym = dlsym(RTLD_DEFAULT, "objc_getClassList");
-    if (gcl_sym && !orig_objc_getClassList) {
-        MSHookFunction(gcl_sym, (void *)hooked_objc_getClassList, (void **)&orig_objc_getClassList);
-        NSLog(@"[ChangeInfoIos] objc_getClassList hooked");
+    // gettimeofday / clock_gettime / mach_absolute_time / CFAbsoluteTimeGetCurrent
+    // — timing hooks. These are HOT (millions of calls/sec from Foundation,
+    // CADisplayLink, NSDateFormatter, animation runloops). Each MSHookFunction
+    // trampoline adds ~10-15ns; multiplied by call volume that's 20-30ms/sec
+    // overhead → visible chat-scroll lag on Zalo. Install ONLY if the user
+    // actually set a timing offset; otherwise hooks would be pure passthrough
+    // (orig + return) and pure overhead.
+    BOOL hasClockOffset  = (getConfig(@"_ci_clock_offset_secs") != nil);
+    BOOL hasMachOffset   = (getConfig(@"zalo_timingOffset") != nil);
+    if (wantTiming || hasClockOffset) {
+        void *gtod_sym = dlsym(RTLD_DEFAULT, "gettimeofday");
+        if (gtod_sym && !orig_gettimeofday) {
+            MSHookFunction(gtod_sym, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
+            NSLog(@"[ChangeInfoIos] gettimeofday hooked");
+        }
+        void *cgt_sym = dlsym(RTLD_DEFAULT, "clock_gettime");
+        if (cgt_sym && !orig_clock_gettime) {
+            MSHookFunction(cgt_sym, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
+            NSLog(@"[ChangeInfoIos] clock_gettime hooked");
+        }
+    }
+    if (wantTiming && hasMachOffset) {
+        void *mat_sym = dlsym(RTLD_DEFAULT, "mach_absolute_time");
+        if (mat_sym && !orig_mach_absolute_time) {
+            MSHookFunction(mat_sym, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
+            NSLog(@"[ChangeInfoIos] mach_absolute_time hooked");
+        }
+        void *cat_sym = dlsym(RTLD_DEFAULT, "CFAbsoluteTimeGetCurrent");
+        if (cat_sym && !orig_CFAbsoluteTimeGetCurrent) {
+            MSHookFunction(cat_sym, (void *)hooked_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent);
+            NSLog(@"[ChangeInfoIos] CFAbsoluteTimeGetCurrent hooked");
+        }
     }
 
-    // gethostuuid — returns 16-byte hardware UUID. Spoof from UniqueDeviceID.
-    void *guuid_sym = dlsym(RTLD_DEFAULT, "gethostuuid");
-    if (guuid_sym && !orig_gethostuuid) {
-        MSHookFunction(guuid_sym, (void *)hooked_gethostuuid, (void **)&orig_gethostuuid);
-        NSLog(@"[ChangeInfoIos] gethostuuid hooked");
+    // gethostname — network identity
+    if (wantNetwork) {
+        void *gethostname_sym = dlsym(RTLD_DEFAULT, "gethostname");
+        if (gethostname_sym && !orig_gethostname) {
+            MSHookFunction(gethostname_sym, (void *)hooked_gethostname, (void **)&orig_gethostname);
+            NSLog(@"[ChangeInfoIos] gethostname hooked");
+        }
     }
 
-    // gettimeofday + clock_gettime — leaves real values by default (passthrough).
-    // Apps that fingerprint by checking mach_absolute_time vs wall-clock
-    // consistency see correct relative offsets. If a constant offset is
-    // ever needed, set _ci_clock_offset_secs in config.
-    void *gtod_sym = dlsym(RTLD_DEFAULT, "gettimeofday");
-    if (gtod_sym && !orig_gettimeofday) {
-        MSHookFunction(gtod_sym, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
-        NSLog(@"[ChangeInfoIos] gettimeofday hooked");
-    }
-    void *cgt_sym = dlsym(RTLD_DEFAULT, "clock_gettime");
-    if (cgt_sym && !orig_clock_gettime) {
-        MSHookFunction(cgt_sym, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
-        NSLog(@"[ChangeInfoIos] clock_gettime hooked");
-    }
-
-    void *gethostname_sym = dlsym(RTLD_DEFAULT, "gethostname");
-    if (gethostname_sym && !orig_gethostname) {
-        MSHookFunction(gethostname_sym, (void *)hooked_gethostname, (void **)&orig_gethostname);
-        NSLog(@"[ChangeInfoIos] gethostname hooked");
-    }
-
-    // mach_absolute_time
-    void *mat_sym = dlsym(RTLD_DEFAULT, "mach_absolute_time");
-    if (mat_sym && !orig_mach_absolute_time) {
-        MSHookFunction(mat_sym, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
-        NSLog(@"[ChangeInfoIos] mach_absolute_time hooked");
+    // dladdr / _dyld_image_count / _dyld_get_image_name — JB hide
+    // (filter out substrate dylibs from runtime image walks).
+    if (wantJbHide) {
+        void *dladdr_sym = dlsym(RTLD_DEFAULT, "dladdr");
+        if (dladdr_sym && !orig_dladdr) {
+            MSHookFunction(dladdr_sym, (void *)hooked_dladdr, (void **)&orig_dladdr);
+            NSLog(@"[ChangeInfoIos] dladdr hooked");
+        }
+        void *dyld_count_sym = dlsym(RTLD_DEFAULT, "_dyld_image_count");
+        if (dyld_count_sym && !orig__dyld_image_count) {
+            MSHookFunction(dyld_count_sym, (void *)hooked__dyld_image_count, (void **)&orig__dyld_image_count);
+            NSLog(@"[ChangeInfoIos] _dyld_image_count hooked");
+        }
+        void *dyld_name_sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+        if (dyld_name_sym && !orig__dyld_get_image_name) {
+            MSHookFunction(dyld_name_sym, (void *)hooked__dyld_get_image_name, (void **)&orig__dyld_get_image_name);
+            NSLog(@"[ChangeInfoIos] _dyld_get_image_name hooked");
+        }
     }
 
-    // CFAbsoluteTimeGetCurrent
-    void *cat_sym = dlsym(RTLD_DEFAULT, "CFAbsoluteTimeGetCurrent");
-    if (cat_sym && !orig_CFAbsoluteTimeGetCurrent) {
-        MSHookFunction(cat_sym, (void *)hooked_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent);
-        NSLog(@"[ChangeInfoIos] CFAbsoluteTimeGetCurrent hooked");
+    // _dyld_get_shared_cache_uuid — used for fingerprinting iOS build.
+    // Gated by hardware spoof (shared cache UUID derived from kern_osversion).
+    if (wantHardware || wantJbHide) {
+        void *dyld_sc_sym = dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_uuid");
+        if (dyld_sc_sym && !orig__dyld_get_shared_cache_uuid) {
+            MSHookFunction(dyld_sc_sym, (void *)hooked__dyld_get_shared_cache_uuid, (void **)&orig__dyld_get_shared_cache_uuid);
+            NSLog(@"[ChangeInfoIos] _dyld_get_shared_cache_uuid hooked");
+        }
     }
 
-    // dladdr
-    void *dladdr_sym = dlsym(RTLD_DEFAULT, "dladdr");
-    if (dladdr_sym && !orig_dladdr) {
-        MSHookFunction(dladdr_sym, (void *)hooked_dladdr, (void **)&orig_dladdr);
-        NSLog(@"[ChangeInfoIos] dladdr hooked");
-    }
-
-    // _dyld_image_count
-    void *dyld_count_sym = dlsym(RTLD_DEFAULT, "_dyld_image_count");
-    if (dyld_count_sym && !orig__dyld_image_count) {
-        MSHookFunction(dyld_count_sym, (void *)hooked__dyld_image_count, (void **)&orig__dyld_image_count);
-        NSLog(@"[ChangeInfoIos] _dyld_image_count hooked");
-    }
-
-    // _dyld_get_image_name
-    void *dyld_name_sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
-    if (dyld_name_sym && !orig__dyld_get_image_name) {
-        MSHookFunction(dyld_name_sym, (void *)hooked__dyld_get_image_name, (void **)&orig__dyld_get_image_name);
-        NSLog(@"[ChangeInfoIos] _dyld_get_image_name hooked");
-    }
-
-    // Tier 6 — _dyld_get_shared_cache_uuid. Apps reading the dyld_shared_
-    // cache UUID can fingerprint exact iOS build. Replace with a 16-byte
-    // value derived from spoofed kern_osversion so the cache identity
-    // matches the claimed OS build.
-    void *dyld_sc_sym = dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_uuid");
-    if (dyld_sc_sym && !orig__dyld_get_shared_cache_uuid) {
-        MSHookFunction(dyld_sc_sym, (void *)hooked__dyld_get_shared_cache_uuid, (void **)&orig__dyld_get_shared_cache_uuid);
-        NSLog(@"[ChangeInfoIos] _dyld_get_shared_cache_uuid hooked");
-    }
-
-    // fork
-    void *fork_sym = dlsym(RTLD_DEFAULT, "fork");
-    if (fork_sym && !orig_fork) {
-        MSHookFunction(fork_sym, (void *)hooked_fork, (void **)&orig_fork);
-        NSLog(@"[ChangeInfoIos] fork hooked");
+    // fork — block child processes (JB-detect avoidance).
+    if (wantJbHide) {
+        void *fork_sym = dlsym(RTLD_DEFAULT, "fork");
+        if (fork_sym && !orig_fork) {
+            MSHookFunction(fork_sym, (void *)hooked_fork, (void **)&orig_fork);
+            NSLog(@"[ChangeInfoIos] fork hooked");
+        }
     }
 
     // getenv
