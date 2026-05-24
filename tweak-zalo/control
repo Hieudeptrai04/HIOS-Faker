@@ -1,6 +1,6 @@
 Package: com.changeinfoios.zalo
 Name: ChangeInfoIosZalo
-Version: 2.6.8
+Version: 2.6.9
 Architecture: iphoneos-arm64
 Description: Ultra-thin device-info spoof sidecar for Zalo. Only 12 cached ObjC pure-read hooks (UIDevice / ASIdentifierManager / UIScreen / NSLocale / NSTimeZone / CTCarrier). No C-level hooks, no keychain dump, no container wipe, no Darwin notify — designed for zero perceptible lag inside Zalo's chat scroll. Use INSTEAD of main ChangeInfoIos tweak for Zalo bundles.
 Maintainer: ChangeInfoIos

@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.6.8";
+static NSString *const kAppVersion = @"2.6.9";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -128,12 +128,16 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"keychainReset"]   == nil) { _cfg[@"keychainReset"]   = @(YES); seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
 
-    // v2.6.8: opt-in flags that v2.5.49+ introduced for performance gating.
-    // Default-ON so full spoof coverage (MG fishhook + sysctlbyname +
-    // IORegistry + uname + getifaddrs + getattrlist) survives Change
-    // Device — previously these flags only existed if user manually
-    // wrote them, so the first Change Device save would silently drop
-    // them from disk and apps like AIDA64/Lirum lost model spoofing.
+    // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
+    // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
+    // hit + sysctlbyname trampoline + IORegistry walks) in SpringBoard and
+    // every target app — that brought back the chat-scroll lag the user
+    // explicitly traded model-spoof for in v2.6.0.
+    //
+    // The sidecar's cold-path MG + sysctlbyname (v2.6.5/7) already covers
+    // AIDA64 / Lirum / Zalo model spoof without the per-call overhead, so
+    // the main tweak's deep hooks are redundant for the spoof goal. Force
+    // them OFF and migrate any lingering YES values from v2.6.8 to NO.
     NSArray *deepHookFlags = @[
         @"_ci_enable_mg",
         @"_ci_enable_sysctlbyname",
@@ -143,7 +147,12 @@ static NSString *CIRRSDir(void) {
         @"_ci_enable_uname_hook",
     ];
     for (NSString *k in deepHookFlags) {
-        if (_cfg[k] == nil) { _cfg[k] = @(YES); seeded = YES; }
+        id v = _cfg[k];
+        if ([v respondsToSelector:@selector(boolValue)] && [v boolValue]) {
+            _cfg[k] = @(NO);
+            seeded = YES;
+            NSLog(@"[ChangeInfoIos] v2.6.9 migration: forced %@ from YES to NO (sidecar handles spoof, deep hooks cause lag)", k);
+        }
     }
     if (seeded) {
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
