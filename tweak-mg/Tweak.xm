@@ -16,6 +16,12 @@
 #import <notify.h>
 #import "fishhook.h"
 
+// MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
+// framework functions which fishhook can't rebind (they're indirect
+// symbol stubs / direct calls, not lazy-bound). Declared extern to
+// avoid pulling in <substrate.h> (Theos auto-links libellekit).
+extern void MSHookFunction(void *symbol, void *replace, void **result);
+
 // ============================================================
 // Config — backed by /var/jb/etc/changeinfoios/config.plist.
 // Reloaded on darwin notify "com.changeinfoios.v3/ReloadConfig".
@@ -346,17 +352,25 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         if (h) orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(h, "MGCopyAnswer");
         if (!orig_MGCopyAnswer) return;
 
-        // Hook MGCopyAnswer + IORegistry Create/Search via fishhook
-        // rebind. UIDevice hooks are handled by Logos %hook automatically.
+        // MGCopyAnswer: fishhook (works for lazy-bound MG calls).
         struct rebinding rebs[] = {
             { "MGCopyAnswer", (void *)hooked_MGCopyAnswer,
               (void **)&orig_MGCopyAnswer },
-            { "IORegistryEntryCreateCFProperty", (void *)hooked_IORegCreate,
-              (void **)&orig_IORegCreate },
-            { "IORegistryEntrySearchCFProperty", (void *)hooked_IORegSearch,
-              (void **)&orig_IORegSearch },
         };
-        rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
+        rebind_symbols(rebs, 1);
+
+        // IORegistry: fishhook can't rebind IOKit framework calls (eager
+        // bind / indirect stubs). Use MSHookFunction (ellekit) instead —
+        // patches the function prologue with a branch to our trampoline.
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+        if (iokit) {
+            void *createSym = dlsym(iokit, "IORegistryEntryCreateCFProperty");
+            if (createSym) MSHookFunction(createSym, (void *)hooked_IORegCreate,
+                                          (void **)&orig_IORegCreate);
+            void *searchSym = dlsym(iokit, "IORegistryEntrySearchCFProperty");
+            if (searchSym) MSHookFunction(searchSym, (void *)hooked_IORegSearch,
+                                          (void **)&orig_IORegSearch);
+        }
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;
