@@ -2177,11 +2177,17 @@ static void ci_swizzleApnsOnDelegate(Class cls) {
 // usually don't care for register flow. Returning NO interferes with
 // legitimate app logic if user has Cydia installed.
 
-// KEEP setDelegate hook — needed to swizzle APNs callback for restore
-// to preserve push token across backup/restore cycles (per v2.5.0 fix).
+// v2.5.47 DISABLED — user wants device-layer only, no app-mutating hooks.
+// APNs delegate swizzle MODIFIES the push-token bytes Apple hands to the
+// host app's UIApplicationDelegate — clearly app-layer interference.
+// User reports Zalo lag + reg-acc-die concerns. Trade-off: cross-account
+// push-token correlation may now be possible at Apple's server side, but
+// the user is not registering banking apps so the de-correlation isn't
+// worth the lag + interference cost. Keep the swizzle code below for
+// opt-in re-enable via `_ci_enable_apns_swizzle=YES` in config.
 - (void)setDelegate:(id<UIApplicationDelegate>)delegate {
     %orig(delegate);
-    if (delegate) {
+    if (delegate && getConfigBool(@"_ci_enable_apns_swizzle")) {
         ci_swizzleApnsOnDelegate([delegate class]);
     }
 }
@@ -2377,20 +2383,19 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
     }
 }
 
+// v2.5.47 DISABLED by default — user wants device-layer only, no
+// app-mutating hooks. LSApplicationWorkspace MUTATES the returned
+// installed-apps array that target apps see (filters out third-party
+// apps for anti-fingerprinting). That mutation IS app-layer interference
+// and could trigger Zalo anti-fraud "abnormal API result" detection.
+// User said: "TÔI KHÔNG DÙNG CHO BANKING, NHỮNG HOOK LIÊN QUAN ĐẾN APP
+// ZALO XÓA HẾT ĐI" — banking would benefit from this filter but Zalo
+// reg does not. Gate behind `_ci_enable_lsaw_filter=YES` for opt-in.
 %hook LSApplicationWorkspace
 
 - (NSArray *)allInstalledApplications {
     if (g_inLSAW) return %orig;     // nested re-entry from metadata-load callback
-    // CRITICAL: skip filter when running inside HIOS Faker (the spoof
-    // tool itself). HIOS Faker's CIAppLister uses LSAW to enumerate
-    // installed apps so the user can pick targets to back up / wipe /
-    // restore. If we filter the list to com.apple.* only, the user
-    // sees ZERO third-party apps — Backup+Reset finds no Zalo, rebackup
-    // can't locate Zalo's container, etc. Confirmed live 2026-05-19:
-    // rebackup of a Zalo RRS produced a 12 MB tar (only /var/jb/etc/
-    // changeinfoios, no Zalo Documents) because LSAW filter hid Zalo
-    // from CIAppLister. The anti-fraud filter is ONLY useful inside
-    // TARGET apps (Zalo, banking) where SDKs walk LSAW for fingerprint.
+    if (!getConfigBool(@"_ci_enable_lsaw_filter")) return %orig;  // v2.5.47 default off
     if (!g_bundleTargeted) return %orig;
     if (!fakeLayer(@"keychain")) return %orig;
     g_inLSAW++;
@@ -2414,6 +2419,7 @@ static BOOL ci_proxyVisibleToHost(LSApplicationProxy *proxy, NSString *hostBundl
 
 - (NSArray *)applicationProxiesForIdentifiersOfType:(NSString *)type {
     if (g_inLSAW) return %orig;
+    if (!getConfigBool(@"_ci_enable_lsaw_filter")) return %orig;  // v2.5.47 default off
     if (!g_bundleTargeted) return %orig;
     if (!fakeLayer(@"keychain")) return %orig;
     g_inLSAW++;
@@ -3708,9 +3714,13 @@ static BOOL computeBundleTargeted(void) {
         // Same runtime-only swizzle pattern; skipped in apps without WebKit.
         ci_installWKWebViewHooks();
 
-        // WebRTC ICE candidate filter — strips host/srflx candidates that
-        // leak local IP. Only installs in processes that link WebRTC.
-        ci_installWebRTCHooks();
+        // v2.5.47 DISABLED — WebRTC hook MUTATES outgoing SDP strings of
+        // host app (Zalo voice/video calls). User wants device-layer only.
+        // Trade-off: real local IP may leak through STUN/srflx ICE
+        // candidates during Zalo voice calls. Opt-in via _ci_enable_webrtc=YES.
+        if (getConfigBool(@"_ci_enable_webrtc")) {
+            ci_installWebRTCHooks();
+        }
 
         NSLog(@"[ChangeInfoIos] Tweak loaded successfully! Config: %@", configLoaded ? @"YES" : @"NO");
     }
