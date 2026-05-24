@@ -18,6 +18,7 @@
 #import <sys/stat.h>
 #import <sys/wait.h>
 #import <spawn.h>
+#import <dlfcn.h>
 
 extern char **environ;
 
