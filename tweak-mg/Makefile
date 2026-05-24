@@ -6,8 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ChangeInfoIosMG
 ChangeInfoIosMG_FILES = Tweak.xm
-ChangeInfoIosMG_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+ChangeInfoIosMG_CFLAGS = -fobjc-arc
 ChangeInfoIosMG_FRAMEWORKS = Foundation
-ChangeInfoIosMG_LIBRARIES = substrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk
