@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.6.0";
+static NSString *const kAppVersion = @"2.6.1";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1869,38 +1869,64 @@ static NSString *CITweakFilterPath(void) {
     return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
 }
 
+// v2.6.1: ALL user-selected target apps go through the ultra-thin
+// ChangeInfoIosZalo sidecar (despite the legacy filename, it now handles
+// every target). The main ChangeInfoIos.dylib retains its full feature
+// set (RRS keychain dump/restore, MGCopyAnswer fishhook, JB hide, proxy
+// injection, etc.) but loads ONLY into the host/system processes that
+// integrate with the HIOS Faker UI — never into user-facing apps where
+// the 60-hook surface re-introduces the chat-scroll lag.
+static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
+    NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
+    NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
+    for (CIAppInfo *app in apps) {
+        if (app.bundleID.length) [bundles addObject:app.bundleID];
+        if (!app.bundlePath.length) continue;
+        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
+        NSString *exec = [[bundle executablePath] lastPathComponent];
+        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
+        if (exec.length) [executables addObject:exec];
+    }
+    NSDictionary *filter = @{
+        @"Filter": @{
+            @"Bundles": bundles.array,
+            @"Executables": executables.array,
+            @"Mode": @"Any",
+        }
+    };
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:filter
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:nil];
+    if (!data) {
+        NSLog(@"[ChangeInfoIos] sidecar filter sync: plist serialization failed");
+        return;
+    }
+    NSString *path = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosZalo.plist";
+    BOOL ok = [data writeToFile:path atomically:YES];
+    if (ok) chmod([path fileSystemRepresentation], 0644);
+    NSLog(@"[ChangeInfoIos] sidecar filter sync: %@ (%lu bundles, %lu execs)",
+          ok ? @"OK" : @"FAIL",
+          (unsigned long)bundles.count,
+          (unsigned long)executables.count);
+}
+
 static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
+    // v2.6.1: main tweak loads ONLY into SpringBoard + Preferences for system
+    // integration (Darwin notify post / UIDevice-from-Settings spoof). All
+    // user-selected target apps are excluded — they're handled by the
+    // ultra-thin sidecar in ci_syncSidecarFilterForApps (called below).
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSetWithArray:@[
         @"com.apple.springboard",
         @"com.apple.Preferences",
     ]];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
-
-    // v2.6.0: Zalo bundle IDs are handled by the dedicated ChangeInfoIosZalo
-    // sidecar (ultra-thin device-info-only spoof, no C-level hooks). The
-    // main ChangeInfoIos.dylib MUST NOT load into Zalo or both will
-    // double-spoof and the main tweak's 15+ ObjC hook overhead returns
-    // the chat-scroll lag the user paid v2.6 to eliminate. Hard-exclude.
-    NSSet *kZaloExcluded = [NSSet setWithArray:@[
-        @"com.vng.zalo",
-        @"com.zing.zalo",
-        @"vn.com.vng.zingalo",
-        @"com.zaloapp.zalovn",
-    ]];
-
-    for (CIAppInfo *app in apps) {
-        if (app.bundleID.length && ![kZaloExcluded containsObject:app.bundleID]) {
-            [bundles addObject:app.bundleID];
-        }
-        if (!app.bundlePath.length) continue;
-        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
-        NSString *exec = [[bundle executablePath] lastPathComponent];
-        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
-        // Skip Zalo executable too (in case bundleID matched above but exec leaks)
-        if (exec.length && ![exec isEqualToString:@"Zalo"]) {
-            [executables addObject:exec];
-        }
-    }
+    // Intentionally NOT adding `apps` bundles/executables here — they go
+    // into the sidecar's filter instead. Loop kept so future per-app opt-in
+    // back to main tweak is a one-line `[bundles addObject:...]` away.
+    (void)apps;
+    // Hand off to sidecar filter writer — it consumes the same target list.
+    ci_syncSidecarFilterForApps(apps);
 
     NSDictionary *filter = @{
         @"Filter": @{
