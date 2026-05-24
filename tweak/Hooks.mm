@@ -1799,8 +1799,11 @@ extern "C" void initCLvlHooks(void) {
           wantJbHide, wantTiming, wantHardware, wantNetwork, wantSysctl);
 
     // sysctlbyname — needed for hardware spoof (hw.machine, kern.osversion).
-    // Bundle for Zalo / FB rely on sysctl values, so install if hardware OR sysctl on.
-    if (wantSysctl || wantHardware) {
+    // v2.5.49: kept install gate (wantSysctl OR wantHardware) but caller can
+    // disable via _ci_disable_sysctl_byname=YES if they observe lag from
+    // libsystem's internal sysctl probes (Crashlytics calls hw.cpufamily +
+    // hw.ncpu on every Crashlytics report submit).
+    if ((wantSysctl || wantHardware) && !getConfigBool(@"_ci_disable_sysctl_byname")) {
         void *sysctl_handle = dlopen(NULL, RTLD_NOLOAD);
         if (!sysctl_handle) sysctl_handle = RTLD_DEFAULT;
         void *sysctl_sym = dlsym(sysctl_handle, "sysctlbyname");
@@ -1810,8 +1813,11 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // uname — hardware fingerprint
-    if (wantHardware) {
+    // v2.5.49 uname GATED on explicit opt-in. uname(2) hits libc on every
+    // crash report dispatch + system version log; UIDevice.systemName / model
+    // ObjC hooks already cover the high-level API surface that Zalo / Firebase
+    // analytics actually reads.
+    if (getConfigBool(@"_ci_enable_uname_hook")) {
         void *uname_sym = dlsym(RTLD_DEFAULT, "uname");
         if (uname_sym && !orig_uname) {
             MSHookFunction(uname_sym, (void *)hooked_uname, (void **)&orig_uname);
@@ -1819,11 +1825,13 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // stat / lstat / access / fopen — POSIX file metadata. ONLY used by
-    // jbhide layer (hide JB paths). Apps that don't ask "is /Applications/
-    // Cydia.app/ installed?" never benefit, and these are HOT paths
-    // (~100K calls/sec during chat scroll on apps like Zalo). Skip install
-    // if jbhide is off to eliminate the per-call trampoline overhead.
+    // v2.5.49 stat/lstat KEPT for JB hide; access/fopen MOVED to opt-in.
+    // NSFileManager.fileExistsAtPath in Foundation calls stat under the
+    // hood — covering it lets us deny JB paths to apps using the modern
+    // ObjC API without hooking the lower-level functions. access/fopen
+    // are hit by file-cache image decode (Zalo image preview, sticker
+    // load) → ~50K calls/sec. Re-enable with _ci_enable_access_fopen=YES
+    // if a future fingerprint SDK probes paths via access(2) directly.
     if (wantJbHide) {
         void *stat_sym = dlsym(RTLD_DEFAULT, "stat");
         if (stat_sym && !orig_stat) {
@@ -1835,6 +1843,8 @@ extern "C" void initCLvlHooks(void) {
             MSHookFunction(lstat_sym, (void *)hooked_lstat, (void **)&orig_lstat);
             NSLog(@"[ChangeInfoIos] lstat hooked");
         }
+    }
+    if (getConfigBool(@"_ci_enable_access_fopen")) {
         void *access_sym = dlsym(RTLD_DEFAULT, "access");
         if (access_sym && !orig_access) {
             MSHookFunction(access_sym, (void *)hooked_access, (void **)&orig_access);
@@ -1861,49 +1871,45 @@ extern "C" void initCLvlHooks(void) {
     // ProductBuildVersion via MGCopyAnswer + MGGetStringAnswer), but not
     // direct file reads. AIDA64 specifically uses direct file read.
 
-    // dlopen — JB-hide blocks substrate dylib opens.
-    if (wantJbHide) {
+    // v2.5.49 ALL gated behind explicit opt-in. dlopen / getifaddrs /
+    // statfs / getattrlist / gethostuuid / objc_getClassList were
+    // installed unconditionally when their layer toggle was on — but
+    // Zalo's reg flow never reads any of them directly. They are
+    // anti-fingerprint scaffolding for paranoid SDKs (AIDA64, advanced
+    // banking probes) that Zalo doesn't use. Trampoline cost on Crashlytics
+    // dlopen + UIKit's internal interface enumerations adds up.
+    if (getConfigBool(@"_ci_enable_dlopen_hook")) {
         void *dlopen_sym = dlsym(RTLD_DEFAULT, "dlopen");
         if (dlopen_sym && !orig_dlopen) {
             MSHookFunction(dlopen_sym, (void *)hooked_dlopen, (void **)&orig_dlopen);
             NSLog(@"[ChangeInfoIos] dlopen hooked");
         }
     }
-
-    // getifaddrs — MAC spoof (network layer)
-    if (wantNetwork || wantHardware) {
+    if (getConfigBool(@"_ci_enable_net_hook")) {
         void *getifaddrs_sym = dlsym(RTLD_DEFAULT, "getifaddrs");
         if (getifaddrs_sym && !orig_getifaddrs) {
             MSHookFunction(getifaddrs_sym, (void *)hooked_getifaddrs, (void **)&orig_getifaddrs);
             NSLog(@"[ChangeInfoIos] getifaddrs hooked");
         }
     }
-
-    // statfs — disk capacity coherence
-    if (wantHardware) {
+    if (getConfigBool(@"_ci_enable_hw_hook")) {
         void *statfs_sym = dlsym(RTLD_DEFAULT, "statfs");
         if (statfs_sym && !orig_statfs) {
             MSHookFunction(statfs_sym, (void *)hooked_statfs, (void **)&orig_statfs);
             NSLog(@"[ChangeInfoIos] statfs hooked");
         }
-
-        // getattrlist — APFS volume UUID
         void *gal_sym = dlsym(RTLD_DEFAULT, "getattrlist");
         if (gal_sym && !orig_getattrlist) {
             MSHookFunction(gal_sym, (void *)hooked_getattrlist, (void **)&orig_getattrlist);
             NSLog(@"[ChangeInfoIos] getattrlist hooked");
         }
-
-        // gethostuuid — 16-byte hardware UUID
         void *guuid_sym = dlsym(RTLD_DEFAULT, "gethostuuid");
         if (guuid_sym && !orig_gethostuuid) {
             MSHookFunction(guuid_sym, (void *)hooked_gethostuuid, (void **)&orig_gethostuuid);
             NSLog(@"[ChangeInfoIos] gethostuuid hooked");
         }
     }
-
-    // objc_getClassList — hide tweak's classes from runtime walks (JB hide).
-    if (wantJbHide) {
+    if (getConfigBool(@"_ci_enable_objc_class_hide")) {
         void *gcl_sym = dlsym(RTLD_DEFAULT, "objc_getClassList");
         if (gcl_sym && !orig_objc_getClassList) {
             MSHookFunction(gcl_sym, (void *)hooked_objc_getClassList, (void **)&orig_objc_getClassList);
@@ -1946,8 +1952,10 @@ extern "C" void initCLvlHooks(void) {
         }
     }
 
-    // gethostname — network identity
-    if (wantNetwork) {
+    // v2.5.49 gethostname GATED on explicit opt-in. NSProcessInfo.hostName
+    // ObjC hook already covers the high-level path; the C function is
+    // rarely needed and adds a trampoline for nothing in Zalo.
+    if (getConfigBool(@"_ci_enable_gethostname_hook")) {
         void *gethostname_sym = dlsym(RTLD_DEFAULT, "gethostname");
         if (gethostname_sym && !orig_gethostname) {
             MSHookFunction(gethostname_sym, (void *)hooked_gethostname, (void **)&orig_gethostname);
@@ -1966,11 +1974,16 @@ extern "C" void initCLvlHooks(void) {
     // edit if a future target ever needs them. Opt-in via per-symbol
     // _ci_enable_<name> gates is a follow-up if any user demands it.
 
-    // getenv
-    void *getenv_sym = dlsym(RTLD_DEFAULT, "getenv");
-    if (getenv_sym && !orig_getenv) {
-        MSHookFunction(getenv_sym, (void *)hooked_getenv, (void **)&orig_getenv);
-        NSLog(@"[ChangeInfoIos] getenv hooked");
+    // v2.5.49 getenv GATED on explicit opt-in. Was installed unconditionally,
+    // adding a trampoline on every libc / Foundation env var probe during app
+    // startup (~3K calls at Zalo launch). Spoof value covered by zero apps
+    // in user's target set during reg flow.
+    if (getConfigBool(@"_ci_enable_getenv_hook")) {
+        void *getenv_sym = dlsym(RTLD_DEFAULT, "getenv");
+        if (getenv_sym && !orig_getenv) {
+            MSHookFunction(getenv_sym, (void *)hooked_getenv, (void **)&orig_getenv);
+            NSLog(@"[ChangeInfoIos] getenv hooked");
+        }
     }
 
     // SecItemCopyMatching

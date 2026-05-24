@@ -3470,20 +3470,28 @@ static BOOL computeBundleTargeted(void) {
             }
         }
 
-        void *iokitHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
-        if (iokitHandle) {
-            orig_IORegistryEntryCreateCFProperty = (IORegCreateCFProp_t)dlsym(iokitHandle, "IORegistryEntryCreateCFProperty");
-            if (orig_IORegistryEntryCreateCFProperty) {
-                MSHookFunction((void *)orig_IORegistryEntryCreateCFProperty, (void *)hooked_IORegistryEntryCreateCFProperty, (void **)&orig_IORegistryEntryCreateCFProperty);
-                NSLog(@"[ChangeInfoIos] IOKit Create hooked");
-            }
-            // IORegistryEntrySearchCFProperty (v2.4.50 Tier 3) — apps bypass
-            // Create by walking the registry plane recursively. Hook both
-            // entry points so they return the same spoofed values.
-            orig_IORegistryEntrySearchCFProperty = (IORegSearchCFProp_t)dlsym(iokitHandle, "IORegistryEntrySearchCFProperty");
-            if (orig_IORegistryEntrySearchCFProperty) {
-                MSHookFunction((void *)orig_IORegistryEntrySearchCFProperty, (void *)hooked_IORegistryEntrySearchCFProperty, (void **)&orig_IORegistryEntrySearchCFProperty);
-                NSLog(@"[ChangeInfoIos] IOKit Search hooked");
+        // v2.5.49 IOKit hooks GATED behind explicit opt-in. Pre-v2.5.49 they
+        // installed unconditionally → every CoreAnimation property read (CALayer
+        // pixel format / display backing / CADisplayLink refresh-rate query)
+        // went through the trampoline. Zalo chat scroll hits IOKit ~thousands
+        // of times/sec during list-cell layout → cumulative trampoline cost ≈
+        // 5-15 ms/sec inside the 16 ms frame budget = visible jank. Spoof of
+        // IOPlatformSerialNumber etc is already covered by sysctlbyname +
+        // MGCopyAnswer (when those gates are on) and ASIdentifierManager etc.
+        // ObjC hooks. Opt-in re-enable via _ci_enable_iokit_reg=YES.
+        if (getConfigBool(@"_ci_enable_iokit_reg")) {
+            void *iokitHandle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+            if (iokitHandle) {
+                orig_IORegistryEntryCreateCFProperty = (IORegCreateCFProp_t)dlsym(iokitHandle, "IORegistryEntryCreateCFProperty");
+                if (orig_IORegistryEntryCreateCFProperty) {
+                    MSHookFunction((void *)orig_IORegistryEntryCreateCFProperty, (void *)hooked_IORegistryEntryCreateCFProperty, (void **)&orig_IORegistryEntryCreateCFProperty);
+                    NSLog(@"[ChangeInfoIos] IOKit Create hooked");
+                }
+                orig_IORegistryEntrySearchCFProperty = (IORegSearchCFProp_t)dlsym(iokitHandle, "IORegistryEntrySearchCFProperty");
+                if (orig_IORegistryEntrySearchCFProperty) {
+                    MSHookFunction((void *)orig_IORegistryEntrySearchCFProperty, (void *)hooked_IORegistryEntrySearchCFProperty, (void **)&orig_IORegistryEntrySearchCFProperty);
+                    NSLog(@"[ChangeInfoIos] IOKit Search hooked");
+                }
             }
         }
 
