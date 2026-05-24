@@ -18,9 +18,15 @@
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
 // framework functions which fishhook can't rebind (they're indirect
-// symbol stubs / direct calls, not lazy-bound). Declared extern to
-// avoid pulling in <substrate.h> (Theos auto-links libellekit).
-extern void MSHookFunction(void *symbol, void *replace, void **result);
+// symbol stubs / direct calls, not lazy-bound). Declared extern "C"
+// to avoid C++ name mangling (Logos preprocesses .xm as .mm).
+#ifdef __cplusplus
+extern "C" {
+#endif
+void MSHookFunction(void *symbol, void *replace, void **result);
+#ifdef __cplusplus
+}
+#endif
 
 // ============================================================
 // Config — backed by /var/jb/etc/changeinfoios/config.plist.
