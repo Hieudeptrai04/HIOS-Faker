@@ -1,0 +1,9 @@
+Package: com.changeinfoios.ct
+Name: ChangeInfoIosCT
+Version: 3.0.0
+Architecture: iphoneos-arm64
+Description: ChangeInfoIos v3 — CoreTelephony carrier-spoof companion to ChangeInfoIosMG. Hooks CTCarrier methods in commcenter / CoreTelephonyHelper. Spoofs carrier name / MCC / MNC / ISO / radio access tech for every app that reads CTTelephonyNetworkInfo. Zero inject into user apps.
+Maintainer: ChangeInfoIos
+Author: ChangeInfoIos
+Section: Tweaks
+Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
