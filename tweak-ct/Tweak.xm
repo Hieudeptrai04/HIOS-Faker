@@ -17,6 +17,7 @@
 // fuzzing rig set up.
 
 #import <Foundation/Foundation.h>
+#import <time.h>
 
 %ctor {
     @autoreleasepool {

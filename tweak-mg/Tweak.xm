@@ -18,6 +18,7 @@
 #import <dlfcn.h>
 #import <substrate.h>
 #import <string.h>
+#import <time.h>
 
 #ifdef __cplusplus
 extern "C" {
