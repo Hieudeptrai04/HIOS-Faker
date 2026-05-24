@@ -7,7 +7,6 @@
 		<key>Bundles</key>
 		<array>
 			<string>com.apple.Preferences</string>
-			<string>com.apple.springboard</string>
 			<string>com.vng.zalo</string>
 			<string>com.zing.zalo</string>
 			<string>vn.com.vng.zingalo</string>

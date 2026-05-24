@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.6.2";
+static NSString *const kAppVersion = @"2.6.3";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1877,14 +1877,16 @@ static NSString *CITweakFilterPath(void) {
 // integrate with the HIOS Faker UI — never into user-facing apps where
 // the 60-hook surface re-introduces the chat-scroll lag.
 static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
-    // v2.6.2: always include Settings + SpringBoard so the sidecar's MG hook
-    // can spoof the Model Name / Model Number values that Settings → General
-    // → About reads via MGCopyAnswer("MarketingName") and
-    // MGCopyAnswer("ModelNumber"). Without these in the filter, Settings
-    // showed the REAL device model even after Change Device.
+    // v2.6.3: REMOVED com.apple.springboard from sidecar filter — the v2.6.2
+    // sidecar with MGCopyAnswer hook crashed SpringBoard into SafeMode
+    // because SpringBoard reads dozens of MG keys during boot (lock screen
+    // wallpaper sizing, status bar, control center) and our cold-load
+    // handler still hadn't loaded gCfg in time for SpringBoard's earliest
+    // calls → re-entrance or type mismatch crashed the BBoard daemon chain.
+    // Settings (com.apple.Preferences) is fine — only loaded when user
+    // opens Settings.app, gCfg already populated by then.
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSetWithArray:@[
         @"com.apple.Preferences",
-        @"com.apple.springboard",
     ]];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
     for (CIAppInfo *app in apps) {

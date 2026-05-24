@@ -1,4 +1,4 @@
-// ChangeInfoIosZalo.dylib — v2.6.2
+// ChangeInfoIosZalo.dylib — v2.6.3
 //
 // Ultra-thin device-info sidecar. Originally Zalo-only (v2.6.0), now
 // promoted to handle EVERY user-selected target app (Facebook, TikTok,
@@ -671,8 +671,20 @@ static void onPrefsNotify(CFNotificationCenterRef c, void *o, CFStringRef n,
 %ctor {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
-        // No hard-coded bundle allowlist — plist filter is the single
-        // source of truth for which apps we load into.
+
+        // v2.6.3 SAFETY: HARD bail on SpringBoard. The v2.6.2 sidecar
+        // crashed SpringBoard into SafeMode because BBoard / lock-screen /
+        // status-bar daemons read MGCopyAnswer dozens of times during boot
+        // BEFORE gCfg loaded from disk, and our hook's early-bail path
+        // through orig_MGCopyAnswer (still NULL at that microsecond) hit
+        // a NULL-deref. SpringBoard is also too sensitive in general —
+        // it must NEVER carry our hooks. Belt-and-braces in case a stale
+        // plist filter still includes springboard.
+        if ([bid isEqualToString:@"com.apple.springboard"]) {
+            NSLog(@"[ChangeInfoIosZalo] SAFETY: skipping load into SpringBoard");
+            return;
+        }
+
         reloadCfg();
         installMGHooks();
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
