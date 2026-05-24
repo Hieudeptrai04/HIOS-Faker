@@ -455,7 +455,6 @@ static void ciResetContainer(CIAppInfo *app) {
     b.backgroundColor = [UIColor systemIndigoColor];
     b.layer.cornerRadius = 14;
     b.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-    b.heightAnchor.constant = 0;
     [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
     [[b.heightAnchor constraintEqualToConstant:54] setActive:YES];
     return b;
