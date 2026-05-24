@@ -282,24 +282,32 @@ static CFTypeRef ci_ioLookup(NSString *keyStr) {
     return (__bridge_retained CFTypeRef)val;
 }
 
+// Re-entry guard: NSData/NSString creation inside ci_ioLookup may call
+// IORegistry under the hood (NSLocale region lookup, memory tagging
+// metadata) → re-enters our hook → infinite recursion → AIDA64 burns
+// 40s CPU → frontboard scene-update watchdog kills (0x8BADF00D).
+__thread int g_inIOReg = 0;
+
 static CFTypeRef hooked_IORegCreate(mach_port_t entry, CFStringRef key,
                                      CFAllocatorRef alloc, uint32_t options) {
-    if (key) {
-        initIOKeyMap();
-        CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
-        if (sp) return sp;
-    }
+    if (g_inIOReg || !key) return orig_IORegCreate(entry, key, alloc, options);
+    g_inIOReg = 1;
+    initIOKeyMap();
+    CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+    g_inIOReg = 0;
+    if (sp) return sp;
     return orig_IORegCreate(entry, key, alloc, options);
 }
 
 static CFTypeRef hooked_IORegSearch(mach_port_t entry, const char *plane,
                                      CFStringRef key, CFAllocatorRef alloc,
                                      uint32_t options) {
-    if (key) {
-        initIOKeyMap();
-        CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
-        if (sp) return sp;
-    }
+    if (g_inIOReg || !key) return orig_IORegSearch(entry, plane, key, alloc, options);
+    g_inIOReg = 1;
+    initIOKeyMap();
+    CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+    g_inIOReg = 0;
+    if (sp) return sp;
     return orig_IORegSearch(entry, plane, key, alloc, options);
 }
 
