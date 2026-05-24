@@ -1,4 +1,4 @@
-// ChangeInfoIosZalo.dylib — v2.6.5 (adds sysctlbyname for Lirum/AIDA hw.machine spoof)
+// ChangeInfoIosZalo.dylib — v2.6.6 (CRASH FIX: drastically trim MG map to safe-string keys)
 //
 // Ultra-thin device-info sidecar. Originally Zalo-only (v2.6.0), now
 // promoted to handle EVERY user-selected target app (Facebook, TikTok,
@@ -458,12 +458,27 @@ static MGGetStringAnswer_t  orig_MGGetStringAnswer  = NULL;
 
 static __thread int g_inMG = 0;
 
+// v2.6.6: TRIMMED to safe-string-only keys. Pre-v2.6.6 map had keys
+// that real iOS returns as NSNumber / CFBoolean / NSArray (e.g., UniqueChipID
+// = CFNumber, HasFaceID = CFBoolean, SupportedOSVersions = CFArray). The
+// MGCopyAnswer hook returned NSString or NSNumber for these → type mismatch
+// → caller passed value down a typed selector path → ___forwarding___
+// exception → SIGABRT. Crash log Preferences-2026-05-24-183107 traced to
+// Apple Pay (PKPaymentRegistrationUtilities) calling
+// CFURLRequestSetHTTPHeaderFieldValue with our wrongly-typed value.
+//
+// To eliminate the entire type-mismatch class, keep only keys we are
+// CERTAIN return NSString on iOS 16+. Drop everything that could be int,
+// bool, array, or NSDate. Loses some fingerprint coverage (UniqueChipID,
+// BoardId, HasFaceID etc. now return real) but the ones that DO matter
+// for anti-fraud (UDID, Serial, IMEI, MarketingName, ProductType, MAC
+// addresses) are all safe strings.
 static NSDictionary *gMGMap = nil;
 static void buildMGMap(void) {
     static dispatch_once_t o;
     dispatch_once(&o, ^{
         gMGMap = @{
-            // String identity keys (most common fingerprint targets)
+            // String identity keys — safe to return NSString
             @"UniqueDeviceID":                          @"UniqueDeviceID",
             @"SerialNumber":                            @"SerialNumber",
             @"InternationalMobileEquipmentIdentity":    @"InternationalMobileEquipmentIdentity",
@@ -472,7 +487,7 @@ static void buildMGMap(void) {
             @"IntegratedCircuitCardIdentity":           @"IntegratedCircuitCardIdentity",
             @"IntegratedCircuitCardIdentity2":          @"IntegratedCircuitCardIdentity2",
             @"PhoneNumber":                             @"PhoneNumber",
-            // Model identity (THIS is what Settings → About reads)
+            // Model identity — Settings → About reads MarketingName + ModelNumber
             @"ProductType":                             @"ProductType",
             @"HardwareModel":                           @"HardwareModel",
             @"HWModelStr":                              @"HWModelStr",
@@ -483,72 +498,41 @@ static void buildMGMap(void) {
             // Region
             @"RegionCode":                              @"RegionCode",
             @"RegionInfo":                              @"RegionInfo",
-            // Network HW MACs
+            // Network HW MACs — always strings
             @"WiFiAddress":                             @"WiFiAddress",
             @"BluetoothAddress":                        @"BluetoothAddress",
             @"EthernetAddress":                         @"EthernetAddress",
-            // OS / boot / chip
+            // OS strings — also reads via UIDevice.systemVersion fallback
             @"BuildVersion":                            @"BuildVersion",
             @"ProductBuildVersion":                     @"BuildVersion",
-            @"OSBuildVersion":                          @"BuildVersion",
-            @"SoftwareBundleVersion":                   @"BuildVersion",
             @"ProductVersion":                          @"ProductVersion",
             @"ProductVersionString":                    @"ProductVersion",
-            @"MaxSupportedOSVersion":                   @"ProductVersion",
-            @"SupportedOSVersions":                     @"ProductVersion",
-            @"FirmwareVersion":                         @"FirmwareVersion",
-            @"BasebandVersion":                         @"BasebandVersion",
-            @"BasebandSerialNumber":                    @"BasebandSerialNumber",
-            @"UniqueChipID":                            @"UniqueChipID",
-            @"BoardId":                                 @"BoardId",
-            @"HardwarePlatform":                        @"BoardId",
-            @"ChipID":                                  @"ChipID",
-            @"BootNonce":                               @"BootNonce",
-            // Colors / capability strings
+            // Colors — strings
             @"DeviceColor":                             @"DeviceColor",
             @"DeviceEnclosureColor":                    @"DeviceEnclosureColor",
-            // Disk + battery
-            @"DiskUsage":                               @"DiskUsage",
-            @"TotalDiskCapacity":                       @"TotalDiskCapacity",
-            @"TotalSystemAvailable":                    @"TotalSystemAvailable",
-            @"BatteryCurrentCapacity":                  @"BatteryCurrentCapacity",
-            @"BatteryIsCharging":                       @"BatteryIsCharging",
-            @"BatterySerialNumber":                     @"BatterySerialNumber",
-            @"AirplaneMode":                            @"AirplaneMode",
-            @"MobileSubscriberCountryCode":             @"MobileSubscriberCountryCode",
-            @"MobileSubscriberNetworkCode":             @"MobileSubscriberNetworkCode",
-            @"SIMTrayStatus":                           @"SIMTrayStatus",
-            // Hardware capability booleans — MUST match the claimed model
-            @"HasFaceID":                               @"HasFaceID",
-            @"HasTouchID":                              @"HasTouchID",
-            @"HasMesa":                                 @"HasTouchID",
-            @"HasHomeButton":                           @"HasHomeButton",
-            @"HasOLEDDisplay":                          @"HasOLEDDisplay",
-            @"Has5GUW":                                 @"Has5G",
-            @"HasNFC":                                  @"HasNFC",
-            @"HasCellularConnectivity":                 @"HasCellularConnectivity",
-            @"HasBaseband":                             @"HasCellularConnectivity",
-            // Activation lifecycle (anti-fraud cross-checks vs reg date)
-            @"InitialActivationDate":                   @"InitialActivationDate",
-            @"ActivationState":                         @"ActivationState",
-            @"ActivationStateAcknowledged":             @"ActivationStateAcknowledged",
+            // INTENTIONALLY DROPPED (type-mismatch risk → crash):
+            //   UniqueChipID (NSNumber on iOS 16)
+            //   BoardId / ChipID / HardwarePlatform (CFNumber)
+            //   BootNonce (CFData or CFNumber depending on iOS)
+            //   FirmwareVersion / BasebandVersion (some iOS return as CFNumber)
+            //   TotalDiskCapacity / TotalSystemAvailable / DiskUsage (CFNumber)
+            //   BatteryCurrentCapacity (CFNumber)
+            //   BatteryIsCharging / AirplaneMode (CFBoolean → MGCopyAnswer)
+            //   HasFaceID / HasTouchID / HasNFC / HasOLEDDisplay (CFBoolean)
+            //   Has5GUW / HasHomeButton / HasMesa / HasBaseband / HasCellularConnectivity
+            //   MaxSupportedOSVersion / SupportedOSVersions (CFArray)
+            //   InitialActivationDate (CFDate)
+            //   ActivationState / ActivationStateAcknowledged (mixed)
+            //   MobileSubscriberCountryCode / MobileSubscriberNetworkCode
+            //   SIMTrayStatus / OSBuildVersion / SoftwareBundleVersion
+            //   BasebandSerialNumber
         };
     });
 }
 
-// Keys MGCopyAnswer returns as NSNumber (int / long) instead of NSString.
-// Reading these as strings would type-mismatch and Settings.app's About
-// screen would render the wrong value (or crash on int-cast).
-static BOOL isMGIntKey(NSString *k) {
-    static NSSet *s = nil; static dispatch_once_t o;
-    dispatch_once(&o, ^{
-        s = [NSSet setWithObjects:
-             @"TotalDiskCapacity", @"TotalSystemAvailable", @"DiskUsage",
-             @"BatteryCurrentCapacity", @"ChipID", @"BoardId",
-             @"HardwarePlatform", @"UniqueChipID", nil];
-    });
-    return [s containsObject:k];
-}
+// v2.6.6: int-keys set deleted along with their map entries; everything we
+// still return goes back as plain NSString to match real-iOS behaviour.
+static BOOL isMGIntKey(NSString *k) { (void)k; return NO; }
 
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (g_inMG || !orig_MGCopyAnswer) return orig_MGCopyAnswer ? orig_MGCopyAnswer(property) : NULL;
