@@ -46,7 +46,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"2.6.7";
+static NSString *const kAppVersion = @"2.6.8";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -127,6 +127,24 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"web_canvasNoise"] == nil) { _cfg[@"web_canvasNoise"] = @(YES); seeded = YES; }
     if (_cfg[@"keychainReset"]   == nil) { _cfg[@"keychainReset"]   = @(YES); seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
+
+    // v2.6.8: opt-in flags that v2.5.49+ introduced for performance gating.
+    // Default-ON so full spoof coverage (MG fishhook + sysctlbyname +
+    // IORegistry + uname + getifaddrs + getattrlist) survives Change
+    // Device — previously these flags only existed if user manually
+    // wrote them, so the first Change Device save would silently drop
+    // them from disk and apps like AIDA64/Lirum lost model spoofing.
+    NSArray *deepHookFlags = @[
+        @"_ci_enable_mg",
+        @"_ci_enable_sysctlbyname",
+        @"_ci_enable_iokit_reg",
+        @"_ci_enable_hw_hook",
+        @"_ci_enable_net_hook",
+        @"_ci_enable_uname_hook",
+    ];
+    for (NSString *k in deepHookFlags) {
+        if (_cfg[k] == nil) { _cfg[k] = @(YES); seeded = YES; }
+    }
     if (seeded) {
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
                         format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
