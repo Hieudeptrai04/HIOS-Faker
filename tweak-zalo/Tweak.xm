@@ -775,26 +775,29 @@ static void ciSidecarMark(NSString *kind, NSString *bid, NSString *extra) {
              (unsigned long)(gCfg ? gCfg.count : 0),
              cs(@"MarketingName") ?: @"<nil>"]);
 
-        // v2.7.3: per-bundle deep_spoof gate. AIDA/Lirum/DeviceDesign auto-
-        // enable MG+sysctl because their entire UX is showing device-info
-        // (real vs fake the user can SEE). Acceptable to be slightly laggy
-        // in these 3 apps since they're not register-flow apps — they're
-        // just verifiers. All OTHER target apps (Zalo, FB, TikTok, banking,
-        // etc.) stay default-OFF for smoothness, matching v2.6.0 baseline.
-        // Global force-enable still works via _ci_enable_deep_spoof=YES.
-        NSSet *verifierBids = [NSSet setWithArray:@[
-            @"com.finalwire.aida64",
-            @"com.finalwire.aida64-ios",
-            @"com.blacksmith.lirum",
-            @"com.umang.devicedesign",
-        ]];
-        BOOL wantDeep = [verifierBids containsObject:bid] || cb(@"_ci_enable_deep_spoof");
-        if (wantDeep) {
+        // v2.7.4: deep_spoof default DISABLED globally + per-bundle. After
+        // researching MGCache direct-patch approach (works via MD5(MGCopyAnswer
+        // +key) base64 hash) we proved iOS auto-regenerates the cache so any
+        // direct patch reverts on next mobilegestaltd restart. Cannot match
+        // "market tool" zero-inject claim — those tools also inject (just
+        // typically into mobilegestaltd via MGCacheEnabler-style tweaks).
+        //
+        // Pragmatic answer: stop trying to spoof MG hat-chases. The 12 ObjC
+        // hooks (UIDevice / ASIdentifierManager / CTCarrier / UIScreen /
+        // NSLocale / NSTimeZone / NSProcessInfo / AVCaptureDevice / ATT)
+        // cover the device-info path 99 % of Vietnamese apps actually read
+        // (Zalo, FB, TikTok, MoMo, Vietcombank, etc.). AIDA64 / Lirum /
+        // DeviceDesign read via MGCopyAnswer directly and will see REAL
+        // model — accepted trade-off for ALL APP SMOOTH.
+        //
+        // Opt-in still available via global _ci_enable_deep_spoof=YES if a
+        // user explicitly wants to trade smoothness for AIDA verification.
+        if (cb(@"_ci_enable_deep_spoof")) {
             installSysctlHook();
             installMGHooks();
-            NSLog(@"[ChangeInfoIosZalo] deep_spoof=YES (verifier bundle %@ or global flag)", bid);
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=YES (global opt-in): MG + sysctl installed (slight lag)");
         } else {
-            NSLog(@"[ChangeInfoIosZalo] deep_spoof=NO (non-verifier %@): smooth mode", bid);
+            NSLog(@"[ChangeInfoIosZalo] deep_spoof=NO (default): pure 12 ObjC hooks for smoothness");
         }
         // v2.6.4 marker #3: MG hook install result.
         ciSidecarMark(@"mg", bid, [NSString stringWithFormat:
