@@ -51,17 +51,47 @@ static long g_dbglog_count = 0;
 static const long kMaxDbgLines = 4000;
 static const char *kDbgPath = "/var/jb/etc/changeinfoios/v3_mg_debug.log";
 
+// Per-app tmp path (always writable from inside the app sandbox).
+// /var/jb/etc/ writes silently fail from sandboxed App Store apps —
+// even with 0666 perms, sandbox profile denies writes outside container.
+// Resolved on first dbglog call via NSTemporaryDirectory().
+static char g_dbgTmpPath[256] = "";
+static char g_dbgTmpResolved = 0;
+
 __attribute__((format(printf, 1, 2)))
 static void dbglog(const char *fmt, ...) {
     if (g_dbglog_count > kMaxDbgLines) return;
     pthread_mutex_lock(&g_dbglog_mu);
     if (g_dbglog_count > kMaxDbgLines) { pthread_mutex_unlock(&g_dbglog_mu); return; }
+
+    // Lazy resolve per-app tmp on first call (NSTemporaryDirectory
+    // requires Foundation initialized — safe in %ctor since Logos
+    // runs after Foundation +load chain).
+    if (!g_dbgTmpResolved) {
+        g_dbgTmpResolved = 1;
+        @autoreleasepool {
+            NSString *tmp = NSTemporaryDirectory();
+            if (tmp && tmp.length) {
+                NSString *p = [tmp stringByAppendingPathComponent:@"v3_mg_debug.log"];
+                strncpy(g_dbgTmpPath, [p UTF8String], sizeof(g_dbgTmpPath) - 1);
+            }
+        }
+    }
+
+    // Try both targets; sandboxed apps will only succeed on the tmp one,
+    // SpringBoard/daemons on the /var/jb one. Either is enough.
     if (!g_dbglog) g_dbglog = fopen(kDbgPath, "a");
-    if (g_dbglog) {
+    FILE *tmpf = (g_dbgTmpPath[0]) ? fopen(g_dbgTmpPath, "a") : NULL;
+
+    if (g_dbglog || tmpf) {
+        char buf[1024];
         va_list ap; va_start(ap, fmt);
-        vfprintf(g_dbglog, fmt, ap);
+        int n = vsnprintf(buf, sizeof(buf), fmt, ap);
         va_end(ap);
-        fflush(g_dbglog);
+        if (n < 0) n = 0;
+        if ((size_t)n >= sizeof(buf)) n = sizeof(buf) - 1;
+        if (g_dbglog) { fwrite(buf, 1, n, g_dbglog); fflush(g_dbglog); }
+        if (tmpf)     { fwrite(buf, 1, n, tmpf);     fclose(tmpf); }
         g_dbglog_count++;
     }
     pthread_mutex_unlock(&g_dbglog_mu);
@@ -617,6 +647,31 @@ static int hooked_getifaddrs(struct ifaddrs **ifap) {
 }
 
 // ============================================================
+// SystemConfiguration: SCDynamicStoreCopyComputerName returns the
+// user-visible device name ("Hieu's iPhone") for apps that don't use
+// UIDevice.name (e.g. AIDA64 — it links SystemConfiguration.framework).
+// MSHookFunction patches the symbol directly via dlsym.
+// ============================================================
+typedef CFStringRef (*SCDSCopyComputerName_t)(void *store, void *nameEncoding);
+static SCDSCopyComputerName_t orig_SCDSCopyComputerName = NULL;
+
+__thread int g_inSCDSName = 0;
+static CFStringRef hooked_SCDSCopyComputerName(void *store, void *nameEncoding) {
+    if (g_inSCDSName) return orig_SCDSCopyComputerName(store, nameEncoding);
+    g_inSCDSName = 1;
+    NSString *v = getConfigStr(@"deviceName");
+    if (v) {
+        dbglog("SCDSCopyComputerName %s -> %s\n", g_procname, [v UTF8String]);
+        if (nameEncoding) *((CFStringEncoding *)nameEncoding) = kCFStringEncodingUTF8;
+        g_inSCDSName = 0;
+        return (CFStringRef)CFBridgingRetain([v copy]);
+    }
+    CFStringRef r = orig_SCDSCopyComputerName(store, nameEncoding);
+    g_inSCDSName = 0;
+    return r;
+}
+
+// ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
 // AIDA64 + most analytics SDKs query these directly.
@@ -707,6 +762,43 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         dbglog("ctor %s fishhook MG+libc rc=%d orig: sysctl=%p getif=%p ghn=%p\n",
                g_procname, fh, (void *)orig_sysctlbyname,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
+
+        // Belt-and-suspenders: MSHookFunction patches the function prologue
+        // directly, so it intercepts callers regardless of how they're
+        // bound (lazy, eager, __got, __TEXT-encrypted). fishhook misses
+        // App Store apps that pre-resolve libc into immediate addresses;
+        // MSHookFunction catches everyone since libsystem_c is shared.
+        // Pre-resolved orig_* gets overwritten by MSHookFunction with a
+        // pointer to the saved prologue trampoline — safe in either case.
+        if (orig_sysctlbyname) {
+            MSHookFunction((void *)orig_sysctlbyname, (void *)hooked_sysctlbyname,
+                           (void **)&orig_sysctlbyname);
+        }
+        if (orig_getifaddrs) {
+            MSHookFunction((void *)orig_getifaddrs, (void *)hooked_getifaddrs,
+                           (void **)&orig_getifaddrs);
+        }
+        if (orig_gethostname) {
+            MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
+                           (void **)&orig_gethostname);
+        }
+        dbglog("ctor %s after MSHook libc orig: sysctl=%p getif=%p ghn=%p\n",
+               g_procname, (void *)orig_sysctlbyname,
+               (void *)orig_getifaddrs, (void *)orig_gethostname);
+
+        // SCDynamicStoreCopyComputerName — SystemConfiguration framework,
+        // used by apps that bypass UIDevice.name for device name.
+        void *sc = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_NOW);
+        if (sc) {
+            void *scdsName = dlsym(sc, "SCDynamicStoreCopyComputerName");
+            if (scdsName) {
+                orig_SCDSCopyComputerName = (SCDSCopyComputerName_t)scdsName;
+                MSHookFunction(scdsName, (void *)hooked_SCDSCopyComputerName,
+                               (void **)&orig_SCDSCopyComputerName);
+            }
+            dbglog("ctor %s SC=%p SCDSCopyName=%p orig=%p\n",
+                   g_procname, sc, scdsName, (void *)orig_SCDSCopyComputerName);
+        }
 
         // IORegistry: fishhook can't rebind IOKit framework calls (eager
         // bind / indirect stubs). Use MSHookFunction (ellekit) instead —

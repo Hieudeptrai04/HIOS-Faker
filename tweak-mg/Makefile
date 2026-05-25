@@ -7,6 +7,6 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = ChangeInfoIosMG
 ChangeInfoIosMG_FILES = Tweak.xm fishhook.c
 ChangeInfoIosMG_CFLAGS = -fobjc-arc -Wno-error -Wno-deprecated-declarations
-ChangeInfoIosMG_FRAMEWORKS = Foundation CoreFoundation UIKit IOKit
+ChangeInfoIosMG_FRAMEWORKS = Foundation CoreFoundation UIKit IOKit SystemConfiguration
 
 include $(THEOS_MAKE_PATH)/tweak.mk
