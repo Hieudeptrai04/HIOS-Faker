@@ -18,6 +18,11 @@
 #import <stdarg.h>
 #import <stdio.h>
 #import <unistd.h>
+#import <string.h>
+#import <sys/sysctl.h>
+#import <ifaddrs.h>
+#import <net/if_dl.h>
+#import <net/if.h>
 #import "fishhook.h"
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
@@ -423,6 +428,195 @@ static kern_return_t hooked_IORegCreateProps(mach_port_t entry,
 }
 
 // ============================================================
+// LAYER 2b: libc syscalls. Device-info viewers like AIDA64 do NOT
+// link libMobileGestalt or IOKit — verified by `otool -L AIDA64_c3`
+// showing only Foundation/UIKit/CoreTelephony/SystemConfiguration.
+// They read hardware identity directly via libc:
+//   - sysctlbyname("hw.machine") / "hw.model" → model identifier
+//   - getifaddrs() → MAC addresses on AF_LINK sockaddrs
+//   - gethostname() → device name (sometimes)
+// MGCopyAnswer + IORegistry hooks above are useless for AIDA but
+// still needed for Zalo/FB/IG (which DO use libMobileGestalt via
+// Firebase / analytics SDKs).
+//
+// All three are lazy-bound in apps → fishhook rebinds them.
+// ============================================================
+typedef int (*sysctlbyname_t)(const char *, void *, size_t *, void *, size_t);
+typedef int (*getifaddrs_t)(struct ifaddrs **);
+typedef int (*gethostname_t)(char *, size_t);
+static sysctlbyname_t orig_sysctlbyname = NULL;
+static getifaddrs_t   orig_getifaddrs   = NULL;
+static gethostname_t  orig_gethostname  = NULL;
+
+// Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
+// inside the hook can itself call sysctlbyname (Foundation queries
+// hw.physicalcpu for thread pool sizing on first touch) → recursion.
+__thread int g_inSysctl = 0;
+
+// sysctl key → config key. AIDA strings confirmed only hw.model +
+// hw.machine, but apps in the wild query the whole hw.* and kern.*
+// tree, so spoof everything we have data for.
+static NSDictionary *g_sysctlMap = nil;
+static void initSysctlMap(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_sysctlMap = @{
+            @"hw.machine":     @"hw_machine",
+            @"hw.model":       @"hw_model",
+            @"hw.product":     @"hw_machine",
+            @"hw.targettype":  @"hw_machine",
+            @"hw.memsize":     @"hw_memsize",
+            @"hw.physmem":     @"hw_memsize",
+            @"hw.ncpu":        @"processorCount",
+            @"hw.activecpu":   @"processorCount",
+            @"hw.physicalcpu": @"hw_physicalcpu",
+            @"hw.logicalcpu":  @"hw_logicalcpu_max",
+            @"hw.logicalcpu_max":  @"hw_logicalcpu_max",
+            @"hw.physicalcpu_max": @"hw_physicalcpu",
+            @"kern.hostname":  @"deviceName",
+            @"kern.osversion": @"BuildVersion",
+            @"kern.osrelease": @"systemVersion",
+            @"kern.boottime":  @"kern_boottime",
+            @"kern.uuid":      @"IOPlatformUUID",
+        };
+    });
+}
+
+// Return 0 = success on string copy. Honors oldp==NULL probe-for-size
+// pattern (caller calls twice: once with NULL to learn size, once with buf).
+static int writeStringSysctl(const char *s, void *oldp, size_t *oldlenp) {
+    size_t need = strlen(s) + 1;
+    if (!oldp) { if (oldlenp) *oldlenp = need; return 0; }
+    if (!oldlenp) return -1;
+    size_t avail = *oldlenp;
+    if (avail < need) {
+        memcpy(oldp, s, avail);          // truncate, still set size
+        ((char*)oldp)[avail - 1] = 0;
+        *oldlenp = need;
+        return -1;                        // ENOMEM equivalent
+    }
+    memcpy(oldp, s, need);
+    *oldlenp = need;
+    return 0;
+}
+
+static int writeIntegerSysctl(int64_t v, void *oldp, size_t *oldlenp, size_t width) {
+    if (!oldp) { if (oldlenp) *oldlenp = width; return 0; }
+    if (!oldlenp || *oldlenp < width) return -1;
+    if (width == 4) { uint32_t u = (uint32_t)v; memcpy(oldp, &u, 4); }
+    else            { uint64_t u = (uint64_t)v; memcpy(oldp, &u, 8); }
+    *oldlenp = width;
+    return 0;
+}
+
+static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
+                                void *newp, size_t newlen) {
+    if (g_inSysctl || !name || newp) {
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    g_inSysctl = 1;
+    initSysctlMap();
+    NSString *ns = [NSString stringWithUTF8String:name];
+    NSString *cfgKey = g_sysctlMap[ns];
+    if (!cfgKey) {
+        g_inSysctl = 0;
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    id v = getConfig(cfgKey);
+    if (!v) {
+        g_inSysctl = 0;
+        return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+
+    dbglog("sysctl %s name=%s\n", g_procname, name);
+
+    int rc;
+    if ([v isKindOfClass:[NSString class]]) {
+        rc = writeStringSysctl([(NSString *)v UTF8String], oldp, oldlenp);
+    } else if ([v isKindOfClass:[NSNumber class]]) {
+        // Probe orig to learn caller's expected width (int vs long).
+        size_t origLen = 0;
+        orig_sysctlbyname(name, NULL, &origLen, NULL, 0);
+        size_t width = (origLen == 4) ? 4 : 8;
+        rc = writeIntegerSysctl([(NSNumber *)v longLongValue], oldp, oldlenp, width);
+    } else {
+        rc = orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    }
+    g_inSysctl = 0;
+    return rc;
+}
+
+// gethostname → spoof to deviceName if set.
+__thread int g_inHostname = 0;
+static int hooked_gethostname(char *buf, size_t len) {
+    if (g_inHostname || !buf || len == 0) return orig_gethostname(buf, len);
+    g_inHostname = 1;
+    NSString *v = getConfigStr(@"deviceName");
+    if (!v) { g_inHostname = 0; return orig_gethostname(buf, len); }
+    const char *s = [v UTF8String];
+    size_t need = strlen(s);
+    size_t cap = len - 1;
+    size_t cp = need < cap ? need : cap;
+    memcpy(buf, s, cp);
+    buf[cp] = 0;
+    g_inHostname = 0;
+    dbglog("gethostname %s -> %s\n", g_procname, buf);
+    return 0;
+}
+
+// Parse "aa:bb:cc:dd:ee:ff" → 6 raw bytes. Returns YES on success.
+static BOOL parseMAC6(const char *s, uint8_t out[6]) {
+    if (!s) return NO;
+    unsigned int b[6];
+    if (sscanf(s, "%x:%x:%x:%x:%x:%x", &b[0],&b[1],&b[2],&b[3],&b[4],&b[5]) != 6) return NO;
+    for (int i = 0; i < 6; i++) out[i] = (uint8_t)(b[i] & 0xff);
+    return YES;
+}
+
+// getifaddrs → call orig, walk linked list, replace MAC bytes in
+// every AF_LINK sockaddr_dl based on interface name. The struct is
+// mutable from the caller's view (caller passes it to freeifaddrs);
+// rewriting the 6 bytes of MAC in place is safe — same alloc, same
+// length, just different content.
+__thread int g_inIfaddrs = 0;
+static int hooked_getifaddrs(struct ifaddrs **ifap) {
+    int rc = orig_getifaddrs(ifap);
+    if (rc != 0 || g_inIfaddrs || !ifap || !*ifap) return rc;
+    g_inIfaddrs = 1;
+
+    NSString *wifiStr = getConfigStr(@"WiFiAddress");
+    NSString *btStr   = getConfigStr(@"BluetoothAddress");
+    NSString *ethStr  = getConfigStr(@"EthernetAddress");
+    uint8_t wifi[6], bt[6], eth[6];
+    BOOL hasWifi = wifiStr && parseMAC6([wifiStr UTF8String], wifi);
+    BOOL hasBT   = btStr   && parseMAC6([btStr   UTF8String], bt);
+    BOOL hasEth  = ethStr  && parseMAC6([ethStr  UTF8String], eth);
+
+    int replaced = 0;
+    for (struct ifaddrs *p = *ifap; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_LINK) continue;
+        struct sockaddr_dl *sdl = (struct sockaddr_dl *)p->ifa_addr;
+        if (sdl->sdl_alen != 6) continue;
+        const char *nm = p->ifa_name ?: "";
+        const uint8_t *src = NULL;
+        // en0 = WiFi on iOS; en1 / en2 = USB-eth / hotspot; bridge0 = bridge.
+        // awdl0 / llw0 = peer-to-peer WiFi → keep as WiFi MAC.
+        if      (strncmp(nm, "en0",    3) == 0 && hasWifi) src = wifi;
+        else if (strncmp(nm, "awdl",   4) == 0 && hasWifi) src = wifi;
+        else if (strncmp(nm, "llw",    3) == 0 && hasWifi) src = wifi;
+        else if (strncmp(nm, "en",     2) == 0 && hasEth)  src = eth;
+        else if (strncmp(nm, "bridge", 6) == 0 && hasEth)  src = eth;
+        else if (strncmp(nm, "bluetooth", 9) == 0 && hasBT) src = bt;
+        if (!src) continue;
+        memcpy(LLADDR(sdl), src, 6);
+        replaced++;
+    }
+    dbglog("getifaddrs %s replaced=%d\n", g_procname, replaced);
+    g_inIfaddrs = 0;
+    return rc;
+}
+
+// ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
 // AIDA64 + most analytics SDKs query these directly.
@@ -477,22 +671,42 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
 
-        // Resolve the original first so fishhook can chain to it.
+        // Resolve originals first so the hook can chain to them even
+        // if fishhook fails to rebind a particular symbol (e.g. when
+        // it's eagerly bound or pre-resolved via __DATA __got).
         void *h = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
         if (h) orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(h, "MGCopyAnswer");
-        dbglog("ctor %s libMG=%p MG_orig=%p\n", g_procname, h, (void *)orig_MGCopyAnswer);
+        orig_sysctlbyname = (sysctlbyname_t)dlsym(RTLD_DEFAULT, "sysctlbyname");
+        orig_getifaddrs   = (getifaddrs_t)  dlsym(RTLD_DEFAULT, "getifaddrs");
+        orig_gethostname  = (gethostname_t) dlsym(RTLD_DEFAULT, "gethostname");
+        dbglog("ctor %s libMG=%p MG=%p sysctl=%p getif=%p ghn=%p\n",
+               g_procname, h, (void *)orig_MGCopyAnswer, (void *)orig_sysctlbyname,
+               (void *)orig_getifaddrs, (void *)orig_gethostname);
+        // libc orig pointers are always resolvable; MG only present on
+        // apps that link libMobileGestalt — don't abort if missing,
+        // libc hooks are still useful (this is exactly the AIDA case).
         if (!orig_MGCopyAnswer) {
-            dbglog("ctor %s ABORT: no MGCopyAnswer\n", g_procname);
-            return;
+            dbglog("ctor %s WARN: no MGCopyAnswer (app doesn't link libMG) — libc hooks only\n", g_procname);
         }
 
-        // MGCopyAnswer: fishhook (works for lazy-bound MG calls).
+        // fishhook for lazy-bound libc / MG symbols. AIDA64 doesn't
+        // link libMobileGestalt, so MGCopyAnswer hook is a no-op there;
+        // sysctlbyname / getifaddrs / gethostname are how AIDA actually
+        // reads model + MAC + hostname.
         struct rebinding rebs[] = {
-            { "MGCopyAnswer", (void *)hooked_MGCopyAnswer,
+            { "MGCopyAnswer",  (void *)hooked_MGCopyAnswer,
               (void **)&orig_MGCopyAnswer },
+            { "sysctlbyname", (void *)hooked_sysctlbyname,
+              (void **)&orig_sysctlbyname },
+            { "getifaddrs",   (void *)hooked_getifaddrs,
+              (void **)&orig_getifaddrs },
+            { "gethostname",  (void *)hooked_gethostname,
+              (void **)&orig_gethostname },
         };
-        int fh = rebind_symbols(rebs, 1);
-        dbglog("ctor %s fishhook MGCopyAnswer rc=%d\n", g_procname, fh);
+        int fh = rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
+        dbglog("ctor %s fishhook MG+libc rc=%d orig: sysctl=%p getif=%p ghn=%p\n",
+               g_procname, fh, (void *)orig_sysctlbyname,
+               (void *)orig_getifaddrs, (void *)orig_gethostname);
 
         // IORegistry: fishhook can't rebind IOKit framework calls (eager
         // bind / indirect stubs). Use MSHookFunction (ellekit) instead —
