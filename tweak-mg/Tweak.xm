@@ -343,9 +343,53 @@ static void initIOKeyMap(void) {
             @"board":@"IOBoardId",
             @"compatible":@"hw_machine",
             @"system-serial-number":@"IOPlatformSerialNumber",
+            // Observed in AIDA64 IORegCreate logs but un-spoofed:
+            @"product-id":@"ProductType",
+            // Network controllers — AIDA Network tab pulls MAC from IOKit,
+            // not from getifaddrs. IOEthernetController + IO80211Controller
+            // both expose IOMACAddress as NSData (6 bytes).
+            @"IOMACAddress":@"WiFiAddress",
+            @"IO80211InterfaceMACAddress":@"WiFiAddress",
+            @"IO80211HardwareAddress":@"WiFiAddress",
+            @"IOEthernetMACAddress":@"EthernetAddress",
         };
     });
 }
+
+// hw.model returns a BOARD ID (e.g. "D22AP" for iPhone X, "D54pAP"
+// for 12 Pro Max), NOT a product type string. AIDA's marketing-name
+// lookup expects board ID format; feeding it "iPhone13,4" makes the
+// table miss and fall back. This table maps ProductType to BoardID
+// for the common iPhone models we ship presets for. Add entries as
+// the host app's preset DB grows.
+static NSString *productTypeToBoardId(NSString *pt) {
+    static NSDictionary *map = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            @"iPhone10,3":@"D22AP",  @"iPhone10,6":@"D221AP",   // X
+            @"iPhone11,2":@"D321AP",                              // XS
+            @"iPhone11,4":@"D331AP", @"iPhone11,6":@"D331pAP",    // XS Max
+            @"iPhone11,8":@"N841AP",                              // XR
+            @"iPhone12,1":@"N104AP",                              // 11
+            @"iPhone12,3":@"D421AP", @"iPhone12,5":@"D431AP",     // 11 Pro / Max
+            @"iPhone12,8":@"D79AP",                               // SE 2
+            @"iPhone13,1":@"D52gAP", @"iPhone13,2":@"D53gAP",     // 12 mini / 12
+            @"iPhone13,3":@"D53pAP", @"iPhone13,4":@"D54pAP",     // 12 Pro / Pro Max
+            @"iPhone14,2":@"D63AP",  @"iPhone14,3":@"D64AP",      // 13 Pro / Pro Max
+            @"iPhone14,4":@"D16AP",  @"iPhone14,5":@"D17AP",      // 13 mini / 13
+            @"iPhone14,6":@"D49AP",                               // SE 3
+            @"iPhone14,7":@"D27AP",  @"iPhone14,8":@"D28AP",      // 14 / 14 Plus
+            @"iPhone15,2":@"D73AP",  @"iPhone15,3":@"D74AP",      // 14 Pro / Pro Max
+            @"iPhone15,4":@"D37AP",  @"iPhone15,5":@"D38AP",      // 15 / 15 Plus
+            @"iPhone16,1":@"D83AP",  @"iPhone16,2":@"D84AP",      // 15 Pro / Pro Max
+        };
+    });
+    return map[pt];
+}
+
+// Forward decl — defined down in the libc-hook section.
+static BOOL parseMAC6(const char *s, uint8_t out[6]);
 
 static CFTypeRef ci_ioLookup(NSString *keyStr) {
     NSString *configKey = g_ioKeyMap[keyStr];
@@ -358,6 +402,19 @@ static CFTypeRef ci_ioLookup(NSString *keyStr) {
         [keyStr isEqualToString:@"system-serial-number"]) {
         NSData *d = [val dataUsingEncoding:NSUTF8StringEncoding];
         return (__bridge_retained CFTypeRef)d;
+    }
+    // IOMACAddress / IO80211*MACAddress / IOEthernetMACAddress = 6 raw bytes.
+    // IOKit stores them as NSData, not "aa:bb:..." string. AIDA reads via
+    // bytes → format-prints as colon-separated. Wrong encoding = no spoof.
+    if ([keyStr isEqualToString:@"IOMACAddress"] ||
+        [keyStr isEqualToString:@"IO80211InterfaceMACAddress"] ||
+        [keyStr isEqualToString:@"IO80211HardwareAddress"] ||
+        [keyStr isEqualToString:@"IOEthernetMACAddress"]) {
+        uint8_t b[6];
+        if (parseMAC6([val UTF8String], b)) {
+            return (__bridge_retained CFTypeRef)[NSData dataWithBytes:b length:6];
+        }
+        return NULL;
     }
     return (__bridge_retained CFTypeRef)val;
 }
@@ -558,17 +615,28 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
 
-    dbglog("sysctl %s name=%s\n", g_procname, name);
+    // Real iOS hw.model returns a BOARD ID ("D22AP"), not a ProductType
+    // ("iPhone10,3"). If our config gives us a ProductType, translate.
+    if ([(NSString *)ns isEqualToString:@"hw.model"] &&
+        [v isKindOfClass:[NSString class]] &&
+        [(NSString *)v hasPrefix:@"iPhone"]) {
+        NSString *board = productTypeToBoardId((NSString *)v);
+        if (board) v = board;
+    }
 
     int rc;
     if ([v isKindOfClass:[NSString class]]) {
-        rc = writeStringSysctl([(NSString *)v UTF8String], oldp, oldlenp);
+        const char *sp = [(NSString *)v UTF8String];
+        rc = writeStringSysctl(sp, oldp, oldlenp);
+        dbglog("sysctl %s name=%s -> '%s' rc=%d\n", g_procname, name, sp, rc);
     } else if ([v isKindOfClass:[NSNumber class]]) {
         // Probe orig to learn caller's expected width (int vs long).
         size_t origLen = 0;
         orig_sysctlbyname(name, NULL, &origLen, NULL, 0);
         size_t width = (origLen == 4) ? 4 : 8;
         rc = writeIntegerSysctl([(NSNumber *)v longLongValue], oldp, oldlenp, width);
+        dbglog("sysctl %s name=%s -> %lld (w=%zu) rc=%d\n",
+               g_procname, name, [(NSNumber *)v longLongValue], width, rc);
     } else {
         rc = orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
@@ -678,10 +746,14 @@ static CFStringRef hooked_SCDSCopyComputerName(void *store, void *nameEncoding) 
 // ============================================================
 %hook UIDevice
 - (NSString *)name {
-    NSString *v = getConfigStr(@"deviceName"); return v ?: %orig;
+    NSString *v = getConfigStr(@"deviceName");
+    dbglog("UIDevice.name %s spoof=%c orig?=%c\n", g_procname, v?'Y':'N', v?'.':'?');
+    return v ?: %orig;
 }
 - (NSString *)model {
-    NSString *v = getConfigStr(@"deviceModel"); return v ?: %orig;
+    NSString *v = getConfigStr(@"deviceModel");
+    dbglog("UIDevice.model %s spoof=%c\n", g_procname, v?'Y':'N');
+    return v ?: %orig;
 }
 - (NSString *)localizedModel {
     NSString *v = getConfigStr(@"localizedModel"); return v ?: %orig;
@@ -690,7 +762,9 @@ static CFStringRef hooked_SCDSCopyComputerName(void *store, void *nameEncoding) 
     NSString *v = getConfigStr(@"systemName"); return v ?: %orig;
 }
 - (NSString *)systemVersion {
-    NSString *v = getConfigStr(@"systemVersion"); return v ?: %orig;
+    NSString *v = getConfigStr(@"systemVersion");
+    dbglog("UIDevice.systemVersion %s spoof=%c\n", g_procname, v?'Y':'N');
+    return v ?: %orig;
 }
 - (NSUUID *)identifierForVendor {
     NSString *v = getConfigStr(@"identifierForVendor");
