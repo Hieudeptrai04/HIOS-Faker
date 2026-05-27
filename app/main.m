@@ -1350,10 +1350,15 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:cpuCores  forKey:@"processorCount"];
     [cm setObject:cpuCores  forKey:@"hw_physicalcpu"];
     [cm setObject:cpuCores  forKey:@"hw_logicalcpu_max"];
-    unsigned long long capacity64 = (unsigned long long)(arc4random_uniform(4) + 1) * 64ULL * 1073741824ULL; // 64/128/192/256 GB
+    // Valid iPhone storage sizes (GB). 192 GB never shipped on any iPhone.
+    static const unsigned int kStorGBPool[] = {64, 128, 256, 512};
+    unsigned int storGB = kStorGBPool[arc4random_uniform(4)];
+    unsigned long long capacity64 = (unsigned long long)storGB * 1073741824ULL;
+    unsigned long long usedBytes = (unsigned long long)(arc4random_uniform(storGB/4) + storGB/8) * 1073741824ULL;
+    if (usedBytes >= capacity64) usedBytes = capacity64 / 4;
     [cm setObject:@(capacity64) forKey:@"TotalDiskCapacity"];
-    [cm setObject:@(capacity64 - (unsigned long long)(arc4random_uniform(20)+5) * 1073741824ULL) forKey:@"TotalSystemAvailable"];
-    [cm setObject:@((unsigned long long)(arc4random_uniform(20)+5) * 1073741824ULL) forKey:@"DiskUsage"];
+    [cm setObject:@(capacity64 - usedBytes) forKey:@"TotalSystemAvailable"];
+    [cm setObject:@(usedBytes) forKey:@"DiskUsage"];
     // No more "iPhone iPhone XS" — single-prefix consumer name.
     [cm setObject:modelName forKey:@"DeviceName"];
     [cm setObject:modelName forKey:@"DeviceNameMG"];
@@ -1607,6 +1612,17 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:car[1]   forKey:@"carrierMCC"];
         [cm setObject:car[2]   forKey:@"carrierMNC"];
         [cm setObject:@"vn"    forKey:@"carrierISO"];
+    }
+
+    // Timezone coherence: if carrier or locale is Vietnamese, force
+    // Asia/Ho_Chi_Minh regardless of what ip-api returned.
+    // ip-api sometimes reports Asia/Bangkok for VN ISP IPs even though
+    // Vietnam's canonical IANA zone is Asia/Ho_Chi_Minh — the mismatch
+    // (VN carrier + Bangkok timezone) is an instant fraud-detection flag.
+    NSString *_tzMCC = [cm stringForKey:@"carrierMCC"];
+    NSString *_tzCC  = [cm stringForKey:@"localeCountryCode"];
+    if ([_tzMCC isEqualToString:@"452"] || [_tzCC isEqualToString:@"VN"]) {
+        [cm setObject:@"Asia/Ho_Chi_Minh" forKey:@"timezoneName"];
     }
 
     [cm save];
@@ -5139,7 +5155,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (NSString *)_fakeStorageText:(CIConfigManager *)cm {
-    id v = [cm objectForKey:@"DiskUsage"];
+    id v = [cm objectForKey:@"TotalDiskCapacity"];
     if ([v isKindOfClass:[NSNumber class]]) {
         long long bytes = [(NSNumber *)v longLongValue];
         if (bytes >= 1024LL*1024*1024) return [NSString stringWithFormat:@"%lld GB", bytes/(1024LL*1024*1024)];
