@@ -900,8 +900,16 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 // Fake CLLocation delivered to delegate 300ms after startUpdating.
 // ============================================================
 %hook CLLocationManager
++ (BOOL)locationServicesEnabled {
+    if (getConfigStr(@"latitude")) return YES;
+    return %orig;
+}
 + (int)authorizationStatus {
     // kCLAuthorizationStatusAuthorizedAlways = 3
+    if (getConfigStr(@"latitude")) return 3;
+    return %orig;
+}
+- (int)authorizationStatus {
     if (getConfigStr(@"latitude")) return 3;
     return %orig;
 }
@@ -939,7 +947,9 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
            g_procname, c.latitude, c.longitude, alt);
     __weak id<CLLocationManagerDelegate> wdel = self.delegate;
     __weak CLLocationManager *wself = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
+    // 50ms — fast enough to beat locationd's first real-GPS callback,
+    // but one runloop after startUpdatingLocation so delegate is ready.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
         id<CLLocationManagerDelegate> del = wdel;
         CLLocationManager *mgr = wself;
@@ -1165,6 +1175,84 @@ static int hook_access_fn(const char *path, int mode) {
 %end
 
 // ============================================================
+// LAYER 10: dyld image list hiding + open() JB path blocking.
+//
+// Anti-fraud SDKs (Zalo / TikTok) call _dyld_image_count() then
+// iterate _dyld_get_image_name(i) looking for:
+//   "substrate", "ellekit", "ChangeInfoIos", "/var/jb/" paths.
+// We present a filtered view that skips all JB-related images.
+//
+// open() hook: complements stat/lstat/access — some SDKs call
+// open(path, O_RDONLY) to check JB file existence.
+// ============================================================
+
+static const char * const kDyldHide[] = {
+    "ChangeInfoIosMG", "ChangeInfoIos",
+    "ellekit", "CydiaSubstrate", "libsubstrate", "substitute",
+    "MobileSubstrate", "TweakInject", "Dopamine", "palera1n",
+    "libhooker", "libblackjack", "pspawn", "ChOma",
+    NULL
+};
+
+static inline BOOL isDyldNameHidden(const char *name) {
+    if (!name) return NO;
+    for (int i = 0; kDyldHide[i]; i++) {
+        if (strstr(name, kDyldHide[i])) return YES;
+    }
+    if (strstr(name, "/var/jb/") || strstr(name, "/private/var/jb/")) return YES;
+    return NO;
+}
+
+typedef uint32_t    (*dyld_image_count_fn_t)(void);
+typedef const char *(*dyld_image_name_fn_t)(uint32_t);
+static dyld_image_count_fn_t  orig_dyld_image_count_fn    = NULL;
+static dyld_image_name_fn_t   orig_dyld_get_image_name_fn = NULL;
+
+static uint32_t hooked_dyld_image_count(void) {
+    if (!orig_dyld_image_count_fn) return 0;
+    uint32_t total = orig_dyld_image_count_fn();
+    uint32_t hidden = 0;
+    for (uint32_t i = 0; i < total; i++) {
+        const char *name = orig_dyld_get_image_name_fn ? orig_dyld_get_image_name_fn(i) : NULL;
+        if (isDyldNameHidden(name)) hidden++;
+    }
+    return total - hidden;
+}
+
+static const char *hooked_dyld_get_image_name(uint32_t index) {
+    if (!orig_dyld_get_image_name_fn || !orig_dyld_image_count_fn) return NULL;
+    uint32_t total = orig_dyld_image_count_fn();
+    uint32_t visible = 0;
+    for (uint32_t i = 0; i < total; i++) {
+        const char *name = orig_dyld_get_image_name_fn(i);
+        if (isDyldNameHidden(name)) continue;
+        if (visible == index) return name;
+        visible++;
+    }
+    return NULL;
+}
+
+typedef int (*open_fn_t)(const char *, int, ...);
+typedef int (*openat_fn_t)(int, const char *, int, ...);
+static open_fn_t   orig_open_fn   = NULL;
+static openat_fn_t orig_openat_fn = NULL;
+
+static int hook_open_fn(const char *path, int flags, ...) {
+    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    va_list ap; va_start(ap, flags);
+    int mode = va_arg(ap, int);
+    va_end(ap);
+    return orig_open_fn(path, flags, mode);
+}
+static int hook_openat_fn(int dirfd, const char *path, int flags, ...) {
+    if (path && path[0] == '/' && isJBPath(path)) { errno = ENOENT; return -1; }
+    va_list ap; va_start(ap, flags);
+    int mode = va_arg(ap, int);
+    va_end(ap);
+    return orig_openat_fn(dirfd, path, flags, mode);
+}
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) { (void)t; reloadConfig(); }
@@ -1336,6 +1424,28 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
             MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
         dbglog("ctor %s JBhide stat=%p lstat=%p access=%p\n",
                g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn);
+
+        // LAYER 10: dyld image list hiding
+        orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
+        orig_dyld_get_image_name_fn = (dyld_image_name_fn_t)    dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+        if (orig_dyld_image_count_fn && orig_dyld_get_image_name_fn) {
+            MSHookFunction((void*)orig_dyld_image_count_fn,    (void*)hooked_dyld_image_count,
+                           (void**)&orig_dyld_image_count_fn);
+            MSHookFunction((void*)orig_dyld_get_image_name_fn, (void*)hooked_dyld_get_image_name,
+                           (void**)&orig_dyld_get_image_name_fn);
+        }
+        dbglog("ctor %s dyldHide cnt=%p name=%p\n",
+               g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
+
+        // LAYER 10: open/openat JB path blocking
+        orig_open_fn = (open_fn_t)dlsym(RTLD_DEFAULT, "open");
+        if (orig_open_fn)
+            MSHookFunction((void*)orig_open_fn, (void*)hook_open_fn, (void**)&orig_open_fn);
+        orig_openat_fn = (openat_fn_t)dlsym(RTLD_DEFAULT, "openat");
+        if (orig_openat_fn)
+            MSHookFunction((void*)orig_openat_fn, (void*)hook_openat_fn, (void**)&orig_openat_fn);
+        dbglog("ctor %s open_hook=%p openat_hook=%p\n", g_procname,
+               (void*)orig_open_fn, (void*)orig_openat_fn);
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;

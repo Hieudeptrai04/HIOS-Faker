@@ -1,8 +1,8 @@
 Package: com.changeinfoios.mg
 Name: ChangeInfoIosMG
-Version: 3.0.9
+Version: 3.1.0
 Architecture: iphoneos-arm64
-Description: ChangeInfoIos v3 — Full device spoof: MGCopyAnswer + sysctl + IORegistry + getifaddrs + CLLocationManager (GPS) + NSLocale + NSTimeZone + CTCarrier + ASIdentifierManager (IDFA) + WKWebView UA. IP proxy GPS/locale/carrier auto-coherent. Zero lag — no per-app injection.
+Description: ChangeInfoIos v3 — Full device spoof + LAYER 10: dyld image hiding (_dyld_image_count/_dyld_get_image_name), open/openat JB path blocking, GPS delivery speedup.
 Maintainer: ChangeInfoIos
 Author: ChangeInfoIos
 Section: Tweaks
