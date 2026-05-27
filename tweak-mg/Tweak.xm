@@ -31,6 +31,9 @@
 #import <WebKit/WKWebView.h>
 #import <WebKit/WKWebViewConfiguration.h>
 #import <AdSupport/ASIdentifierManager.h>
+#import <Security/Security.h>
+#import <DeviceCheck/DeviceCheck.h>
+#import <AppTrackingTransparency/AppTrackingTransparency.h>
 #import "fishhook.h"
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
@@ -129,9 +132,22 @@ static NSString *const kLegacyNote = @"com.changeinfoios/ReloadConfig";
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
 
+static BOOL g_wipeKeychainOnReload = NO; // set by notify_cb, cleared after wipe
+
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     g_config = d ?: @{};
+    // When user changes identity (explicit ReloadConfig notification) and we're
+    // inside Zalo's process, proactively delete the stored device fingerprints so
+    // Zalo regenerates fresh IDs on next registration without reading cached ones.
+    if (g_wipeKeychainOnReload && (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber"))) {
+        const char *pn = getprogname();
+        if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
+                   strstr(pn, "zingalo") || strstr(pn, "imess") || strstr(pn, "vng"))) {
+            wipeZaloKeychainFingerprints();
+        }
+        g_wipeKeychainOnReload = NO;
+    }
 }
 
 static inline NSDictionary *cfg(void) {
@@ -848,6 +864,107 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 }
 
 // ============================================================
+// LAYER 11: Keychain device-fingerprint isolation — Zalo reg-ban fix.
+//
+// Zalo stores a persistent device ID in Keychain that survives app
+// reinstalls. During registration this ID is sent to VNG servers and
+// cross-checked against the ban list. If the device was previously
+// used for a banned account → instant ban on every new registration.
+//
+// Exact account names discovered via Keychain dump of vn.com.vng.zingalo:
+//   kZAIDForDevice      — 32-char hex, the primary device fingerprint
+//   zda_device_udid     — UUID format device ID
+//   kZAIDForAdvertisingKey — Advertising UUID stored by Zalo (not IDFA)
+//   kSecurityIndentifierKey — Security fingerprint (VNG's internal misspelling)
+//   deviceUUID / deviceModel — ZaloSDK cached identity (svce: ...zalosdk)
+//   firstTimeInstallApp / installSource — controls fresh-install flow
+//   Firebase FID        — Firebase Installation ID used for analytics tracking
+//
+// Hook: SecItemCopyMatching returns errSecItemNotFound for these keys when
+// identity spoofing is active. Zalo generates fresh IDs → clean registration.
+// SecItemAdd is NOT blocked (new IDs for this session are stored normally).
+// ============================================================
+#import <Security/Security.h>
+
+// Exact account names to block — from live Keychain dump of Zalo 23.x
+static const char * const kZaloFpAccounts[] = {
+    "kZAIDForDevice",           // Primary device fingerprint (32-char hex)
+    "kZAIDForAdvertisingKey",   // Zalo advertising UUID (different from IDFA)
+    "zda_device_udid",          // Device UDID (UUID format)
+    "kSecurityIndentifierKey",  // Security fingerprint (note VNG typo)
+    "kThisDeviceOnlyKey",       // Device-only preference flag
+    "_pfo",                     // Platform fingerprint object
+    // ZaloSDK (svce: vn.com.vng.zingalo.zalosdk)
+    "deviceUUID",               // SDK device UUID
+    "deviceModel",              // SDK cached model — inconsistency with MG spoof
+    "firstTimeInstallApp",      // First-install flow controller
+    "installSource",            // Install source tag
+    NULL
+};
+
+typedef OSStatus (*SecItemCopyMatching_t)(CFDictionaryRef, CFTypeRef *);
+typedef OSStatus (*SecItemDelete_t)(CFDictionaryRef);
+static SecItemCopyMatching_t orig_SecItemCopyMatching = NULL;
+
+static BOOL isZaloFingerprintQuery(CFDictionaryRef query) {
+    if (!query) return NO;
+    // Only active when device identity spoof is enabled
+    if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return NO;
+    CFStringRef acc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrAccount);
+    if (!acc || CFGetTypeID(acc) != CFStringGetTypeID()) return NO;
+    char ab[128]; ab[0] = 0;
+    CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
+    for (int i = 0; kZaloFpAccounts[i]; i++) {
+        if (strcmp(ab, kZaloFpAccounts[i]) == 0) return YES;
+    }
+    // Block Firebase Installation ID by service (prevents device-level tracking)
+    CFStringRef svc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrService);
+    if (svc && CFGetTypeID(svc) == CFStringGetTypeID()) {
+        char sb[128]; sb[0] = 0;
+        CFStringGetCString(svc, sb, sizeof(sb), kCFStringEncodingUTF8);
+        if (strstr(sb, "FIRInstallations") || strstr(sb, "firebase")) return YES;
+    }
+    return NO;
+}
+
+static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    if (isZaloFingerprintQuery(query)) {
+        CFStringRef acc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrAccount);
+        char ab[64]; ab[0] = 0;
+        if (acc && CFGetTypeID(acc) == CFStringGetTypeID())
+            CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
+        dbglog("Keychain.block %s acct=%s\n", g_procname, ab);
+        return errSecItemNotFound;
+    }
+    return orig_SecItemCopyMatching(query, result);
+}
+
+// Wipe Zalo's stored device fingerprints from Keychain.
+// Called when running inside Zalo's process on identity reload (ReloadConfig).
+// From inside the target process we have Zalo's keychain-access-groups entitlement
+// so SecItemDelete succeeds where it would fail from an outside process.
+static void wipeZaloKeychainFingerprints(void) {
+    NSString *const kAgrp = @"CVB6BX97VM.group.keychain.vn.com.vng.zalo";
+    int deleted = 0;
+    for (int i = 0; kZaloFpAccounts[i]; i++) {
+        NSDictionary *q = @{
+            (__bridge id)kSecClass:           (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrAccount:     [NSString stringWithUTF8String:kZaloFpAccounts[i]],
+            (__bridge id)kSecAttrAccessGroup: kAgrp,
+        };
+        if (SecItemDelete((__bridge CFDictionaryRef)q) == errSecSuccess) deleted++;
+    }
+    // Delete Firebase Installation record (matches by service, not account)
+    NSDictionary *fbq = @{
+        (__bridge id)kSecClass:           (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService:     @"com.firebase.FIRInstallations.installations",
+        (__bridge id)kSecAttrAccessGroup: kAgrp,
+    };
+    if (SecItemDelete((__bridge CFDictionaryRef)fbq) == errSecSuccess) deleted++;
+    dbglog("wipeZaloKC %s deleted=%d\n", g_procname, deleted);
+}
+
+// ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
 // AIDA64 + most analytics SDKs query these directly.
@@ -1160,6 +1277,20 @@ static int hook_access_fn(const char *path, int mode) {
     }
     return %orig;
 }
+- (NSArray *)contentsOfDirectoryAtPath:(NSString *)path error:(NSError **)err {
+    if (path && isJBPath(path.UTF8String)) {
+        if (err) *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:nil];
+        return nil;
+    }
+    NSArray *orig = %orig;
+    if (!orig || orig.count == 0) return orig;
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:orig.count];
+    for (NSString *item in orig) {
+        NSString *full = [path stringByAppendingPathComponent:item];
+        if (!isJBPath([full UTF8String])) [out addObject:item];
+    }
+    return out;
+}
 %end
 
 %hook UIApplication
@@ -1239,9 +1370,70 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // JB-path detection paths without the multi-thread re-entry risk.
 
 // ============================================================
+// LAYER 12: DeviceCheck — block token generation.
+//
+// Apple's DeviceCheck API creates a server-side cryptographic token that
+// permanently identifies the device even across factory resets. Zalo sends
+// this token to VNG servers during registration for hardware-level binding.
+// We return DCErrorFeatureUnsupported so Zalo skips DeviceCheck and falls
+// back to software fingerprints (which we're already spoofing via LAYER 11).
+// ============================================================
+%hook DCDevice
+- (void)generateTokenWithCompletionHandler:(void(^)(NSData *, NSError *))completion {
+    if (completion) {
+        NSError *e = [NSError errorWithDomain:DCErrorDomain
+                                         code:DCErrorFeatureUnsupported
+                                     userInfo:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dbglog("DeviceCheck.block %s\n", g_procname);
+            completion(nil, e);
+        });
+    }
+}
+%end
+
+// ============================================================
+// LAYER 13: AppTrackingTransparency — return Authorized.
+//
+// When ATT status is not Authorized, apps use IDFV-based fingerprinting
+// fallbacks that correlate across identity changes (IDFV is per vendor,
+// survives reinstalls within the same vendor group). Returning Authorized
+// makes apps trust the spoofed IDFA instead of using those fallbacks.
+// ============================================================
+%hook ATTrackingManager
++ (NSUInteger)trackingAuthorizationStatus {
+    return 3; // ATTrackingManagerAuthorizationStatusAuthorized
+}
+%end
+
+// ============================================================
+// NSProcessInfo — iOS version must match UIDevice.systemVersion.
+// Anti-fraud SDKs compare operatingSystemVersion struct against the
+// UIDevice string value; mismatch is flagged as instrumentation.
+// ============================================================
+%hook NSProcessInfo
+- (NSOperatingSystemVersion)operatingSystemVersion {
+    NSString *v = getConfigStr(@"systemVersion");
+    if (!v) return %orig;
+    NSArray<NSString *> *p = [v componentsSeparatedByString:@"."];
+    NSOperatingSystemVersion osv = {0, 0, 0};
+    if (p.count > 0) osv.majorVersion = [p[0] integerValue];
+    if (p.count > 1) osv.minorVersion = [p[1] integerValue];
+    if (p.count > 2) osv.patchVersion = [p[2] integerValue];
+    return osv;
+}
+- (BOOL)isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion)v {
+    NSOperatingSystemVersion ours = [self operatingSystemVersion];
+    if (ours.majorVersion != v.majorVersion) return ours.majorVersion > v.majorVersion;
+    if (ours.minorVersion != v.minorVersion) return ours.minorVersion > v.minorVersion;
+    return ours.patchVersion >= v.patchVersion;
+}
+%end
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
-static void notify_cb(int t) { (void)t; reloadConfig(); }
+static void notify_cb(int t) { (void)t; g_wipeKeychainOnReload = YES; reloadConfig(); }
 
 %ctor {
     @autoreleasepool {
@@ -1424,6 +1616,21 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
 
         // open()/openat() hooks intentionally not installed — see comment above.
+
+        // LAYER 11: Keychain device-fingerprint isolation
+        // MSHookFunction patches the Security.framework prologue so ALL callers
+        // (including those with pre-bound symbols via dyld shared cache) are intercepted.
+        void *sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
+        if (sec) {
+            void *sicm = dlsym(sec, "SecItemCopyMatching");
+            if (sicm) {
+                orig_SecItemCopyMatching = (SecItemCopyMatching_t)sicm;
+                MSHookFunction(sicm, (void *)hooked_SecItemCopyMatching,
+                               (void **)&orig_SecItemCopyMatching);
+            }
+            dbglog("ctor %s Keychain SICM=%p orig=%p\n",
+                   g_procname, sicm, (void *)orig_SecItemCopyMatching);
+        }
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;
