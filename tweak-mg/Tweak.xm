@@ -23,6 +23,12 @@
 #import <ifaddrs.h>
 #import <net/if_dl.h>
 #import <net/if.h>
+#import <CoreLocation/CoreLocation.h>
+#import <CoreTelephony/CTCarrier.h>
+#import <CoreTelephony/CTTelephonyNetworkInfo.h>
+#import <WebKit/WKWebView.h>
+#import <WebKit/WKWebViewConfiguration.h>
+#import <AdSupport/ASIdentifierManager.h>
 #import "fishhook.h"
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
@@ -881,6 +887,178 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 - (long)batteryState {
     id v = getConfig(@"batteryState");
     return v ? (long)[v integerValue] : %orig;
+}
+%end
+
+// ============================================================
+// LAYER 4: CLLocationManager — GPS spoof.
+// lat/lon/altitude come from config keys set by ci_applyGeoFromIPAPI
+// (proxy-IP path) or the VN-city fallback in ci_randomizeIdentities.
+// Authorization silently granted → no permission dialog during reg.
+// Fake CLLocation delivered to delegate 300ms after startUpdating.
+// ============================================================
+%hook CLLocationManager
++ (int)authorizationStatus {
+    // kCLAuthorizationStatusAuthorizedAlways = 3
+    if (getConfigStr(@"latitude")) return 3;
+    return %orig;
+}
+- (void)requestWhenInUseAuthorization {
+    if (!getConfigStr(@"latitude")) { %orig; return; }
+    // Simulate "user tapped Allow" by firing the auth-change callback,
+    // then immediately deliver a fake location fix.
+    __weak id<CLLocationManagerDelegate> wdel = self.delegate;
+    __weak CLLocationManager *wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        CLLocationManager *mgr = wself;
+        id<CLLocationManagerDelegate> del = wdel;
+        if (!mgr || !del) return;
+        // iOS 14+ unified callback
+        if ([del respondsToSelector:@selector(locationManagerDidChangeAuthorization:)])
+            [del locationManagerDidChangeAuthorization:mgr];
+        // Pre-iOS 14 callback (CLAuthorizationStatus = int)
+        if ([del respondsToSelector:@selector(locationManager:didChangeAuthorizationStatus:)])
+            [del locationManager:mgr didChangeAuthorizationStatus:kCLAuthorizationStatusAuthorizedAlways];
+        [mgr startUpdatingLocation];
+    });
+}
+- (void)requestAlwaysAuthorization { [self requestWhenInUseAuthorization]; }
+- (void)startUpdatingLocation {
+    NSString *latS = getConfigStr(@"latitude");
+    NSString *lonS = getConfigStr(@"longitude");
+    if (!latS || !lonS) { %orig; return; }
+    CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
+    double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
+    CLLocation *fake = [[CLLocation alloc] initWithCoordinate:c
+                altitude:alt horizontalAccuracy:10.0 verticalAccuracy:5.0
+                timestamp:[NSDate date]];
+    dbglog("CLLocation.start %s lat=%.4f lon=%.4f alt=%.0f\n",
+           g_procname, c.latitude, c.longitude, alt);
+    __weak id<CLLocationManagerDelegate> wdel = self.delegate;
+    __weak CLLocationManager *wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        id<CLLocationManagerDelegate> del = wdel;
+        CLLocationManager *mgr = wself;
+        if (!del || !mgr) return;
+        if ([del respondsToSelector:@selector(locationManager:didUpdateLocations:)])
+            [del locationManager:mgr didUpdateLocations:@[fake]];
+    });
+}
+- (void)requestLocation { [self startUpdatingLocation]; }
+- (CLLocation *)location {
+    NSString *latS = getConfigStr(@"latitude");
+    NSString *lonS = getConfigStr(@"longitude");
+    if (!latS || !lonS) return %orig;
+    CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
+    double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
+    return [[CLLocation alloc] initWithCoordinate:c altitude:alt
+            horizontalAccuracy:10.0 verticalAccuracy:5.0 timestamp:[NSDate date]];
+}
+%end
+
+// ============================================================
+// LAYER 5: NSLocale / NSTimeZone — language, region, timezone spoof.
+// Config keys localeIdentifier/localeLanguageCode/localeCountryCode/
+// localeCurrencyCode/timezoneName must match GPS city and carrier.
+// ============================================================
+%hook NSLocale
++ (instancetype)currentLocale {
+    NSString *ident = getConfigStr(@"localeIdentifier");
+    if (!ident) return %orig;
+    NSLocale *fake = [[NSLocale alloc] initWithLocaleIdentifier:ident];
+    return fake ?: %orig;
+}
++ (instancetype)autoupdatingCurrentLocale { return [self currentLocale]; }
++ (NSArray *)preferredLanguages {
+    NSString *lang = getConfigStr(@"localeLanguageCode");
+    NSString *rgn  = getConfigStr(@"localeCountryCode");
+    if (!lang) return %orig;
+    NSString *tag = rgn ? [NSString stringWithFormat:@"%@-%@", lang, rgn] : lang;
+    return @[tag, @"en-US"]; // en-US fallback keeps system string formatting sane
+}
+%end
+
+%hook NSTimeZone
++ (NSTimeZone *)systemTimeZone {
+    NSString *name = getConfigStr(@"timezoneName");
+    if (!name) return %orig;
+    return [NSTimeZone timeZoneWithName:name] ?: %orig;
+}
++ (NSTimeZone *)localTimeZone   { return [self systemTimeZone]; }
++ (NSTimeZone *)defaultTimeZone { return [self systemTimeZone]; }
+%end
+
+// ============================================================
+// LAYER 6: CTCarrier — carrier name / MCC / MNC spoof.
+// Apps may call CTTelephonyNetworkInfo.serviceSubscriberCellularProviders
+// (returning CTCarrier objects) instead of querying MGCopyAnswer,
+// bypassing the MG hook. Hook the CTCarrier ObjC methods directly.
+// ============================================================
+%hook CTCarrier
+- (NSString *)carrierName {
+    NSString *v = getConfigStr(@"carrierName");
+    dbglog("CTCarrier.carrierName %s -> %s\n", g_procname, v ? [v UTF8String] : "orig");
+    return v ?: %orig;
+}
+- (NSString *)mobileCountryCode {
+    return getConfigStr(@"carrierMCC") ?: getConfigStr(@"MobileSubscriberCountryCode") ?: %orig;
+}
+- (NSString *)mobileNetworkCode {
+    return getConfigStr(@"carrierMNC") ?: getConfigStr(@"MobileSubscriberNetworkCode") ?: %orig;
+}
+- (NSString *)isoCountryCode {
+    NSString *iso = getConfigStr(@"carrierISO");
+    if (!iso) { iso = getConfigStr(@"RegionCode"); }
+    return iso ? iso.lowercaseString : %orig;
+}
+- (BOOL)allowsVOIP { return YES; }
+%end
+
+// ============================================================
+// LAYER 7: ASIdentifierManager — IDFA advertising identifier spoof.
+// advertisingIdentifier UUID is set in config by ci_randomizeIdentities.
+// isAdvertisingTrackingEnabled returns YES so apps don't fall back to
+// alternative tracking (which could leak real device identity).
+// ============================================================
+%hook ASIdentifierManager
+- (NSUUID *)advertisingIdentifier {
+    NSString *v = getConfigStr(@"advertisingIdentifier");
+    if (v) {
+        NSUUID *u = [[NSUUID alloc] initWithUUIDString:v];
+        if (u) {
+            dbglog("IDFA %s -> %s\n", g_procname, [v UTF8String]);
+            return u;
+        }
+    }
+    return %orig;
+}
+- (BOOL)isAdvertisingTrackingEnabled { return YES; }
+%end
+
+// ============================================================
+// LAYER 8: WKWebView — user-agent string spoof.
+// zalo_fakeWebViewUA is built per Change Device in ci_randomizeIdentities:
+//   "Mozilla/5.0 (iPhone; CPU iPhone OS XX_X like Mac OS X)
+//    AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+// Hooks both the property getter (for lazy UA builds) and the initializer
+// (to seed customUserAgent on creation, caught by request-level headers).
+// ============================================================
+%hook WKWebView
+- (NSString *)customUserAgent {
+    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
+    return ua ?: %orig;
+}
+- (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)cfg {
+    WKWebView *v = %orig;
+    if (!v) return v;
+    NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
+    if (ua) {
+        [v setCustomUserAgent:ua];
+        dbglog("WKWebView.init %s ua set\n", g_procname);
+    }
+    return v;
 }
 %end
 
