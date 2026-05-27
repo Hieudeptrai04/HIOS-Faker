@@ -606,11 +606,15 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     NSString *ns = [NSString stringWithUTF8String:name];
     NSString *cfgKey = g_sysctlMap[ns];
     if (!cfgKey) {
+        // Log hw.* and kern.* misses so we can see what the app actually queries
+        if (strncmp(name, "hw.", 3) == 0 || strncmp(name, "kern.", 5) == 0)
+            dbglog("sysctl.miss %s name=%s\n", g_procname, name);
         g_inSysctl = 0;
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
     id v = getConfig(cfgKey);
     if (!v) {
+        dbglog("sysctl.nocfg %s name=%s cfgKey=%s\n", g_procname, name, [cfgKey UTF8String]);
         g_inSysctl = 0;
         return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     }
@@ -855,6 +859,16 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         if (orig_gethostname) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
+        }
+        // MGCopyAnswer: fishhook only rebinds GOT entries — useless for apps that
+        // resolve MGCopyAnswer via dlsym() at runtime (AIDA64 pattern). Patch the
+        // function prologue directly so every caller, regardless of resolution
+        // method, goes through our hook.
+        if (orig_MGCopyAnswer) {
+            MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer,
+                           (void **)&orig_MGCopyAnswer);
+            dbglog("ctor %s MSHook MGCopyAnswer orig=%p\n",
+                   g_procname, (void *)orig_MGCopyAnswer);
         }
         dbglog("ctor %s after MSHook libc orig: sysctl=%p getif=%p ghn=%p\n",
                g_procname, (void *)orig_sysctlbyname,

@@ -1,6 +1,6 @@
 Package: com.changeinfoios.mg
 Name: ChangeInfoIosMG
-Version: 3.0.0
+Version: 3.0.1
 Architecture: iphoneos-arm64
 Description: ChangeInfoIos v3 — MobileGestaltHelper-targeted device spoof. Single ~200-line MGCopyAnswer hook that owns all device-fingerprint reads (UDID/Serial/IMEI/Model/OS/MAC/Region). Zero injection into user-facing apps — Zalo/FB/TikTok/AIDA see fake values via the standard MG API without any per-process overhead.
 Maintainer: ChangeInfoIos
