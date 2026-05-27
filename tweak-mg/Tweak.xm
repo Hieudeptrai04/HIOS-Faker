@@ -30,6 +30,9 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <WebKit/WKWebView.h>
 #import <WebKit/WKWebViewConfiguration.h>
+#import <WebKit/WKUserContentController.h>
+#import <WebKit/WKUserScript.h>
+#import <WebKit/WKWebsiteDataStore.h>
 #import <AdSupport/ASIdentifierManager.h>
 #import <Security/Security.h>
 #import <DeviceCheck/DeviceCheck.h>
@@ -951,6 +954,37 @@ static void wipeZaloKeychainFingerprints(void) {
     dbglog("wipeZaloKC %s deleted=%d\n", g_procname, deleted);
 }
 
+// LAYER 11 (cont): Block SecItemAdd/SecItemUpdate for device fingerprint keys.
+// SecItemCopyMatching already returns not-found, making Zalo generate a fresh
+// device UUID each launch. Without blocking Add/Update, that fresh UUID gets
+// written to Keychain and persists until the next wipe — adding noise across
+// multiple registrations on the same session. Returning errSecSuccess from Add
+// (without actually storing) keeps Zalo happy without persisting anything.
+typedef OSStatus (*SecItemAdd_t)(CFDictionaryRef, CFTypeRef *);
+typedef OSStatus (*SecItemUpdate_t)(CFDictionaryRef, CFDictionaryRef);
+static SecItemAdd_t    orig_SecItemAdd    = NULL;
+static SecItemUpdate_t orig_SecItemUpdate = NULL;
+
+static OSStatus hooked_SecItemAdd(CFDictionaryRef attrs, CFTypeRef *result) {
+    if (isZaloFingerprintQuery(attrs)) {
+        CFStringRef acc = (CFStringRef)CFDictionaryGetValue(attrs, kSecAttrAccount);
+        char ab[64]; ab[0] = 0;
+        if (acc && CFGetTypeID(acc) == CFStringGetTypeID())
+            CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
+        dbglog("Keychain.blockAdd %s acct=%s\n", g_procname, ab);
+        if (result) *result = NULL;
+        return errSecSuccess; // lie to Zalo — it thinks the store succeeded
+    }
+    return orig_SecItemAdd(attrs, result);
+}
+static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attrs) {
+    if (isZaloFingerprintQuery(query)) {
+        dbglog("Keychain.blockUpdate %s\n", g_procname);
+        return errSecItemNotFound;
+    }
+    return orig_SecItemUpdate(query, attrs);
+}
+
 // ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
@@ -1170,13 +1204,99 @@ static void wipeZaloKeychainFingerprints(void) {
 %end
 
 // ============================================================
-// LAYER 8: WKWebView — user-agent string spoof.
-// zalo_fakeWebViewUA is built per Change Device in ci_randomizeIdentities:
-//   "Mozilla/5.0 (iPhone; CPU iPhone OS XX_X like Mac OS X)
-//    AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
-// Hooks both the property getter (for lazy UA builds) and the initializer
-// (to seed customUserAgent on creation, caught by request-level headers).
+// LAYER 8: WKWebView — user-agent + LAYER 14: JavaScript fingerprint spoof.
+//
+// LAYER 8: UA string — zalo_fakeWebViewUA set by ci_randomizeIdentities.
+// LAYER 14: Inject WKUserScript at document start to override:
+//   navigator.language/languages/platform/maxTouchPoints/hardwareConcurrency
+//   screen.width/height/availWidth/availHeight/colorDepth/pixelDepth
+//   window.devicePixelRatio
+//   HTMLCanvasElement.toDataURL (1-pixel LSB noise per call → unique canvas hash)
+//   WebGLRenderingContext.getParameter (UNMASKED_VENDOR/RENDERER → "Apple Inc."/"Apple GPU")
+//
+// Why: Vietnamese apps (Zalo, Shopee, Facebook) fingerprint the embedded WebView
+// JS environment. navigator.language/platform/screen dimensions must match the
+// spoofed ProductType + localeIdentifier or the server detects inconsistency.
 // ============================================================
+
+// Screen dimensions (CSS logical pixels, not physical) + DPR per ProductType.
+// iOS reports screen.width in points (1 pt = DPR physical pixels).
+static void screenDimsForProductType(NSString *pt, int *sw, int *sh, double *dpr, int *hc) {
+    *sw = 390; *sh = 844; *dpr = 3.0; *hc = 6; // default: iPhone 13/14
+    if (!pt || !pt.length) return;
+    // SE 2nd/3rd gen (4.7" Retina)
+    if ([pt hasPrefix:@"iPhone12,8"] || [pt hasPrefix:@"iPhone14,6"]) {
+        *sw = 375; *sh = 667; *dpr = 2.0; *hc = 6;
+    // XR / 11 (6.1" LCD, 2x)
+    } else if ([pt hasPrefix:@"iPhone11,8"] || [pt hasPrefix:@"iPhone12,1"]) {
+        *sw = 414; *sh = 896; *dpr = 2.0; *hc = 6;
+    // Xs Max / 11 Pro Max (6.5" OLED, 3x)
+    } else if ([pt hasPrefix:@"iPhone12,3"] || [pt hasPrefix:@"iPhone12,5"]) {
+        *sw = 414; *sh = 896; *dpr = 3.0; *hc = 6;
+    // 12 mini / 13 mini
+    } else if ([pt hasPrefix:@"iPhone13,1"] || [pt hasPrefix:@"iPhone14,4"]) {
+        *sw = 375; *sh = 812; *dpr = 3.0; *hc = 6;
+    // 12 / 13 / 14 / 12 Pro / 13 Pro / 14 Pro (390×844)
+    } else if ([pt hasPrefix:@"iPhone13,2"] || [pt hasPrefix:@"iPhone13,3"] ||
+               [pt hasPrefix:@"iPhone14,2"] || [pt hasPrefix:@"iPhone14,5"]) {
+        *sw = 390; *sh = 844; *dpr = 3.0; *hc = 6;
+    // 12 Pro Max / 13 Pro Max / 14 Plus (428×926)
+    } else if ([pt hasPrefix:@"iPhone13,4"] || [pt hasPrefix:@"iPhone14,3"]) {
+        *sw = 428; *sh = 926; *dpr = 3.0; *hc = 6;
+    // 14 Pro / 15 / 15 Pro (393×852)
+    } else if ([pt hasPrefix:@"iPhone15,2"] || [pt hasPrefix:@"iPhone15,4"] ||
+               [pt hasPrefix:@"iPhone16,1"]) {
+        *sw = 393; *sh = 852; *dpr = 3.0; *hc = ([pt hasPrefix:@"iPhone16"] ? 8 : 6);
+    // 14 Pro Max / 15 Plus / 15 Pro Max (430×932)
+    } else if ([pt hasPrefix:@"iPhone15,3"] || [pt hasPrefix:@"iPhone15,5"] ||
+               [pt hasPrefix:@"iPhone16,2"]) {
+        *sw = 430; *sh = 932; *dpr = 3.0; *hc = ([pt hasPrefix:@"iPhone16"] ? 8 : 6);
+    }
+}
+
+static NSString *buildWKJSSpoof(void) {
+    NSString *lang = getConfigStr(@"localeLanguageCode") ?: @"vi";
+    NSString *rgn  = getConfigStr(@"localeCountryCode")  ?: @"VN";
+    NSString *tag  = [NSString stringWithFormat:@"%@-%@", lang, rgn];
+    int sw, sh, hc; double dpr;
+    screenDimsForProductType(getConfigStr(@"ProductType"), &sw, &sh, &dpr, &hc);
+    return [NSString stringWithFormat:
+        @"(function(){"
+         "var l='%@',ls=['%@','en-US'],sw=%d,sh=%d,dpr=%.1f,hc=%d;"
+         "function d(o,k,v){"
+         "try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}}"
+         "d(navigator,'language',l);"
+         "d(navigator,'languages',Object.freeze(ls));"
+         "d(navigator,'platform','iPhone');"
+         "d(navigator,'maxTouchPoints',5);"
+         "d(navigator,'hardwareConcurrency',hc);"
+         "d(screen,'width',sw);d(screen,'height',sh);"
+         "d(screen,'availWidth',sw);d(screen,'availHeight',sh-44);"
+         "d(screen,'colorDepth',24);d(screen,'pixelDepth',24);"
+         "d(window,'devicePixelRatio',dpr);"
+         // Canvas 1-pixel LSB noise so hash differs each page load
+         "var _ot=HTMLCanvasElement.prototype.toDataURL;"
+         "HTMLCanvasElement.prototype.toDataURL=function(){"
+         "var c=this.getContext&&this.getContext('2d');"
+         "if(c&&this.width>0&&this.height>0){"
+         "try{var id=c.getImageData(0,0,1,1);"
+         "id.data[0]=(id.data[0]+1)&255;"
+         "c.putImageData(id,0,0);}catch(e){}}"
+         "return _ot.apply(this,arguments);};"
+         // WebGL renderer → Apple GPU (consistent with all real iPhones)
+         "function pg(G){"
+         "if(!G)return;"
+         "var op=G.prototype.getParameter;"
+         "G.prototype.getParameter=function(p){"
+         "if(p===0x9245)return'Apple Inc.';"
+         "if(p===0x9246)return'Apple GPU';"
+         "return op.apply(this,arguments);};}"
+         "pg(window.WebGLRenderingContext);"
+         "if(window.WebGL2RenderingContext)pg(window.WebGL2RenderingContext);"
+         "})();",
+        tag, tag, sw, sh, dpr, hc];
+}
+
 %hook WKWebView
 - (NSString *)customUserAgent {
     NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
@@ -1186,9 +1306,16 @@ static void wipeZaloKeychainFingerprints(void) {
     WKWebView *v = %orig;
     if (!v) return v;
     NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
-    if (ua) {
-        [v setCustomUserAgent:ua];
-        dbglog("WKWebView.init %s ua set\n", g_procname);
+    if (ua) [v setCustomUserAgent:ua];
+    NSString *js = buildWKJSSpoof();
+    if (js) {
+        WKUserScript *script = [[WKUserScript alloc]
+            initWithSource:js
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+            forMainFrameOnly:NO];
+        [v.configuration.userContentController addUserScript:script];
+        dbglog("WKWebView.init %s ua+js injected sw=%d\n", g_procname,
+               (int)[UIScreen mainScreen].bounds.size.width);
     }
     return v;
 }
@@ -1423,16 +1550,31 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 static void notify_cb(int t) {
     (void)t;
     reloadConfig();
-    // Proactively wipe Zalo device fingerprints when identity changes.
-    // notify_cb is called on explicit user action (press "Apply" in app), not on startup,
-    // so this only triggers when the user consciously changes identity.
-    // wipeZaloKeychainFingerprints() is defined above and uses Security.framework;
-    // it can only delete items from Zalo's access group when running inside Zalo's process.
+    // On identity change: wipe all Zalo persistent fingerprints so the next
+    // registration sees a completely clean device.
     if (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber")) {
         const char *pn = getprogname();
         if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
                    strstr(pn, "zingalo") || strstr(pn, "imess"))) {
             wipeZaloKeychainFingerprints();
+            // Clear WKWebView persistent storage (cookies, localStorage, IndexedDB,
+            // service worker caches) — Zalo's embedded WebView stores session tokens
+            // and device fingerprints in localStorage that survive app reinstalls.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                @autoreleasepool {
+                    WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
+                    NSSet *types = [WKWebsiteDataStore allWebsiteDataTypes];
+                    [store removeDataOfTypes:types
+                              modifiedSince:[NSDate distantPast]
+                          completionHandler:^{
+                        dbglog("WKDataStore.cleared %s\n", g_procname);
+                    }];
+                    // Clear general pasteboard — Zalo may write device token to
+                    // pasteboard for cross-app/reinstall persistence.
+                    [[UIPasteboard generalPasteboard] setItems:@[]];
+                    dbglog("Pasteboard.cleared %s\n", g_procname);
+                }
+            });
         }
     }
 }
@@ -1630,8 +1772,23 @@ static void notify_cb(int t) {
                 MSHookFunction(sicm, (void *)hooked_SecItemCopyMatching,
                                (void **)&orig_SecItemCopyMatching);
             }
-            dbglog("ctor %s Keychain SICM=%p orig=%p\n",
-                   g_procname, sicm, (void *)orig_SecItemCopyMatching);
+            void *siAdd = dlsym(sec, "SecItemAdd");
+            if (siAdd) {
+                orig_SecItemAdd = (SecItemAdd_t)siAdd;
+                MSHookFunction(siAdd, (void *)hooked_SecItemAdd,
+                               (void **)&orig_SecItemAdd);
+            }
+            void *siUpd = dlsym(sec, "SecItemUpdate");
+            if (siUpd) {
+                orig_SecItemUpdate = (SecItemUpdate_t)siUpd;
+                MSHookFunction(siUpd, (void *)hooked_SecItemUpdate,
+                               (void **)&orig_SecItemUpdate);
+            }
+            dbglog("ctor %s Keychain CopyMatch=%p Add=%p Upd=%p\n",
+                   g_procname,
+                   (void *)orig_SecItemCopyMatching,
+                   (void *)orig_SecItemAdd,
+                   (void *)orig_SecItemUpdate);
         }
 
         // Reload config on either notification (v3-native + legacy v2 app).
