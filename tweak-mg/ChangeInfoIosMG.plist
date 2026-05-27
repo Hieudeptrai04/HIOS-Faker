@@ -17,6 +17,10 @@
 			<string>com.shopee.vn</string>
 			<string>vn.shopee.vnapp</string>
 			<string>ph.telegra.Telegraph</string>
+			<string>com.apple.mobilesafari</string>
+			<string>com.apple.WebKit.WebContent</string>
+			<string>com.apple.Maps</string>
+			<string>com.apple.weather</string>
 		</array>
 		<key>Mode</key>
 		<string>Any</string>
