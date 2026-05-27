@@ -20,6 +20,8 @@
 #import <unistd.h>
 #import <string.h>
 #import <sys/sysctl.h>
+#import <sys/stat.h>
+#import <errno.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
 #import <net/if.h>
@@ -1079,6 +1081,90 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 %end
 
 // ============================================================
+// LAYER 9: Jailbreak hiding — block common JB detection vectors.
+// Hooks: stat, lstat, access (C), NSFileManager (ObjC),
+//        UIApplication -canOpenURL: (URL scheme check).
+// Exempts our own config dir so config reads keep working.
+// Does NOT hide loaded dylib list — use Shadow/KernBypass for TikTok.
+// ============================================================
+
+static BOOL isJBPath(const char *path) {
+    if (!path) return NO;
+    // Never hide our own config directory — reloadConfig must still work
+    static const char kCfgDir[] = "/var/jb/etc/changeinfoios/";
+    if (strncmp(path, kCfgDir, sizeof(kCfgDir)-1) == 0) return NO;
+    static const char * const kHide[] = {
+        "/var/jb", "/private/var/jb",
+        "/var/lib/apt", "/private/var/lib/apt",
+        "/var/lib/cydia", "/var/cache/apt",
+        "/Applications/Cydia.app", "/Applications/Sileo.app",
+        "/Applications/Zebra.app", "/Applications/filza.app",
+        "/Library/MobileSubstrate", "/var/MobileSubstrate",
+        "/usr/lib/libsubstrate.dylib", "/usr/lib/substrate",
+        "/var/checkra1n.dmg", "/.bootstraprc", "/bootstraprc",
+        "/private/etc/apt", "/etc/apt",
+        NULL
+    };
+    for (int i = 0; kHide[i]; i++) {
+        if (strncmp(path, kHide[i], strlen(kHide[i])) == 0) return YES;
+    }
+    return NO;
+}
+
+typedef int (*stat_fn_t)(const char *, struct stat *);
+typedef int (*access_fn_t)(const char *, int);
+static stat_fn_t   orig_stat_fn   = NULL;
+static stat_fn_t   orig_lstat_fn  = NULL;
+static access_fn_t orig_access_fn = NULL;
+
+static int hook_stat_fn(const char *path, struct stat *buf) {
+    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    return orig_stat_fn(path, buf);
+}
+static int hook_lstat_fn(const char *path, struct stat *buf) {
+    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    return orig_lstat_fn(path, buf);
+}
+static int hook_access_fn(const char *path, int mode) {
+    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    return orig_access_fn(path, mode);
+}
+
+%hook NSFileManager
+- (BOOL)fileExistsAtPath:(NSString *)path {
+    if (path && isJBPath(path.UTF8String)) return NO;
+    return %orig;
+}
+- (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDir {
+    if (path && isJBPath(path.UTF8String)) return NO;
+    return %orig;
+}
+- (NSData *)contentsAtPath:(NSString *)path {
+    if (path && isJBPath(path.UTF8String)) return nil;
+    return %orig;
+}
+- (NSDictionary *)attributesOfItemAtPath:(NSString *)path error:(NSError **)err {
+    if (path && isJBPath(path.UTF8String)) {
+        if (err) *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:nil];
+        return nil;
+    }
+    return %orig;
+}
+%end
+
+%hook UIApplication
+- (BOOL)canOpenURL:(NSURL *)url {
+    NSString *s = url.scheme.lowercaseString;
+    if ([s isEqualToString:@"cydia"]     || [s isEqualToString:@"sileo"] ||
+        [s isEqualToString:@"zbra"]      || [s isEqualToString:@"filza"] ||
+        [s isEqualToString:@"santander"] || [s isEqualToString:@"undecimus"]) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) { (void)t; reloadConfig(); }
@@ -1237,6 +1323,19 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
                        g_procname, (void *)orig_IORegCreateProps);
             }
         }
+
+        // LAYER 9: JB hiding — stat / lstat / access
+        orig_stat_fn   = (stat_fn_t)  dlsym(RTLD_DEFAULT, "stat");
+        orig_lstat_fn  = (stat_fn_t)  dlsym(RTLD_DEFAULT, "lstat");
+        orig_access_fn = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
+        if (orig_stat_fn)
+            MSHookFunction((void*)orig_stat_fn,   (void*)hook_stat_fn,   (void**)&orig_stat_fn);
+        if (orig_lstat_fn)
+            MSHookFunction((void*)orig_lstat_fn,  (void*)hook_lstat_fn,  (void**)&orig_lstat_fn);
+        if (orig_access_fn)
+            MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
+        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p\n",
+               g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn);
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;
