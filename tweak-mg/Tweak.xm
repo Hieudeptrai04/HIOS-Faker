@@ -1232,25 +1232,11 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return NULL;
 }
 
-typedef int (*open_fn_t)(const char *, int, ...);
-typedef int (*openat_fn_t)(int, const char *, int, ...);
-static open_fn_t   orig_open_fn   = NULL;
-static openat_fn_t orig_openat_fn = NULL;
-
-static int hook_open_fn(const char *path, int flags, ...) {
-    if (isJBPath(path)) { errno = ENOENT; return -1; }
-    va_list ap; va_start(ap, flags);
-    int mode = va_arg(ap, int);
-    va_end(ap);
-    return orig_open_fn(path, flags, mode);
-}
-static int hook_openat_fn(int dirfd, const char *path, int flags, ...) {
-    if (path && path[0] == '/' && isJBPath(path)) { errno = ENOENT; return -1; }
-    va_list ap; va_start(ap, flags);
-    int mode = va_arg(ap, int);
-    va_end(ap);
-    return orig_openat_fn(dirfd, path, flags, mode);
-}
+// open()/openat() hooks removed: variadic signature + Foundation's
+// _NSOpenFileDescriptor_Protected calling open() from multiple threads
+// simultaneously caused strncmp to receive an invalid kHide[i] pointer
+// (0x209) → EXC_BAD_ACCESS. stat/lstat/access hooks cover the same
+// JB-path detection paths without the multi-thread re-entry risk.
 
 // ============================================================
 // ctor: install hook + register reload notify.
@@ -1437,15 +1423,7 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         dbglog("ctor %s dyldHide cnt=%p name=%p\n",
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
 
-        // LAYER 10: open/openat JB path blocking
-        orig_open_fn = (open_fn_t)dlsym(RTLD_DEFAULT, "open");
-        if (orig_open_fn)
-            MSHookFunction((void*)orig_open_fn, (void*)hook_open_fn, (void**)&orig_open_fn);
-        orig_openat_fn = (openat_fn_t)dlsym(RTLD_DEFAULT, "openat");
-        if (orig_openat_fn)
-            MSHookFunction((void*)orig_openat_fn, (void*)hook_openat_fn, (void**)&orig_openat_fn);
-        dbglog("ctor %s open_hook=%p openat_hook=%p\n", g_procname,
-               (void*)orig_open_fn, (void*)orig_openat_fn);
+        // open()/openat() hooks intentionally not installed — see comment above.
 
         // Reload config on either notification (v3-native + legacy v2 app).
         int t1 = 0, t2 = 0;
