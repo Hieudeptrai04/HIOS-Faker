@@ -266,6 +266,25 @@ __thread int g_inMG = 0;
 
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (g_inMG || !property) return orig_MGCopyAnswer(property);
+
+    // MSHookFunction patches the MG prologue globally, so UIKit's internal
+    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also arrives here.
+    // That UIKit function reads ProductType to load device-specific config
+    // plists — returning a fake type for which no plist exists makes
+    // initWithContentsOfFile: throw → std::terminate → SIGABRT.
+    // Fix: pass through calls from /System/Library/ and /usr/lib/; only
+    // intercept calls from app bundles (AIDA64 dlopen/dlsym, Zalo/FB SDKs).
+    Dl_info _di; _di.dli_fname = NULL;
+    dladdr(__builtin_return_address(0), &_di);
+    if (_di.dli_fname) {
+        const char *_fn = _di.dli_fname;
+        if (strncmp(_fn, "/System/Library/", 16) == 0 ||
+            strncmp(_fn, "/usr/lib/", 9) == 0 ||
+            strncmp(_fn, "/var/jb/usr/lib/", 16) == 0) {
+            return orig_MGCopyAnswer(property);
+        }
+    }
+
     g_inMG = 1;
 
     NSString *key = (__bridge NSString *)property;
@@ -567,7 +586,7 @@ static void initSysctlMap(void) {
             @"kern.hostname":         @"deviceName",
             @"kern.osversion":        @"BuildVersion",
             @"kern.osrelease":        @"systemVersion",
-            @"kern.osproductversion": @"ProductVersion",
+            @"kern.osproductversion": @"systemVersion",
             @"kern.boottime":         @"kern_boottime",
             @"kern.uuid":             @"IOPlatformUUID",
         };
@@ -791,6 +810,30 @@ static CFStringRef hooked_SCDSCopyComputerName(void *store, void *nameEncoding) 
 }
 
 // ============================================================
+// CNCopyCurrentNetworkInfo — returns SSID / BSSID of connected WiFi.
+// AIDA64 reads WiFi network name from here, not from getifaddrs.
+// Located in NetworkExtension.framework (iOS 14+). Intercepted via
+// MSHookFunction since it's a C function, not lazy-bound in most apps.
+// ============================================================
+typedef CFDictionaryRef (*CNCopyCurrentNetworkInfo_t)(CFStringRef ifName);
+static CNCopyCurrentNetworkInfo_t orig_CNCopyCurrentNetworkInfo = NULL;
+
+static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
+    CFDictionaryRef orig = orig_CNCopyCurrentNetworkInfo(ifName);
+    if (!orig) return orig; // not connected — don't fake connectivity
+    NSString *ssid = getConfigStr(@"wifiSSID");
+    if (!ssid) return orig;
+    NSMutableDictionary *d = [(__bridge NSDictionary *)orig mutableCopy];
+    CFRelease(orig);
+    d[@"SSID"] = ssid;
+    d[@"SSIDDATA"] = [ssid dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *bssid = getConfigStr(@"wifiBSSID");
+    if (bssid) d[@"BSSID"] = bssid;
+    dbglog("CNCopyCurrentNetworkInfo %s ssid=%s\n", g_procname, [ssid UTF8String]);
+    return (CFDictionaryRef)CFBridgingRetain(d);
+}
+
+// ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
 // AIDA64 + most analytics SDKs query these directly.
@@ -917,14 +960,18 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
-        // NOTE: MSHookFunction on MGCopyAnswer is intentionally NOT done here.
-        // Prologue-patching MG would intercept UIKit-internal calls from
-        // /System/Library/ (e.g. _UIDeviceNativeUserInterfaceIdiomIgnoringClassic)
-        // which our ci_image_is_rebind_safe() fishhook correctly skips.
-        // Those UIKit callers load device-model config plists keyed on ProductType;
-        // returning a fake type makes initWithContentsOfFile: throw → SIGABRT.
-        // AIDA64 doesn't link libMobileGestalt so fishhook GOT rebind is enough:
-        // AIDA64's own binary has no MG GOT entry, and UIKit's entry is skipped.
+        // MSHookFunction on MGCopyAnswer — now safe because hooked_MGCopyAnswer
+        // uses dladdr(__builtin_return_address(0)) to detect the caller image.
+        // Calls from /System/Library/ (UIKit, etc.) pass through to real MG.
+        // Calls from app bundles (AIDA64 dlopen/dlsym, analytics SDKs) get faked.
+        // This fixes AIDA64 serial/IMEI/UDID — AIDA64 loads MG via dlopen+dlsym,
+        // which bypasses fishhook's GOT rebind but IS caught by prologue patching.
+        if (orig_MGCopyAnswer) {
+            MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer,
+                           (void **)&orig_MGCopyAnswer);
+            dbglog("ctor %s MSHook MGCopyAnswer orig=%p\n",
+                   g_procname, (void *)orig_MGCopyAnswer);
+        }
         dbglog("ctor %s after MSHook libc orig: sysctl=%p sysctl_raw=%p getif=%p ghn=%p\n",
                g_procname, (void *)orig_sysctlbyname, (void *)orig_sysctl_raw,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
@@ -941,6 +988,22 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
             }
             dbglog("ctor %s SC=%p SCDSCopyName=%p orig=%p\n",
                    g_procname, sc, scdsName, (void *)orig_SCDSCopyComputerName);
+        }
+
+        // CNCopyCurrentNetworkInfo — SSID / BSSID of connected WiFi.
+        // Used by AIDA64 and other apps to display WiFi network name.
+        // Located in NetworkExtension.framework (iOS 14+).
+        void *ne = dlopen("/System/Library/Frameworks/NetworkExtension.framework/NetworkExtension", RTLD_NOW);
+        if (ne) {
+            void *cnSym = dlsym(ne, "CNCopyCurrentNetworkInfo");
+            if (cnSym) {
+                orig_CNCopyCurrentNetworkInfo = (CNCopyCurrentNetworkInfo_t)cnSym;
+                MSHookFunction(cnSym, (void *)hooked_CNCopyCurrentNetworkInfo,
+                               (void **)&orig_CNCopyCurrentNetworkInfo);
+            }
+            dbglog("ctor %s CNCopyCurrentNetworkInfo=%p orig=%p\n",
+                   g_procname, ne ? dlsym(ne,"CNCopyCurrentNetworkInfo") : NULL,
+                   (void *)orig_CNCopyCurrentNetworkInfo);
         }
 
         // IORegistry: fishhook can't rebind IOKit framework calls (eager
