@@ -860,16 +860,14 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
-        // MGCopyAnswer: fishhook only rebinds GOT entries — useless for apps that
-        // resolve MGCopyAnswer via dlsym() at runtime (AIDA64 pattern). Patch the
-        // function prologue directly so every caller, regardless of resolution
-        // method, goes through our hook.
-        if (orig_MGCopyAnswer) {
-            MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer,
-                           (void **)&orig_MGCopyAnswer);
-            dbglog("ctor %s MSHook MGCopyAnswer orig=%p\n",
-                   g_procname, (void *)orig_MGCopyAnswer);
-        }
+        // NOTE: MSHookFunction on MGCopyAnswer is intentionally NOT done here.
+        // Prologue-patching MG would intercept UIKit-internal calls from
+        // /System/Library/ (e.g. _UIDeviceNativeUserInterfaceIdiomIgnoringClassic)
+        // which our ci_image_is_rebind_safe() fishhook correctly skips.
+        // Those UIKit callers load device-model config plists keyed on ProductType;
+        // returning a fake type makes initWithContentsOfFile: throw → SIGABRT.
+        // AIDA64 doesn't link libMobileGestalt so fishhook GOT rebind is enough:
+        // AIDA64's own binary has no MG GOT entry, and UIKit's entry is skipped.
         dbglog("ctor %s after MSHook libc orig: sysctl=%p getif=%p ghn=%p\n",
                g_procname, (void *)orig_sysctlbyname,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
