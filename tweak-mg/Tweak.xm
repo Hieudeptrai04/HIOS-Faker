@@ -965,12 +965,23 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 // ============================================================
 %hook NSLocale
 + (instancetype)currentLocale {
+    static __thread BOOL _inLocale = NO;
+    if (_inLocale) return %orig;
     NSString *ident = getConfigStr(@"localeIdentifier");
     if (!ident) return %orig;
+    _inLocale = YES;
     NSLocale *fake = [[NSLocale alloc] initWithLocaleIdentifier:ident];
+    _inLocale = NO;
     return fake ?: %orig;
 }
-+ (instancetype)autoupdatingCurrentLocale { return [self currentLocale]; }
++ (instancetype)autoupdatingCurrentLocale {
+    static __thread BOOL _inAuto = NO;
+    if (_inAuto) return %orig;
+    _inAuto = YES;
+    id r = [self currentLocale];
+    _inAuto = NO;
+    return r;
+}
 + (NSArray *)preferredLanguages {
     NSString *lang = getConfigStr(@"localeLanguageCode");
     NSString *rgn  = getConfigStr(@"localeCountryCode");
@@ -982,9 +993,14 @@ static CFDictionaryRef hooked_CNCopyCurrentNetworkInfo(CFStringRef ifName) {
 
 %hook NSTimeZone
 + (NSTimeZone *)systemTimeZone {
+    static __thread BOOL _inTZ = NO;
+    if (_inTZ) return %orig;
     NSString *name = getConfigStr(@"timezoneName");
     if (!name) return %orig;
-    return [NSTimeZone timeZoneWithName:name] ?: %orig;
+    _inTZ = YES;
+    NSTimeZone *tz = [NSTimeZone timeZoneWithName:name];
+    _inTZ = NO;
+    return tz ?: %orig;
 }
 + (NSTimeZone *)localTimeZone   { return [self systemTimeZone]; }
 + (NSTimeZone *)defaultTimeZone { return [self systemTimeZone]; }
