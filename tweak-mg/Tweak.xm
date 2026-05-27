@@ -1454,6 +1454,26 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         notify_register_dispatch([kLegacyNote UTF8String], &t2,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
+        // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
+        // cached location. Safari / WebContent calls exit(0) so next launch reads
+        // the freshly-written coordinates. Other processes ignore it.
+        {
+            const char *pn = getprogname();
+            BOOL isSafari = (pn && (strcmp(pn, "MobileSafari") == 0 ||
+                                    strcmp(pn, "SafariViewService") == 0 ||
+                                    strcmp(pn, "com.apple.WebKit.WebContent") == 0 ||
+                                    strstr(pn, "WebContent") != NULL));
+            if (isSafari) {
+                int t3 = 0;
+                notify_register_dispatch("com.changeinfoios/RestartTarget", &t3,
+                    dispatch_get_main_queue(), ^(int __unused x) {
+                        dbglog("RestartTarget %s → exit(0)\n", g_procname);
+                        exit(0);
+                    });
+                dbglog("ctor %s registered RestartTarget handler\n", g_procname);
+            }
+        }
+
         NSString *marker = @"/var/jb/etc/changeinfoios/v3_mg_loaded.txt";
         NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
         NSString *body = [NSString stringWithFormat:@"%@ %@\n", exec, [NSDate date]];
