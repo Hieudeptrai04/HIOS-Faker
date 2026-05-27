@@ -132,22 +132,9 @@ static NSString *const kLegacyNote = @"com.changeinfoios/ReloadConfig";
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
 
-static BOOL g_wipeKeychainOnReload = NO; // set by notify_cb, cleared after wipe
-
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     g_config = d ?: @{};
-    // When user changes identity (explicit ReloadConfig notification) and we're
-    // inside Zalo's process, proactively delete the stored device fingerprints so
-    // Zalo regenerates fresh IDs on next registration without reading cached ones.
-    if (g_wipeKeychainOnReload && (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber"))) {
-        const char *pn = getprogname();
-        if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
-                   strstr(pn, "zingalo") || strstr(pn, "imess") || strstr(pn, "vng"))) {
-            wipeZaloKeychainFingerprints();
-        }
-        g_wipeKeychainOnReload = NO;
-    }
 }
 
 static inline NSDictionary *cfg(void) {
@@ -1433,7 +1420,22 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
-static void notify_cb(int t) { (void)t; g_wipeKeychainOnReload = YES; reloadConfig(); }
+static void notify_cb(int t) {
+    (void)t;
+    reloadConfig();
+    // Proactively wipe Zalo device fingerprints when identity changes.
+    // notify_cb is called on explicit user action (press "Apply" in app), not on startup,
+    // so this only triggers when the user consciously changes identity.
+    // wipeZaloKeychainFingerprints() is defined above and uses Security.framework;
+    // it can only delete items from Zalo's access group when running inside Zalo's process.
+    if (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber")) {
+        const char *pn = getprogname();
+        if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
+                   strstr(pn, "zingalo") || strstr(pn, "imess"))) {
+            wipeZaloKeychainFingerprints();
+        }
+    }
+}
 
 %ctor {
     @autoreleasepool {
