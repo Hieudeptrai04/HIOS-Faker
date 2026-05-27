@@ -122,8 +122,9 @@ static const char *g_procname = "?";
 // Atomic pointer swap so hot-path readers never lock.
 // ============================================================
 static NSString *const kConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
-static NSString *const kReloadNote = @"com.changeinfoios.v3/ReloadConfig";
-static NSString *const kLegacyNote = @"com.changeinfoios/ReloadConfig";
+static NSString *const kReloadNote  = @"com.changeinfoios.v3/ReloadConfig";
+static NSString *const kLegacyNote  = @"com.changeinfoios/ReloadConfig";
+static NSString *const kAppNote     = @"com.changeinfoios/ReloadPrefs"; // app sends this
 
 // Plain strong ARC pointer + dispatch_once init. NSDictionary is
 // immutable; multi-threaded reads are safe. The 8-byte aligned pointer
@@ -1791,11 +1792,16 @@ static void notify_cb(int t) {
                    (void *)orig_SecItemUpdate);
         }
 
-        // Reload config on either notification (v3-native + legacy v2 app).
-        int t1 = 0, t2 = 0;
+        // Reload config on any of the 3 notification names:
+        //   kReloadNote  = com.changeinfoios.v3/ReloadConfig  (v3 native)
+        //   kLegacyNote  = com.changeinfoios/ReloadConfig     (v2 legacy)
+        //   kAppNote     = com.changeinfoios/ReloadPrefs      (what app actually sends)
+        int t1 = 0, t2 = 0, t3 = 0;
         notify_register_dispatch([kReloadNote UTF8String], &t1,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kLegacyNote UTF8String], &t2,
+            dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
         // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
@@ -1824,6 +1830,33 @@ static void notify_cb(int t) {
         // Append (not overwrite) so multiple apps' loads are visible.
         FILE *f = fopen([marker UTF8String], "a");
         if (f) { fputs([body UTF8String], f); fclose(f); }
+
+        // Auto-clear Zalo persistent fingerprints on every launch when spoof is active.
+        // This runs without any user action — just kill Zalo and reopen.
+        // We dispatch after a 1.5s delay so Foundation/UIKit are fully initialized.
+        if (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber")) {
+            const char *pn2 = getprogname();
+            if (pn2 && (strstr(pn2, "Zalo") || strstr(pn2, "zalo") ||
+                        strstr(pn2, "zingalo") || strstr(pn2, "imess"))) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)),
+                               dispatch_get_main_queue(), ^{
+                    @autoreleasepool {
+                        wipeZaloKeychainFingerprints();
+                        WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
+                        NSSet *types = [WKWebsiteDataStore allWebsiteDataTypes];
+                        [store removeDataOfTypes:types
+                                  modifiedSince:[NSDate distantPast]
+                              completionHandler:^{
+                            dbglog("ctor.autoWipe WKDataStore cleared %s\n", g_procname);
+                        }];
+                        [[UIPasteboard generalPasteboard] setItems:@[]];
+                        dbglog("ctor.autoWipe KC+WebStore+PB cleared %s\n", g_procname);
+                    }
+                });
+                dbglog("ctor %s scheduled autoWipe in 1.5s\n", g_procname);
+            }
+        }
+
         dbglog("ctor %s done\n", g_procname);
     }
 }
