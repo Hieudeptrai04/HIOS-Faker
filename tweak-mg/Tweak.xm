@@ -529,15 +529,19 @@ static kern_return_t hooked_IORegCreateProps(mach_port_t entry,
 // All three are lazy-bound in apps → fishhook rebinds them.
 // ============================================================
 typedef int (*sysctlbyname_t)(const char *, void *, size_t *, void *, size_t);
+typedef int (*sysctl_raw_t)(int *, u_int, void *, size_t *, void *, size_t);
 typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 static sysctlbyname_t orig_sysctlbyname = NULL;
+static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
 // hw.physicalcpu for thread pool sizing on first touch) → recursion.
+// Shared by both sysctlbyname and raw sysctl hooks so the inner
+// orig_sysctlbyname→sysctl() chain doesn't re-enter either hook.
 __thread int g_inSysctl = 0;
 
 // sysctl key → config key. AIDA strings confirmed only hw.model +
@@ -560,11 +564,12 @@ static void initSysctlMap(void) {
             @"hw.logicalcpu":  @"hw_logicalcpu_max",
             @"hw.logicalcpu_max":  @"hw_logicalcpu_max",
             @"hw.physicalcpu_max": @"hw_physicalcpu",
-            @"kern.hostname":  @"deviceName",
-            @"kern.osversion": @"BuildVersion",
-            @"kern.osrelease": @"systemVersion",
-            @"kern.boottime":  @"kern_boottime",
-            @"kern.uuid":      @"IOPlatformUUID",
+            @"kern.hostname":         @"deviceName",
+            @"kern.osversion":        @"BuildVersion",
+            @"kern.osrelease":        @"systemVersion",
+            @"kern.osproductversion": @"ProductVersion",
+            @"kern.boottime":         @"kern_boottime",
+            @"kern.uuid":             @"IOPlatformUUID",
         };
     });
 }
@@ -646,6 +651,48 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     }
     g_inSysctl = 0;
     return rc;
+}
+
+// Raw sysctl() hook — AIDA64 and similar apps bypass sysctlbyname() by
+// calling sysctl({CTL_HW, HW_MACHINE}, ...) with numeric MIBs directly.
+// sysctlbyname() itself calls sysctl() internally, so we share g_inSysctl
+// to prevent re-entry: if the inner orig_sysctlbyname→sysctl() chain fires,
+// g_inSysctl is already 1 and we pass through instantly.
+static int hooked_sysctl_raw(int *name, u_int namelen, void *oldp, size_t *oldlenp,
+                               void *newp, size_t newlen) {
+    if (g_inSysctl || !name || newp || namelen < 2) {
+        return orig_sysctl_raw(name, namelen, oldp, oldlenp, newp, newlen);
+    }
+    g_inSysctl = 1;
+
+    const char *spoofed = NULL;
+    if (name[0] == CTL_HW) {
+        if (name[1] == HW_MACHINE) {
+            NSString *v = getConfigStr(@"hw_machine");
+            if (v) spoofed = [v UTF8String];
+        } else if (name[1] == HW_MODEL) {
+            NSString *v = getConfigStr(@"hw_model");
+            if (v) {
+                if ([v hasPrefix:@"iPhone"] || [v hasPrefix:@"iPad"] ||
+                    [v hasPrefix:@"iPod"]) {
+                    NSString *board = productTypeToBoardId(v);
+                    if (board) v = board;
+                }
+                spoofed = [v UTF8String];
+            }
+        }
+    }
+
+    if (spoofed) {
+        int rc = writeStringSysctl(spoofed, oldp, oldlenp);
+        dbglog("sysctl_raw %s mib=[%d,%d] -> '%s' rc=%d\n",
+               g_procname, name[0], name[1], spoofed, rc);
+        g_inSysctl = 0;
+        return rc;
+    }
+
+    g_inSysctl = 0;
+    return orig_sysctl_raw(name, namelen, oldp, oldlenp, newp, newlen);
 }
 
 // gethostname → spoof to deviceName if set.
@@ -852,6 +899,16 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
             MSHookFunction((void *)orig_sysctlbyname, (void *)hooked_sysctlbyname,
                            (void **)&orig_sysctlbyname);
         }
+        // Raw sysctl() — AIDA64 calls sysctl({CTL_HW, HW_MACHINE}, ...) with
+        // numeric MIBs directly, bypassing sysctlbyname entirely. Patch the
+        // function prologue in libsystem_c so all callers are intercepted.
+        // g_inSysctl is shared with hooked_sysctlbyname to break the inner
+        // orig_sysctlbyname → sysctl() chain (prevents double-hook re-entry).
+        orig_sysctl_raw = (sysctl_raw_t)dlsym(RTLD_DEFAULT, "sysctl");
+        if (orig_sysctl_raw) {
+            MSHookFunction((void *)orig_sysctl_raw, (void *)hooked_sysctl_raw,
+                           (void **)&orig_sysctl_raw);
+        }
         if (orig_getifaddrs) {
             MSHookFunction((void *)orig_getifaddrs, (void *)hooked_getifaddrs,
                            (void **)&orig_getifaddrs);
@@ -868,8 +925,8 @@ static void notify_cb(int t) { (void)t; reloadConfig(); }
         // returning a fake type makes initWithContentsOfFile: throw → SIGABRT.
         // AIDA64 doesn't link libMobileGestalt so fishhook GOT rebind is enough:
         // AIDA64's own binary has no MG GOT entry, and UIKit's entry is skipped.
-        dbglog("ctor %s after MSHook libc orig: sysctl=%p getif=%p ghn=%p\n",
-               g_procname, (void *)orig_sysctlbyname,
+        dbglog("ctor %s after MSHook libc orig: sysctl=%p sysctl_raw=%p getif=%p ghn=%p\n",
+               g_procname, (void *)orig_sysctlbyname, (void *)orig_sysctl_raw,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
 
         // SCDynamicStoreCopyComputerName — SystemConfiguration framework,
