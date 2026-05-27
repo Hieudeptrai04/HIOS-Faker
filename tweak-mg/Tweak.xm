@@ -386,7 +386,13 @@ static NSString *productTypeToBoardId(NSString *pt) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         map = @{
-            @"iPhone10,3":@"D22AP",  @"iPhone10,6":@"D221AP",   // X
+            @"iPhone8,4":@"N69uAP",                               // SE 1
+            @"iPhone8,1":@"N71AP",   @"iPhone8,2":@"N66AP",       // 6s / 6s Plus
+            @"iPhone9,1":@"D10AP",   @"iPhone9,2":@"D11AP",       // 7 / 7 Plus (US)
+            @"iPhone9,3":@"D101AP",  @"iPhone9,4":@"D111AP",      // 7 / 7 Plus (intl)
+            @"iPhone10,1":@"D20AP",  @"iPhone10,2":@"D21AP",      // 8 / 8 Plus (US)
+            @"iPhone10,4":@"D201AP", @"iPhone10,5":@"D211AP",     // 8 / 8 Plus (intl)
+            @"iPhone10,3":@"D22AP",  @"iPhone10,6":@"D221AP",     // X
             @"iPhone11,2":@"D321AP",                              // XS
             @"iPhone11,4":@"D331AP", @"iPhone11,6":@"D331pAP",    // XS Max
             @"iPhone11,8":@"N841AP",                              // XR

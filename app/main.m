@@ -1023,7 +1023,21 @@ static NSArray *ci_randomPresets(void) {
             @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(4294967296), @(6),  @(14), @(18), colors12],
             @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
             @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
-            // NOTE: iPhone 13+ removed — Zalo only recognizes models up to iPhone 12 Pro Max.
+            // iPhone 13 series — A15 Bionic (T8110). iOS 15-18.
+            @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(4294967296),  @(6),  @(15), @(18), colors13],
+            @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(4294967296),  @(6),  @(15), @(18), colors13],
+            @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(6442450944),  @(6),  @(15), @(18), colors13Pro],
+            @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(6442450944),  @(6),  @(15), @(18), colors13Pro],
+            // iPhone 14 series — A15 Bionic (14/Plus) or A16 Bionic (Pro). iOS 16-18.
+            @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14],
+            @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14],
+            @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14Pro],
+            @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14Pro],
+            // iPhone 15 series — A16 Bionic (15/Plus) or A17 Pro (Pro/Max). iOS 17-18.
+            @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x28", @(6442450944),  @(6),  @(17), @(18), colors15],
+            @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x28", @(6442450944),  @(6),  @(17), @(18), colors15],
+            @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A17 Pro",   @"0x8130", @"0x2C", @(8589934592),  @(6),  @(17), @(18), colors15Pro],
+            @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A17 Pro",   @"0x8130", @"0x2C", @(8589934592),  @(6),  @(17), @(18), colors15Pro],
         ];
     }
     return presets;
@@ -1253,6 +1267,17 @@ static NSUInteger ci_randomizeIdentities(void) {
     // iPhone 12 series — FaceID + OLED + 5G.
     else if ([productTyp hasPrefix:@"iPhone13,"]) {
         hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
+    }
+    // iPhone 13/14/15/16 series — FaceID + OLED + 5G. SE3 (iPhone14,6) keeps TouchID.
+    else if ([productTyp hasPrefix:@"iPhone14,"] ||
+             [productTyp hasPrefix:@"iPhone15,"] ||
+             [productTyp hasPrefix:@"iPhone16,"]) {
+        if ([productTyp isEqualToString:@"iPhone14,6"]) {
+            // SE (3rd gen) — TouchID + HomeButton, no FaceID, LCD
+            hasTouchID = YES; hasHomeButton = YES; hasFaceID = NO; hasOLED = NO; has5G = YES;
+        } else {
+            hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
+        }
     }
     [cm setObject:@(hasFaceID)     forKey:@"HasFaceID"];
     [cm setObject:@(hasTouchID)    forKey:@"HasTouchID"];
