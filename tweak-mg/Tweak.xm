@@ -1359,46 +1359,58 @@ static stat_fn_t   orig_stat_fn   = NULL;
 static stat_fn_t   orig_lstat_fn  = NULL;
 static access_fn_t orig_access_fn = NULL;
 
+// Pass-through for callers from JB tweak dylibs so they can access
+// their own files under /var/jb/ (e.g. VCam reading its video source).
+static BOOL statCallerIsJBTweak(void) {
+    Dl_info di; di.dli_fname = NULL;
+    dladdr(__builtin_return_address(1), &di);
+    if (!di.dli_fname) return NO;
+    return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
+            strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
+            strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0);
+}
+
 static int hook_stat_fn(const char *path, struct stat *buf) {
-    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
     return orig_stat_fn(path, buf);
 }
 static int hook_lstat_fn(const char *path, struct stat *buf) {
-    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
     return orig_lstat_fn(path, buf);
 }
 static int hook_access_fn(const char *path, int mode) {
-    if (isJBPath(path)) { errno = ENOENT; return -1; }
+    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
     return orig_access_fn(path, mode);
 }
 
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    if (path && isJBPath(path.UTF8String)) return NO;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return NO;
     return %orig;
 }
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDir {
-    if (path && isJBPath(path.UTF8String)) return NO;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return NO;
     return %orig;
 }
 - (NSData *)contentsAtPath:(NSString *)path {
-    if (path && isJBPath(path.UTF8String)) return nil;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return nil;
     return %orig;
 }
 - (NSDictionary *)attributesOfItemAtPath:(NSString *)path error:(NSError **)err {
-    if (path && isJBPath(path.UTF8String)) {
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) {
         if (err) *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:nil];
         return nil;
     }
     return %orig;
 }
 - (NSArray *)contentsOfDirectoryAtPath:(NSString *)path error:(NSError **)err {
-    if (path && isJBPath(path.UTF8String)) {
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) {
         if (err) *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:nil];
         return nil;
     }
     NSArray *orig = %orig;
     if (!orig || orig.count == 0) return orig;
+    if (statCallerIsJBTweak()) return orig;
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:orig.count];
     for (NSString *item in orig) {
         NSString *full = [path stringByAppendingPathComponent:item];
@@ -1454,8 +1466,23 @@ typedef const char *(*dyld_image_name_fn_t)(uint32_t);
 static dyld_image_count_fn_t  orig_dyld_image_count_fn    = NULL;
 static dyld_image_name_fn_t   orig_dyld_get_image_name_fn = NULL;
 
+// If the caller of _dyld_image_count / _dyld_get_image_name is itself
+// a JB tweak (its code lives in /var/jb/Library/ or /var/jb/usr/lib/),
+// pass through the real list — that tweak needs to locate itself or its
+// peers (e.g. VCam finding vcamrootless.dylib to locate its video file).
+// Only filter the view for app-bundle callers (the anti-fraud SDK path).
+static BOOL dyldCallerIsJBTweak(void) {
+    Dl_info di; di.dli_fname = NULL;
+    dladdr(__builtin_return_address(1), &di);
+    if (!di.dli_fname) return NO;
+    return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
+            strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
+            strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0);
+}
+
 static uint32_t hooked_dyld_image_count(void) {
     if (!orig_dyld_image_count_fn) return 0;
+    if (dyldCallerIsJBTweak()) return orig_dyld_image_count_fn();
     uint32_t total = orig_dyld_image_count_fn();
     uint32_t hidden = 0;
     for (uint32_t i = 0; i < total; i++) {
@@ -1467,6 +1494,7 @@ static uint32_t hooked_dyld_image_count(void) {
 
 static const char *hooked_dyld_get_image_name(uint32_t index) {
     if (!orig_dyld_get_image_name_fn || !orig_dyld_image_count_fn) return NULL;
+    if (dyldCallerIsJBTweak()) return orig_dyld_get_image_name_fn(index);
     uint32_t total = orig_dyld_image_count_fn();
     uint32_t visible = 0;
     for (uint32_t i = 0; i < total; i++) {
