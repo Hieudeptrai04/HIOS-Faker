@@ -1849,8 +1849,10 @@ static void notify_cb(int t) {
                               completionHandler:^{
                             dbglog("ctor.autoWipe WKDataStore cleared %s\n", g_procname);
                         }];
-                        [[UIPasteboard generalPasteboard] setItems:@[]];
-                        dbglog("ctor.autoWipe KC+WebStore+PB cleared %s\n", g_procname);
+                        // Pasteboard NOT cleared here — VCam stores its video path
+                        // in the general pasteboard; clearing it breaks VCam.
+                        // Pasteboard is only cleared in notify_cb (user-triggered).
+                        dbglog("ctor.autoWipe KC+WebStore cleared %s\n", g_procname);
                     }
                 });
                 dbglog("ctor %s scheduled autoWipe in 1.5s\n", g_procname);
