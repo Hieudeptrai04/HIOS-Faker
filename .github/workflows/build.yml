@@ -230,63 +230,10 @@ jobs:
           path: out/*.deb
           retention-days: 14
 
-      # Deploy APT repo to gh-pages under /v3/ subdirectory.
-      # v2 repo lives at root of gh-pages; v3 lives at /v3/ — no conflict.
-      - name: Build Sileo repo structure
-        if: success() && github.ref == 'refs/heads/v3'
-        run: |
-          exec > >(tee -a /tmp/build.log) 2>&1
-          echo ">>> STEP: Build Sileo repo structure <<<"
-          set -euo pipefail
-          DEB=$(ls out/*.deb | head -1)
-          DEBNAME=$(basename "$DEB")
-          VERSION=$(grep '^Version:' tweak-mg/control | awk '{print $2}')
-          SIZE=$(stat -f%z "$DEB" 2>/dev/null || stat -c%s "$DEB")
-          MD5=$(md5 -q "$DEB" 2>/dev/null || md5sum "$DEB" | awk '{print $1}')
-          SHA1=$(shasum -a 1 "$DEB" | awk '{print $1}')
-          SHA256=$(shasum -a 256 "$DEB" | awk '{print $1}')
-          mkdir -p repo-v3/pool/main
-          cp "$DEB" "repo-v3/pool/main/$DEBNAME"
-          # Use printf — heredocs in YAML run blocks have indented EOF terminators
-          # which bash doesn't recognise, causing the script to hang.
-          printf '%s\n' \
-            "Package: com.changeinfoios.v3" \
-            "Name: HIOS Faker v3" \
-            "Version: $VERSION" \
-            "Architecture: iphoneos-arm64" \
-            "Section: Tweaks" \
-            "Author: ChangeInfoIos" \
-            "Maintainer: ChangeInfoIos" \
-            "Depends: ellekit | mobilesubstrate, firmware (>= 15.0)" \
-            "Description: HIOS Faker v3 - 22-layer device spoof for Zalo/FB/TikTok/IG" \
-            "Filename: pool/main/$DEBNAME" \
-            "Size: $SIZE" \
-            "MD5sum: $MD5" \
-            "SHA1: $SHA1" \
-            "SHA256: $SHA256" \
-            "" > repo-v3/Packages
-          bzip2 -k repo-v3/Packages
-          gzip  -k repo-v3/Packages
-          printf '%s\n' \
-            "Origin: HIOS Faker" \
-            "Label: HIOS Faker v3" \
-            "Suite: stable" \
-            "Version: $VERSION" \
-            "Codename: ios" \
-            "Architectures: iphoneos-arm64" \
-            "Components: main" \
-            "Description: HIOS Faker v3" > repo-v3/Release
-          echo "Repo built: v$VERSION, deb=$DEBNAME, size=$SIZE"
-
-      - name: Deploy Sileo repo to gh-pages /v3/
-        if: success() && github.ref == 'refs/heads/v3'
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./repo-v3
-          destination_dir: v3
-          keep_files: true
-          commit_message: "repo: v3 ${{ github.sha }}"
+      # NOTE: the gh-pages Sileo deploy step was REMOVED. The customer-facing
+      # Sileo source is the dedicated repo hieudeptrai04.github.io/v3/, which
+      # updates itself from the GitHub Release below (Publish GitHub Release).
+      # We no longer maintain an HIOS-Faker/gh-pages branch.
 
       - name: Publish GitHub Release
         if: success() && github.ref == 'refs/heads/v3'
