@@ -1605,22 +1605,21 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return v ? (NSUInteger)[v integerValue] : %orig;
 }
 - (NSUInteger)activeProcessorCount { return [self processorCount]; }
-// Hide jailbreak-indicative environment variables (DYLD_INSERT_LIBRARIES etc.)
-// Anti-fraud SDKs read NSProcessInfo.environment to check for substrate injection.
+// Hide jailbreak-indicative environment variables (DYLD_INSERT_LIBRARIES etc.).
+// Cached after first call — environment never changes during process lifetime,
+// so building the filtered dict once avoids O(n-calls) overhead that caused hang.
 - (NSDictionary<NSString *, NSString *> *)environment {
+    static NSDictionary *_envCached = nil;
+    if (_envCached) return _envCached;
     NSDictionary *o = %orig;
-    static NSSet *_jb = nil;
-    static dispatch_once_t _jbOnce;
-    dispatch_once(&_jbOnce, ^{
-        _jb = [NSSet setWithObjects:
-            @"DYLD_INSERT_LIBRARIES", @"DYLD_FORCE_FLAT_NAMESPACE",
-            @"_MSSafeMode", @"_SafeMode", @"SUBSTRATE_TWEAKS",
-            @"_INJECTION_DYLIBS", @"CFNETWORK_DIAGNOSTICS",
-            nil];
-    });
     NSMutableDictionary *clean = [o mutableCopy];
-    for (NSString *k in _jb) [clean removeObjectForKey:k];
-    return [clean copy];
+    for (NSString *k in @[@"DYLD_INSERT_LIBRARIES", @"DYLD_FORCE_FLAT_NAMESPACE",
+                          @"_MSSafeMode", @"_SafeMode", @"SUBSTRATE_TWEAKS",
+                          @"_INJECTION_DYLIBS"]) {
+        [clean removeObjectForKey:k];
+    }
+    _envCached = [clean copy];
+    return _envCached;
 }
 %end
 
@@ -1715,34 +1714,42 @@ static BOOL isZaloUDKey(NSString *k) {
 // Only fires when the real and spoofed versions differ AND the
 // UA actually contains the real version string.
 // ============================================================
+// Cached UA patch strings — built once per process, reused on every request.
+// Calling [[UIDevice currentDevice] systemVersion] on every HTTP request
+// triggered our UIDevice hook chain repeatedly → severe startup lag.
+static NSString *g_uaRealDot  = nil; // "17_7" (real iOS)
+static NSString *g_uaSpoofDot = nil; // "16_7" (spoofed iOS)
+static void initUAPatch(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *spoof = getConfigStr(@"systemVersion");
+        if (!spoof) return;
+        // Read real iOS version directly from sysctl to avoid ObjC hook chain
+        char buf[32] = {0};
+        size_t sz = sizeof(buf);
+        sysctlbyname("kern.osproductversion", buf, &sz, NULL, 0);
+        NSString *real = buf[0] ? [NSString stringWithUTF8String:buf] : nil;
+        if (!real || [real isEqualToString:spoof]) return;
+        g_uaRealDot  = [real  stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+        g_uaSpoofDot = [spoof stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    });
+}
+static NSString *patchUA(NSString *value) {
+    initUAPatch();
+    if (!g_uaRealDot || !value) return value;
+    if (![value containsString:g_uaRealDot]) return value;
+    return [value stringByReplacingOccurrencesOfString:g_uaRealDot withString:g_uaSpoofDot];
+}
+
 %hook NSMutableURLRequest
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame && value.length) {
-        NSString *spoof = getConfigStr(@"systemVersion");
-        if (spoof) {
-            NSString *real     = [[UIDevice currentDevice] systemVersion];
-            NSString *realDot  = [real  stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            NSString *spoofDot = [spoof stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            if (real && ![real isEqualToString:spoof] && [value containsString:realDot]) {
-                value = [value stringByReplacingOccurrencesOfString:realDot withString:spoofDot];
-                dbglog("UA.patch %s -> %s\n", g_procname, [value UTF8String]);
-            }
-        }
-    }
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame)
+        value = patchUA(value);
     %orig(value, field);
 }
 - (void)addValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame && value.length) {
-        NSString *spoof = getConfigStr(@"systemVersion");
-        if (spoof) {
-            NSString *real     = [[UIDevice currentDevice] systemVersion];
-            NSString *realDot  = [real  stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            NSString *spoofDot = [spoof stringByReplacingOccurrencesOfString:@"." withString:@"_"];
-            if (real && ![real isEqualToString:spoof] && [value containsString:realDot]) {
-                value = [value stringByReplacingOccurrencesOfString:realDot withString:spoofDot];
-            }
-        }
-    }
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame)
+        value = patchUA(value);
     %orig(value, field);
 }
 %end
