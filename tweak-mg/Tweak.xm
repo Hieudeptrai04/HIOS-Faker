@@ -1605,22 +1605,9 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return v ? (NSUInteger)[v integerValue] : %orig;
 }
 - (NSUInteger)activeProcessorCount { return [self processorCount]; }
-// Hide jailbreak-indicative environment variables (DYLD_INSERT_LIBRARIES etc.).
-// Cached after first call — environment never changes during process lifetime,
-// so building the filtered dict once avoids O(n-calls) overhead that caused hang.
-- (NSDictionary<NSString *, NSString *> *)environment {
-    static NSDictionary *_envCached = nil;
-    if (_envCached) return _envCached;
-    NSDictionary *o = %orig;
-    NSMutableDictionary *clean = [o mutableCopy];
-    for (NSString *k in @[@"DYLD_INSERT_LIBRARIES", @"DYLD_FORCE_FLAT_NAMESPACE",
-                          @"_MSSafeMode", @"_SafeMode", @"SUBSTRATE_TWEAKS",
-                          @"_INJECTION_DYLIBS"]) {
-        [clean removeObjectForKey:k];
-    }
-    _envCached = [clean copy];
-    return _envCached;
-}
+// NSProcessInfo.environment NOT hooked — hooking it caused app-wide hangs
+// because WebContent (spawned by every WKWebView app) also receives this dylib
+// and the hook fired during early process init before ObjC runtime was stable.
 %end
 
 // ============================================================
@@ -1629,8 +1616,7 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // Fingerprinters read scale/nativeScale/nativeBounds separately.
 // ============================================================
 %hook UIScreen
-- (BOOL)isCaptured     { return NO; } // block screen-recording JB detection
-- (NSInteger)captureStatus { return 0; } // UIScreenCaptureStatusNotCapturing
+- (BOOL)isCaptured { return NO; } // block screen-recording JB detection
 - (CGFloat)scale {
     NSString *pt = getConfigStr(@"ProductType");
     if (!pt) return %orig;
