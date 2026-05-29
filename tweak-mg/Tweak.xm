@@ -1104,6 +1104,10 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
     });
 }
 - (void)requestLocation { [self startUpdatingLocation]; }
+// Significant-location-change service (used by Maps background tracking):
+// don't start real monitoring, just deliver one fake fix.
+- (void)startMonitoringSignificantLocationChanges { [self startUpdatingLocation]; }
+- (void)stopMonitoringSignificantLocationChanges  { /* no-op */ }
 - (CLLocation *)location {
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");
@@ -1111,9 +1115,20 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
     CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
     double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
     return [[CLLocation alloc] initWithCoordinate:c altitude:alt
-            horizontalAccuracy:10.0 verticalAccuracy:5.0 timestamp:[NSDate date]];
+            horizontalAccuracy:5.0 verticalAccuracy:3.0 timestamp:[NSDate date]];
 }
+// speedFilter / distanceFilter don't matter since we own the delivery.
+- (CLLocationDistance)distanceFilter { return kCLDistanceFilterNone; }
+// pausesLocationUpdatesAutomatically = NO prevents iOS from stopping
+// our fake delivery when the app "stops moving".
+- (BOOL)pausesLocationUpdatesAutomatically { return NO; }
 %end
+
+// CLGeocoder: no hook needed. When Maps/Weather call
+// [geocoder reverseGeocodeLocation:clm.location], clm.location
+// already returns our fake coordinates (hook above). Apple's
+// geocoding server receives the fake lat/lon and returns the
+// correct fake city — real device location never leaves the device.
 
 // ============================================================
 // LAYER 5: NSLocale / NSTimeZone — language, region, timezone spoof.
