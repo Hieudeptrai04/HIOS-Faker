@@ -13,6 +13,7 @@
 #import <math.h>
 #import <fcntl.h>
 #import <errno.h>
+#import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -33,7 +34,8 @@
 @end
 
 @class CIHomeViewController, CIAppPickerViewController, CIFakeSettingsViewController,
-       CIRRSManagerViewController, CISideMenuViewController, CIProxyViewController;
+       CIRRSManagerViewController, CISideMenuViewController, CIProxyViewController,
+       CILoginViewController;
 
 // ============================================================
 // CONSTANTS
@@ -2448,6 +2450,299 @@ static UIButton *CIBoxButton(NSString *title, UIColor *textColor, UIColor *borde
     (void)textColor;
     return b;
 }
+
+// ============================================================
+// LICENSE MANAGER  (key-based login, 1 key = 1 device)
+// ============================================================
+// IMPORTANT: license enforcement lives in THIS app only — never in the
+// injected tweak (no network calls inside Zalo). The tweak just reads the
+// spoof config; if the key is expired we refuse to generate a NEW identity
+// (Change Device) and kick the user back to the Login screen.
+//
+// ⚠ CONFIG: set these two before building. kLicenseSecret MUST be identical
+//    to HIOS_SECRET in the server's lib.php. kLicenseBaseURL is your hosting
+//    folder URL (must end with a slash).
+static NSString *const kLicenseBaseURL = @"https://CHANGE-ME-your-domain.com/hios/";
+static NSString *const kLicenseSecret  = @"hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6";
+static const NSInteger kLicenseOfflineGraceHours = 48;
+
+// config plist keys
+static NSString *const kLicKey      = @"_ci_lic_key";
+static NSString *const kLicExpiry   = @"_ci_lic_expiry";    // ISO8601
+static NSString *const kLicLastOK   = @"_ci_lic_lastok";    // epoch of last good online check
+static NSString *const kLicUDID     = @"_ci_lic_udid";
+
+@interface CILicenseManager : NSObject
++ (instancetype)shared;
+- (NSString *)deviceUDID;                 // REAL idfv (un-spoofed in this app)
+- (NSString *)storedKey;
+- (NSDate *)expiryDate;
+- (NSInteger)daysLeft;
+- (BOOL)isLicenseValidCached;             // offline-tolerant (within grace)
+- (void)validateKey:(NSString *)key
+          completion:(void(^)(BOOL ok, NSString *status, NSString *err))completion;
+- (void)recheckWithCompletion:(void(^)(BOOL ok, NSString *status))completion;
+- (BOOL)blockingRecheck;                  // synchronous (for Change-Device gate)
+- (void)logout;
+@end
+
+@implementation CILicenseManager
+
++ (instancetype)shared {
+    static CILicenseManager *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[CILicenseManager alloc] init]; });
+    return s;
+}
+
+- (NSString *)deviceUDID {
+    // The tweak does NOT inject into this app, so identifierForVendor is the
+    // REAL, stable, per-device value here. Fall back to a hashed utsname if nil.
+    NSUUID *idfv = [UIDevice currentDevice].identifierForVendor;
+    if (idfv) return idfv.UUIDString;
+    struct utsname u; uname(&u);
+    return [NSString stringWithFormat:@"M-%s", u.machine];
+}
+
+- (NSString *)storedKey { return [[CIConfigManager shared] stringForKey:kLicKey]; }
+
+- (NSDate *)expiryDate {
+    NSString *iso = [[CIConfigManager shared] stringForKey:kLicExpiry];
+    if (!iso.length) return nil;
+    NSDateFormatter *f = [[NSDateFormatter alloc] init];
+    f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
+    f.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+    f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    return [f dateFromString:iso];
+}
+
+- (NSInteger)daysLeft {
+    NSDate *e = [self expiryDate];
+    if (!e) return 0;
+    NSTimeInterval s = [e timeIntervalSinceNow];
+    return s <= 0 ? 0 : (NSInteger)ceil(s / 86400.0);
+}
+
+- (BOOL)isLicenseValidCached {
+    if (![self storedKey].length) return NO;
+    NSDate *e = [self expiryDate];
+    if (!e || [e timeIntervalSinceNow] <= 0) return NO;          // expired
+    // require a successful online check within the grace window
+    NSInteger lastOK = [[CIConfigManager shared] integerForKey:kLicLastOK];
+    NSTimeInterval since = [[NSDate date] timeIntervalSince1970] - lastOK;
+    if (lastOK <= 0 || since > kLicenseOfflineGraceHours * 3600) return NO;
+    return YES;
+}
+
+// HMAC-SHA256(canonical, secret) hex — must match server hios_sign().
+- (NSString *)hmac:(NSString *)canonical {
+    const char *cKey = [kLicenseSecret UTF8String];
+    const char *cMsg = [canonical UTF8String];
+    unsigned char mac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, cKey, strlen(cKey), cMsg, strlen(cMsg), mac);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH*2];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", mac[i]];
+    return hex;
+}
+
+- (void)validateKey:(NSString *)key
+          completion:(void(^)(BOOL, NSString *, NSString *))completion {
+    key = [key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!key.length) { if (completion) completion(NO, @"bad_request", @"Chưa nhập key"); return; }
+
+    NSString *udid  = [self deviceUDID];
+    NSString *nonce = [[NSUUID UUID] UUIDString];
+    long ts = (long)[[NSDate date] timeIntervalSince1970];
+
+    NSString *body = [NSString stringWithFormat:@"key=%@&udid=%@&nonce=%@&ts=%ld",
+        [self urlEnc:key], [self urlEnc:udid], [self urlEnc:nonce], ts];
+
+    NSURL *url = [NSURL URLWithString:[kLicenseBaseURL stringByAppendingString:@"check.php"]];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 12.0;
+    [req setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
+    req.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+    req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        void (^done)(BOOL,NSString*,NSString*) = ^(BOOL ok, NSString *st, NSString *e){
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(ok, st, e); });
+        };
+        if (err || !data) { done(NO, @"network", @"Không kết nối được máy chủ"); return; }
+        id j = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![j isKindOfClass:[NSDictionary class]]) { done(NO, @"network", @"Phản hồi lỗi"); return; }
+
+        // Verify HMAC signature so a forged/MITM 'ok' is rejected.
+        BOOL ok       = [j[@"ok"] boolValue];
+        NSString *st  = j[@"status"] ?: @"";
+        NSString *exp = j[@"expiry"] ?: @"";
+        NSInteger dl  = [j[@"daysLeft"] integerValue];
+        long rts      = [j[@"ts"] longValue];
+        NSString *rn  = j[@"nonce"] ?: @"";
+        NSString *sig = j[@"sig"] ?: @"";
+        NSString *canon = [NSString stringWithFormat:@"%@|%@|%@|%ld|%ld|%@",
+            ok ? @"1" : @"0", st, exp, (long)dl, rts, rn];
+        NSString *want = [self hmac:canon];
+        if (![rn isEqualToString:nonce] || ![want isEqualToString:sig]) {
+            done(NO, @"bad_sig", @"Chữ ký máy chủ không hợp lệ"); return;  // anti-forgery
+        }
+
+        if (ok) {
+            CIConfigManager *cm = [CIConfigManager shared];
+            [cm setObject:key forKey:kLicKey];
+            [cm setObject:exp forKey:kLicExpiry];
+            [cm setObject:udid forKey:kLicUDID];
+            [cm setObject:@((long)[[NSDate date] timeIntervalSince1970]) forKey:kLicLastOK];
+            [cm save];
+            done(YES, st, nil);
+        } else {
+            done(NO, st, [self msgForStatus:st]);
+        }
+    }] resume];
+}
+
+- (NSString *)msgForStatus:(NSString *)st {
+    if ([st isEqualToString:@"expired"])      return @"Key đã hết hạn.";
+    if ([st isEqualToString:@"revoked"])      return @"Key đã bị thu hồi.";
+    if ([st isEqualToString:@"wrong_device"]) return @"Key đã dùng trên máy khác.";
+    if ([st isEqualToString:@"not_found"])    return @"Key không tồn tại.";
+    return @"Key không hợp lệ.";
+}
+
+- (void)recheckWithCompletion:(void(^)(BOOL, NSString *))completion {
+    NSString *k = [self storedKey];
+    if (!k.length) { if (completion) completion(NO, @"not_found"); return; }
+    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
+        // network error → keep cached state (offline grace decides elsewhere)
+        if (completion) completion(ok || [st isEqualToString:@"network"] , st);
+    }];
+}
+
+- (BOOL)blockingRecheck {
+    NSString *k = [self storedKey];
+    if (!k.length) return NO;
+    __block BOOL result = NO; __block BOOL networkErr = NO;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
+        result = ok; networkErr = [st isEqualToString:@"network"];
+        dispatch_semaphore_signal(sem);
+    }];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(14.0 * NSEC_PER_SEC)));
+    if (networkErr) return [self isLicenseValidCached];  // offline → cached/grace
+    return result;
+}
+
+- (void)logout {
+    CIConfigManager *cm = [CIConfigManager shared];
+    [cm setObject:@"" forKey:kLicKey];
+    [cm setObject:@"" forKey:kLicExpiry];
+    [cm setObject:@(0) forKey:kLicLastOK];
+    [cm save];
+}
+
+- (NSString *)urlEnc:(NSString *)s {
+    return [s stringByAddingPercentEncodingWithAllowedCharacters:
+            [NSCharacterSet characterSetWithCharactersInString:
+             @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"]];
+}
+@end
+
+// ============================================================
+// LOGIN VIEW CONTROLLER  (enter license key)
+// ============================================================
+@interface CILoginViewController : UIViewController
+@end
+@implementation CILoginViewController {
+    UITextField *_keyField;
+    UIButton    *_loginBtn;
+    UILabel     *_statusLbl;
+    UIActivityIndicatorView *_spin;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [CITheme bg];
+    CGFloat W = self.view.bounds.size.width, M = 24;
+    CGFloat y = self.view.safeAreaInsets.top + 70;
+    if (y < 110) y = 110;
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W-2*M, 34)];
+    title.text = @"HIOS Faker v3"; title.font = [UIFont boldSystemFontOfSize:28];
+    title.textColor = [CITheme orange]; title.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:title]; y += 42;
+
+    UILabel *sub = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W-2*M, 22)];
+    sub.text = @"Nhập key để kích hoạt"; sub.font = [CITheme body];
+    sub.textColor = [CITheme dim]; sub.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:sub]; y += 50;
+
+    _keyField = [[UITextField alloc] initWithFrame:CGRectMake(M, y, W-2*M, 52)];
+    _keyField.placeholder = @"HIOS-XXXX-XXXX-XXXX";
+    _keyField.textAlignment = NSTextAlignmentCenter;
+    _keyField.font = [UIFont fontWithName:@"Menlo" size:18] ?: [UIFont systemFontOfSize:18];
+    _keyField.backgroundColor = [CITheme card];
+    _keyField.textColor = [CITheme text];
+    _keyField.layer.cornerRadius = 12;
+    _keyField.layer.borderWidth = 1; _keyField.layer.borderColor = [CITheme border].CGColor;
+    _keyField.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+    _keyField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _keyField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _keyField.returnKeyType = UIReturnKeyGo;
+    _keyField.delegate = (id<UITextFieldDelegate>)self;
+    [self.view addSubview:_keyField]; y += 66;
+
+    _loginBtn = CIBoxButton(@"Đăng nhập", [UIColor whiteColor], [CITheme orange]);
+    _loginBtn.frame = CGRectMake(M, y, W-2*M, 54);
+    [_loginBtn addTarget:self action:@selector(loginTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:_loginBtn]; y += 66;
+
+    _spin = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    _spin.center = CGPointMake(W/2, y+10); _spin.color = [CITheme dim];
+    [self.view addSubview:_spin];
+
+    _statusLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y+30, W-2*M, 60)];
+    _statusLbl.numberOfLines = 0; _statusLbl.textAlignment = NSTextAlignmentCenter;
+    _statusLbl.font = [CITheme small]; _statusLbl.textColor = [CITheme red];
+    [self.view addSubview:_statusLbl];
+
+    // show bound device id (helps support)
+    UILabel *dev = [[UILabel alloc] initWithFrame:CGRectMake(M, self.view.bounds.size.height-80, W-2*M, 40)];
+    dev.numberOfLines = 0; dev.textAlignment = NSTextAlignmentCenter;
+    dev.font = [UIFont systemFontOfSize:10]; dev.textColor = [CITheme dim];
+    dev.text = [NSString stringWithFormat:@"Máy: %@\nLiên hệ Telegram @houselis để mua key",
+                [[CILicenseManager shared] deviceUDID]];
+    dev.autoresizingMask = UIViewAutoresizingFlexibleTopMargin;
+    [self.view addSubview:dev];
+
+    // pre-fill last key if present
+    NSString *last = [[CILicenseManager shared] storedKey];
+    if (last.length) _keyField.text = last;
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self loginTapped]; return YES; }
+
+- (void)loginTapped {
+    [self.view endEditing:YES];
+    NSString *key = _keyField.text;
+    if (!key.length) { _statusLbl.textColor = [CITheme red]; _statusLbl.text = @"Vui lòng nhập key."; return; }
+    _loginBtn.enabled = NO; [_spin startAnimating];
+    _statusLbl.textColor = [CITheme dim]; _statusLbl.text = @"Đang kiểm tra key…";
+    [[CILicenseManager shared] validateKey:key completion:^(BOOL ok, NSString *st, NSString *e) {
+        [self->_spin stopAnimating]; self->_loginBtn.enabled = YES;
+        if (ok) {
+            NSInteger d = [[CILicenseManager shared] daysLeft];
+            self->_statusLbl.textColor = [CITheme green];
+            self->_statusLbl.text = [NSString stringWithFormat:@"✓ Kích hoạt thành công — còn %ld ngày", (long)d];
+            id del = [UIApplication sharedApplication].delegate;
+            if ([del respondsToSelector:@selector(showMain)])
+                [del performSelector:@selector(showMain)];
+        } else {
+            self->_statusLbl.textColor = [CITheme red];
+            self->_statusLbl.text = e ?: @"Key không hợp lệ.";
+        }
+    }];
+}
+@end
 
 // ============================================================
 // FORMATTERS
@@ -5827,7 +6122,37 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 - (void)resetData {
     [self performRRSBackup:NO];
 }
+
+// LICENSE GATE for Change Device. Requirement: key hết hạn → KHÔNG change
+// được + văng ra Login. Cached check is instant; then a fresh online recheck
+// catches server-side revoke before doing any destructive work.
 - (void)performRRSBackup:(BOOL)backup {
+    id del = [UIApplication sharedApplication].delegate;  // CIAppDelegate (defined later)
+    if (![[CILicenseManager shared] isLicenseValidCached]) {
+        [self alert:@"Key hết hạn" msg:@"Đăng nhập lại bằng key còn hạn để dùng Change Device."];
+        if ([del respondsToSelector:@selector(showLogin)]) [del performSelector:@selector(showLogin)];
+        return;
+    }
+    UIAlertController *checking = [UIAlertController alertControllerWithTitle:nil
+        message:@"Đang kiểm tra key…\n\n" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:checking animated:YES completion:nil];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL ok = [[CILicenseManager shared] blockingRecheck];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [checking dismissViewControllerAnimated:YES completion:^{
+                if (!ok) {
+                    [self alert:@"Key hết hạn / bị thu hồi"
+                            msg:@"Không thể Change Device. Vui lòng gia hạn key (Telegram @houselis)."];
+                    if ([del respondsToSelector:@selector(showLogin)]) [del performSelector:@selector(showLogin)];
+                    return;
+                }
+                [self performRRSBackupLicensed:backup];
+            }];
+        });
+    });
+}
+
+- (void)performRRSBackupLicensed:(BOOL)backup {
     NSArray<NSString *> *resetBids = [[CIConfigManager shared] targetBundles];
     if (resetBids.count == 0) {
         [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
@@ -7462,6 +7787,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 // ============================================================
 @interface CIAppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
+- (void)showMain;
+- (void)showLogin;
 @end
 
 @implementation CIAppDelegate
@@ -7481,10 +7808,26 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+    self.window.backgroundColor = [CITheme bg];
 
-    // v2.4.37: bottom tab bar — Home / Backups / Settings (AZInfo-style).
-    // Set tabBarItem on the ROOT view controller, not the nav stack, so
-    // UINavigationController doesn't override the title with topViewController.title.
+    // ---- LICENSE GATE ----
+    // Show main UI only if a cached-valid license exists; otherwise Login.
+    // Either way, kick off a fresh online recheck to catch revoke/expire.
+    if ([[CILicenseManager shared] isLicenseValidCached]) {
+        [self showMain];
+        [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
+            if (!ok) [self showLogin];  // revoked / expired server-side → kick out
+        }];
+    } else {
+        [self showLogin];
+    }
+
+    [self.window makeKeyAndVisible];
+    return YES;
+}
+
+// Build the main tab UI (Home / Backups / Settings).
+- (UIViewController *)buildMainTab {
     CIHomeViewController *home = [[CIHomeViewController alloc] init];
     UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:home];
     home.tabBarItem = (@available(iOS 13.0, *))
@@ -7519,10 +7862,32 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         tab.tabBar.standardAppearance = ta;
         tab.tabBar.scrollEdgeAppearance = ta;
     }
-    self.window.rootViewController = tab;
-    self.window.backgroundColor = [CITheme bg];
-    [self.window makeKeyAndVisible];
-    return YES;
+    return tab;
+}
+
+- (void)showMain {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([self.window.rootViewController isKindOfClass:[UITabBarController class]]) return;
+        [UIView transitionWithView:self.window duration:0.3
+            options:UIViewAnimationOptionTransitionCrossDissolve
+            animations:^{ self.window.rootViewController = [self buildMainTab]; }
+            completion:nil];
+    });
+}
+
+- (void)showLogin {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([self.window.rootViewController isKindOfClass:[UINavigationController class]] &&
+            [((UINavigationController *)self.window.rootViewController).topViewController
+                isKindOfClass:[CILoginViewController class]]) return;
+        CILoginViewController *login = [[CILoginViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:login];
+        nav.navigationBarHidden = YES;
+        [UIView transitionWithView:self.window duration:0.3
+            options:UIViewAnimationOptionTransitionCrossDissolve
+            animations:^{ self.window.rootViewController = nav; }
+            completion:nil];
+    });
 }
 @end
 
