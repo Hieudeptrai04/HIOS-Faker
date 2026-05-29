@@ -33,6 +33,7 @@
 #import <WebKit/WKUserContentController.h>
 #import <WebKit/WKUserScript.h>
 #import <WebKit/WKWebsiteDataStore.h>
+#import <PushKit/PKPushRegistry.h>
 #import <AdSupport/ASIdentifierManager.h>
 #import <Security/Security.h>
 #import <DeviceCheck/DeviceCheck.h>
@@ -1604,6 +1605,23 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return v ? (NSUInteger)[v integerValue] : %orig;
 }
 - (NSUInteger)activeProcessorCount { return [self processorCount]; }
+// Hide jailbreak-indicative environment variables (DYLD_INSERT_LIBRARIES etc.)
+// Anti-fraud SDKs read NSProcessInfo.environment to check for substrate injection.
+- (NSDictionary<NSString *, NSString *> *)environment {
+    NSDictionary *o = %orig;
+    static NSSet *_jb = nil;
+    static dispatch_once_t _jbOnce;
+    dispatch_once(&_jbOnce, ^{
+        _jb = [NSSet setWithObjects:
+            @"DYLD_INSERT_LIBRARIES", @"DYLD_FORCE_FLAT_NAMESPACE",
+            @"_MSSafeMode", @"_SafeMode", @"SUBSTRATE_TWEAKS",
+            @"_INJECTION_DYLIBS", @"CFNETWORK_DIAGNOSTICS",
+            nil];
+    });
+    NSMutableDictionary *clean = [o mutableCopy];
+    for (NSString *k in _jb) [clean removeObjectForKey:k];
+    return [clean copy];
+}
 %end
 
 // ============================================================
@@ -1612,6 +1630,8 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // Fingerprinters read scale/nativeScale/nativeBounds separately.
 // ============================================================
 %hook UIScreen
+- (BOOL)isCaptured     { return NO; } // block screen-recording JB detection
+- (NSInteger)captureStatus { return 0; } // UIScreenCaptureStatusNotCapturing
 - (CGFloat)scale {
     NSString *pt = getConfigStr(@"ProductType");
     if (!pt) return %orig;
@@ -1681,6 +1701,93 @@ static BOOL isZaloUDKey(NSString *k) {
     if (!o || o.count == 0) return o;
     NSMutableDictionary *d = [o mutableCopy];
     for (NSString *k in o) d[k] = v;
+    return [d copy];
+}
+%end
+
+// ============================================================
+// LAYER 18: NSMutableURLRequest — patch User-Agent header.
+//
+// iOS NSURLSession automatically sends a UA like:
+//   "AppName/x.y (iPhone; CPU iPhone OS 17_7 like Mac OS X)"
+// containing the REAL iOS version. We replace the real version
+// segment with the spoofed one so HTTP traffic is consistent.
+// Only fires when the real and spoofed versions differ AND the
+// UA actually contains the real version string.
+// ============================================================
+%hook NSMutableURLRequest
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame && value.length) {
+        NSString *spoof = getConfigStr(@"systemVersion");
+        if (spoof) {
+            NSString *real     = [[UIDevice currentDevice] systemVersion];
+            NSString *realDot  = [real  stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            NSString *spoofDot = [spoof stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            if (real && ![real isEqualToString:spoof] && [value containsString:realDot]) {
+                value = [value stringByReplacingOccurrencesOfString:realDot withString:spoofDot];
+                dbglog("UA.patch %s -> %s\n", g_procname, [value UTF8String]);
+            }
+        }
+    }
+    %orig(value, field);
+}
+- (void)addValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+    if ([field caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame && value.length) {
+        NSString *spoof = getConfigStr(@"systemVersion");
+        if (spoof) {
+            NSString *real     = [[UIDevice currentDevice] systemVersion];
+            NSString *realDot  = [real  stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            NSString *spoofDot = [spoof stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+            if (real && ![real isEqualToString:spoof] && [value containsString:realDot]) {
+                value = [value stringByReplacingOccurrencesOfString:realDot withString:spoofDot];
+            }
+        }
+    }
+    %orig(value, field);
+}
+%end
+
+// ============================================================
+// LAYER 19: fork / popen / system — block process-spawn JB detection.
+//
+// The iOS sandbox already blocks fork/popen/system on non-JB devices
+// (returns -1 / NULL / EPERM). If these succeed inside an App Store
+// app, it's a JB indicator. We restore sandbox behavior by always
+// returning failure — same result as on a stock device.
+// ============================================================
+typedef int   (*fork_fn_t)(void);
+typedef FILE *(*popen_fn_t)(const char *, const char *);
+typedef int   (*system_fn_t)(const char *);
+static fork_fn_t   orig_fork_fn   = NULL;
+static popen_fn_t  orig_popen_fn  = NULL;
+static system_fn_t orig_system_fn = NULL;
+
+static int   hooked_fork(void)                             { errno = EPERM; return -1; }
+static FILE *hooked_popen(const char *cmd, const char *t)  { errno = EPERM; return NULL; }
+static int   hooked_system(const char *cmd)                { return -1; }
+
+// ============================================================
+// LAYER 20: PKPushRegistry — VoIP push token device fingerprint.
+//
+// The VoIP push token is device-unique and survives app reinstalls.
+// It's often used alongside APNS token for device identity.
+// We return the XOR-scrambled apnsTokenSpoof value (same derivation
+// the app uses for voipTokenPreview) so it looks legitimate but
+// changes every Change Device session.
+// ============================================================
+%hook PKPushRegistry
+- (NSData *)pushTokenForType:(NSString *)type {
+    NSString *hex = getConfigStr(@"apnsTokenSpoof");
+    if (!hex || hex.length < 64) return %orig;
+    NSMutableData *d = [NSMutableData dataWithCapacity:hex.length / 2];
+    for (NSUInteger i = 0; i + 1 < hex.length; i += 2) {
+        unsigned int b = 0;
+        NSScanner *sc = [NSScanner scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]];
+        [sc scanHexInt:&b];
+        uint8_t byte = (uint8_t)(b ^ 0xA5);
+        [d appendBytes:&byte length:1];
+    }
+    dbglog("PKPushToken.spoof %s type=%s\n", g_procname, [type UTF8String]);
     return [d copy];
 }
 %end
@@ -1899,6 +2006,19 @@ static void notify_cb(int t) {
         }
         dbglog("ctor %s dyldHide cnt=%p name=%p\n",
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
+
+        // LAYER 19: block fork/popen/system — restore stock iOS sandbox behavior.
+        // On non-JB iOS these always return -1/NULL; succeeding = JB indicator.
+        orig_fork_fn   = (fork_fn_t)  dlsym(RTLD_DEFAULT, "fork");
+        orig_popen_fn  = (popen_fn_t) dlsym(RTLD_DEFAULT, "popen");
+        orig_system_fn = (system_fn_t)dlsym(RTLD_DEFAULT, "system");
+        if (orig_fork_fn)
+            MSHookFunction((void*)orig_fork_fn,   (void*)hooked_fork,   (void**)&orig_fork_fn);
+        if (orig_popen_fn)
+            MSHookFunction((void*)orig_popen_fn,  (void*)hooked_popen,  (void**)&orig_popen_fn);
+        if (orig_system_fn)
+            MSHookFunction((void*)orig_system_fn, (void*)hooked_system, (void**)&orig_system_fn);
+        dbglog("ctor %s fork/popen/system blocked\n", g_procname);
 
         // open()/openat() hooks intentionally not installed — see comment above.
 
