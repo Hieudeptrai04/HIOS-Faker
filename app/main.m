@@ -1,7 +1,7 @@
-#import <UIKit/UIKit.h>
+﻿#import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>  // CAShapeLayer / CABasicAnimation for ring HUD
 #import <AVFoundation/AVFoundation.h>  // AVAssetExportSession for video import (CICameraVC)
-#import <Photos/Photos.h>               // PHAsset / PHImageManager — proper cross-container path for picker assets
+#import <Photos/Photos.h>               // PHAsset / PHImageManager â€” proper cross-container path for picker assets
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <sys/wait.h>
@@ -33,13 +33,13 @@
 @end
 
 @class CIHomeViewController, CIAppPickerViewController, CIFakeSettingsViewController,
-       CIRRSManagerViewController, CISideMenuViewController, CIProxyViewController;
+       CIRRSManagerViewController, CISideMenuViewController;
 
 // ============================================================
 // CONSTANTS
 // ============================================================
 static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
-// Sandbox-friendly mirror for App Store app tweaks — /var/mobile/Library/Prefs
+// Sandbox-friendly mirror for App Store app tweaks â€” /var/mobile/Library/Prefs
 // is blocked by their sandboxes, /var/jb/etc/* is allowed (verified live).
 static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
@@ -108,7 +108,7 @@ static NSString *CIRRSDir(void) {
 }
 
 // Default-ON for all fake layers. User can still turn individual layers off
-// in settings — seedDefaults only fills values that are absent from config.
+// in settings â€” seedDefaults only fills values that are absent from config.
 - (void)seedDefaultsIfNeeded {
     NSArray *allFakeLayers = @[
         @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",
@@ -131,7 +131,7 @@ static NSString *CIRRSDir(void) {
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
     // hit + sysctlbyname trampoline + IORegistry walks) in SpringBoard and
-    // every target app — that brought back the chat-scroll lag the user
+    // every target app â€” that brought back the chat-scroll lag the user
     // explicitly traded model-spoof for in v2.6.0.
     //
     // The sidecar's cold-path MG + sysctlbyname (v2.6.5/7) already covers
@@ -265,7 +265,7 @@ static NSString *CIRRSDir(void) {
     // inside an App Store app's sandbox can't read /var/mobile/Library/Prefs
     // directly, but it CAN read via CFPreferencesCopyValue (cfprefsd brokers
     // the access). Without this, hooks load but configLoaded stays NO and
-    // every getter falls through %orig — i.e. "Change" never takes effect.
+    // every getter falls through %orig â€” i.e. "Change" never takes effect.
     CFStringRef appID = CFSTR("com.changeinfoios");
     for (NSString *k in _cfg) {
         id v = _cfg[k];
@@ -277,7 +277,7 @@ static NSString *CIRRSDir(void) {
     // Strategy 6: write the same plist into /var/jb/etc/changeinfoios/config.plist.
     // Verified live via probe dylib: this path IS readable from App Store
     // app sandboxes, while /var/mobile/Library/Preferences/ is NOT. Tweak.xm
-    // tries this path first in reloadConfigFromDisk(). Best-effort — if the
+    // tries this path first in reloadConfigFromDisk(). Best-effort â€” if the
     // dir isn't writable, we still have the cfprefsd path above.
     @try {
         NSString *sharedDir = [kSharedConfigPath stringByDeletingLastPathComponent];
@@ -310,7 +310,7 @@ static NSString *CIRRSDir(void) {
 
 // v2.4.54: pull public IP geolocation (ipinfo.io) and sync profile coord,
 // timezone, country code to match. Use case: user changes Shadowrocket VPN
-// exit → app auto-detects new exit IP → updates lat/lng/timezone so
+// exit â†’ app auto-detects new exit IP â†’ updates lat/lng/timezone so
 // browser geolocation, IP geo, and locale all show the SAME location
 // (no "VPN in Vung Tau but GPS in Hanoi" leak).
 //
@@ -345,7 +345,7 @@ static NSString *CIRRSDir(void) {
         double lat = [parts[0] doubleValue];
         double lng = [parts[1] doubleValue];
         if (lat == 0 && lng == 0) { finish(NO, city, country, @"zero coord"); return; }
-        // Update — keep numeric type for lat/lng (tweak reads as NSNumber).
+        // Update â€” keep numeric type for lat/lng (tweak reads as NSNumber).
         [self setObject:@(lat) forKey:@"latitude"];
         [self setObject:@(lng) forKey:@"longitude"];
         if (tz.length) [self setObject:tz forKey:@"timezoneName"];
@@ -376,7 +376,7 @@ static NSString *CIRRSDir(void) {
 // ============================================================
 // ============================================================
 // RANDOM HARDWARE IDENTIFIER GENERATORS
-// Each call yields a fresh value — used on every Reset Data.
+// Each call yields a fresh value â€” used on every Reset Data.
 // GPS / locale / carrier are intentionally NOT randomized.
 // ============================================================
 static NSString *ci_randHex(NSUInteger n) {
@@ -406,18 +406,18 @@ static NSString *ci_randDigits(NSUInteger n) {
     free(buf); return s;
 }
 // Luhn-valid IMEI (15 digits): 8-digit TAC prefix + 6 random + checksum.
-// v2.5.38: TAC pool now covers iPhone 6 → iPhone 15 Pro Max so Zalo can't
+// v2.5.38: TAC pool now covers iPhone 6 â†’ iPhone 15 Pro Max so Zalo can't
 // cross-correlate "same TAC = same tool" across Change Device sessions.
-// Pre-v2.5.38 hardcoded 35332811 (iPhone 13 mini) — every faked IMEI
+// Pre-v2.5.38 hardcoded 35332811 (iPhone 13 mini) â€” every faked IMEI
 // shared the same TAC prefix, which would fingerprint the tool itself
 // regardless of how often the user rotated the rest of the device IDs.
 // Pool below is sourced from public TAC databases (each entry is a real
 // 8-digit TAC reported by a shipped iPhone variant). Caller can pass a
 // productType (e.g. @"iPhone15,3") to constrain the pick to TACs that
-// match that generation — useful when the spoofed model needs to line up
+// match that generation â€” useful when the spoofed model needs to line up
 // with the IMEI's claimed device class.
 static NSString *ci_randIMEIForModel(NSString *productType) {
-    // Maps iPhoneX,Y product type → list of TACs that shipped for that gen.
+    // Maps iPhoneX,Y product type â†’ list of TACs that shipped for that gen.
     // Falls through to the full pool when productType is unknown / nil.
     static NSDictionary<NSString *, NSArray<NSString *> *> *kTACByModel = nil;
     static NSArray<NSString *> *kAllTACs = nil;
@@ -554,8 +554,8 @@ static double ci_randDouble(double lo, double hi) {
 }
 
 // Area-uniform jitter inside a disk of radius `radiusKm` around (lat0, lon0).
-// Uses r = R * sqrt(U) so density is uniform across the disk — a flat
-// ±degree offset would cluster samples in the corners and be easier to
+// Uses r = R * sqrt(U) so density is uniform across the disk â€” a flat
+// Â±degree offset would cluster samples in the corners and be easier to
 // fingerprint as synthetic.
 static void ci_jitterCoordKm(double lat0, double lon0, double radiusKm,
                              double *outLat, double *outLon) {
@@ -565,7 +565,7 @@ static void ci_jitterCoordKm(double lat0, double lon0, double radiusKm,
     double r  = radiusKm * sqrt(u1);
     double t  = 2.0 * M_PI * u2;
 
-    // Offset in degrees (small-angle approximation — fine up to ~1000 km)
+    // Offset in degrees (small-angle approximation â€” fine up to ~1000 km)
     double dLat = (r / kEarthR) * cos(t) * (180.0 / M_PI);
     double cosLat = cos(lat0 * M_PI / 180.0);
     if (cosLat < 0.001) cosLat = 0.001; // guard against poles
@@ -584,17 +584,17 @@ static void ci_jitterCoordKm(double lat0, double lon0, double radiusKm,
 // Map apps flag speed=0 + accuracy=0 as synthetic; random but bounded values
 // look like a phone that just finished a cold GPS fix.
 static void ci_writeLocationFuzz(CIConfigManager *cm) {
-    // 5–25m horizontal accuracy — typical outdoor fix
+    // 5â€“25m horizontal accuracy â€” typical outdoor fix
     [cm setObject:[NSString stringWithFormat:@"%.1f", ci_randDouble(5.0, 25.0)]
            forKey:@"locationAccuracy"];
-    // 0–2 m/s: standing / slow walking
+    // 0â€“2 m/s: standing / slow walking
     [cm setObject:[NSString stringWithFormat:@"%.2f", ci_randDouble(0.0, 2.0)]
            forKey:@"locationSpeed"];
     [cm setObject:[NSString stringWithFormat:@"%.1f", ci_randDouble(0.0, 360.0)]
            forKey:@"locationCourse"];
 }
 
-// countryCode → MCC / MNC / carrierName / locale / currency / language
+// countryCode â†’ MCC / MNC / carrierName / locale / currency / language
 // Used to align carrier/locale with the proxy country returned by ip-api.
 static NSDictionary *ci_countryMap(void) {
     static NSDictionary *m = nil;
@@ -626,91 +626,19 @@ static NSDictionary *ci_countryMap(void) {
     return m;
 }
 
-// Parse a "host:port", "host:port:user:pass" string into components.
-// Returns nil if host/port missing. Port must be 1..65535.
-static NSDictionary *ci_parseProxyString(NSString *s) {
-    if (![s isKindOfClass:[NSString class]]) return nil;
-    NSString *trimmed = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (trimmed.length == 0) return nil;
-    NSArray *parts = [trimmed componentsSeparatedByString:@":"];
-    if (parts.count < 2) return nil;
-    NSString *host = parts[0];
-    NSInteger port = [parts[1] integerValue];
-    if (host.length == 0 || port < 1 || port > 65535) return nil;
-    NSMutableDictionary *out = [@{@"host": host, @"port": @(port)} mutableCopy];
-    if (parts.count >= 3 && [parts[2] length] > 0) out[@"user"] = parts[2];
-    if (parts.count >= 4 && [parts[3] length] > 0) out[@"pass"] = parts[3];
-    return out;
-}
-
-// Build NSURLSessionConfiguration with the user's proxy applied (HTTP or
-// SOCKS5). Returns nil if proxy not enabled / not parseable — caller should
-// fall back to sharedSession in that case so external VPN still works.
-//
-// Proxy auth (user/pass) is injected by the URL loader's challenge handler;
-// we set kCFProxyUsername/Password on the proxy dict so URLSession picks it
-// up for both HTTP CONNECT auth and SOCKS5 auth without needing an extra
-// NSURLCredential wiring.
-static NSURLSessionConfiguration *ci_proxyConfigOrNil(void) {
-    CIConfigManager *cm = [CIConfigManager shared];
-    if (![cm boolForKey:@"proxyEnabled"]) return nil;
-    NSDictionary *p = ci_parseProxyString([cm stringForKey:@"proxyString"]);
-    if (!p) return nil;
-    NSString *type = [cm stringForKey:@"proxyType"];
-    BOOL socks = [type isEqualToString:@"socks5"];
-
-    NSMutableDictionary *proxyDict = [NSMutableDictionary dictionary];
-    NSString *host = p[@"host"];
-    NSNumber *port = p[@"port"];
-    NSString *u = p[@"user"];
-    NSString *pw = p[@"pass"];
-
-    if (socks) {
-        proxyDict[(NSString *)kCFStreamPropertySOCKSProxyHost] = host;
-        proxyDict[(NSString *)kCFStreamPropertySOCKSProxyPort] = port;
-        proxyDict[(NSString *)kCFStreamPropertySOCKSVersion] = (NSString *)kCFStreamSocketSOCKSVersion5;
-        if (u) proxyDict[(NSString *)kCFStreamPropertySOCKSUser]     = u;
-        if (pw) proxyDict[(NSString *)kCFStreamPropertySOCKSPassword] = pw;
-    } else {
-        // HTTP/HTTPS via CFNetwork keys recognised by NSURLSession.
-        proxyDict[@"HTTPEnable"]   = @YES;
-        proxyDict[@"HTTPProxy"]    = host;
-        proxyDict[@"HTTPPort"]     = port;
-        proxyDict[@"HTTPSEnable"]  = @YES;
-        proxyDict[@"HTTPSProxy"]   = host;
-        proxyDict[@"HTTPSPort"]    = port;
-        if (u) proxyDict[@"HTTPProxyUsername"]  = u;
-        if (pw) proxyDict[@"HTTPProxyPassword"] = pw;
-    }
-    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    cfg.connectionProxyDictionary = proxyDict;
-    cfg.timeoutIntervalForRequest = 8.0;
-    cfg.timeoutIntervalForResource = 10.0;
-    return cfg;
-}
-
-// Blocking HTTP GET to ip-api.com — returns parsed dict or nil on any failure.
-// Runs on background queue (caller is already off main), 5s timeout.
-//
-// If user has a proxy configured (Proxy section in side menu), the request
-// is routed through that proxy so ip-api sees the proxy's IP. Otherwise
-// falls back to sharedSession (uses any external VPN the user has on).
+// Blocking HTTP GET to ip-api.com â€” returns parsed dict or nil on any failure.
+// Uses sharedSession so the request goes through whatever system-level VPN
+// (Shadowrocket, Surge, etc.) the user has active â€” ip-api sees the VPN IP.
 static NSDictionary *ci_fetchProxyGeo(NSString *url) {
     if (!url.length) url = @"http://ip-api.com/json";
     NSURL *u = [NSURL URLWithString:url];
     if (!u) return nil;
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:u];
-    req.timeoutInterval = 5.0;
+    req.timeoutInterval = 8.0;
     req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     [req setValue:@"close" forHTTPHeaderField:@"Connection"];
 
-    NSURLSession *session;
-    NSURLSessionConfiguration *proxyCfg = ci_proxyConfigOrNil();
-    if (proxyCfg) {
-        session = [NSURLSession sessionWithConfiguration:proxyCfg];
-    } else {
-        session = [NSURLSession sharedSession];
-    }
+    NSURLSession *session = [NSURLSession sharedSession];
 
     __block NSData *data = nil; __block NSError *err = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
@@ -733,7 +661,7 @@ static NSDictionary *ci_fetchProxyGeo(NSString *url) {
 // === Canonical mobile-carrier picker per country ===
 // Returns @[carrierName, mcc, mnc, iso] randomly chosen from a country's
 // actual mobile operators. Used to AVOID writing the raw ISP name returned
-// by ip-api (e.g. "NXKY Vietnam Company Limited" — a wired ISP, not a
+// by ip-api (e.g. "NXKY Vietnam Company Limited" â€” a wired ISP, not a
 // cellular carrier) into carrierName. Zalo's anti-fraud expects mobile
 // MCC/MNC to be paired with a real mobile-carrier brand; an ISP name +
 // mobile MCC/MNC pair is a contradiction it can detect.
@@ -822,7 +750,7 @@ static NSArray *ci_pickMobileCarrierForCountry(NSString *cc) {
 // === Canonical IANA timezone per country ===
 // ip-api sometimes returns regional aliases (Asia/Bangkok for VN IPs even
 // though Vietnam's canonical zone is Asia/Ho_Chi_Minh). Apple's CFTimeZone
-// stores Asia/Ho_Chi_Minh — if we report Bangkok while the device's
+// stores Asia/Ho_Chi_Minh â€” if we report Bangkok while the device's
 // internal CFTimeZone says Ho_Chi_Minh, Zalo sees a mismatch.
 static NSString *ci_canonicalTimezoneForCountry(NSString *cc) {
     if (cc.length == 0) return nil;
@@ -883,10 +811,10 @@ static NSString *ci_wifiSSIDForCountry(NSString *cc) {
 // this, GPS = random VN coords + IP = random US proxy = instant detection.
 //
 // Propagation per response field:
-//   lat/lon       → latitude/longitude (+2km jitter for sensor realism)
-//   countryCode   → locale, currency, language, carrier brand, MCC/MNC, SSID
-//   timezone      → canonical IANA name (override ip-api regional aliases)
-//   query (IP)    → lastResetIP (for the user-visible report)
+//   lat/lon       â†’ latitude/longitude (+2km jitter for sensor realism)
+//   countryCode   â†’ locale, currency, language, carrier brand, MCC/MNC, SSID
+//   timezone      â†’ canonical IANA name (override ip-api regional aliases)
+//   query (IP)    â†’ lastResetIP (for the user-visible report)
 static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     if (!geo) return NO;
     id latV = geo[@"lat"], lonV = geo[@"lon"];
@@ -918,7 +846,7 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
     if (cc.length) {
         // Carrier: pick a real mobile operator from this country (random across
         // resets so multiple accounts on the same proxy IP don't all claim the
-        // same carrier). NEVER use the raw ISP string — it's usually a wired
+        // same carrier). NEVER use the raw ISP string â€” it's usually a wired
         // ISP (NXKY, FPT Telecom) that doesn't pair with a cellular MCC/MNC.
         NSArray *carrier = ci_pickMobileCarrierForCountry(cc);
         if (carrier.count >= 4) {
@@ -931,7 +859,7 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
         // Locale + currency + language from the static country map.
         NSArray *info = ci_countryMap()[cc];
         if (info.count >= 7) {
-            // Don't overwrite carrier from the static map — already done above.
+            // Don't overwrite carrier from the static map â€” already done above.
             [cm setObject:info[3] forKey:@"localeIdentifier"];
             [cm setObject:cc       forKey:@"localeCountryCode"];
             [cm setObject:info[4] forKey:@"localeCurrencyCode"];
@@ -971,13 +899,13 @@ static BOOL ci_applyGeoFromIPAPI(NSDictionary *geo) {
 //   7  nativeHeight            "2532"
 //   8  nativeScale             "3"
 //   9  chipName                "A14 Bionic"
-//   10 chipIDHex               "0x8101"        — real ProductTypeIdentifier
-//   11 boardIDHex              "0x18"          — real BoardId
-//   12 ramBytesNumber          @(4294967296)   — NSNumber, 4 GB
-//   13 cpuCoresNumber          @(6)            — NSNumber
+//   10 chipIDHex               "0x8101"        â€” real ProductTypeIdentifier
+//   11 boardIDHex              "0x18"          â€” real BoardId
+//   12 ramBytesNumber          @(4294967296)   â€” NSNumber, 4 GB
+//   13 cpuCoresNumber          @(6)            â€” NSNumber
 //   14 minIOSMajor             @(14)
 //   15 maxIOSMajor             @(18)
-//   16 colorChoices            @[@"Black", @"White", ...]   — real launch colors
+//   16 colorChoices            @[@"Black", @"White", ...]   â€” real launch colors
 static NSArray *ci_randomPresets(void) {
     static NSArray *presets = nil;
     if (!presets) {
@@ -998,11 +926,11 @@ static NSArray *ci_randomPresets(void) {
         NSArray *colors16Pro   = @[@"Black Titanium", @"White Titanium", @"Natural Titanium", @"Desert Titanium"];
 
         presets = @[
-            // iPhone 5/5s/6/6 Plus removed — their max real iOS is 10-12,
+            // iPhone 5/5s/6/6 Plus removed â€” their max real iOS is 10-12,
             // and our IOS_VERSIONS list only spans 14-18. Picking those
             // models would force an impossible combo (e.g., iPhone 6 Plus
             // running iOS 18) that Apple/Zalo anti-fraud detects instantly.
-            // iPhone SE (1) kept — A9 chip supports iOS 9-15, our list
+            // iPhone SE (1) kept â€” A9 chip supports iOS 9-15, our list
             // intersects at iOS 14-15.
             @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2", @"A9",        @"0x8000", @"0x24", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
             @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2", @"A9",        @"0x8000", @"0x10", @(2147483648), @(2),  @(9),  @(15), colorsClassic],
@@ -1023,17 +951,17 @@ static NSArray *ci_randomPresets(void) {
             @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(4294967296), @(6),  @(14), @(18), colors12],
             @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
             @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A14 Bionic",@"0x8101", @"0x18", @(6442450944), @(6),  @(14), @(18), colors12Pro],
-            // iPhone 13 series — A15 Bionic (T8110). iOS 15-18.
+            // iPhone 13 series â€” A15 Bionic (T8110). iOS 15-18.
             @[@"iPhone 13 mini",    @"iPhone14,4", @"iPhone14,4", @"375", @"812", @"3", @"1080", @"2340", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(4294967296),  @(6),  @(15), @(18), colors13],
             @[@"iPhone 13",         @"iPhone14,5", @"iPhone14,5", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(4294967296),  @(6),  @(15), @(18), colors13],
             @[@"iPhone 13 Pro",     @"iPhone14,2", @"iPhone14,2", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(6442450944),  @(6),  @(15), @(18), colors13Pro],
             @[@"iPhone 13 Pro Max", @"iPhone14,3", @"iPhone14,3", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x1C", @(6442450944),  @(6),  @(15), @(18), colors13Pro],
-            // iPhone 14 series — A15 Bionic (14/Plus) or A16 Bionic (Pro). iOS 16-18.
+            // iPhone 14 series â€” A15 Bionic (14/Plus) or A16 Bionic (Pro). iOS 16-18.
             @[@"iPhone 14",         @"iPhone14,7", @"iPhone14,7", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A15 Bionic",@"0x8110", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14],
             @[@"iPhone 14 Plus",    @"iPhone14,8", @"iPhone14,8", @"428", @"926", @"3", @"1284", @"2778", @"3", @"A15 Bionic",@"0x8110", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14],
             @[@"iPhone 14 Pro",     @"iPhone15,2", @"iPhone15,2", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14Pro],
             @[@"iPhone 14 Pro Max", @"iPhone15,3", @"iPhone15,3", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x24", @(6442450944),  @(6),  @(16), @(18), colors14Pro],
-            // iPhone 15 series — A16 Bionic (15/Plus) or A17 Pro (Pro/Max). iOS 17-18.
+            // iPhone 15 series â€” A16 Bionic (15/Plus) or A17 Pro (Pro/Max). iOS 17-18.
             @[@"iPhone 15",         @"iPhone15,4", @"iPhone15,4", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A16 Bionic",@"0x8120", @"0x28", @(6442450944),  @(6),  @(17), @(18), colors15],
             @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x28", @(6442450944),  @(6),  @(17), @(18), colors15],
             @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A17 Pro",   @"0x8130", @"0x2C", @(8589934592),  @(6),  @(17), @(18), colors15Pro],
@@ -1046,7 +974,7 @@ static NSArray *ci_randomPresets(void) {
 static NSArray *ci_randomIOSPresets(void) {
     static NSArray *iosList = nil;
     if (!iosList) {
-        // Granular list — every shipping minor + most patch releases from
+        // Granular list â€” every shipping minor + most patch releases from
         // iOS 14 through 18. Matches the picker wheel resolution shown in
         // mainstream tools (multiple decimal versions per major).
         iosList = @[
@@ -1200,7 +1128,7 @@ static NSUInteger ci_randomizeIdentities(void) {
             : iosList[(NSUInteger)iLo + arc4random_uniform((uint32_t)(iHi - iLo + 1))];
     }
 
-    // Coherent column extraction — fields beyond index 8 are NEW (chip, board,
+    // Coherent column extraction â€” fields beyond index 8 are NEW (chip, board,
     // RAM, CPU cores, supported iOS range, color list). All numeric fields
     // are stored as NSNumber so hooks can call -unsigned*Value safely.
     NSString *modelName  = preset[0];
@@ -1227,7 +1155,7 @@ static NSUInteger ci_randomizeIdentities(void) {
 
     // === Hardware capability booleans, derived from productType ===
     // Hooked by MGGetBoolAnswer (HasFaceID, HasTouchID, HasHomeButton,
-    // HasOLEDDisplay, Has5G, HasNFC). Wrong values → instant detection
+    // HasOLEDDisplay, Has5G, HasNFC). Wrong values â†’ instant detection
     // (e.g. claim iPhone XS Max but Has FaceID=NO + HasHomeButton=YES).
     //
     // Generation buckets:
@@ -1264,16 +1192,16 @@ static NSUInteger ci_randomizeIdentities(void) {
              [productTyp isEqualToString:@"iPhone12,5"]) {
         hasFaceID = YES; hasOLED = YES; hasTouchID = NO; hasHomeButton = NO;
     }
-    // iPhone 12 series — FaceID + OLED + 5G.
+    // iPhone 12 series â€” FaceID + OLED + 5G.
     else if ([productTyp hasPrefix:@"iPhone13,"]) {
         hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
     }
-    // iPhone 13/14/15/16 series — FaceID + OLED + 5G. SE3 (iPhone14,6) keeps TouchID.
+    // iPhone 13/14/15/16 series â€” FaceID + OLED + 5G. SE3 (iPhone14,6) keeps TouchID.
     else if ([productTyp hasPrefix:@"iPhone14,"] ||
              [productTyp hasPrefix:@"iPhone15,"] ||
              [productTyp hasPrefix:@"iPhone16,"]) {
         if ([productTyp isEqualToString:@"iPhone14,6"]) {
-            // SE (3rd gen) — TouchID + HomeButton, no FaceID, LCD
+            // SE (3rd gen) â€” TouchID + HomeButton, no FaceID, LCD
             hasTouchID = YES; hasHomeButton = YES; hasFaceID = NO; hasOLED = NO; has5G = YES;
         } else {
             hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
@@ -1287,7 +1215,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@(YES)           forKey:@"HasNFC"];                  // every iPhone 6s+
     [cm setObject:@(YES)           forKey:@"HasCellularConnectivity"]; // every iPhone has cellular
 
-    // === Activation timestamp — stable per profile, random 6-18 months back ===
+    // === Activation timestamp â€” stable per profile, random 6-18 months back ===
     // Stored as Cocoa-style ISO8601 string so MGCopyAnswer hook can return it
     // verbatim. Only generate once per Reset (don't overwrite if already set
     // so a single account's claimed device keeps the same activation date).
@@ -1302,7 +1230,7 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:@(YES)                          forKey:@"ActivationStateAcknowledged"];
     }
 
-    // === kern.boottime — fresh boot looks suspicious. Pick last 1h-7d ago. ===
+    // === kern.boottime â€” fresh boot looks suspicious. Pick last 1h-7d ago. ===
     // Tweak sysctlbyname hook returns this when apps query KERN_BOOTTIME.
     NSInteger uptimeSec = 3600 + (NSInteger)arc4random_uniform(7 * 86400 - 3600);
     [cm setObject:@(time(NULL) - uptimeSec) forKey:@"kern_boottime"];
@@ -1324,7 +1252,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:iosPreset[0] forKey:@"__presetIOSName"];
     [cm setObject:@(YES) forKey:@"fake_sysosversion"];
 
-    // WebView User-Agent removed — was added in ac4ec0e along with the
+    // WebView User-Agent removed â€” was added in ac4ec0e along with the
     // 14 extras and triggered the same crash chain. Restore once we
     // identify the actual trigger.
 
@@ -1359,7 +1287,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@(capacity64) forKey:@"TotalDiskCapacity"];
     [cm setObject:@(capacity64 - usedBytes) forKey:@"TotalSystemAvailable"];
     [cm setObject:@(usedBytes) forKey:@"DiskUsage"];
-    // No more "iPhone iPhone XS" — single-prefix consumer name.
+    // No more "iPhone iPhone XS" â€” single-prefix consumer name.
     [cm setObject:modelName forKey:@"DeviceName"];
     [cm setObject:modelName forKey:@"DeviceNameMG"];
     [cm setObject:modelName forKey:@"UserAssignedDeviceName"];
@@ -1375,24 +1303,24 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
     [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
 
-    // Battery level (0.0–1.0) + state (0=Unknown, 1=Unplugged, 2=Charging,
+    // Battery level (0.0â€“1.0) + state (0=Unknown, 1=Unplugged, 2=Charging,
     // 3=Full). Randomize so two consecutive registrations don't show
-    // identical battery telemetry — anti-fraud servers fingerprint this.
+    // identical battery telemetry â€” anti-fraud servers fingerprint this.
     [cm setObject:[NSString stringWithFormat:@"%.2f", 0.30 + (arc4random_uniform(70) / 100.0)]
-            forKey:@"batteryLevel"];                                 // 0.30 – 0.99
+            forKey:@"batteryLevel"];                                 // 0.30 â€“ 0.99
     [cm setObject:[NSString stringWithFormat:@"%u", arc4random_uniform(3) + 1]
             forKey:@"batteryState"];                                  // 1 / 2 / 3
 
-    // Zalo timing offset — adds jitter to mach_absolute_time / CFAbsoluteTime
+    // Zalo timing offset â€” adds jitter to mach_absolute_time / CFAbsoluteTime
     // so two devices with identical hardware fingerprint show different
     // launch-to-event timings. Range chosen to look like a device that's
     // been booted hours-to-days ago.
     [cm setObject:[NSString stringWithFormat:@"%u",
-        (unsigned)(arc4random_uniform(900000) + 100000)]              // 100k – 1M ms
+        (unsigned)(arc4random_uniform(900000) + 100000)]              // 100k â€“ 1M ms
             forKey:@"zalo_timingOffset"];
 
     // Vietnamese mobile prefix pool. Generates a fresh +84 9xx xxx xxx
-    // every Reset so PhoneNumber doesn't carry over an old account's SĐT.
+    // every Reset so PhoneNumber doesn't carry over an old account's SÄT.
     static NSArray *kVNPrefixes = nil;
     if (!kVNPrefixes) kVNPrefixes = @[
         @"32", @"33", @"34", @"35", @"36", @"37", @"38", @"39",     // Viettel
@@ -1405,7 +1333,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:[NSString stringWithFormat:@"+849%@%@", vnPrefix, ci_randDigits(7)]
             forKey:@"PhoneNumber"];
 
-    // Local IP — keeps the wifiSSID story coherent. Pick from a private
+    // Local IP â€” keeps the wifiSSID story coherent. Pick from a private
     // RFC1918 range that an iPhone actually gets on home WiFi.
     static NSArray *kLocalIPPrefixes = nil;
     if (!kLocalIPPrefixes) kLocalIPPrefixes = @[
@@ -1420,7 +1348,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // Pasteboard reset toggle (cleared on next Zalo launch).
     [cm setObject:@(YES) forKey:@"clearPasteboard"];
 
-    // Cellular radio tech — pick from realistic mix. iPhone XS+/iOS 14+
+    // Cellular radio tech â€” pick from realistic mix. iPhone XS+/iOS 14+
     // typically reports LTE indoors, NRNSA outdoors-on-5G-network. Random
     // pick avoids per-account fingerprint stability on this field.
     static NSArray *kRadioTech = nil;
@@ -1442,7 +1370,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // restored session instead of starting clean.
     [cm setObject:@(YES) forKey:@"keychainReset"];
 
-    // WebKit / Metal fingerprint values — coherent with chip + iOS choice.
+    // WebKit / Metal fingerprint values â€” coherent with chip + iOS choice.
     NSString *chipName = preset.count > 9 ? preset[9] : @"A17 Pro";
     NSString *gpuName  = [NSString stringWithFormat:@"Apple %@ GPU", chipName];
     [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
@@ -1450,7 +1378,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
-    // WKWebView UA string — randomize every Change Device (v2.5.13).
+    // WKWebView UA string â€” randomize every Change Device (v2.5.13).
     // Vary mobile-build + Safari minor + WebKit patch so each profile
     // has a UNIQUE UA. Pool values are all real Apple builds that
     // shipped with their respective iOS versions.
@@ -1461,11 +1389,11 @@ static NSUInteger ci_randomizeIdentities(void) {
     // Safari version typically = iOS major.minor with random patch (0-3).
     NSString *safariVer = [NSString stringWithFormat:@"%ld.%ld.%u",
                             (long)iosMajor, (long)iosMinor, arc4random_uniform(4)];
-    // Mobile/<build> pool — real Apple build numbers across iOS versions.
+    // Mobile/<build> pool â€” real Apple build numbers across iOS versions.
     NSArray *mobileBuilds = @[@"15E148", @"15E149", @"15D60", @"15D100",
                               @"14F89", @"14E304", @"15F79", @"15G77"];
     NSString *mobileBuild = mobileBuilds[arc4random_uniform((uint32_t)mobileBuilds.count)];
-    // WebKit patch — real point-release values.
+    // WebKit patch â€” real point-release values.
     NSArray *wkPatches = @[@"605.1.15", @"605.1.14", @"605.1.13", @"605.1.16"];
     NSString *wkVer = wkPatches[arc4random_uniform((uint32_t)wkPatches.count)];
     NSString *fakeUA = [NSString stringWithFormat:
@@ -1487,15 +1415,15 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:@(YES) forKey:k];
     }
 
-    // Hardware IDs — REVERTED to the v2.4.0-9e19459 baseline (16 keys).
+    // Hardware IDs â€” REVERTED to the v2.4.0-9e19459 baseline (16 keys).
     // The 14 extras added in ac4ec0e (PhoneNumber, localIP, carrierRadio
     // Access, web_glVendor/Renderer/canvasNoise, zalo_metalGPU/timingOffset,
     // clearPasteboard, zalo_fakeWebViewUA, batteryLevel/State,
     // BatteryCurrentCapacity/IsCharging, BootNonce) caused EVERY targeted
-    // app to crash at launch — first with EXC_CRASH/SIGABRT in scene
+    // app to crash at launch â€” first with EXC_CRASH/SIGABRT in scene
     // forwarding, then with std::terminate() on FrontBoardServices serial
     // queue. User confirmed that BEFORE ac4ec0e, AIDA64 opened cleanly
-    // and showed the spoofed model — same hooks, just without the new
+    // and showed the spoofed model â€” same hooks, just without the new
     // config values. So one (or more) of the new values feeds a hook a
     // value Apple's frameworks reject mid-launch.
     //
@@ -1523,7 +1451,7 @@ static NSUInteger ci_randomizeIdentities(void) {
         // swizzle reads this and passes it instead of the real APNS token,
         // breaking server-side correlation across Reset cycles. Same Apple
         // ID + same hardware would otherwise give Zalo's server identical
-        // tokens for every account → "abnormal behavior" lock.
+        // tokens for every account â†’ "abnormal behavior" lock.
         @"apnsTokenSpoof":                        ci_randHexLower(64),
     };
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
@@ -1531,15 +1459,15 @@ static NSUInteger ci_randomizeIdentities(void) {
     }];
 
     // Geo strategy:
-    //   • Proxy ON  → ip-api sees proxy's country → GPS pinned to proxy IP
+    //   â€¢ Proxy ON  â†’ ip-api sees proxy's country â†’ GPS pinned to proxy IP
     //     (tiny ~2km jitter) so IP and GPS stay coherent.
-    //   • Proxy OFF / no internet → fetch fails → random point inside Vietnam
+    //   â€¢ Proxy OFF / no internet â†’ fetch fails â†’ random point inside Vietnam
     //     within `vn_radiusKm` (default 999km from central VN), VN carrier bundle.
     // v2.5.31: gps_random_vn_mode toggle. When ON, the user explicitly
-    // wants different cities per Change Device — skip proxy-IP geo and
+    // wants different cities per Change Device â€” skip proxy-IP geo and
     // jump straight to the VN-wide randomization branch. Useful when
-    // the user is roaming VN-internal (proxy=HN but they want Sài Gòn,
-    // Đà Nẵng, etc. for variety). Off by default so the IP-coherent
+    // the user is roaming VN-internal (proxy=HN but they want SÃ i GÃ²n,
+    // ÄÃ  Náºµng, etc. for variety). Off by default so the IP-coherent
     // anti-detection path stays the default.
     BOOL applied = NO;
     id randVNFlag = [cm objectForKey:@"gps_random_vn_mode"];
@@ -1550,34 +1478,34 @@ static NSUInteger ci_randomizeIdentities(void) {
         applied = ci_applyGeoFromIPAPI(geo);
     }
     // Visible flag for the user to verify geo flow took the right path.
-    //   PROXY_OK    = ip-api responded → GPS/locale/carrier pulled from proxy IP
-    //   FALLBACK_VN = ip-api timed out → random VN city
-    //   RANDOM_VN   = gps_random_vn_mode toggle is ON → intentionally random VN
+    //   PROXY_OK    = ip-api responded â†’ GPS/locale/carrier pulled from proxy IP
+    //   FALLBACK_VN = ip-api timed out â†’ random VN city
+    //   RANDOM_VN   = gps_random_vn_mode toggle is ON â†’ intentionally random VN
     NSString *src = applied ? @"PROXY_OK" : (forceRandomVN ? @"RANDOM_VN" : @"FALLBACK_VN");
     [cm setObject:src forKey:@"_ci_geo_source"];
     if (!applied) {
-        // v2.5.41: Random VN city — pick from a curated pool of 10 major
+        // v2.5.41: Random VN city â€” pick from a curated pool of 10 major
         // VN cities + 3km intra-city jitter. Pre-v2.5.41 used a 999km
         // disk centered on Da Nang (16N, 107E) which bled HEAVILY into
         // Laos / NE Thailand / Cambodia. User saw GPS 17.42N 103.24E
-        // (Savannakhet, Laos) → Zalo server detects IP-VN + GPS-LAOS
-        // mismatch → account locked on registration.
+        // (Savannakhet, Laos) â†’ Zalo server detects IP-VN + GPS-LAOS
+        // mismatch â†’ account locked on registration.
         // Pool guarantees every spoof lands INSIDE Vietnam, and the
-        // city-appropriate altitude (Đà Lạt 1500m, ven biển 3-10m) lines
+        // city-appropriate altitude (ÄÃ  Láº¡t 1500m, ven biá»ƒn 3-10m) lines
         // up with realistic device elevation.
         static NSArray *vnCities = nil;
         if (!vnCities) {
             vnCities = @[
-                @[@"Hà Nội",          @21.028511, @105.804817, @18.0],
-                @[@"TP. Hồ Chí Minh", @10.762622, @106.660172, @19.0],
-                @[@"Đà Nẵng",         @16.054407, @108.202164, @7.0],
-                @[@"Hải Phòng",       @20.844912, @106.688084, @5.0],
-                @[@"Cần Thơ",         @10.045162, @105.746857, @4.0],
+                @[@"HÃ  Ná»™i",          @21.028511, @105.804817, @18.0],
+                @[@"TP. Há»“ ChÃ­ Minh", @10.762622, @106.660172, @19.0],
+                @[@"ÄÃ  Náºµng",         @16.054407, @108.202164, @7.0],
+                @[@"Háº£i PhÃ²ng",       @20.844912, @106.688084, @5.0],
+                @[@"Cáº§n ThÆ¡",         @10.045162, @105.746857, @4.0],
                 @[@"Nha Trang",       @12.238791, @109.196749, @8.0],
-                @[@"Huế",             @16.463713, @107.590866, @10.0],
-                @[@"Vũng Tàu",        @10.346110, @107.084580, @3.0],
-                @[@"Đà Lạt",          @11.940419, @108.458313, @1500.0],
-                @[@"Buôn Ma Thuột",   @12.666667, @108.050003, @536.0],
+                @[@"Huáº¿",             @16.463713, @107.590866, @10.0],
+                @[@"VÅ©ng TÃ u",        @10.346110, @107.084580, @3.0],
+                @[@"ÄÃ  Láº¡t",          @11.940419, @108.458313, @1500.0],
+                @[@"BuÃ´n Ma Thuá»™t",   @12.666667, @108.050003, @536.0],
             ];
         }
         NSArray *city = vnCities[arc4random_uniform((uint32_t)vnCities.count)];
@@ -1587,7 +1515,7 @@ static NSUInteger ci_randomizeIdentities(void) {
         double lat = 0, lon = 0;
         ci_jitterCoordKm(clat, clon, 3.0, &lat, &lon);
         double alt = calt + ci_randDouble(0.0, 20.0);
-        NSLog(@"[ChangeInfoIos] Random VN city pick: %@ → (%.4f, %.4f)", city[0], lat, lon);
+        NSLog(@"[ChangeInfoIos] Random VN city pick: %@ â†’ (%.4f, %.4f)", city[0], lat, lon);
         [cm setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
         [cm setObject:[NSString stringWithFormat:@"%.6f", lon] forKey:@"longitude"];
         [cm setObject:[NSString stringWithFormat:@"%.2f", alt] forKey:@"altitude"];
@@ -1617,7 +1545,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // Timezone coherence: if carrier or locale is Vietnamese, force
     // Asia/Ho_Chi_Minh regardless of what ip-api returned.
     // ip-api sometimes reports Asia/Bangkok for VN ISP IPs even though
-    // Vietnam's canonical IANA zone is Asia/Ho_Chi_Minh — the mismatch
+    // Vietnam's canonical IANA zone is Asia/Ho_Chi_Minh â€” the mismatch
     // (VN carrier + Bangkok timezone) is an instant fraud-detection flag.
     NSString *_tzMCC = [cm stringForKey:@"carrierMCC"];
     NSString *_tzCC  = [cm stringForKey:@"localeCountryCode"];
@@ -1636,28 +1564,28 @@ static NSUInteger ci_randomizeIdentities(void) {
 // metadata.plist is binary plist; the bundle ID appears as a UTF-8 string
 // inside it, so a simple grep is enough to identify the right container
 // without depending on PlistBuddy or any rootless-only CLI.
-// Mobile Safari is a system app — its data does NOT live entirely in the
+// Mobile Safari is a system app â€” its data does NOT live entirely in the
 // data container (~/Containers/Data/Application/<UUID>). The user-visible
-// browsing state — bookmarks, history, cookies, cache, WebKit data — sits
+// browsing state â€” bookmarks, history, cookies, cache, WebKit data â€” sits
 // in /var/mobile/Library/Safari + /var/mobile/Library/WebKit + WebKit
 // caches that the data-container wipe doesn't reach. Without this deep
 // wipe, every "Reset Data" leaves Safari with the previous session's
 // cookies / IDFA / canvas fingerprint visible to the next account.
 //
-// Killing the WebKit content/networking/GPU daemons mid-wipe is fine —
+// Killing the WebKit content/networking/GPU daemons mid-wipe is fine â€”
 // they auto-respawn when next requested. They are SHARED across every WK
 // client process, but no client holds long-running state across that
 // boundary, so a kill at idle is recoverable.
 // (ci_run forward decl already at top of file, line 45)
 static void ci_wipeSafariDeep(void) {
     // 1. Kill the user-visible Safari/SafariViewService apps. Intentionally
-    //    NOT killing WebKit.WebContent / .Networking / .GPU here — those
+    //    NOT killing WebKit.WebContent / .Networking / .GPU here â€” those
     //    are SHARED daemons used by every WK client (in-app browsers in
     //    other apps, Mail, etc.). v2.4.0-a5256fe took down AIDA64 by
     //    wiping them via `pkill -f com.apple.mobilesafari` which also
     //    matched the substring inside backboardd / runningboardd cmdlines.
     //    POSIX unlink semantics: rm succeeds even with daemons holding
-    //    open handles — they just see stale cache until next reload.
+    //    open handles â€” they just see stale cache until next reload.
     NSArray<NSString *> *killCmds = @[
         @"killall -9 MobileSafari 2>/dev/null",
         @"killall -9 SafariViewService 2>/dev/null",
@@ -1666,7 +1594,7 @@ static void ci_wipeSafariDeep(void) {
     for (NSString *c in killCmds) ci_run([c UTF8String]);
 
     // 2. Wipe every Safari + WebKit on-disk state we know about. Both
-    //    rooted and rootless paths are tried — Dopamine 2 keeps
+    //    rooted and rootless paths are tried â€” Dopamine 2 keeps
     //    /var/mobile/Library/* at the canonical location, but sandbox
     //    redirection can occasionally shadow them under /var/jb/.
     NSArray<NSString *> *paths = @[
@@ -1705,7 +1633,7 @@ static void ci_wipeSafariDeep(void) {
 //   Weather:  saved-city list, weatherd's daemon cache (per-city forecast
 //             history), widget timeline snapshots
 // Without wiping these, opening Maps/Weather after Change Device still
-// shows "your previous routes / saved home city" — a strong identity
+// shows "your previous routes / saved home city" â€” a strong identity
 // continuity signal even after Zalo/FB account swap.
 static void ci_wipeMapsWeatherDeep(void) {
     NSArray<NSString *> *killCmds = @[
@@ -1757,7 +1685,7 @@ static void ci_wipeMapsWeatherDeep(void) {
 }
 
 // Aggressive cross-app residue wipe. After Reset Data we want every
-// trace of "previous device install" gone — apps fingerprint the device
+// trace of "previous device install" gone â€” apps fingerprint the device
 // not just by hardware IDs but by:
 //   - HTTP cookies persisted in NSHTTPCookieStorage
 //   - WKWebView website data (localStorage, IndexedDB, ServiceWorker cache)
@@ -1771,13 +1699,13 @@ static void ci_wipeMapsWeatherDeep(void) {
 // match cookies against a server-side device-cookie pair, so even a fresh
 // container with stale cookies trips the "this device used to be account
 // X" alarm. We wipe per-app and global cookie storage paths.
-// Takes NSArray of CIAppInfo (typed loosely as id) — the class is defined
+// Takes NSArray of CIAppInfo (typed loosely as id) â€” the class is defined
 // further down in the file and we can't forward-typedef it without
 // duplicating the @interface here. KVC -valueForKey: gives us bundleID.
 static void ci_wipeCrossAppResidue(NSArray *targets) {
     // Global cookie + cache paths shared by NSHTTPCookieStorage and
     // CFNetwork. Wiping these clears cookies for every app on the device,
-    // not just our targets — that's the desired behavior for a fresh-device
+    // not just our targets â€” that's the desired behavior for a fresh-device
     // simulation.
     NSArray<NSString *> *globalPaths = @[
         @"/var/mobile/Library/Cookies",
@@ -1793,7 +1721,7 @@ static void ci_wipeCrossAppResidue(NSArray *targets) {
         ci_run([cmd UTF8String]);
     }
 
-    // Per-app App Group containers — found at
+    // Per-app App Group containers â€” found at
     // /var/mobile/Containers/Shared/AppGroup/<UUID>/. Each shared container's
     // metadata.plist lists the bundle IDs that have access. Wipe any that
     // mention our target bundles.
@@ -1832,7 +1760,7 @@ static void ci_wipeCrossAppResidue(NSArray *targets) {
         groupsWiped++;
     }
 
-    // Reset NSHTTPCookieStorage from our process — covers cookies cached in
+    // Reset NSHTTPCookieStorage from our process â€” covers cookies cached in
     // memory by other processes' cfprefsd-shared storage. Belt-and-braces.
     NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
     NSArray<NSHTTPCookie *> *cookies = jar.cookies;
@@ -1840,7 +1768,7 @@ static void ci_wipeCrossAppResidue(NSArray *targets) {
 
     // Pasteboard changeCount drives several "first-launch" heuristics. We
     // can't reset it directly (read-only on iOS), but writing + clearing
-    // bumps it twice — server fingerprints that compare "changeCount mod N"
+    // bumps it twice â€” server fingerprints that compare "changeCount mod N"
     // see a fresh increment.
     [UIPasteboard generalPasteboard].string = @"";
     [UIPasteboard generalPasteboard].items = @[];
@@ -1895,8 +1823,8 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
 static int ci_run(const char *cmd) {
     pid_t pid;
     // CRITICAL FIX: empty envp caused ALL shell commands to fail (cp, rm, mkdir,
-    // killall etc.) because $PATH was empty → binaries not found.
-    // See BUILD_NOTES §10.5 Hướng A.
+    // killall etc.) because $PATH was empty â†’ binaries not found.
+    // See BUILD_NOTES Â§10.5 HÆ°á»›ng A.
     char *envp[] = {
         (char *)"PATH=/usr/bin:/usr/sbin:/bin:/sbin:/var/jb/usr/bin:/var/jb/usr/sbin:/var/jb/usr/libexec:/usr/libexec",
         (char *)"HOME=/var/mobile",
@@ -1942,22 +1870,22 @@ static NSString *CITweakFilterPath(void) {
 // every target). The main ChangeInfoIos.dylib retains its full feature
 // set (RRS keychain dump/restore, MGCopyAnswer fishhook, JB hide, proxy
 // injection, etc.) but loads ONLY into the host/system processes that
-// integrate with the HIOS Faker UI — never into user-facing apps where
+// integrate with the HIOS Faker UI â€” never into user-facing apps where
 // the 60-hook surface re-introduces the chat-scroll lag.
 static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
-    // v2.6.3: REMOVED com.apple.springboard from sidecar filter — the v2.6.2
+    // v2.6.3: REMOVED com.apple.springboard from sidecar filter â€” the v2.6.2
     // sidecar with MGCopyAnswer hook crashed SpringBoard into SafeMode
     // because SpringBoard reads dozens of MG keys during boot (lock screen
     // wallpaper sizing, status bar, control center) and our cold-load
     // handler still hadn't loaded gCfg in time for SpringBoard's earliest
-    // calls → re-entrance or type mismatch crashed the BBoard daemon chain.
-    // Settings (com.apple.Preferences) is fine — only loaded when user
+    // calls â†’ re-entrance or type mismatch crashed the BBoard daemon chain.
+    // Settings (com.apple.Preferences) is fine â€” only loaded when user
     // opens Settings.app, gCfg already populated by then.
     // v2.6.7: REMOVED com.apple.Preferences. User explicitly does NOT want
-    // Settings to be spoofed — they verify spoof inside their actual target
+    // Settings to be spoofed â€” they verify spoof inside their actual target
     // apps (Lirum / AIDA64 / Zalo). Settings also kept crashing in v2.6.4-6
     // because Apple Pay's PKPaymentRegistrationUtilities probes ~30 MG keys
-    // and any single type-mismatch trips ___forwarding___ → SIGABRT. Easier
+    // and any single type-mismatch trips ___forwarding___ â†’ SIGABRT. Easier
     // to just not inject there at all.
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
@@ -1996,18 +1924,18 @@ static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
 static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
     // v2.6.1: main tweak loads ONLY into SpringBoard + Preferences for system
     // integration (Darwin notify post / UIDevice-from-Settings spoof). All
-    // user-selected target apps are excluded — they're handled by the
+    // user-selected target apps are excluded â€” they're handled by the
     // ultra-thin sidecar in ci_syncSidecarFilterForApps (called below).
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSetWithArray:@[
         @"com.apple.springboard",
         @"com.apple.Preferences",
     ]];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
-    // Intentionally NOT adding `apps` bundles/executables here — they go
+    // Intentionally NOT adding `apps` bundles/executables here â€” they go
     // into the sidecar's filter instead. Loop kept so future per-app opt-in
     // back to main tweak is a one-line `[bundles addObject:...]` away.
     (void)apps;
-    // Hand off to sidecar filter writer — it consumes the same target list.
+    // Hand off to sidecar filter writer â€” it consumes the same target list.
     ci_syncSidecarFilterForApps(apps);
 
     NSDictionary *filter = @{
@@ -2141,8 +2069,8 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 // ============================================================
 // Account-journal fields (accountLabel/Kind/status) were added on top of
 // the original RRS schema 2026-05-15. Older snapshots have these keys
-// missing in their NSCoder data — decode falls back to nil/0 cleanly so
-// pre-existing entries still load and just show "Chưa gắn nhãn" in the
+// missing in their NSCoder data â€” decode falls back to nil/0 cleanly so
+// pre-existing entries still load and just show "ChÆ°a gáº¯n nhÃ£n" in the
 // UI. Don't reorder existing fields above (NSKeyedArchiver is key-based
 // so order doesn't matter, but the field names below must stay stable
 // or already-saved entries lose their data on next load).
@@ -2166,7 +2094,7 @@ static NSString *ci_kindLabel(CIAccountKind k) {
         case CIAccountKindFacebook: return @"Facebook";
         case CIAccountKindTikTok:   return @"TikTok";
         case CIAccountKindBanking:  return @"Banking";
-        case CIAccountKindOther:    return @"Khác";
+        case CIAccountKindOther:    return @"KhÃ¡c";
         default:                    return @"";
     }
 }
@@ -2201,7 +2129,7 @@ static NSString *ci_kindLabel(CIAccountKind k) {
         self.date = [c decodeObjectForKey:@"date"];
         self.totalSize = [[c decodeObjectForKey:@"size"] unsignedLongLongValue];
         self.note = [c decodeObjectForKey:@"note"];
-        // Missing keys decode to nil/0 — older RRS entries silently get the
+        // Missing keys decode to nil/0 â€” older RRS entries silently get the
         // "unknown" defaults without forcing a schema migration.
         self.accountLabel  = [c decodeObjectForKey:@"acctLabel"];
         self.accountKind   = (CIAccountKind)[c decodeIntegerForKey:@"acctKind"];
@@ -2278,7 +2206,7 @@ static NSString *ci_kindLabel(CIAccountKind k) {
 }
 @end
 
-// Build the `tar -cf …` command shared by createRRSForBundles and
+// Build the `tar -cf â€¦` command shared by createRRSForBundles and
 // rebackupEntry, with --exclude rules that strip cache/log paths.
 // Empirical: an unfiltered Zalo backup ran 77 MB; the same content
 // with these exclusions drops to ~25-35 MB without losing anything
@@ -2327,7 +2255,7 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
         // for Zalo's network requests; Library/WebKit holds eKYC + login
         // webview state; Documents/services has runtime service queue
         // that may include session tokens. Excluding any of these means
-        // Zalo restores but server rejects → Zalo wipes profile.sqlite +
+        // Zalo restores but server rejects â†’ Zalo wipes profile.sqlite +
         // chat_dbs/<UID> on launch.
         //
         // Confirmed live 2026-05-19: 77 MB tar (no excludes) auto-logged
@@ -2353,11 +2281,11 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
         //   Documents/services          runtime service state
         // v2.5.0: REPLACED blanket "Library/Caches" exclude with precise
         // sub-directory excludes. The blanket exclude was DROPPING
-        // /Library/Caches/ChangeInfoIos/apns_token.dat — our per-bundle
+        // /Library/Caches/ChangeInfoIos/apns_token.dat â€” our per-bundle
         // persistent fake APNs token. Without that file in backup, restore
-        // re-generates a NEW fake token → server-side Zalo sees a
-        // different push token than at backup time → session invalidated
-        // → login screen, despite all keychain + filesystem being correctly
+        // re-generates a NEW fake token â†’ server-side Zalo sees a
+        // different push token than at backup time â†’ session invalidated
+        // â†’ login screen, despite all keychain + filesystem being correctly
         // restored. Confirmed root cause via /var/jb/etc/changeinfoios/
         // restoreEntry.log + per-bundle restore.log showing 30/30
         // keychain entries restored but app still asked login.
@@ -2416,7 +2344,7 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
 
 @implementation CITheme
 + (UIColor *)rgb:(NSUInteger)h { return [UIColor colorWithRed:((h>>16)&0xFF)/255.0 green:((h>>8)&0xFF)/255.0 blue:(h&0xFF)/255.0 alpha:1.0]; }
-// v2.4.36 light theme — modeled after AZInfo-style market tools.
+// v2.4.36 light theme â€” modeled after AZInfo-style market tools.
 + (UIColor *)bg        { return [self rgb:0xF2F3F5]; }    // soft grey page background
 + (UIColor *)card      { return [UIColor whiteColor]; }   // white cards
 + (UIColor *)text      { return [self rgb:0x1C1C1E]; }    // near-black text
@@ -2474,8 +2402,8 @@ static NSString *CIDeviceBanner(void) {
 // APP PICKER VIEW CONTROLLER
 // ============================================================
 typedef NS_ENUM(NSInteger, CIAppPickerMode) {
-    CIAppPickerModeReset = 0,  // chọn app cần xóa dữ liệu
-    CIAppPickerModeRRS   = 1,  // chọn app lưu RRS
+    CIAppPickerModeReset = 0,  // chá»n app cáº§n xÃ³a dá»¯ liá»‡u
+    CIAppPickerModeRRS   = 1,  // chá»n app lÆ°u RRS
 };
 
 @interface CIAppPickerViewController : UIViewController <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate>
@@ -2495,7 +2423,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
-    self.title = self.mode == CIAppPickerModeReset ? @"Chọn app reset" : @"Chọn app lưu RRS";
+    self.title = self.mode == CIAppPickerModeReset ? @"Chá»n app reset" : @"Chá»n app lÆ°u RRS";
 
     _selected = [NSMutableSet set];
     NSArray *saved = self.mode == CIAppPickerModeReset
@@ -2505,7 +2433,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 
     CGFloat W = self.view.bounds.size.width;
 
-    // ── Top search bar (sticky, full-width with rounded fill) ─────────
+    // â”€â”€ Top search bar (sticky, full-width with rounded fill) â”€â”€â”€â”€â”€â”€â”€â”€â”€
     UIView *searchWrap = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 56)];
     searchWrap.backgroundColor = [CITheme bg];
     searchWrap.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -2520,7 +2448,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 
     _search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, searchBg.bounds.size.width, 38)];
     _search.delegate = self;
-    _search.placeholder = @"Tìm app theo tên hoặc bundle ID…";
+    _search.placeholder = @"TÃ¬m app theo tÃªn hoáº·c bundle IDâ€¦";
     _search.searchBarStyle = UISearchBarStyleMinimal;
     _search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     _search.tintColor = [CITheme orange];
@@ -2534,7 +2462,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     }
     [searchBg addSubview:_search];
 
-    // ── Selection summary line ────────────────────────────────────────
+    // â”€â”€ Selection summary line â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _summaryLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, W, 26)];
     _summaryLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     _summaryLbl.textColor = [CITheme dim];
@@ -2547,7 +2475,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     _summaryLbl.frame = CGRectMake(0, 56, W, 22);
     [header addSubview:_summaryLbl];
 
-    // ── Bottom sticky action bar ──────────────────────────────────────
+    // â”€â”€ Bottom sticky action bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     UIView *bottom = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 78)];
     bottom.backgroundColor = [CITheme card];
     bottom.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -2558,7 +2486,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 
     UIButton *selAll = [UIButton buttonWithType:UIButtonTypeSystem];
     selAll.frame = CGRectMake(16, 14, 110, 44);
-    [selAll setTitle:@"Chọn tất cả" forState:UIControlStateNormal];
+    [selAll setTitle:@"Chá»n táº¥t cáº£" forState:UIControlStateNormal];
     [selAll setTitleColor:[CITheme blue] forState:UIControlStateNormal];
     selAll.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     selAll.backgroundColor = [[CITheme blue] colorWithAlphaComponent:0.12];
@@ -2571,7 +2499,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     UIButton *action = [UIButton buttonWithType:UIButtonTypeSystem];
     action.frame = CGRectMake(W - 16 - 160, 14, 160, 44);
     action.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [action setTitle:(self.mode == CIAppPickerModeReset ? @"Xác nhận reset" : @"Xác nhận RRS") forState:UIControlStateNormal];
+    [action setTitle:(self.mode == CIAppPickerModeReset ? @"XÃ¡c nháº­n reset" : @"XÃ¡c nháº­n RRS") forState:UIControlStateNormal];
     [action setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     action.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     action.backgroundColor = [CITheme orange];
@@ -2621,11 +2549,11 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 - (void)updateSummary {
     NSUInteger n = _selected.count;
     NSUInteger total = _view.count;
-    NSString *icon = self.mode == CIAppPickerModeReset ? @"🧹" : @"💾";
+    NSString *icon = self.mode == CIAppPickerModeReset ? @"ðŸ§¹" : @"ðŸ’¾";
     if (total == 0) {
-        _summaryLbl.text = [NSString stringWithFormat:@"%@  Đang tải danh sách app…", icon];
+        _summaryLbl.text = [NSString stringWithFormat:@"%@  Äang táº£i danh sÃ¡ch appâ€¦", icon];
     } else {
-        _summaryLbl.text = [NSString stringWithFormat:@"%@  Đã chọn %lu / %lu app",
+        _summaryLbl.text = [NSString stringWithFormat:@"%@  ÄÃ£ chá»n %lu / %lu app",
                             icon, (unsigned long)n, (unsigned long)total];
     }
 }
@@ -2681,10 +2609,10 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     // Card-style row: a rounded inner panel that hugs the screen edges with
     // 12pt margin so successive cells look like stacked cards. Layout:
-    //   ┌───────────────────────────────────────────┐
-    //   │ [icon]  Name (bold)              [○ / ●] │   ○ = empty, ● = orange
-    //   │         bundle.id  •  size MB             │
-    //   └───────────────────────────────────────────┘
+    //   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+    //   â”‚ [icon]  Name (bold)              [â—‹ / â—] â”‚   â—‹ = empty, â— = orange
+    //   â”‚         bundle.id  â€¢  size MB             â”‚
+    //   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
     static NSString *cid = @"appCard";
     UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:cid];
     if (!c) {
@@ -2726,7 +2654,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     UILabel *sub = [[UILabel alloc] initWithFrame:CGRectMake(70, 36, card.bounds.size.width - 70 - 50, 18)];
     sub.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     if (a.containerSize > 1) {
-        sub.text = [NSString stringWithFormat:@"%@  •  %@", a.bundleID, CIBytesString(a.containerSize)];
+        sub.text = [NSString stringWithFormat:@"%@  â€¢  %@", a.bundleID, CIBytesString(a.containerSize)];
     } else {
         sub.text = a.bundleID;
     }
@@ -2735,8 +2663,8 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
     sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [card addSubview:sub];
 
-    // Custom check pill — empty circle when off, filled orange ring with
-    // ✓ when on. Stays right-aligned via FlexibleLeftMargin.
+    // Custom check pill â€” empty circle when off, filled orange ring with
+    // âœ“ when on. Stays right-aligned via FlexibleLeftMargin.
     UIView *check = [[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width - 38, 22, 24, 24)];
     check.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     check.layer.cornerRadius = 12;
@@ -2747,7 +2675,7 @@ typedef NS_ENUM(NSInteger, CIAppPickerMode) {
 
     if (selected) {
         UILabel *tick = [[UILabel alloc] initWithFrame:check.bounds];
-        tick.text = @"✓";
+        tick.text = @"âœ“";
         tick.textColor = [UIColor whiteColor];
         tick.textAlignment = NSTextAlignmentCenter;
         tick.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
@@ -2832,7 +2760,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 @property (nonatomic, copy)   NSArray  *options;    // for choose/picker
 @property (nonatomic, copy)   NSString *placeholder;
 @property (nonatomic, assign) CGFloat  leftPad;     // indentation level (sub-rows)
-// CIRowRange — `options` holds the ordered list of display labels;
+// CIRowRange â€” `options` holds the ordered list of display labels;
 // `key` is the config storage key (we store @{minIdx,maxIdx} as a 2-int array).
 @property (nonatomic, copy)   NSString *minStorageKey;
 @property (nonatomic, copy)   NSString *maxStorageKey;
@@ -2885,15 +2813,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     return r;
 }
 
-// Shared preset data — the table-of-truth lives in the static C function
+// Shared preset data â€” the table-of-truth lives in the static C function
 // ci_randomPresets() (defined earlier in this file). The class method here
 // just proxies, so the range slider's labels and the Reset randomizer pick
-// from the exact same array — keeping indices aligned.
+// from the exact same array â€” keeping indices aligned.
 + (NSArray *)devicePresets { return ci_randomPresets(); }
 + (NSArray *)iosPresets { return ci_randomIOSPresets(); }
 
 // Legacy in-class arrays, retained as a fallback if the C function returns
-// nil for any reason (it shouldn't — both arrays are static dispatch_once'd).
+// nil for any reason (it shouldn't â€” both arrays are static dispatch_once'd).
 // Columns: name, productType, machine, width, height, scale, nativeW, nativeH, nativeScale
 + (NSArray *)devicePresetsLegacy {
     static NSArray *presets = nil;
@@ -2920,13 +2848,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
             @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
             @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            // NOTE: iPhone 13+ removed — Zalo only recognizes models up to iPhone 12 Pro Max.
+            // NOTE: iPhone 13+ removed â€” Zalo only recognizes models up to iPhone 12 Pro Max.
         ];
     }
     return presets;
 }
 
-// iOS version presets — name, systemVersion, BuildVersion
+// iOS version presets â€” name, systemVersion, BuildVersion
 + (NSArray *)iosPresetsLegacy {
     static NSArray *v = nil;
     if (!v) {
@@ -2960,7 +2888,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     _expandedRangeKeys = [NSMutableSet set];
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self buildRows];
-    // Single compact menu on the right — avoids overflow on narrow screens.
+    // Single compact menu on the right â€” avoids overflow on narrow screens.
     self.navigationItem.rightBarButtonItem =
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                       target:self action:@selector(done)];
@@ -2972,13 +2900,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)showMenu {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Chọn Model iPhone" style:UIAlertActionStyleDefault
+    [ac addAction:[UIAlertAction actionWithTitle:@"Chá»n Model iPhone" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) { [self showPresets]; }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Chọn iOS Version" style:UIAlertActionStyleDefault
+    [ac addAction:[UIAlertAction actionWithTitle:@"Chá»n iOS Version" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) { [self showIOSPresets]; }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Bật/tắt toàn bộ Fake" style:UIAlertActionStyleDefault
+    [ac addAction:[UIAlertAction actionWithTitle:@"Báº­t/táº¯t toÃ n bá»™ Fake" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) { [self toggleAllFakes]; }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huá»·" style:UIAlertActionStyleCancel handler:nil]];
     ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:ac animated:YES completion:nil];
 }
@@ -3001,14 +2929,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)showPresets {
     NSArray *presets = [CIFakeSettingsViewController devicePresets];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Model iPhone"
-        message:@"iPhone 5 → iPhone 12 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chá»n Model iPhone"
+        message:@"iPhone 5 â†’ iPhone 12 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSArray *p in presets) {
         [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
             [self applyPreset:p];
         }]];
     }
-    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huá»·" style:UIAlertActionStyleCancel handler:nil]];
     ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     ac.popoverPresentationController.sourceView = self.view;
     ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, 0, 1, 1);
@@ -3017,14 +2945,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)showIOSPresets {
     NSArray *presets = [CIFakeSettingsViewController iosPresets];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn iOS Version"
-        message:@"iOS 12 → iOS 18" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chá»n iOS Version"
+        message:@"iOS 12 â†’ iOS 18" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSArray *p in presets) {
         [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
             [self applyIOSPreset:p];
         }]];
     }
-    [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Huá»·" style:UIAlertActionStyleCancel handler:nil]];
     ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     ac.popoverPresentationController.sourceView = self.view;
     ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, 0, 1, 1);
@@ -3076,10 +3004,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     Class C = [CIFakeSettingsViewController class];
     _rows = [NSMutableArray array];
 
-    // === Random Range — picker wheels for device + iOS ===
+    // === Random Range â€” picker wheels for device + iOS ===
     // Reset Data picks 1 device and 1 iOS uniformly at random from the [min,
     // max] window the user dialed in via the wheel.
-    // Picker labels — devices show "<idx> <name>" (matches mainstream tools'
+    // Picker labels â€” devices show "<idx> <name>" (matches mainstream tools'
     // wheel format), iOS shows the bare version number ("14.5", "17.5.1").
     NSMutableArray *deviceLabels = [NSMutableArray array];
     NSArray *_devs = [CIFakeSettingsViewController devicePresets];
@@ -3098,30 +3026,30 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
 
-    // 3. Fake Name — kept editable since the user often wants a custom one.
+    // 3. Fake Name â€” kept editable since the user often wants a custom one.
     [_rows addObject:[C toggle:@"3. Fake Name" key:@"fake_processinfo" indent:0]];
     [_rows addObject:[C text:@"deviceName" key:@"deviceName" placeholder:@"iPhone" indent:24]];
 
     // 4. Check IP + location
     [_rows addObject:[C header:@"4. Check IP Address"]];
-    [_rows addObject:[C note:@"Chọn server: ip-api.com" indent:24]];
+    [_rows addObject:[C note:@"Chá»n server: ip-api.com" indent:24]];
     [_rows addObject:[C toggle:@"4.1 Fake GPS Location" key:@"fake_location" indent:24]];
     // v2.5.31: random VN city per Change Device. OFF (default) = pin GPS to
     // proxy IP (IP/GPS coherent, anti-detection). ON = ignore proxy, pick
-    // random VN coords every Change Device — Maps/Weather show different
+    // random VN coords every Change Device â€” Maps/Weather show different
     // VN cities each session. Use only if you accept the IP/GPS mismatch
     // risk (banking/register flows prefer OFF).
-    [_rows addObject:[C toggle:@"4.1b Random VN city mỗi Change Device" key:@"gps_random_vn_mode" indent:24]];
+    [_rows addObject:[C toggle:@"4.1b Random VN city má»—i Change Device" key:@"gps_random_vn_mode" indent:24]];
     [_rows addObject:[C text:@"Latitude"  key:@"latitude"  placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Longitude" key:@"longitude" placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Altitude"  key:@"altitude"  placeholder:@"0" indent:48]];
-    [_rows addObject:[C toggle:@"4.2 Đổi TimeZone" key:@"fake_datetime" indent:24]];
+    [_rows addObject:[C toggle:@"4.2 Äá»•i TimeZone" key:@"fake_datetime" indent:24]];
     [_rows addObject:[C text:@"timezoneName" key:@"timezoneName" placeholder:@"America/Los_Angeles" indent:48]];
-    [_rows addObject:[C toggle:@"4.3 Đổi Locale" key:@"fake_locale" indent:24]];
+    [_rows addObject:[C toggle:@"4.3 Äá»•i Locale" key:@"fake_locale" indent:24]];
     [_rows addObject:[C text:@"localeIdentifier"    key:@"localeIdentifier"    placeholder:@"en_US" indent:48]];
     [_rows addObject:[C text:@"localeCountryCode"   key:@"localeCountryCode"   placeholder:@"US" indent:48]];
     [_rows addObject:[C text:@"localeCurrencyCode"  key:@"localeCurrencyCode"  placeholder:@"USD" indent:48]];
-    [_rows addObject:[C toggle:@"4.4 Đổi Language" key:@"fake_locale2" indent:24]];
+    [_rows addObject:[C toggle:@"4.4 Äá»•i Language" key:@"fake_locale2" indent:24]];
     [_rows addObject:[C text:@"localeLanguageCode"  key:@"localeLanguageCode"  placeholder:@"en" indent:48]];
 
     // 5. Fake Carrier
@@ -3135,11 +3063,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     // 6. Serial
     [_rows addObject:[C toggle:@"6. Fake & random serial" key:@"fake_hardware" indent:0]];
-    [_rows addObject:[C note:@"Thay đổi Serial sẽ yêu cầu login lại App Store khi reset data." indent:24]];
-    [_rows addObject:[C text:@"Serial (16 ký tự)" key:@"serialNumber" placeholder:@"F2LX...." indent:24]];
+    [_rows addObject:[C note:@"Thay Ä‘á»•i Serial sáº½ yÃªu cáº§u login láº¡i App Store khi reset data." indent:24]];
+    [_rows addObject:[C text:@"Serial (16 kÃ½ tá»±)" key:@"serialNumber" placeholder:@"F2LX...." indent:24]];
 
     // 7. Sensors
-    [_rows addObject:[C toggle:@"7. Fake sensors (rung, gia tốc)" key:@"fake_sensor" indent:0]];
+    [_rows addObject:[C toggle:@"7. Fake sensors (rung, gia tá»‘c)" key:@"fake_sensor" indent:0]];
 
     // 8. Advertising
     [_rows addObject:[C toggle:@"8. Fake IDFA" key:@"fake_ads" indent:0]];
@@ -3202,18 +3130,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"20. Fake system uptime" key:@"fake_uptime" indent:0]];
     [_rows addObject:[C text:@"systemUptime (seconds)" key:@"systemUptime" placeholder:@"3600" indent:24]];
 
-    // 21. Reset Data behavior — let user opt out of the SpringBoard
+    // 21. Reset Data behavior â€” let user opt out of the SpringBoard
     // respring that fires at the end of every Reset Data run. Respring
     // is harmless but takes ~6s + reloads every running app from a
     // launch snapshot. For users batching many resets in a row, that's
     // wasted time. With this toggle ON, Step 4 (respring) is skipped
-    // and target apps are killed instead — the tweak %ctor still runs
+    // and target apps are killed instead â€” the tweak %ctor still runs
     // fresh on next cold-start of each target app, so spoof identities
     // still rotate correctly. The only thing the user loses is
     // SpringBoard's icon cache refresh, which is fine if you're not
     // installing/uninstalling apps mid-session.
-    [_rows addObject:[C toggle:@"21. Bỏ qua respring sau Reset Data" key:@"skipRespringAfterReset" indent:0]];
-    [_rows addObject:[C note:@"Bật để khỏi mất 6s reload SpringBoard mỗi lần Reset. Target apps vẫn bị kill + reload tweak ở lần mở tiếp theo." indent:24]];
+    [_rows addObject:[C toggle:@"21. Bá» qua respring sau Reset Data" key:@"skipRespringAfterReset" indent:0]];
+    [_rows addObject:[C note:@"Báº­t Ä‘á»ƒ khá»i máº¥t 6s reload SpringBoard má»—i láº§n Reset. Target apps váº«n bá»‹ kill + reload tweak á»Ÿ láº§n má»Ÿ tiáº¿p theo." indent:24]];
 
     [self.tableView reloadData];
 }
@@ -3270,7 +3198,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         return c;
     }
     if (r.kind == CIRowChoose) {
-        // Pill-style button row — title left, current value + chevron right
+        // Pill-style button row â€” title left, current value + chevron right
         UIView *pill = [[UIView alloc] initWithFrame:CGRectMake(pad, 6, rightEdge - pad, 50)];
         pill.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         pill.backgroundColor = [CITheme card];
@@ -3287,13 +3215,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         NSString *cur = [[CIConfigManager shared] stringForKey:r.key];
         UILabel *v = [[UILabel alloc] initWithFrame:CGRectMake(12, 24, pill.bounds.size.width - 44, 22)];
         v.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        v.text = cur.length ? cur : @"— chạm để chọn —";
+        v.text = cur.length ? cur : @"â€” cháº¡m Ä‘á»ƒ chá»n â€”";
         v.font = [CITheme small]; v.textColor = cur.length ? [CITheme text] : [CITheme dim];
         [pill addSubview:v];
 
         UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(pill.bounds.size.width - 28, 12, 20, 24)];
         chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        chev.text = @"›"; chev.textColor = [CITheme dim]; chev.textAlignment = NSTextAlignmentCenter;
+        chev.text = @"â€º"; chev.textColor = [CITheme dim]; chev.textAlignment = NSTextAlignmentCenter;
         chev.font = [UIFont boldSystemFontOfSize:22];
         [pill addSubview:chev];
 
@@ -3325,7 +3253,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         return c;
     }
     if (r.kind == CIRowRange) {
-        // Collapsed by default — pill shows "Từ X đến Y" summary; tapping the
+        // Collapsed by default â€” pill shows "Tá»« X Ä‘áº¿n Y" summary; tapping the
         // pill expands a 2-component UIPickerView underneath. Tapping again
         // collapses. State lives in _expandedRangeKeys keyed by minStorageKey.
         NSInteger maxI = (NSInteger)r.options.count - 1;
@@ -3350,7 +3278,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             pillY = 32;
         }
 
-        // Tappable pill — UIControl so we can hook UIControlEventTouchUpInside
+        // Tappable pill â€” UIControl so we can hook UIControlEventTouchUpInside
         // and animate the row expansion. A trailing chevron rotates when open.
         UIControl *pill = [[UIControl alloc] initWithFrame:CGRectMake(pad, pillY, rightEdge - pad, 40)];
         pill.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -3367,13 +3295,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         summary.font = [CITheme body];
         summary.textColor = [CITheme text];
         summary.textAlignment = NSTextAlignmentCenter;
-        summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", r.options[lo], r.options[hi]];
+        summary.text = [NSString stringWithFormat:@"Tá»« %@ Ä‘áº¿n %@", r.options[lo], r.options[hi]];
         summary.userInteractionEnabled = NO;
         [pill addSubview:summary];
 
         UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(pill.bounds.size.width - 28, 8, 20, 24)];
         chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        chev.text = expanded ? @"˅" : @"›";
+        chev.text = expanded ? @"Ë…" : @"â€º";
         chev.textColor = [CITheme orange];
         chev.textAlignment = NSTextAlignmentCenter;
         chev.font = [UIFont boldSystemFontOfSize:18];
@@ -3414,7 +3342,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     return 70;
 }
 
-// UIPickerView data source / delegate — services every CIRowRange picker.
+// UIPickerView data source / delegate â€” services every CIRowRange picker.
 // The picker carries its own associated objects (min/max storage keys, label
 // list, summary label) so we can dispatch without a per-row delegate.
 - (NSInteger)numberOfComponentsInPickerView:(UIPickerView *)pickerView { return 2; }
@@ -3432,7 +3360,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (CGFloat)pickerView:(UIPickerView *)pv rowHeightForComponent:(NSInteger)component { return 32; }
 
-// Override the default dim system color — UIPickerView default text color
+// Override the default dim system color â€” UIPickerView default text color
 // renders almost-black on our dark background. Returning a custom UILabel
 // per row forces clean white text, large enough to read on the wheel.
 - (UIView *)pickerView:(UIPickerView *)pv viewForRow:(NSInteger)row forComponent:(NSInteger)component reusingView:(UIView *)reusingView {
@@ -3473,12 +3401,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSInteger lo = [pv selectedRowInComponent:0];
     NSInteger hi = [pv selectedRowInComponent:1];
     // Clamp: if user pulls min past max (or vice-versa) we drag the other
-    // wheel along to keep min ≤ max. The wheel that just moved is the source
+    // wheel along to keep min â‰¤ max. The wheel that just moved is the source
     // of truth; the other one snaps to it.
     if (component == 0 && lo > hi) { hi = lo; [pv selectRow:hi inComponent:1 animated:YES]; }
     if (component == 1 && hi < lo) { lo = hi; [pv selectRow:lo inComponent:0 animated:YES]; }
 
-    if (summary) summary.text = [NSString stringWithFormat:@"Từ %@ đến %@", opts[lo], opts[hi]];
+    if (summary) summary.text = [NSString stringWithFormat:@"Tá»« %@ Ä‘áº¿n %@", opts[lo], opts[hi]];
 
     CIConfigManager *cm = [CIConfigManager shared];
     [cm setObject:@(lo) forKey:minKey];
@@ -3526,10 +3454,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [super viewDidLoad];
     self.view.backgroundColor = [CITheme bg];
 
-    // Single search bar header — no more checkbox + Xóa button. Tap a row
+    // Single search bar header â€” no more checkbox + XÃ³a button. Tap a row
     // to restore that snapshot, swipe-left to delete (iOS-standard pattern).
     _search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 56)];
-    _search.placeholder = @"Lọc RRS theo IDFA / IP / app";
+    _search.placeholder = @"Lá»c RRS theo IDFA / IP / app";
     _search.searchBarStyle = UISearchBarStyleMinimal;
     _search.delegate = self;
     _search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -3554,12 +3482,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)refreshTitle {
     self.title = _view.count > 0
-        ? [NSString stringWithFormat:@"%lu RRS — chạm để restore", (unsigned long)_view.count]
-        : @"RRS (chưa có)";
+        ? [NSString stringWithFormat:@"%lu RRS â€” cháº¡m Ä‘á»ƒ restore", (unsigned long)_view.count]
+        : @"RRS (chÆ°a cÃ³)";
 }
 
 // Cells are built with frames computed from tv.bounds.size.width at
-// dequeue time. On first appearance the table's bounds are still 0×0,
+// dequeue time. On first appearance the table's bounds are still 0Ã—0,
 // so every cell renders with clipped value cards. Force a single
 // reloadData when the table reaches its real width.
 - (void)viewDidLayoutSubviews {
@@ -3599,7 +3527,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     // v2.4.41: cell.contentView width is reliable even when tv.bounds is
     // 0 on the first cellForRow pass (was causing right-edge content
-    // truncation — date/IDFA/"chạm để res" appeared cut off). Pull margin
+    // truncation â€” date/IDFA/"cháº¡m Ä‘á»ƒ res" appeared cut off). Pull margin
     // off contentView and clamp to a minimum so children never get
     // negative-x positions.
     CGFloat margin = 12;
@@ -3632,9 +3560,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [card addSubview:idxBadge];
 
     // Top row: account label (preferred) OR app names if no label was set.
-    NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@" • "] : @"-";
+    NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@" â€¢ "] : @"-";
     NSString *titleText = e.note.length > 0
-        ? [NSString stringWithFormat:@"%@ — %@", e.note, names]
+        ? [NSString stringWithFormat:@"%@ â€” %@", e.note, names]
         : names;
     UILabel *appLbl = [[UILabel alloc] initWithFrame:CGRectMake(46, 10, card.bounds.size.width - 56 - 100, 22)];
     appLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -3678,10 +3606,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     szLbl.textColor = [CITheme orange];
     [card addSubview:szLbl];
 
-    // Account metadata chips — only shown when at least one journal field
+    // Account metadata chips â€” only shown when at least one journal field
     // is populated, so old entries (label/kind/status all blank) render
     // unchanged. Layout: [phone] [kind] [status] strung horizontally
-    // starting from the size label, dimmed-style. Tap the cell's "Sửa"
+    // starting from the size label, dimmed-style. Tap the cell's "Sá»­a"
     // swipe action to fill these in for an old entry.
     CGFloat chipX = 46 + 84;
     if (e.accountLabel.length || e.accountKind != CIAccountKindUnknown
@@ -3725,7 +3653,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             [card addSubview:bx];
         } else if (e.accountStatus == CIAccountStatusActive) {
             UILabel *act = [[UILabel alloc] initWithFrame:CGRectMake(chipX, 80, 16, 20)];
-            act.text = @"✓";
+            act.text = @"âœ“";
             act.font = [UIFont boldSystemFontOfSize:14];
             act.textColor = [CITheme green];
             act.textAlignment = NSTextAlignmentCenter;
@@ -3735,14 +3663,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     UILabel *cta = [[UILabel alloc] initWithFrame:CGRectMake(card.bounds.size.width - 130, 80, 120, 20)];
     cta.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    cta.text = @"chạm để restore →";
+    cta.text = @"cháº¡m Ä‘á»ƒ restore â†’";
     cta.font = [UIFont italicSystemFontOfSize:11];
     cta.textColor = [CITheme green];
     cta.textAlignment = NSTextAlignmentRight;
     [card addSubview:cta];
 
     // Banned entries get a faint red overlay so they're easy to skip
-    // when scanning the list — restore is still allowed but the visual
+    // when scanning the list â€” restore is still allowed but the visual
     // hint nudges the user to pick another snapshot.
     if (e.accountStatus == CIAccountStatusBanned) {
         card.layer.borderColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.55].CGColor;
@@ -3752,14 +3680,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 // In-place editor for the journal fields. Triggered from the leading
-// swipe action ("Sửa"). Alert with three inputs: account label (free
-// text — phone/email/anything memorable), kind (segmented choices), and
+// swipe action ("Sá»­a"). Alert with three inputs: account label (free
+// text â€” phone/email/anything memorable), kind (segmented choices), and
 // active/banned status. Updates the CIRRSEntry in the shared store and
 // reloads just the affected row to keep the list smooth.
 - (void)editAccountForEntry:(CIRRSEntry *)e atIndex:(NSIndexPath *)ip {
     UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:@"Sửa thông tin tài khoản"
-                         message:@"Nhãn (SĐT/email), loại, trạng thái"
+        alertControllerWithTitle:@"Sá»­a thÃ´ng tin tÃ i khoáº£n"
+                         message:@"NhÃ£n (SÄT/email), loáº¡i, tráº¡ng thÃ¡i"
                   preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
         tf.placeholder = @"vd: 0912345678";
@@ -3767,18 +3695,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
         tf.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    // Kind picker — squeeze a segmented control into the alert via a
+    // Kind picker â€” squeeze a segmented control into the alert via a
     // dummy text field whose inputView is the segmented. Simpler than
     // pushing a separate VC.
     static const NSInteger kinds[] = {
         CIAccountKindZalo, CIAccountKindFacebook, CIAccountKindTikTok,
         CIAccountKindBanking, CIAccountKindOther
     };
-    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Há»§y" style:UIAlertActionStyleCancel handler:nil]];
 
     // Helper to add one Save action per kind so user picks via the
     // alert's action list rather than a sub-picker. Each save action
-    // captures its kind. Six total (Zalo/FB/TT/Banking/Khác/Giữ nguyên).
+    // captures its kind. Six total (Zalo/FB/TT/Banking/KhÃ¡c/Giá»¯ nguyÃªn).
     void (^addSaveAction)(NSString *, CIAccountKind) = ^(NSString *title, CIAccountKind k) {
         [a addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
             handler:^(UIAlertAction *_) {
@@ -3792,12 +3720,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             }]];
     };
     for (NSUInteger i = 0; i < sizeof(kinds)/sizeof(kinds[0]); i++) {
-        addSaveAction([@"Lưu (" stringByAppendingFormat:@"%@)", ci_kindLabel(kinds[i])],
+        addSaveAction([@"LÆ°u (" stringByAppendingFormat:@"%@)", ci_kindLabel(kinds[i])],
                       (CIAccountKind)kinds[i]);
     }
     // Last action: just save the label without changing kind (for old
     // entries where user wants to add a phone without picking a kind).
-    [a addAction:[UIAlertAction actionWithTitle:@"Lưu (giữ loại)" style:UIAlertActionStyleDefault
+    [a addAction:[UIAlertAction actionWithTitle:@"LÆ°u (giá»¯ loáº¡i)" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) {
             e.accountLabel = a.textFields.firstObject.text ?: @"";
             if (e.accountStatus == CIAccountStatusUnknown)
@@ -3810,7 +3738,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:a animated:YES completion:nil];
 }
 
-// Tap a row → confirm dialog → restore.
+// Tap a row â†’ confirm dialog â†’ restore.
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     CIRRSEntry *e = _view[ip.row];
@@ -3822,28 +3750,28 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         ? [NSString stringWithFormat:@"\"%@\"\n\n", e.note]
         : @"";
     NSString *body = [NSString stringWithFormat:
-        @"%@Khôi phục môi trường này?\n\n"
+        @"%@KhÃ´i phá»¥c mÃ´i trÆ°á»ng nÃ y?\n\n"
         @"Apps: %@\n"
         @"IDFA: %@\n"
         @"IP: %@\n"
-        @"Backup lúc: %@\n\n"
-        @"Sau khi restore, account đã đăng ký trong môi trường này (Zalo, …) sẽ vẫn login được.",
+        @"Backup lÃºc: %@\n\n"
+        @"Sau khi restore, account Ä‘Ã£ Ä‘Äƒng kÃ½ trong mÃ´i trÆ°á»ng nÃ y (Zalo, â€¦) sáº½ váº«n login Ä‘Æ°á»£c.",
         header,
         names,
         e.idfa ?: @"-",
         e.ipReset ?: @"-",
         [df stringFromDate:e.date]];
 
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Restore môi trường"
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Restore mÃ´i trÆ°á»ng"
                                                                message:body
                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Há»§y" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) {
         // v2.4.45: RRS list is now a tab (UITabBarController), not a modal,
-        // so presentingViewController is nil → previous lookup returned no
+        // so presentingViewController is nil â†’ previous lookup returned no
         // target and restoreEntry: was never invoked (user reported
-        // "ấn restore nhưng ko restore" on v2.4.44). Walk three locations:
+        // "áº¥n restore nhÆ°ng ko restore" on v2.4.44). Walk three locations:
         //   1) tabBarController.viewControllers[0]'s nav root (Home tab)
         //   2) presentingViewController chain (legacy modal flow)
         //   3) self if we're inline-pushed
@@ -3878,8 +3806,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         if (target) {
             [target performSelector:@selector(restoreEntry:) withObject:e];
         } else {
-            UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Lỗi"
-                message:@"Không tìm thấy handler restore. Mở tab Home trước rồi quay lại Backups và thử lại."
+            UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Lá»—i"
+                message:@"KhÃ´ng tÃ¬m tháº¥y handler restore. Má»Ÿ tab Home trÆ°á»›c rá»“i quay láº¡i Backups vÃ  thá»­ láº¡i."
                 preferredStyle:UIAlertControllerStyleAlert];
             [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             [self presentViewController:err animated:YES completion:nil];
@@ -3888,19 +3816,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:a animated:YES completion:nil];
 }
 
-// Swipe-left → Xóa (single action — never clips). All other actions
-// (Cập nhật / Sửa / Ban) moved to the long-press context menu below.
+// Swipe-left â†’ XÃ³a (single action â€” never clips). All other actions
+// (Cáº­p nháº­t / Sá»­a / Ban) moved to the long-press context menu below.
 // Earlier attempts to cram a 2nd or 3rd action into the swipe area
 // kept getting label-clipped no matter how short the title was
-// (tried "Cập nhật" → "hật", "Lưu lại" → "lại", "Lưu" → "lưu", and
-// even icon-only — the layout broke when 2 trailing actions had to
-// share the swipe width). Single-action swipe gives Xóa the full
+// (tried "Cáº­p nháº­t" â†’ "háº­t", "LÆ°u láº¡i" â†’ "láº¡i", "LÆ°u" â†’ "lÆ°u", and
+// even icon-only â€” the layout broke when 2 trailing actions had to
+// share the swipe width). Single-action swipe gives XÃ³a the full
 // width with no clipping. Power-user actions hide behind the menu.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
         trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
     UIContextualAction *del = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleDestructive
-                            title:@"Xóa"
+                            title:@"XÃ³a"
                           handler:^(UIContextualAction *action, UIView *view, void (^doneHandler)(BOOL)) {
         CIRRSEntry *e = self->_view[ip.row];
         [[CIRRSStore shared] deleteEntry:e];
@@ -3912,7 +3840,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     return [UISwipeActionsConfiguration configurationWithActions:@[del]];
 }
 
-// Long-press context menu — iOS-native pattern that doesn't clip
+// Long-press context menu â€” iOS-native pattern that doesn't clip
 // text and gives plenty of room for multi-action lists. User holds
 // the cell for ~0.4s, the cell pops up, and a menu sheet appears
 // with all the per-entry actions. No more swipe-label fitting puzzles.
@@ -3924,21 +3852,21 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         configurationWithIdentifier:nil
                     previewProvider:nil
                      actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
-        // 1) Cập nhật — re-tar this snapshot with current state.
+        // 1) Cáº­p nháº­t â€” re-tar this snapshot with current state.
         UIAction *update = [UIAction
-            actionWithTitle:@"Cập nhật"
+            actionWithTitle:@"Cáº­p nháº­t"
                       image:[UIImage systemImageNamed:@"arrow.clockwise"]
                  identifier:nil
                     handler:^(UIAction *_) {
             UIAlertController *a = [UIAlertController
-                alertControllerWithTitle:@"Cập nhật snapshot?"
+                alertControllerWithTitle:@"Cáº­p nháº­t snapshot?"
                                  message:[NSString stringWithFormat:
-                                          @"Tar mới sẽ ghi đè bản hiện tại của %lu app. "
-                                          @"Nếu tar mới nhỏ hơn nhiều, bạn sẽ được hỏi xác nhận lại.",
+                                          @"Tar má»›i sáº½ ghi Ä‘Ã¨ báº£n hiá»‡n táº¡i cá»§a %lu app. "
+                                          @"Náº¿u tar má»›i nhá» hÆ¡n nhiá»u, báº¡n sáº½ Ä‘Æ°á»£c há»i xÃ¡c nháº­n láº¡i.",
                                           (unsigned long)e.bundleIDs.count]
                           preferredStyle:UIAlertControllerStyleAlert];
-            [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
-            [a addAction:[UIAlertAction actionWithTitle:@"Cập nhật" style:UIAlertActionStyleDestructive
+            [a addAction:[UIAlertAction actionWithTitle:@"Há»§y" style:UIAlertActionStyleCancel handler:nil]];
+            [a addAction:[UIAlertAction actionWithTitle:@"Cáº­p nháº­t" style:UIAlertActionStyleDestructive
                 handler:^(UIAlertAction *_) {
                 UIViewController *presenter = self.presentingViewController;
                 if ([presenter isKindOfClass:[UINavigationController class]]) {
@@ -3953,19 +3881,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             [self presentViewController:a animated:YES completion:nil];
         }];
 
-        // 2) Sửa — edit account label / kind.
+        // 2) Sá»­a â€” edit account label / kind.
         UIAction *edit = [UIAction
-            actionWithTitle:@"Sửa nhãn / loại"
+            actionWithTitle:@"Sá»­a nhÃ£n / loáº¡i"
                       image:[UIImage systemImageNamed:@"pencil"]
                  identifier:nil
                     handler:^(UIAction *_) {
             [self editAccountForEntry:e atIndex:ip];
         }];
 
-        // 3) Ban / Mở khóa — toggle account status.
+        // 3) Ban / Má»Ÿ khÃ³a â€” toggle account status.
         BOOL isBanned = (e.accountStatus == CIAccountStatusBanned);
         UIAction *toggleBan = [UIAction
-            actionWithTitle:(isBanned ? @"Mở khóa" : @"Đánh dấu BANNED")
+            actionWithTitle:(isBanned ? @"Má»Ÿ khÃ³a" : @"ÄÃ¡nh dáº¥u BANNED")
                       image:[UIImage systemImageNamed:(isBanned ? @"checkmark.circle" : @"xmark.octagon")]
                  identifier:nil
                     handler:^(UIAction *_) {
@@ -3974,9 +3902,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
         }];
 
-        // 4) Xóa — destructive, separate inline menu so iOS styles it red.
+        // 4) XÃ³a â€” destructive, separate inline menu so iOS styles it red.
         UIAction *del = [UIAction
-            actionWithTitle:@"Xóa snapshot"
+            actionWithTitle:@"XÃ³a snapshot"
                       image:[UIImage systemImageNamed:@"trash"]
                  identifier:nil
                     handler:^(UIAction *_) {
@@ -3993,16 +3921,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     return cfg;
 }
 
-// Swipe-right → Sửa (account label/kind) + Ban/Mở khóa (toggle status).
+// Swipe-right â†’ Sá»­a (account label/kind) + Ban/Má»Ÿ khÃ³a (toggle status).
 // Two actions on the leading edge so user can fill metadata or mark a
-// banned account without conflicting with the destructive "Xóa" pattern
+// banned account without conflicting with the destructive "XÃ³a" pattern
 // on the other edge.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
         leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
     CIRRSEntry *e = _view[ip.row];
     UIContextualAction *edit = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:@"Sửa"
+                            title:@"Sá»­a"
                           handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
         [self editAccountForEntry:e atIndex:ip];
         done(YES);
@@ -4012,7 +3940,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     BOOL isBanned = (e.accountStatus == CIAccountStatusBanned);
     UIContextualAction *toggleBan = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
-                            title:(isBanned ? @"Mở khóa" : @"Ban")
+                            title:(isBanned ? @"Má»Ÿ khÃ³a" : @"Ban")
                           handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
         e.accountStatus = isBanned ? CIAccountStatusActive : CIAccountStatusBanned;
         [[CIRRSStore shared] saveIndex];
@@ -4025,17 +3953,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 @end
 
-// Forward-declare full CIProxyViewController @interface so CISideMenu's
-// didSelect can alloc + push it. Implementation lives below.
-@interface CIProxyViewController : UIViewController <UITextFieldDelegate>
-@end
-
-// Same pattern for the Camera spoof config screen.
-// UIImagePickerController shows the iOS Photos UI directly. The app's
-// containerless sandbox normally blocks the Photos TCC flow, but
-// entitlements.plist now ships com.apple.private.tcc.allow with
-// kTCCServicePhotos which pre-grants access — no permission dialog,
-// no TCC.db round-trip needed.
 // ============================================================
 // SIDE MENU (hamburger)
 // ============================================================
@@ -4046,10 +3963,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Trimmed to only working entries — placeholders ("Chức năng đang phát
-    // triển") were cluttering the menu. Add new items here as they get real
-    // handlers in didSelectRowAtIndexPath.
-    _items = @[@"Proxy"];
+    _items = @[];
     self.view.backgroundColor = [CITheme bg];
     self.tableView.rowHeight = 52;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 110)];
@@ -4078,271 +3992,26 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    NSString *cmd = _items[ip.row];
-    if ([cmd isEqualToString:@"Proxy"]) {
-        CIProxyViewController *vc = [[CIProxyViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-        return;
-    }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:cmd message:@"Chức năng đang phát triển." preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:a animated:YES completion:nil];
 }
 @end
 
-// ============================================================
-// PROXY CONFIG VIEW CONTROLLER
-// ============================================================
-// User pastes "host:port[:user:pass]" + picks HTTP / SOCKS5 + toggles ON.
-//   Test         → blocking GET https://api.ipify.org?format=json through
-//                  the proxy; alert shows resolved IP or error.
-//   Auto-fill GPS → fetch ip-api geoip via the proxy and apply lat/long/
-//                  carrier/locale (same path as Reset Data, so the user
-//                  can dial in coordinates without doing a full reset).
-//   Save         → persist + Darwin notify the tweak so target apps
-//                  pick up the new proxy on next request.
-// (@interface is declared above CISideMenuViewController so the side
-//  menu's didSelect can construct it; implementation stays here.)
+// CIProxyViewController removed â€” proxy handled by system VPN (Shadowrocket).
+// ci_fetchProxyGeo uses sharedSession which routes through any active VPN.
 
-@implementation CIProxyViewController {
-    UISwitch           *_enableSwitch;
-    UISegmentedControl *_typeSegment;
-    UITextField        *_proxyField;
-    UILabel            *_statusLabel;
-    UIButton           *_testBtn;
-    UIButton           *_geoBtn;
-    UIButton           *_saveBtn;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Proxy";
-    self.view.backgroundColor = [CITheme bg];
-
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    sv.alwaysBounceVertical = YES;
-    sv.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    [self.view addSubview:sv];
-
-    CGFloat W = self.view.bounds.size.width;
-    CGFloat M = 16;
-    CGFloat y = 16;
-
-    // Enable row
-    UILabel *enLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M - 60, 32)];
-    enLbl.text = @"Bật proxy"; enLbl.textColor = [CITheme text];
-    enLbl.font = [UIFont boldSystemFontOfSize:17];
-    [sv addSubview:enLbl];
-    _enableSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(W - M - 51, y, 51, 32)];
-    _enableSwitch.onTintColor = [CITheme orange];
-    [sv addSubview:_enableSwitch];
-    y += 50;
-
-    // Type segment
-    UILabel *tyLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
-    tyLbl.text = @"Loại"; tyLbl.textColor = [CITheme dim];
-    tyLbl.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:tyLbl]; y += 24;
-    _typeSegment = [[UISegmentedControl alloc] initWithItems:@[@"HTTP", @"SOCKS5"]];
-    _typeSegment.frame = CGRectMake(M, y, W - 2*M, 36);
-    _typeSegment.selectedSegmentIndex = 0;
-    [sv addSubview:_typeSegment];
-    y += 50;
-
-    // Proxy textfield
-    UILabel *pfLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 22)];
-    pfLbl.text = @"host:port:user:pass"; pfLbl.textColor = [CITheme dim];
-    pfLbl.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:pfLbl]; y += 24;
-    _proxyField = [[UITextField alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 44)];
-    _proxyField.placeholder = @"vd: 1.2.3.4:8080:user:pass";
-    _proxyField.font = [UIFont fontWithName:@"Menlo" size:14];
-    _proxyField.textColor = [CITheme text];
-    _proxyField.backgroundColor = [CITheme card];
-    _proxyField.layer.cornerRadius = 8;
-    _proxyField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    _proxyField.autocorrectionType = UITextAutocorrectionTypeNo;
-    _proxyField.spellCheckingType = UITextSpellCheckingTypeNo;
-    _proxyField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    _proxyField.delegate = self;
-    UIView *pad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 1)];
-    _proxyField.leftView = pad; _proxyField.leftViewMode = UITextFieldViewModeAlways;
-    [sv addSubview:_proxyField];
-    y += 60;
-
-    // Status label
-    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 60)];
-    _statusLabel.numberOfLines = 0;
-    _statusLabel.textColor = [CITheme dim];
-    _statusLabel.font = [UIFont systemFontOfSize:13];
-    [sv addSubview:_statusLabel];
-    y += 70;
-
-    // Test button
-    _testBtn = CIBoxButton(@"Test kết nối", [CITheme blue], [CITheme blue]);
-    _testBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_testBtn addTarget:self action:@selector(testTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_testBtn];
-    y += 64;
-
-    // Auto-fill GPS button
-    _geoBtn = CIBoxButton(@"Lấy GPS theo IP proxy", [CITheme orange], [CITheme orange]);
-    _geoBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_geoBtn addTarget:self action:@selector(geoTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_geoBtn];
-    y += 64;
-
-    // Save button
-    _saveBtn = CIBoxButton(@"Lưu", [UIColor whiteColor], [CITheme border]);
-    _saveBtn.frame = CGRectMake(M, y, W - 2*M, 52);
-    [_saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
-    [sv addSubview:_saveBtn];
-    y += 64;
-
-    sv.contentSize = CGSizeMake(W, y + 24);
-
-    // Load existing config
-    CIConfigManager *cm = [CIConfigManager shared];
-    _enableSwitch.on = [cm boolForKey:@"proxyEnabled"];
-    NSString *type = [cm stringForKey:@"proxyType"];
-    _typeSegment.selectedSegmentIndex = [type isEqualToString:@"socks5"] ? 1 : 0;
-    _proxyField.text = [cm stringForKey:@"proxyString"] ?: @"";
-    [self refreshStatus:nil error:NO];
-}
-
-- (void)refreshStatus:(NSString *)msg error:(BOOL)isError {
-    if (msg.length == 0) {
-        NSDictionary *p = ci_parseProxyString(_proxyField.text);
-        if (!p) { _statusLabel.text = @"⚠ Cấu hình proxy chưa hợp lệ"; _statusLabel.textColor = [CITheme dim]; return; }
-        NSString *type = _typeSegment.selectedSegmentIndex == 1 ? @"SOCKS5" : @"HTTP";
-        _statusLabel.text = [NSString stringWithFormat:@"%@ %@:%@%@",
-            type, p[@"host"], p[@"port"],
-            p[@"user"] ? @" (auth)" : @""];
-        _statusLabel.textColor = [CITheme dim];
-        return;
-    }
-    _statusLabel.text = msg;
-    _statusLabel.textColor = isError ? [UIColor systemRedColor] : [CITheme green];
-}
-
-// Snapshot UI → CIConfigManager so the helpers below see fresh values
-// before we kick the network request.
-- (void)stageConfigFromUI {
-    CIConfigManager *cm = [CIConfigManager shared];
-    [cm setObject:@(_enableSwitch.on) forKey:@"proxyEnabled"];
-    [cm setObject:(_typeSegment.selectedSegmentIndex == 1 ? @"socks5" : @"http")
-           forKey:@"proxyType"];
-    [cm setObject:(_proxyField.text ?: @"") forKey:@"proxyString"];
-}
-
-- (void)testTapped {
-    [self.view endEditing:YES];
-    [self stageConfigFromUI];
-    if (![_enableSwitch isOn]) {
-        [self refreshStatus:@"Bật switch trước rồi mới test." error:YES];
-        return;
-    }
-    if (!ci_parseProxyString(_proxyField.text)) {
-        [self refreshStatus:@"Format sai. Đúng: host:port:user:pass" error:YES];
-        return;
-    }
-    [self refreshStatus:@"⌛ Đang test…" error:NO];
-    _testBtn.enabled = NO;
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSURLSessionConfiguration *cfg = ci_proxyConfigOrNil();
-        NSURLSession *session = cfg ? [NSURLSession sessionWithConfiguration:cfg]
-                                    : [NSURLSession sharedSession];
-        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
-            [NSURL URLWithString:@"https://api.ipify.org?format=json"]];
-        req.timeoutInterval = 8.0;
-        req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
-        __block NSData *data = nil; __block NSError *err = nil;
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-        [[session dataTaskWithRequest:req
-            completionHandler:^(NSData *d, NSURLResponse *_r, NSError *e) {
-                data = d; err = e; dispatch_semaphore_signal(sem);
-            }] resume];
-        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)));
-        if (cfg) [session finishTasksAndInvalidate];
-
-        NSString *resultMsg; BOOL isErr = NO;
-        if (err || !data) {
-            resultMsg = [NSString stringWithFormat:@"❌ Lỗi: %@",
-                         err.localizedDescription ?: @"không nhận được response"];
-            isErr = YES;
-        } else {
-            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            NSString *ip = [json isKindOfClass:[NSDictionary class]] ? json[@"ip"] : nil;
-            if ([ip isKindOfClass:[NSString class]] && ip.length) {
-                resultMsg = [NSString stringWithFormat:@"✓ OK — IP qua proxy: %@", ip];
-            } else {
-                resultMsg = @"❌ Response lạ — proxy có thể chặn HTTPS";
-                isErr = YES;
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self->_testBtn.enabled = YES;
-            [self refreshStatus:resultMsg error:isErr];
-        });
-    });
-}
-
-- (void)geoTapped {
-    [self.view endEditing:YES];
-    [self stageConfigFromUI];
-    if (![_enableSwitch isOn] || !ci_parseProxyString(_proxyField.text)) {
-        [self refreshStatus:@"Bật proxy + nhập đúng format trước." error:YES];
-        return;
-    }
-    [self refreshStatus:@"⌛ Đang lấy GPS từ ip-api.com qua proxy…" error:NO];
-    _geoBtn.enabled = NO;
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDictionary *geo = ci_fetchProxyGeo(nil);
-        BOOL ok = ci_applyGeoFromIPAPI(geo);
-        if (ok) [[CIConfigManager shared] save];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self->_geoBtn.enabled = YES;
-            if (!ok) {
-                [self refreshStatus:@"❌ Geo failed — proxy chặn ip-api.com hoặc offline" error:YES];
-                return;
-            }
-            CIConfigManager *cm = [CIConfigManager shared];
-            NSString *cc  = [cm stringForKey:@"localeCountryCode"] ?: @"?";
-            NSString *isp = [cm stringForKey:@"carrierName"] ?: @"?";
-            NSString *ip  = [cm stringForKey:@"lastResetIP"] ?: @"?";
-            [self refreshStatus:[NSString stringWithFormat:@"✓ %@ — %@ (%@)\nGPS + locale + carrier đã đồng bộ.", cc, isp, ip]
-                          error:NO];
-            [cm notifyReload];
-        });
-    });
-}
-
-- (void)saveTapped {
-    [self.view endEditing:YES];
-    [self stageConfigFromUI];
-    [[CIConfigManager shared] save];
-    [[CIConfigManager shared] notifyReload];
-    [self refreshStatus:@"✓ Lưu xong — tweak sẽ pick up proxy ngay." error:NO];
-}
-
-- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
-- (void)textFieldDidEndEditing:(UITextField *)tf { [self refreshStatus:nil error:NO]; }
-
+@interface _CIProxyPlaceholder : NSObject @end
+@implementation _CIProxyPlaceholder
 @end
 
 // ============================================================
 // FAKE INFO REPORT VIEW CONTROLLER
 // ============================================================
 // One screen showing every faked field grouped by hook layer with a
-// green ✓ / red ✕ glyph and the current spoofed value next to it.
-// Driven entirely by [CIConfigManager shared] reads — same source the
+// green âœ“ / red âœ• glyph and the current spoofed value next to it.
+// Driven entirely by [CIConfigManager shared] reads â€” same source the
 // tweak's getConfig() pulls from, so what the user sees here is
 // exactly what target apps will see at runtime.
 @interface CIFakeReportRow : NSObject
-@property (nonatomic, copy)   NSString *label;     // "Serial", "WiFi MAC", …
+@property (nonatomic, copy)   NSString *label;     // "Serial", "WiFi MAC", â€¦
 @property (nonatomic, copy)   NSString *configKey; // key in CIConfigManager
 @property (nonatomic, copy)   NSString *value;     // resolved at build time
 @property (nonatomic, assign) BOOL      ok;        // green vs red
@@ -4377,7 +4046,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             v = [NSString stringWithFormat:@"%@", raw];
         }
     }
-    r.value = v ?: @"(chưa fake)";
+    r.value = v ?: @"(chÆ°a fake)";
     r.ok = (v.length > 0);
     return r;
 }
@@ -4387,7 +4056,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 + (CIFakeReportRow *)rowWithLabel:(NSString *)label value:(NSString *)value {
     CIFakeReportRow *r = [CIFakeReportRow new];
     r.label = label; r.configKey = @"";
-    r.value = value.length > 0 ? value : @"(chưa fake)";
+    r.value = value.length > 0 ? value : @"(chÆ°a fake)";
     r.ok = (value.length > 0);
     return r;
 }
@@ -4421,7 +4090,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     Class C = [CIFakeInfoReportViewController class];
     NSMutableArray *all = [NSMutableArray array];
 
-    [all addObject:[C section:@"UIDevice" icon:@"📱" rows:@[
+    [all addObject:[C section:@"UIDevice" icon:@"ðŸ“±" rows:@[
         [C row:@"Marketing Name" key:@"MarketingName"],
         [C row:@"Device Name"    key:@"deviceName"],
         [C row:@"Model"          key:@"deviceModel"],
@@ -4431,7 +4100,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"IDFV"           key:@"identifierForVendor"],
     ]]];
 
-    [all addObject:[C section:@"Hardware (MGCopyAnswer)" icon:@"🔩" rows:@[
+    [all addObject:[C section:@"Hardware (MGCopyAnswer)" icon:@"ðŸ”©" rows:@[
         [C row:@"Product Type"   key:@"ProductType"],
         [C row:@"Hardware Model" key:@"HardwareModel"],
         [C row:@"Serial Number"  key:@"SerialNumber"],
@@ -4450,13 +4119,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Phone Number"   key:@"PhoneNumber"],
     ]]];
 
-    [all addObject:[C section:@"Network MAC" icon:@"📡" rows:@[
+    [all addObject:[C section:@"Network MAC" icon:@"ðŸ“¡" rows:@[
         [C row:@"WiFi MAC"       key:@"WiFiAddress"],
         [C row:@"Bluetooth MAC"  key:@"BluetoothAddress"],
         [C row:@"Ethernet MAC"   key:@"EthernetAddress"],
     ]]];
 
-    [all addObject:[C section:@"Carrier" icon:@"📶" rows:@[
+    [all addObject:[C section:@"Carrier" icon:@"ðŸ“¶" rows:@[
         [C row:@"Carrier Name"   key:@"carrierName"],
         [C row:@"MCC"            key:@"carrierMCC"],
         [C row:@"MNC"            key:@"carrierMNC"],
@@ -4464,13 +4133,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Radio Tech"     key:@"carrierRadioAccess"],
     ]]];
 
-    [all addObject:[C section:@"WiFi Network" icon:@"🛜" rows:@[
+    [all addObject:[C section:@"WiFi Network" icon:@"ðŸ›œ" rows:@[
         [C row:@"SSID"           key:@"wifiSSID"],
         [C row:@"BSSID"          key:@"wifiBSSID"],
         [C row:@"Local IP"       key:@"localIP"],
     ]]];
 
-    [all addObject:[C section:@"Screen" icon:@"🖥️" rows:@[
+    [all addObject:[C section:@"Screen" icon:@"ðŸ–¥ï¸" rows:@[
         [C row:@"Width"          key:@"screenWidth"],
         [C row:@"Height"         key:@"screenHeight"],
         [C row:@"Scale"          key:@"screenScale"],
@@ -4478,7 +4147,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Native Height"  key:@"nativeScreenHeight"],
     ]]];
 
-    [all addObject:[C section:@"Locale & Time" icon:@"🌏" rows:@[
+    [all addObject:[C section:@"Locale & Time" icon:@"ðŸŒ" rows:@[
         [C row:@"Locale ID"      key:@"localeIdentifier"],
         [C row:@"Country"        key:@"localeCountryCode"],
         [C row:@"Language"       key:@"localeLanguageCode"],
@@ -4486,7 +4155,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Timezone"       key:@"timezoneName"],
     ]]];
 
-    [all addObject:[C section:@"Disk & Memory" icon:@"💾" rows:@[
+    [all addObject:[C section:@"Disk & Memory" icon:@"ðŸ’¾" rows:@[
         [C row:@"Total Disk"     key:@"TotalDiskCapacity"],
         [C row:@"Free Disk"      key:@"TotalSystemAvailable"],
         [C row:@"RAM"            key:@"physicalMemory"],
@@ -4494,12 +4163,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"hw.machine"     key:@"hw_machine"],
     ]]];
 
-    [all addObject:[C section:@"Advertising / Tracking" icon:@"📢" rows:@[
+    [all addObject:[C section:@"Advertising / Tracking" icon:@"ðŸ“¢" rows:@[
         [C row:@"IDFA"           key:@"advertisingIdentifier"],
         [C row:@"Tracking Auth"  key:@"trackingAuthorizationStatus"],
     ]]];
 
-    [all addObject:[C section:@"GPS Location (PHẢI khớp Proxy/VPN)" icon:@"📍" rows:@[
+    [all addObject:[C section:@"GPS Location (PHáº¢I khá»›p Proxy/VPN)" icon:@"ðŸ“" rows:@[
         [C row:@"Geo Source"     key:@"_ci_geo_source"],
         [C row:@"Last Reset IP"  key:@"lastResetIP"],
         [C row:@"Country"        key:@"localeCountryCode"],
@@ -4511,7 +4180,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Enabled"        key:@"locationEnabled"],
     ]]];
 
-    [all addObject:[C section:@"Web / GPU Fingerprint" icon:@"🌐" rows:@[
+    [all addObject:[C section:@"Web / GPU Fingerprint" icon:@"ðŸŒ" rows:@[
         [C row:@"User-Agent"     key:@"zalo_fakeWebViewUA"],
         [C row:@"GL Vendor"      key:@"web_glVendor"],
         [C row:@"GL Renderer"    key:@"web_glRenderer"],
@@ -4520,19 +4189,19 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [C row:@"Timing Offset"  key:@"zalo_timingOffset"],
     ]]];
 
-    [all addObject:[C section:@"Battery" icon:@"🔋" rows:@[
+    [all addObject:[C section:@"Battery" icon:@"ðŸ”‹" rows:@[
         [C row:@"Battery Level"    key:@"batteryLevel"],
         [C row:@"Battery State"    key:@"batteryState"],
         [C row:@"Battery Capacity" key:@"BatteryCurrentCapacity"],
         [C row:@"Is Charging"      key:@"BatteryIsCharging"],
     ]]];
 
-    [all addObject:[C section:@"Push Tokens (anti-correlation)" icon:@"🔔" rows:@[
+    [all addObject:[C section:@"Push Tokens (anti-correlation)" icon:@"ðŸ””" rows:@[
         [C row:@"APNS Token Spoof"  key:@"apnsTokenSpoof"],
         [C rowWithLabel:@"VoIP Token Spoof" value:[C voipTokenPreview]],
     ]]];
 
-    [all addObject:[C section:@"Anti-Fraud Layers" icon:@"🛡️" rows:@[
+    [all addObject:[C section:@"Anti-Fraud Layers" icon:@"ðŸ›¡ï¸" rows:@[
         [C row:@"Hide Jailbreak" key:@"hideJailbreak"],
         [C row:@"Keychain Reset" key:@"keychainReset"],
         [C row:@"Clear Pasteboard" key:@"clearPasteboard"],
@@ -4550,7 +4219,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Thông tin máy fake";
+    self.title = @"ThÃ´ng tin mÃ¡y fake";
     self.view.backgroundColor = [CITheme bg];
 
     [self buildSections];
@@ -4563,7 +4232,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 style:UIBarButtonItemStylePlain target:self action:@selector(copyAll)];
     self.navigationItem.rightBarButtonItem = copyBtn;
 
-    // Summary header — green/red badge.
+    // Summary header â€” green/red badge.
     CGFloat W = self.view.bounds.size.width;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 80)];
     header.backgroundColor = [CITheme bg];
@@ -4578,7 +4247,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [header addSubview:card];
 
     UILabel *icon = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, 36, 56)];
-    icon.text = allOk ? @"✓" : @"⚠";
+    icon.text = allOk ? @"âœ“" : @"âš ";
     icon.textColor = allOk ? [CITheme green] : [CITheme orange];
     icon.font = [UIFont systemFontOfSize:24 weight:UIFontWeightBold];
     icon.textAlignment = NSTextAlignmentCenter;
@@ -4586,7 +4255,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     UILabel *line = [[UILabel alloc] initWithFrame:CGRectMake(56, 0, card.bounds.size.width - 64, 56)];
     line.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    line.text = [NSString stringWithFormat:@"Đã fake %ld / %ld trường",
+    line.text = [NSString stringWithFormat:@"ÄÃ£ fake %ld / %ld trÆ°á»ng",
                  (long)_okCount, (long)_totalCount];
     line.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     line.textColor = [CITheme text];
@@ -4604,8 +4273,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 // Cell layout in cellForRow uses tv.bounds.size.width to position the
 // trailing value label. On the FIRST appearance the table's bounds are
-// still 0×0 (set later by autoresize), so cells render with the value
-// label clipped — only swiping forces a re-dequeue with the correct
+// still 0Ã—0 (set later by autoresize), so cells render with the value
+// label clipped â€” only swiping forces a re-dequeue with the correct
 // width. Force a reloadData once the table reaches its real width so
 // every cell is rebuilt correctly without user interaction.
 - (void)viewDidLayoutSubviews {
@@ -4621,17 +4290,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (void)copyAll {
     NSMutableString *out = [NSMutableString string];
-    [out appendFormat:@"=== Thông tin máy fake (%ld/%ld) ===\n\n",
+    [out appendFormat:@"=== ThÃ´ng tin mÃ¡y fake (%ld/%ld) ===\n\n",
         (long)_okCount, (long)_totalCount];
     for (CIFakeReportSection *s in _sections) {
         [out appendFormat:@"%@ %@\n", s.icon, s.title];
         for (CIFakeReportRow *r in s.rows) {
-            [out appendFormat:@"  %@ %-22s %@\n", (r.ok ? @"✓" : @"✕"), r.label.UTF8String, r.value];
+            [out appendFormat:@"  %@ %-22s %@\n", (r.ok ? @"âœ“" : @"âœ•"), r.label.UTF8String, r.value];
         }
         [out appendString:@"\n"];
     }
     [UIPasteboard generalPasteboard].string = out;
-    UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil message:@"Đã copy" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil message:@"ÄÃ£ copy" preferredStyle:UIAlertControllerStyleAlert];
     [self presentViewController:toast animated:YES completion:^{
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [toast dismissViewControllerAnimated:YES completion:nil];
@@ -4684,7 +4353,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [c.contentView addSubview:card];
 
     UILabel *glyph = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, 24, 48)];
-    glyph.text = r.ok ? @"✓" : @"✕";
+    glyph.text = r.ok ? @"âœ“" : @"âœ•";
     glyph.textColor = accent;
     glyph.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
     glyph.textAlignment = NSTextAlignmentCenter;
@@ -4713,7 +4382,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 
 // ============================================================
-// HOME VIEW CONTROLLER (matches Xóa Info layout)
+// HOME VIEW CONTROLLER (matches XÃ³a Info layout)
 // ============================================================
 @interface CIHomeViewController : UIViewController <UITextFieldDelegate>
 @end
@@ -4840,7 +4509,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     profTitle.textColor = [CITheme text];
     [profCard addSubview:profTitle];
 
-    // Field labels — instance refs so viewWillAppear can refresh them.
+    // Field labels â€” instance refs so viewWillAppear can refresh them.
     _profileLabels = [NSMutableDictionary dictionary];
     NSArray *keys = @[@"Model", @"iOS", @"Color", @"Storage", @"Region",
                       @"Locale", @"Timezone", @"Carrier"];
@@ -4872,7 +4541,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     UIButton *rrsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     rrsBtn.frame = CGRectMake(0, 0, cardW/2, 56);
-    [rrsBtn setTitle:@"Quản lý RRS" forState:UIControlStateNormal];
+    [rrsBtn setTitle:@"Quáº£n lÃ½ RRS" forState:UIControlStateNormal];
     [rrsBtn setTitleColor:[CITheme orange] forState:UIControlStateNormal];
     rrsBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
     [rrsBtn addTarget:self action:@selector(openRRS) forControlEvents:UIControlEventTouchUpInside];
@@ -4893,7 +4562,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     y += 72;
 
     // ---- VPN Sync + Check Fingerprint card (v2.4.54) ----
-    // Sync GPS+TZ+country với VPN exit IP, rồi mở browserleaks để verify.
+    // Sync GPS+TZ+country vá»›i VPN exit IP, rá»“i má»Ÿ browserleaks Ä‘á»ƒ verify.
     UIView *syncCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
     [sv addSubview:syncCard];
     UIButton *syncBtn = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -4909,10 +4578,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [syncBtn addSubview:iv];
     }
     UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW/2-60, 22)];
-    st.text = @"Sync GPS với VPN"; st.font = [UIFont boldSystemFontOfSize:14]; st.textColor = [CITheme text];
+    st.text = @"Sync GPS vá»›i VPN"; st.font = [UIFont boldSystemFontOfSize:14]; st.textColor = [CITheme text];
     [syncBtn addSubview:st];
     UILabel *ss = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW/2-60, 20)];
-    ss.text = @"ipinfo.io → coord/TZ"; ss.font = [UIFont systemFontOfSize:11]; ss.textColor = [CITheme dim];
+    ss.text = @"ipinfo.io â†’ coord/TZ"; ss.font = [UIFont systemFontOfSize:11]; ss.textColor = [CITheme dim];
     [syncBtn addSubview:ss];
 
     UIView *divSync = [[UIView alloc] initWithFrame:CGRectMake(cardW/2, 12, 0.5, 40)];
@@ -4940,9 +4609,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     y += 80;
 
-    // v2.5.31: 🎲 Random VN City NOW button — single tap to randomize coords
-    // to a different VN city (Hà Nội ↔ Sài Gòn ↔ Đà Nẵng ↔ Hải Phòng ↔
-    // Cần Thơ ↔ Nha Trang ↔ Huế etc.) without touching proxy state.
+    // v2.5.31: ðŸŽ² Random VN City NOW button â€” single tap to randomize coords
+    // to a different VN city (HÃ  Ná»™i â†” SÃ i GÃ²n â†” ÄÃ  Náºµng â†” Háº£i PhÃ²ng â†”
+    // Cáº§n ThÆ¡ â†” Nha Trang â†” Huáº¿ etc.) without touching proxy state.
     UIView *randCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
     [sv addSubview:randCard];
     UIButton *randBtn = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -4958,10 +4627,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [randBtn addSubview:iv3];
     }
     UILabel *rt = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW-60, 22)];
-    rt.text = @"🎲 Random VN City NOW"; rt.font = [UIFont boldSystemFontOfSize:14]; rt.textColor = [CITheme text];
+    rt.text = @"ðŸŽ² Random VN City NOW"; rt.font = [UIFont boldSystemFontOfSize:14]; rt.textColor = [CITheme text];
     [randBtn addSubview:rt];
     UILabel *rs = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW-60, 20)];
-    rs.text = @"Maps/Weather → random VN city"; rs.font = [UIFont systemFontOfSize:11]; rs.textColor = [CITheme dim];
+    rs.text = @"Maps/Weather â†’ random VN city"; rs.font = [UIFont systemFontOfSize:11]; rs.textColor = [CITheme dim];
     [randBtn addSubview:rs];
 
     y += 80;
@@ -5005,7 +4674,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     sv.contentSize = CGSizeMake(W, y);
 
-    // hidden field — keep for compatibility with existing action methods
+    // hidden field â€” keep for compatibility with existing action methods
     // that read [CIConfigManager rrsNote]; surfaced inside RRS list now.
     _noteField = [[UITextField alloc] init];
     _noteField.delegate = self;
@@ -5044,8 +4713,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (NSString *)_humanModelName:(NSString *)machine {
     // Per-identifier mapping table (source: Apple model IDs). Earlier
-    // prefix-based shortcut was wrong — e.g. iPhone10,3/10,6 is iPhone X,
-    // not iPhone 8 — so map every specific identifier we know about.
+    // prefix-based shortcut was wrong â€” e.g. iPhone10,3/10,6 is iPhone X,
+    // not iPhone 8 â€” so map every specific identifier we know about.
     static NSDictionary<NSString *, NSString *> *table = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -5083,7 +4752,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             @"iPhone17,1": @"iPhone 16 Pro", @"iPhone17,2": @"iPhone 16 Pro Max",
             @"iPhone17,3": @"iPhone 16",     @"iPhone17,4": @"iPhone 16 Plus",
             @"iPhone17,5": @"iPhone 16e",
-            // iPad (selected — common in test fleets)
+            // iPad (selected â€” common in test fleets)
             @"iPad2,1": @"iPad 2",           @"iPad2,2": @"iPad 2",           @"iPad2,3": @"iPad 2",           @"iPad2,4": @"iPad 2",
             @"iPad2,5": @"iPad mini",        @"iPad2,6": @"iPad mini",        @"iPad2,7": @"iPad mini",
             @"iPad3,1": @"iPad (3rd gen)",   @"iPad3,2": @"iPad (3rd gen)",   @"iPad3,3": @"iPad (3rd gen)",
@@ -5133,7 +4802,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     });
     NSString *mapped = table[machine];
     if (mapped) return mapped;
-    // Unknown identifier — return raw so the user sees something accurate.
+    // Unknown identifier â€” return raw so the user sees something accurate.
     return machine;
 }
 
@@ -5143,7 +4812,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (name.length && model.length) return [NSString stringWithFormat:@"%@ (%@)", name, model];
     if (name.length) return name;
     if (model.length) return model;
-    return @"—";
+    return @"â€”";
 }
 
 - (NSString *)_fakeIOSText:(CIConfigManager *)cm {
@@ -5151,7 +4820,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *build = [cm stringForKey:@"BuildVersion"];
     if (ver.length && build.length) return [NSString stringWithFormat:@"%@ (%@)", ver, build];
     if (ver.length) return ver;
-    return @"—";
+    return @"â€”";
 }
 
 - (NSString *)_fakeStorageText:(CIConfigManager *)cm {
@@ -5161,7 +4830,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         if (bytes >= 1024LL*1024*1024) return [NSString stringWithFormat:@"%lld GB", bytes/(1024LL*1024*1024)];
     }
     if ([v isKindOfClass:[NSString class]]) return (NSString *)v;
-    return @"—";
+    return @"â€”";
 }
 
 - (NSString *)_fakeCarrierText:(CIConfigManager *)cm {
@@ -5180,7 +4849,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             : [NSString stringWithFormat:@"%@ / %@", mcc, iso];
     }
     if (name.length) return name;
-    return @"—";
+    return @"â€”";
 }
 
 - (UIImage *)menuIcon {
@@ -5230,8 +4899,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)refreshSelectionLabels {
     NSUInteger r = [[CIConfigManager shared] targetBundles].count;
     NSUInteger s = [[CIConfigManager shared] rrsBundles].count;
-    _selectedResetLabel.text = r ? [NSString stringWithFormat:@"đã chọn %lu app", (unsigned long)r] : @"(chưa chọn)";
-    _selectedRrsLabel.text   = s ? [NSString stringWithFormat:@"đã chọn %lu app", (unsigned long)s] : @"";
+    _selectedResetLabel.text = r ? [NSString stringWithFormat:@"Ä‘Ã£ chá»n %lu app", (unsigned long)r] : @"(chÆ°a chá»n)";
+    _selectedRrsLabel.text   = s ? [NSString stringWithFormat:@"Ä‘Ã£ chá»n %lu app", (unsigned long)s] : @"";
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -5242,18 +4911,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 // Re-reads CIConfigManager and updates the Current Fake Profile labels.
 // Called from viewDidLoad and viewWillAppear so the Home tab always
-// reflects whatever the user just set in the Settings tab — no need
+// reflects whatever the user just set in the Settings tab â€” no need
 // to exit and re-enter the app.
 - (void)refreshFakeProfile {
     if (!_profileLabels) return;
     CIConfigManager *cm = [CIConfigManager shared];
     _profileLabels[@"Model"]   .text = [self _fakeModelText:cm];
     _profileLabels[@"iOS"]     .text = [self _fakeIOSText:cm];
-    _profileLabels[@"Color"]   .text = [cm stringForKey:@"DeviceColor"]      ?: @"—";
+    _profileLabels[@"Color"]   .text = [cm stringForKey:@"DeviceColor"]      ?: @"â€”";
     _profileLabels[@"Storage"] .text = [self _fakeStorageText:cm];
-    _profileLabels[@"Region"]  .text = [cm stringForKey:@"RegionInfo"]       ?: @"—";
-    _profileLabels[@"Locale"]  .text = [cm stringForKey:@"localeIdentifier"] ?: @"—";
-    _profileLabels[@"Timezone"].text = [cm stringForKey:@"timezoneName"]     ?: @"—";
+    _profileLabels[@"Region"]  .text = [cm stringForKey:@"RegionInfo"]       ?: @"â€”";
+    _profileLabels[@"Locale"]  .text = [cm stringForKey:@"localeIdentifier"] ?: @"â€”";
+    _profileLabels[@"Timezone"].text = [cm stringForKey:@"timezoneName"]     ?: @"â€”";
     _profileLabels[@"Carrier"] .text = [self _fakeCarrierText:cm];
 }
 
@@ -5268,7 +4937,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self.view endEditing:YES];
 }
 
-// "Nhập" / Return key on the keyboard also dismisses.
+// "Nháº­p" / Return key on the keyboard also dismisses.
 - (BOOL)textFieldShouldReturn:(UITextField *)tf {
     [tf resignFirstResponder];
     return YES;
@@ -5315,7 +4984,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // then open Safari. Otherwise user with VN VPN + Hanoi-profile coord
 // gets browserleaks showing Hanoi GPS while VPN says somewhere else.
 - (void)openFingerprintCheck {
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Đang đồng bộ vị trí với VPN..."
+    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Äang Ä‘á»“ng bá»™ vá»‹ trÃ­ vá»›i VPN..."
                                                                   message:@"\n"
                                                            preferredStyle:UIAlertControllerStyleAlert];
     [self presentViewController:hud animated:YES completion:nil];
@@ -5329,13 +4998,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 ? [NSString stringWithFormat:@"\nCoord: %.4f, %.4f\nTZ: %@",
                    [flat doubleValue], [flng doubleValue], ftz ?: @"?"]
                 : @"";
-            NSString *title = ok ? @"Đã sync xong" : @"Sync lỗi";
+            NSString *title = ok ? @"ÄÃ£ sync xong" : @"Sync lá»—i";
             NSString *info;
             if (ok) {
-                info = [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nĐang khởi động lại Safari để load coord mới...",
+                info = [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nÄang khá»Ÿi Ä‘á»™ng láº¡i Safari Ä‘á»ƒ load coord má»›i...",
                         city ?: @"?", country ?: @"?", coordInfo];
             } else {
-                info = [NSString stringWithFormat:@"Lỗi: %@%@\n\nVẫn mở browser check.",
+                info = [NSString stringWithFormat:@"Lá»—i: %@%@\n\nVáº«n má»Ÿ browser check.",
                         err ?: @"unknown", coordInfo];
             }
             UIAlertController *r = [UIAlertController alertControllerWithTitle:title message:info
@@ -5363,7 +5032,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }];
 }
 
-// v2.5.31: random VN city — instant action, no proxy involvement.
+// v2.5.31: random VN city â€” instant action, no proxy involvement.
 // Picks one of 10 major VN cities + small intra-city jitter (~3km).
 // Updates lat/lng/altitude/timezone/country in the config + reloads
 // running tweak hooks via Darwin notification so Maps/Weather see the
@@ -5373,16 +5042,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     if (!cities) {
         cities = @[
             // name, lat, lng, altitude(m approx)
-            @[@"Hà Nội",          @21.028511, @105.804817, @18.0],
-            @[@"TP. Hồ Chí Minh", @10.762622, @106.660172, @19.0],
-            @[@"Đà Nẵng",         @16.054407, @108.202164, @7.0],
-            @[@"Hải Phòng",       @20.844912, @106.688084, @5.0],
-            @[@"Cần Thơ",         @10.045162, @105.746857, @4.0],
+            @[@"HÃ  Ná»™i",          @21.028511, @105.804817, @18.0],
+            @[@"TP. Há»“ ChÃ­ Minh", @10.762622, @106.660172, @19.0],
+            @[@"ÄÃ  Náºµng",         @16.054407, @108.202164, @7.0],
+            @[@"Háº£i PhÃ²ng",       @20.844912, @106.688084, @5.0],
+            @[@"Cáº§n ThÆ¡",         @10.045162, @105.746857, @4.0],
             @[@"Nha Trang",       @12.238791, @109.196749, @8.0],
-            @[@"Huế",             @16.463713, @107.590866, @10.0],
-            @[@"Vũng Tàu",        @10.346110, @107.084580, @3.0],
-            @[@"Đà Lạt",          @11.940419, @108.458313, @1500.0],
-            @[@"Buôn Ma Thuột",   @12.666667, @108.050003, @536.0],
+            @[@"Huáº¿",             @16.463713, @107.590866, @10.0],
+            @[@"VÅ©ng TÃ u",        @10.346110, @107.084580, @3.0],
+            @[@"ÄÃ  Láº¡t",          @11.940419, @108.458313, @1500.0],
+            @[@"BuÃ´n Ma Thuá»™t",   @12.666667, @108.050003, @536.0],
         ];
     }
     NSArray *pick = cities[arc4random_uniform((uint32_t)cities.count)];
@@ -5404,17 +5073,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [cm save];  // save calls notifyReload internally
 
     UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:@"GPS đã đổi"
-                         message:[NSString stringWithFormat:@"Vị trí mới: %@\nCoord: %.4f, %.4f\nMở Maps/Weather sẽ thấy %@",
+        alertControllerWithTitle:@"GPS Ä‘Ã£ Ä‘á»•i"
+                         message:[NSString stringWithFormat:@"Vá»‹ trÃ­ má»›i: %@\nCoord: %.4f, %.4f\nMá»Ÿ Maps/Weather sáº½ tháº¥y %@",
                                     pick[0], lat, lng, pick[0]]
                   preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
 
-// v2.4.54: explicit Sync GPS button — same logic without opening browser.
+// v2.4.54: explicit Sync GPS button â€” same logic without opening browser.
 - (void)syncGPSWithVPN {
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Đang sync GPS với VPN..."
+    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Äang sync GPS vá»›i VPN..."
                                                                   message:@"\n"
                                                            preferredStyle:UIAlertControllerStyleAlert];
     [self presentViewController:hud animated:YES completion:nil];
@@ -5427,9 +5096,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                 ? [NSString stringWithFormat:@"\nCoord: %.4f, %.4f\nTZ: %@",
                    [flat doubleValue], [flng doubleValue], ftz ?: @"?"]
                 : @"";
-            NSString *t = ok ? @"Đồng bộ thành công" : @"Lỗi sync";
+            NSString *t = ok ? @"Äá»“ng bá»™ thÃ nh cÃ´ng" : @"Lá»—i sync";
             NSString *m = ok
-                ? [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nĐã restart Safari + WebContent — mở lại Safari sẽ thấy coord mới.",
+                ? [NSString stringWithFormat:@"VPN exit: %@, %@%@\n\nÄÃ£ restart Safari + WebContent â€” má»Ÿ láº¡i Safari sáº½ tháº¥y coord má»›i.",
                    city ?: @"?", country ?: @"?", coordInfo]
                 : (err ?: @"unknown");
             UIAlertController *r = [UIAlertController alertControllerWithTitle:t message:m
@@ -5448,7 +5117,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     }];
 }
 
-// View tags inside the progress HUD — fetched by updateHUD:step:title:subtitle:
+// View tags inside the progress HUD â€” fetched by updateHUD:step:title:subtitle:
 // to mutate the right subview without traversing every time.
 #define CI_HUD_DIM        0xC1DCD
 #define CI_HUD_TITLE      0xC1DCE
@@ -5464,26 +5133,26 @@ static NSString *const kCIHudRingFillKey  = @"ciFillLayer";
 static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
 - (UIView *)showHUDWithTitle:(NSString *)title {
-    // Circular-ring progress HUD. Layout (300×280):
-    //   ┌────────────────────────────────┐
-    //   │            ╭───╮                │
-    //   │           ╱     ╲               │   outer track ring (faint)
-    //   │          │  1/5  │              │   inner step counter
-    //   │           ╲     ╱               │   orange fill ring grows w/step
-    //   │            ╰───╯                │   rotating gradient ring overlay
-    //   │                                │
-    //   │      Title (semibold)           │
-    //   │      Subtitle text              │
-    //   └────────────────────────────────┘
+    // Circular-ring progress HUD. Layout (300Ã—280):
+    //   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+    //   â”‚            â•­â”€â”€â”€â•®                â”‚
+    //   â”‚           â•±     â•²               â”‚   outer track ring (faint)
+    //   â”‚          â”‚  1/5  â”‚              â”‚   inner step counter
+    //   â”‚           â•²     â•±               â”‚   orange fill ring grows w/step
+    //   â”‚            â•°â”€â”€â”€â•¯                â”‚   rotating gradient ring overlay
+    //   â”‚                                â”‚
+    //   â”‚      Title (semibold)           â”‚
+    //   â”‚      Subtitle text              â”‚
+    //   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
     // Two CAShapeLayer rings:
-    //   trackLayer — full-circle stroke (faint colour) showing the path
-    //   fillLayer  — same circle, strokeEnd animates 0 → step/total
+    //   trackLayer â€” full-circle stroke (faint colour) showing the path
+    //   fillLayer  â€” same circle, strokeEnd animates 0 â†’ step/total
     // A third layer (spinLayer) is a thin rotating arc on top of the fill
     // for a constant "alive" indicator while the step is sleeping for I/O.
     // v2.4.46: prefer the app's key window so the HUD shows even when
     // restoreEntry: is invoked from a different tab (RRS Backups tab
-    // calls Home VC's restoreEntry, but Home's view isn't loaded yet →
-    // self.view.window was nil → HUD never visible).
+    // calls Home VC's restoreEntry, but Home's view isn't loaded yet â†’
+    // self.view.window was nil â†’ HUD never visible).
     UIView *root = self.view.window;
     if (!root) {
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -5513,7 +5182,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     card.tag = CI_HUD_CARD;
     [dim addSubview:card];
 
-    // Ring host — a square view in the top half of the card. The ring layers
+    // Ring host â€” a square view in the top half of the card. The ring layers
     // are sized to its bounds; we keep them on the host so layout/sizing is
     // self-contained and the rest of the card is regular UIKit.
     CGFloat ringSize = 130;
@@ -5554,7 +5223,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     [ringHost.layer addSublayer:fill];
     [ringHost.layer setValue:fill forKey:kCIHudRingFillKey];
 
-    // Constant rotating arc — shorter stroke than `fill`, rides on top so
+    // Constant rotating arc â€” shorter stroke than `fill`, rides on top so
     // the user sees motion even when strokeEnd hasn't changed.
     CAShapeLayer *spin = [CAShapeLayer layer];
     spin.path = circle.CGPath;
@@ -5580,16 +5249,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     stepLbl.textAlignment = NSTextAlignmentCenter;
     stepLbl.textColor = [CITheme text];
     stepLbl.font = [UIFont systemFontOfSize:30 weight:UIFontWeightSemibold];
-    stepLbl.text = @"…";
+    stepLbl.text = @"â€¦";
     stepLbl.tag = CI_HUD_STEP_LBL;
     [ringHost addSubview:stepLbl];
 
-    // Title + subtitle — below the ring.
+    // Title + subtitle â€” below the ring.
     UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 178, cardW - 40, 26)];
     titleLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     titleLbl.textColor = [CITheme text];
     titleLbl.textAlignment = NSTextAlignmentCenter;
-    titleLbl.text = title ?: @"Đang xử lý";
+    titleLbl.text = title ?: @"Äang xá»­ lÃ½";
     titleLbl.numberOfLines = 1;
     titleLbl.adjustsFontSizeToFitWidth = YES;
     titleLbl.minimumScaleFactor = 0.8;
@@ -5601,7 +5270,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     subLbl.textColor = [CITheme dim];
     subLbl.textAlignment = NSTextAlignmentCenter;
     subLbl.numberOfLines = 2;
-    subLbl.text = @"Khởi tạo…";
+    subLbl.text = @"Khá»Ÿi táº¡oâ€¦";
     subLbl.tag = CI_HUD_SUB;
     [card addSubview:subLbl];
 
@@ -5642,8 +5311,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     });
 }
 
-// Back-compat for callers that pass a single status string ("[2/5] Killing…").
-// Parses the "[N/M] Title…" prefix when present so the new layout still works
+// Back-compat for callers that pass a single status string ("[2/5] Killingâ€¦").
+// Parses the "[N/M] Titleâ€¦" prefix when present so the new layout still works
 // with old call sites; falls back to dropping the whole string into the title.
 - (void)updateHUDTitle:(UIView *)hud title:(NSString *)title {
     if (title.length == 0) return;
@@ -5660,7 +5329,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 
 - (void)finishHUD:(UIView *)hud success:(BOOL)success message:(NSString *)message {
-    // Stop the rotation, fill the ring 100%, fade in a ✓/✕ glyph in the
+    // Stop the rotation, fill the ring 100%, fade in a âœ“/âœ• glyph in the
     // centre. Caller still calls dismissHUD: separately ~0.7s later.
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *card = [hud viewWithTag:CI_HUD_CARD];
@@ -5685,11 +5354,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [fillLayer addAnimation:anim forKey:@"finish"];
         }
         if (stepLbl) {
-            stepLbl.text = success ? @"✓" : @"✕";
+            stepLbl.text = success ? @"âœ“" : @"âœ•";
             stepLbl.textColor = success ? [CITheme green] : [CITheme red];
             stepLbl.font = [UIFont systemFontOfSize:48 weight:UIFontWeightBold];
         }
-        if (titleLbl) titleLbl.text = success ? @"Hoàn tất" : @"Có lỗi";
+        if (titleLbl) titleLbl.text = success ? @"HoÃ n táº¥t" : @"CÃ³ lá»—i";
         if (subLbl)   subLbl.text   = message ?: @"";
     });
 }
@@ -5705,7 +5374,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableString *out = [NSMutableString string];
 
-    // 1. Shared prefs (app → tweak handoff file)
+    // 1. Shared prefs (app â†’ tweak handoff file)
     NSString *sharedPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
     BOOL sharedExists = [fm fileExistsAtPath:sharedPath];
     unsigned long long sharedSize = 0;
@@ -5717,7 +5386,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         sharedKeys = d.count;
     }
     [out appendFormat:@"%@ Shared prefs: %llu bytes, %lu keys\n",
-        (sharedExists && sharedSize > 1024) ? @"✅" : @"❌",
+        (sharedExists && sharedSize > 1024) ? @"âœ…" : @"âŒ",
         sharedSize, (unsigned long)sharedKeys];
 
     // 2. Dylib + filter plist in the substrate dir
@@ -5729,7 +5398,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         dylibSize = [[fm attributesOfItemAtPath:dylibPath error:nil][NSFileSize] unsignedLongLongValue];
     }
     [out appendFormat:@"%@ Dylib: %llu bytes\n",
-        (dylibExists && dylibSize > 50000) ? @"✅" : @"❌", dylibSize];
+        (dylibExists && dylibSize > 50000) ? @"âœ…" : @"âŒ", dylibSize];
 
     BOOL filterExists = [fm fileExistsAtPath:filterPath];
     NSDictionary *filter = [NSDictionary dictionaryWithContentsOfFile:filterPath];
@@ -5737,11 +5406,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSArray *execs   = [filter[@"Filter"][@"Executables"] isKindOfClass:[NSArray class]] ? filter[@"Filter"][@"Executables"] : @[];
     BOOL hasAida = [bundles containsObject:@"com.finalwire.aida64"];
     [out appendFormat:@"%@ Filter plist: %lu bundles, %lu execs, aida64=%@\n",
-        (filterExists && hasAida) ? @"✅" : @"❌",
+        (filterExists && hasAida) ? @"âœ…" : @"âŒ",
         (unsigned long)bundles.count, (unsigned long)execs.count,
         hasAida ? @"YES" : @"NO"];
 
-    // 3. Injection markers — the actual proof substrate loaded our dylib
+    // 3. Injection markers â€” the actual proof substrate loaded our dylib
     NSString *markerDir = @"/var/mobile/Library/Caches/ChangeInfoIos";
     NSArray *items = [fm contentsOfDirectoryAtPath:markerDir error:nil];
     NSMutableArray *markers = [NSMutableArray array];
@@ -5762,13 +5431,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     BOOL aidaInjected = [markers containsObject:@"com.finalwire.aida64"];
     [out appendFormat:@"\n%@ Main tweak inject: %lu app(s)\n",
-        markers.count > 0 ? @"✅" : @"❌", (unsigned long)markers.count];
-    for (NSString *bid in markers) [out appendFormat:@"  • %@\n", bid];
+        markers.count > 0 ? @"âœ…" : @"âŒ", (unsigned long)markers.count];
+    for (NSString *bid in markers) [out appendFormat:@"  â€¢ %@\n", bid];
     [out appendFormat:@"%@ HelloInject probe: %lu app(s)\n",
-        helloMarkers.count > 0 ? @"✅" : @"❌", (unsigned long)helloMarkers.count];
-    for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
+        helloMarkers.count > 0 ? @"âœ…" : @"âŒ", (unsigned long)helloMarkers.count];
+    for (NSString *bid in helloMarkers) [out appendFormat:@"  â€¢ %@\n", bid];
 
-    // 4. Loader presence — confirms ellekit/substrate is even installed
+    // 4. Loader presence â€” confirms ellekit/substrate is even installed
     NSArray *loaderPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
                              @"/var/jb/usr/lib/TweakInject.dylib",
                              @"/var/jb/usr/lib/libsubstrate.dylib"];
@@ -5777,31 +5446,31 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if ([fm fileExistsAtPath:p]) [loaderFound addObject:[p lastPathComponent]];
     }
     [out appendFormat:@"\n%@ Loader: %@\n",
-        loaderFound.count > 0 ? @"✅" : @"❌",
+        loaderFound.count > 0 ? @"âœ…" : @"âŒ",
         loaderFound.count > 0 ? [loaderFound componentsJoinedByString:@", "] : @"(none found)"];
 
-    // 5. Diagnosis — pick the single most actionable step
-    [out appendString:@"\n=== CHẨN ĐOÁN ===\n"];
+    // 5. Diagnosis â€” pick the single most actionable step
+    [out appendString:@"\n=== CHáº¨N ÄOÃN ===\n"];
     if (!sharedExists || sharedSize < 1024) {
-        [out appendString:@"⚠ Shared prefs chưa ghi — bấm CHANGE trước rồi test lại.\n"];
+        [out appendString:@"âš  Shared prefs chÆ°a ghi â€” báº¥m CHANGE trÆ°á»›c rá»“i test láº¡i.\n"];
     } else if (!dylibExists || !filterExists) {
-        [out appendString:@"⚠ Thiếu dylib hoặc filter plist — cài lại .deb mới nhất.\n"];
+        [out appendString:@"âš  Thiáº¿u dylib hoáº·c filter plist â€” cÃ i láº¡i .deb má»›i nháº¥t.\n"];
     } else if (!hasAida) {
-        [out appendString:@"⚠ Filter plist không có com.finalwire.aida64 — .deb cũ, cài bản mới.\n"];
+        [out appendString:@"âš  Filter plist khÃ´ng cÃ³ com.finalwire.aida64 â€” .deb cÅ©, cÃ i báº£n má»›i.\n"];
     } else if (loaderFound.count == 0) {
-        [out appendString:@"⚠ KHÔNG tìm thấy ellekit/substrate — mở Sileo cài lại loader.\n"];
+        [out appendString:@"âš  KHÃ”NG tÃ¬m tháº¥y ellekit/substrate â€” má»Ÿ Sileo cÃ i láº¡i loader.\n"];
     } else if (markers.count == 0 && helloMarkers.count == 0) {
-        [out appendString:@"⚠ Loader có mặt nhưng không inject bất kỳ app nào.\n"
-                          @"  → Mở Safari rồi test lại; nếu vẫn trống → reboot máy.\n"
-                          @"  → Vẫn trống sau reboot → ellekit daemon lỗi, reinstall Dopamine.\n"];
+        [out appendString:@"âš  Loader cÃ³ máº·t nhÆ°ng khÃ´ng inject báº¥t ká»³ app nÃ o.\n"
+                          @"  â†’ Má»Ÿ Safari rá»“i test láº¡i; náº¿u váº«n trá»‘ng â†’ reboot mÃ¡y.\n"
+                          @"  â†’ Váº«n trá»‘ng sau reboot â†’ ellekit daemon lá»—i, reinstall Dopamine.\n"];
     } else if (markers.count == 0 && helloMarkers.count > 0) {
-        [out appendString:@"⚠ HelloInject load được nhưng ChangeInfoIos thì không.\n"
-                          @"  → Framework link của tweak chính có vấn đề, xem CI log.\n"];
+        [out appendString:@"âš  HelloInject load Ä‘Æ°á»£c nhÆ°ng ChangeInfoIos thÃ¬ khÃ´ng.\n"
+                          @"  â†’ Framework link cá»§a tweak chÃ­nh cÃ³ váº¥n Ä‘á», xem CI log.\n"];
     } else if (!aidaInjected) {
-        [out appendString:@"⚠ Tweak inject được app khác nhưng chưa vào AIDA64.\n"
-                          @"  → Mở AIDA64 (cold start, không qua App Switcher) rồi check lại.\n"];
+        [out appendString:@"âš  Tweak inject Ä‘Æ°á»£c app khÃ¡c nhÆ°ng chÆ°a vÃ o AIDA64.\n"
+                          @"  â†’ Má»Ÿ AIDA64 (cold start, khÃ´ng qua App Switcher) rá»“i check láº¡i.\n"];
     } else {
-        [out appendString:@"✅ AIDA64 đã inject. Nếu vẫn thấy máy gốc → key config chưa khớp.\n"];
+        [out appendString:@"âœ… AIDA64 Ä‘Ã£ inject. Náº¿u váº«n tháº¥y mÃ¡y gá»‘c â†’ key config chÆ°a khá»›p.\n"];
     }
 
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Debug Inject Check"
@@ -5815,7 +5484,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 
 // ============================================================
-// "Xem thông tin máy fake" — full hook status report
+// "Xem thÃ´ng tin mÃ¡y fake" â€” full hook status report
 // ============================================================
 // Replaces the old text-dump Debug Inject Check button. Presents a
 // modal table with every faked field grouped by hook layer; rows are
@@ -5839,9 +5508,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 - (void)performRRSBackup:(BOOL)backup {
     NSArray<NSString *> *resetBids = [[CIConfigManager shared] targetBundles];
     if (resetBids.count == 0) {
-        [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
+        [self alert:@"ChÆ°a chá»n app" msg:@"VÃ o má»¥c 1 Ä‘á»ƒ chá»n app cáº§n reset dá»¯ liá»‡u."]; return;
     }
-    // v2.7.1 — RRS backup: user-ticked rrsBundles + ALWAYS Safari + Maps +
+    // v2.7.1 â€” RRS backup: user-ticked rrsBundles + ALWAYS Safari + Maps +
     // Weather (matches the same kSystemAlwaysInclude as Change Device so
     // restore can replay browser cookies + Maps saved places + Weather
     // saved cities to land back on the original profile state).
@@ -5860,7 +5529,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     NSArray<NSString *> *rrsBids = backup ? [rrsBidsM copy] : nil;
     if (backup && rrsBids.count == 0) {
-        [self alert:@"Chưa chọn app lưu RRS" msg:@"Vào mục 2 để chọn app cần lưu retention."]; return;
+        [self alert:@"ChÆ°a chá»n app lÆ°u RRS" msg:@"VÃ o má»¥c 2 Ä‘á»ƒ chá»n app cáº§n lÆ°u retention."]; return;
     }
 
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
@@ -5874,18 +5543,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
 
     NSString *note = _noteField.text ?: @"";
-    NSString *title = backup ? @"Đang lưu RRS + Change dữ liệu..." : @"Bắt đầu change dữ liệu...";
+    NSString *title = backup ? @"Äang lÆ°u RRS + Change dá»¯ liá»‡u..." : @"Báº¯t Ä‘áº§u change dá»¯ liá»‡u...";
     UIView *hud = [self showHUDWithTitle:title];
 
-    // v2.7.1 — refined per user feedback "Safari/Maps/Weather phải fake
-    // mặc định không cần tích, còn lại phải tích". Two categories:
-    //   (A) kSystemAlwaysInclude — Safari / Maps / Weather. ALWAYS added,
+    // v2.7.1 â€” refined per user feedback "Safari/Maps/Weather pháº£i fake
+    // máº·c Ä‘á»‹nh khÃ´ng cáº§n tÃ­ch, cÃ²n láº¡i pháº£i tÃ­ch". Two categories:
+    //   (A) kSystemAlwaysInclude â€” Safari / Maps / Weather. ALWAYS added,
     //       no picker tick required, no UI row shown. They're tied to
     //       location + browser cache + WebKit data store which every
     //       Change Device must reset for the spoof to look real.
     //   (B) Everything else (Zalo / Facebook / TikTok / AIDA / Lirum /
-    //       banking / etc.) — ONLY if user ticked it. v2.6.x force-add
-    //       of AIDA64 / Lirum / DeviceDesign is fully gone — user must
+    //       banking / etc.) â€” ONLY if user ticked it. v2.6.x force-add
+    //       of AIDA64 / Lirum / DeviceDesign is fully gone â€” user must
     //       opt in by ticking.
     NSMutableArray<CIAppInfo *> *fullTargets = [targets mutableCopy];
     NSMutableSet<NSString *> *addedBids = [NSMutableSet setWithArray:[targets valueForKey:@"bundleID"]];
@@ -5954,11 +5623,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // i.e. AFTER ci_randomizeIdentities had overwritten config + the
         // container wipe had emptied every target's Documents/Library/etc.
         // The resulting tar contained the NEW (already-spoofed) config and
-        // EMPTY containers — restoring it never brought back the account.
+        // EMPTY containers â€” restoring it never brought back the account.
         if (backup) {
             [self updateHUD:hud step:1 total:totalSteps
-                      title:@"Backup môi trường hiện tại"
-                   subtitle:[NSString stringWithFormat:@"Lưu %lu app + config + DC tokens…",
+                      title:@"Backup mÃ´i trÆ°á»ng hiá»‡n táº¡i"
+                   subtitle:[NSString stringWithFormat:@"LÆ°u %lu app + config + DC tokensâ€¦",
                              (unsigned long)rrsBids.count]];
             [NSThread sleepForTimeInterval:1.2];
             [self createRRSForBundles:rrsBids note:note];
@@ -5968,8 +5637,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // Step 1: Generate new fake identities and persist to plist
         NSInteger stepIdx = backup ? 2 : 1;
         [self updateHUD:hud step:stepIdx total:totalSteps
-                  title:@"Tạo thông tin giả mới"
-               subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC mới…"];
+                  title:@"Táº¡o thÃ´ng tin giáº£ má»›i"
+               subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC má»›iâ€¦"];
         [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
         NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
@@ -5977,9 +5646,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // Step 2: Kill + wipe target app sandboxes.
         // Kill FIRST so file handles release and the app can't re-create files
         // mid-wipe. Do it via 3 mechanisms per app for maximum coverage:
-        //   1) killall -9 '<ExecName>' — the canonical path
-        //   2) pkill -9 -f '<bundleID>' — matches cmdline (catches ext processes)
-        //   3) pkill -9 -f '<bundle-path>' — in case exec name was spoofed
+        //   1) killall -9 '<ExecName>' â€” the canonical path
+        //   2) pkill -9 -f '<bundleID>' â€” matches cmdline (catches ext processes)
+        //   3) pkill -9 -f '<bundle-path>' â€” in case exec name was spoofed
         NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
                           @"Library/Cookies", @"Library/WebKit",
                           @"Library/Application Support", @"tmp"];
@@ -6011,7 +5680,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             // IMPORTANT: do NOT pkill -f <bundleID>. That string appears in
             // the cmdline of system services (backboardd, runningboardd,
-            // installd, containermanagerd, …) which all carry per-app state
+            // installd, containermanagerd, â€¦) which all carry per-app state
             // strings. Killing those caused the v2.4.0-a5256fe regression
             // where wiping com.apple.mobilesafari took down WebKit-related
             // daemons and AIDA64 wouldn't relaunch. Only the executable
@@ -6027,10 +5696,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
-            NSString *sub = [NSString stringWithFormat:@"%lu/%lu — %@",
+            NSString *sub = [NSString stringWithFormat:@"%lu/%lu â€” %@",
                 (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
             [self updateHUD:hud step:(backup ? 3 : 2) total:totalSteps
-                      title:@"Xoá dữ liệu app target"
+                      title:@"XoÃ¡ dá»¯ liá»‡u app target"
                    subtitle:sub];
             [NSThread sleepForTimeInterval:0.8];
             killApp(a);
@@ -6044,9 +5713,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             // v2.5.39: write marker inside Documents/ so iOS sandbox lets
             // the file land (host's writeToFile: to another app's container
-            // ROOT silently fails — observed live on Zalo 2026-05-23:
-            // marker missing → wipe re-fired every launch → keychain wipe
-            // every launch → session lost + lag). Use shell echo > to
+            // ROOT silently fails â€” observed live on Zalo 2026-05-23:
+            // marker missing â†’ wipe re-fired every launch â†’ keychain wipe
+            // every launch â†’ session lost + lag). Use shell echo > to
             // bypass any cross-container NSFileManager sandbox check.
             // Also keep writing the root path as a backward-compat fallback
             // so older tweak builds still see a marker.
@@ -6068,19 +5737,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
         [self updateHUD:hud step:(backup ? 4 : 3) total:totalSteps
-                  title:@"Xoá cache phát hiện + Safari"
-               subtitle:@"Safari history/cookies/WebKit + DeviceCheck/IDFA…"];
+                  title:@"XoÃ¡ cache phÃ¡t hiá»‡n + Safari"
+               subtitle:@"Safari history/cookies/WebKit + DeviceCheck/IDFAâ€¦"];
         [NSThread sleepForTimeInterval:1.5];
 
-        // Safari + WebKit complete wipe — cookies, history, cache, bookmarks,
+        // Safari + WebKit complete wipe â€” cookies, history, cache, bookmarks,
         // WebKit shared data store. Container wipe in Step 2 only handles
         // /var/mobile/Containers/Data/Application/<UUID>; the bulk of Safari's
         // state lives in /var/mobile/Library/Safari which is outside that.
         ci_wipeSafariDeep();
 
         // v2.5.36: Maps + Weather have system-wide caches outside the
-        // per-app container — route history, saved cities, "Frequent
-        // Locations" — that survive Step 2's container wipe.
+        // per-app container â€” route history, saved cities, "Frequent
+        // Locations" â€” that survive Step 2's container wipe.
         ci_wipeMapsWeatherDeep();
 
         // Cross-app residue: HTTPStorages cookies, App Group shared containers,
@@ -6089,7 +5758,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // identifiable as "the same device that used account X yesterday".
         ci_wipeCrossAppResidue(fullTargets);
 
-        // DC state — persistent DC token + AppAttest keyId per bundle. The
+        // DC state â€” persistent DC token + AppAttest keyId per bundle. The
         // tweak persists these so iOS app suspension + relaunch returns the
         // same token (otherwise dispatch_once re-rolls and Zalo's server sees
         // token drift on every relaunch). Reset Data must wipe them so the
@@ -6125,24 +5794,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // sbreload/launchctl first (rootless-jb friendly), then fall back
         // to killall SpringBoard which only works if elevated.
         //
-        // User can opt out via the "21. Bỏ qua respring sau Reset Data"
+        // User can opt out via the "21. Bá» qua respring sau Reset Data"
         // toggle in Fake Settings (config key skipRespringAfterReset).
         // When skipped: Step 5's kill sweep still ensures cold-start the
         // next time the user opens a target app, so the new fake config
-        // still takes effect — we just save the ~6s SpringBoard reload.
+        // still takes effect â€” we just save the ~6s SpringBoard reload.
         BOOL skipRespring = [[CIConfigManager shared] boolForKey:@"skipRespringAfterReset"];
         int respringRC = 0;
         BOOL respringOK = YES;
         if (skipRespring) {
             [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
-                      title:@"Bỏ qua Respring"
-                   subtitle:@"Target apps sẽ cold-start ở lần mở tiếp theo…"];
+                      title:@"Bá» qua Respring"
+                   subtitle:@"Target apps sáº½ cold-start á»Ÿ láº§n má»Ÿ tiáº¿p theoâ€¦"];
             [NSThread sleepForTimeInterval:0.6];
             NSLog(@"[ChangeInfoIos] Step 4 skipped (skipRespringAfterReset=YES)");
         } else {
             [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
                       title:@"Restart SpringBoard"
-                   subtitle:@"Reload tweak với config mới…"];
+                   subtitle:@"Reload tweak vá»›i config má»›iâ€¦"];
             [NSThread sleepForTimeInterval:1.5];
             const char *respringCmd =
                 "/var/jb/usr/bin/sbreload 2>/dev/null"
@@ -6163,23 +5832,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // more time so that when the user next opens the app icon, it does a
         // FRESH cold-start and the tweak %ctor runs again with the new config.
         [self updateHUD:hud step:(backup ? 6 : 5) total:totalSteps
-                  title:@"Dọn lần cuối"
-               subtitle:@"Đảm bảo lần mở tới là cold-start mới…"];
+                  title:@"Dá»n láº§n cuá»‘i"
+               subtitle:@"Äáº£m báº£o láº§n má»Ÿ tá»›i lÃ  cold-start má»›iâ€¦"];
         [NSThread sleepForTimeInterval:1.0];
         for (CIAppInfo *a in fullTargets) { killApp(a); }
         NSLog(@"[ChangeInfoIos] Step 5 done: post-respring kill sweep");
 
         // Collect fake IDs to show in summary so user can verify they changed.
-        NSString *model  = [cm stringForKey:@"__presetModelName"] ?: @"—";
-        NSString *ios    = [cm stringForKey:@"__presetIOSName"] ?: @"—";
-        NSString *serial = [cm stringForKey:@"SerialNumber"] ?: @"—";
-        NSString *idfa   = [cm stringForKey:@"advertisingIdentifier"] ?: @"—";
-        NSString *udid   = [cm stringForKey:@"UniqueDeviceID"] ?: @"—";
-        NSString *imei   = [cm stringForKey:@"InternationalMobileEquipmentIdentity"] ?: @"—";
+        NSString *model  = [cm stringForKey:@"__presetModelName"] ?: @"â€”";
+        NSString *ios    = [cm stringForKey:@"__presetIOSName"] ?: @"â€”";
+        NSString *serial = [cm stringForKey:@"SerialNumber"] ?: @"â€”";
+        NSString *idfa   = [cm stringForKey:@"advertisingIdentifier"] ?: @"â€”";
+        NSString *udid   = [cm stringForKey:@"UniqueDeviceID"] ?: @"â€”";
+        NSString *imei   = [cm stringForKey:@"InternationalMobileEquipmentIdentity"] ?: @"â€”";
         NSString *shortSerial = [serial length] > 12 ? [serial substringToIndex:12] : serial;
-        NSString *shortUDID   = [udid length]   > 16 ? [[udid substringToIndex:16] stringByAppendingString:@"…"] : udid;
+        NSString *shortUDID   = [udid length]   > 16 ? [[udid substringToIndex:16] stringByAppendingString:@"â€¦"] : udid;
 
-        // Diagnostic: verify shared prefs actually hit disk (see BUILD_NOTES §10).
+        // Diagnostic: verify shared prefs actually hit disk (see BUILD_NOTES Â§10).
         NSFileManager *fm2 = [NSFileManager defaultManager];
         BOOL sharedExists = [fm2 fileExistsAtPath:kSharedPrefPath];
         unsigned long long sharedSize = 0;
@@ -6198,7 +5867,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         //      or /var/jb/etc/, so two of three writes silently EPERM.
         //   2. The remaining sandbox-permitted path
         //      <container>/tmp/hios_changeinfo_loaded.txt would also be
-        //      EMPTY immediately after Reset Data — the Reset wipes the
+        //      EMPTY immediately after Reset Data â€” the Reset wipes the
         //      whole container including tmp/ between marker write and
         //      diagnostic check. Race-condition by design.
         //   3. The reverse signal (spoofed values appearing in
@@ -6213,35 +5882,35 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSMutableArray<NSString *> *notInjected = [NSMutableArray array];  // intentionally empty
 
         [self dismissHUD:hud completion:^{
-            NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
-            NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
+            NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(Ä‘Ã£ chá»n)";
+            NSString *t = backup ? @"ÄÃ£ lÆ°u RRS + Change thÃ nh cÃ´ng" : @"Change thÃ nh cÃ´ng";
 
             NSMutableString *body = [NSMutableString string];
             if (!prefsOK) {
-                [body appendString:@"🚨 Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.\n\n"];
+                [body appendString:@"ðŸš¨ Shared prefs KHÃ”NG ghi Ä‘Æ°á»£c â€” tweak sáº½ Ä‘á»c config cÅ©.\nXem BUILD_NOTES Â§10.\n\n"];
             }
             if (notInjected.count > 0) {
-                [body appendFormat:@"🚨 Tweak CHƯA inject vào: %@\n(Mở app đó 1 lần rồi thử lại.)\n\n",
+                [body appendFormat:@"ðŸš¨ Tweak CHÆ¯A inject vÃ o: %@\n(Má»Ÿ app Ä‘Ã³ 1 láº§n rá»“i thá»­ láº¡i.)\n\n",
                     [notInjected componentsJoinedByString:@", "]];
             }
             if (skipRespring) {
-                [body appendString:@"⏭ Bỏ qua respring (tuỳ chọn 21).\n→ Mở lại target app để thấy thông tin fake mới.\n\n"];
+                [body appendString:@"â­ Bá» qua respring (tuá»³ chá»n 21).\nâ†’ Má»Ÿ láº¡i target app Ä‘á»ƒ tháº¥y thÃ´ng tin fake má»›i.\n\n"];
             } else if (!respringOK) {
-                [body appendFormat:@"⚠️ Respring fail (rc=%d).\n→ Hãy **force-quit** target app (vuốt lên) rồi mở lại.\n\n", respringRC];
+                [body appendFormat:@"âš ï¸ Respring fail (rc=%d).\nâ†’ HÃ£y **force-quit** target app (vuá»‘t lÃªn) rá»“i má»Ÿ láº¡i.\n\n", respringRC];
             }
-            [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
+            [body appendFormat:@"ÄÃ£ xoÃ¡ dá»¯ liá»‡u %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
             [body appendFormat:@"Model: %@\niOS: %@\nSerial: %@\nIDFA: %@\nUDID: %@\nIMEI: %@\n\n",
                 model, ios, shortSerial, idfa, shortUDID, imei];
             if (prefsOK) {
-                [body appendFormat:@"✅ Shared prefs OK (%llu bytes)\n", sharedSize];
+                [body appendFormat:@"âœ… Shared prefs OK (%llu bytes)\n", sharedSize];
             }
             if (notInjected.count == 0 && fullTargets.count > 0) {
-                [body appendFormat:@"✅ Tweak inject OK vào %lu app\n", (unsigned long)fullTargets.count];
+                [body appendFormat:@"âœ… Tweak inject OK vÃ o %lu app\n", (unsigned long)fullTargets.count];
             }
             if (respringOK && !skipRespring) {
-                [body appendString:@"✅ Đã restart SpringBoard.\n"];
+                [body appendString:@"âœ… ÄÃ£ restart SpringBoard.\n"];
             }
-            [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
+            [body appendString:@"\nðŸ‘‰ Má»Ÿ láº¡i app target Ä‘á»ƒ tháº¥y thÃ´ng tin fake má»›i."];
             [self alert:t msg:body];
         }];
 
@@ -6267,11 +5936,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // Auto-fill journal fields from the same `note` text the user typed
     // on the home screen. Two heuristics avoid forcing a separate prompt
     // dialog (which would interrupt the Backup+Reset HUD progression):
-    //   1. Phone-like substring → accountLabel. Match the first run of
-    //      ≥9 digits (Vietnamese SĐT after country-code strip).
-    //   2. Brand keyword (case-insensitive) → accountKind.
+    //   1. Phone-like substring â†’ accountLabel. Match the first run of
+    //      â‰¥9 digits (Vietnamese SÄT after country-code strip).
+    //   2. Brand keyword (case-insensitive) â†’ accountKind.
     // If nothing matches, fields stay at the "unknown" defaults and the
-    // user can fill them later via the leading swipe "Sửa" action — the
+    // user can fill them later via the leading swipe "Sá»­a" action â€” the
     // schema doesn't require these to be set at creation time.
     if (note.length > 0) {
         NSError *re = nil;
@@ -6295,7 +5964,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     // Snapshot the current proxy so a future restore knows which proxy
     // the account was registered through. Mask the last IP octet so a
-    // shared screenshot doesn't leak the residential IP cleanly — anti-
+    // shared screenshot doesn't leak the residential IP cleanly â€” anti-
     // fraud SDKs that ban one IP often ban the whole /24 anyway.
     NSString *proxyStr = [[CIConfigManager shared] stringForKey:@"proxyString"];
     if ([[CIConfigManager shared] boolForKey:@"proxyEnabled"] && proxyStr.length) {
@@ -6338,11 +6007,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     e.appNames = n; e.bundleIDs = b; e.totalSize = total;
 
     // Use uncompressed .tar (no gzip): Dopamine 2's rootless prefix ships
-    // tar (GNU tar 1.35) but does NOT include gzip — `tar -czf` invokes
+    // tar (GNU tar 1.35) but does NOT include gzip â€” `tar -czf` invokes
     // gzip via execvp and silently produces a 0-byte archive when gzip
     // isn't found. Discovered via ssh-probe-gzip.js after every Backup +
     // Reset run was leaving the user's account list at "0 bytes". Plain
-    // tar without compression works fine; archives are larger (3-5×) but
+    // tar without compression works fine; archives are larger (3-5Ã—) but
     // disk space isn't constrained on a 256GB iPhone, and the resulting
     // archive is actually openable by the restore code.
     NSString *tarPath = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
@@ -6352,12 +6021,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // Pre-flight: log what we're about to archive. If `paths` is empty
     // (CIAppLister couldn't resolve a containerPath for any of the user's
     // RRS picks), tar would still run and produce an archive containing
-    // only /var/jb/etc/changeinfoios — useless for restoring an account.
+    // only /var/jb/etc/changeinfoios â€” useless for restoring an account.
     NSLog(@"[ChangeInfoIos] RRS pre-archive: %lu containers + config dir",
           (unsigned long)paths.count);
     for (NSString *p in paths) NSLog(@"[ChangeInfoIos]   archiving %@", p);
     if (paths.count == 0) {
-        NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up — RRS will only contain config snapshot");
+        NSLog(@"[ChangeInfoIos] WARNING: no app containers to back up â€” RRS will only contain config snapshot");
     }
 
     // Trigger keychain dump in every running target. Tweak's observer
@@ -6368,15 +6037,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // Fix 2026-05-09 (login-after-restore bug): previous version did
     // notify_post + fixed 1.5s sleep, then tarred regardless. Failure
     // modes:
-    //   - Zalo backgrounded → Darwin notify not delivered immediately
-    //   - Zalo just launched → tweak observer not yet registered
+    //   - Zalo backgrounded â†’ Darwin notify not delivered immediately
+    //   - Zalo just launched â†’ tweak observer not yet registered
     //   - Tweak's 5s post-ctor dispatch_after hasn't fired yet
-    // Result: tar didn't contain hios_keychain.plist → restore had
-    // nothing to apply → Zalo asked login next launch even though user
+    // Result: tar didn't contain hios_keychain.plist â†’ restore had
+    // nothing to apply â†’ Zalo asked login next launch even though user
     // restored.
     //
     // Now: notify, then poll each target's tmp/hios_keychain.plist for
-    // up to 8s, requiring mtime ≥ dumpStart (guard against stale file
+    // up to 8s, requiring mtime â‰¥ dumpStart (guard against stale file
     // from a previous reset). Log per-bundle status; never abort backup
     // (partial backup still saves Documents/Library), just warn user.
     notify_post("com.changeinfoios/dump_keychain");
@@ -6406,7 +6075,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         if (missingDumps.count == 0) break; // all dumps present + fresh
     }
-    NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %d×0.5s retries)",
+    NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %dÃ—0.5s retries)",
           foundDumps, missingDumps, 16);
 
     // Build tar command via helper that adds --exclude rules for cache/log
@@ -6429,19 +6098,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
 // Re-backup: rebuild an existing entry's tar with current container state,
 // preserving uid + bundleIDs + note + accountLabel/Kind/Status. Used when
-// the user wants to "freshen" a saved snapshot — they've sent more chats,
+// the user wants to "freshen" a saved snapshot â€” they've sent more chats,
 // installed an update, changed a setting in Zalo, and want to capture the
 // new state on top of the existing label without losing the label itself.
 //
 // Same tar logic as createRRSForBundles: but operates on e.bundleIDs and
-// writes to <kRRSDir>/<e.uid>.tar — OVERWRITES the old tar in place. The
+// writes to <kRRSDir>/<e.uid>.tar â€” OVERWRITES the old tar in place. The
 // idfa / ipReset get refreshed to current values (they're part of the
 // snapshot we're updating), and date moves to NOW; everything else
 // (accountLabel/Kind/Status/note/proxyTag) stays.
 - (void)rebackupEntry:(CIRRSEntry *)e {
     NSArray<NSString *> *bids = e.bundleIDs;
     if (bids.count == 0) {
-        [self alert:@"Snapshot trống" msg:@"Entry này không có bundle nào để backup."];
+        [self alert:@"Snapshot trá»‘ng" msg:@"Entry nÃ y khÃ´ng cÃ³ bundle nÃ o Ä‘á»ƒ backup."];
         return;
     }
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
@@ -6451,12 +6120,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     NSString *labelForHUD = e.accountLabel.length ? e.accountLabel
                           : (e.note.length ? e.note : e.uid);
-    UIView *hud = [self showHUDWithTitle:[@"Đang cập nhật RRS — " stringByAppendingString:labelForHUD]];
+    UIView *hud = [self showHUDWithTitle:[@"Äang cáº­p nháº­t RRS â€” " stringByAppendingString:labelForHUD]];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Trigger keychain dump + wait for files. Same poll logic as the
         // create path; up to 8s for every target. Missing dumps don't
-        // abort — partial tar is still useful, and the alert reports
+        // abort â€” partial tar is still useful, and the alert reports
         // which bundles missed.
         notify_post("com.changeinfoios/dump_keychain");
         NSDate *dumpStart = [NSDate date];
@@ -6489,18 +6158,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // Rebuild tar at a SCRATCH path first, then atomic-rename over
         // the live tar IFF the new tar isn't catastrophically smaller
         // than the old one. The user reported 2026-05-19 losing a 69 MB
-        // Zalo backup → 12 MB after rebackup because Zalo's container
+        // Zalo backup â†’ 12 MB after rebackup because Zalo's container
         // had been silently wiped (Reset / app self-wipe) between
-        // backup time and rebackup time. They tapped Lưu in good faith
+        // backup time and rebackup time. They tapped LÆ°u in good faith
         // and the snapshot was destroyed.
         //
         // Safety strategy:
         //   1. tar to <uid>.tar.new
         //   2. compare to <uid>.tar
-        //   3. if new < 50% of old (and old > 5 MB) → KEEP the .tar.bak
+        //   3. if new < 50% of old (and old > 5 MB) â†’ KEEP the .tar.bak
         //      copy of the old + return error + show alert. User can
         //      delete the .bak themselves if they're sure.
-        //   4. else → mv .tar.new → .tar (overwrite cleanly)
+        //   4. else â†’ mv .tar.new â†’ .tar (overwrite cleanly)
         NSString *tarPath    = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
         NSString *tarNew     = [tarPath stringByAppendingString:@".new"];
         NSString *tarBak     = [tarPath stringByAppendingString:@".bak"];
@@ -6522,13 +6191,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // Shrinkage protection. If the new tar is < 50% of the existing
         // tar AND the existing tar was substantial (> 5 MB), the user
-        // probably triggered Lưu while the target app's container was
+        // probably triggered LÆ°u while the target app's container was
         // empty (Reset Data / app self-wipe). Don't HARD-reject (some
-        // shrinkage is legitimate — user deleted chats, cleared cache).
-        // Instead: show alert with TWO buttons: "Hủy" (keep old) and
-        // "Vẫn cập nhật" (force-publish new). The hard-reject behavior
-        // from v2.4.15 was too strict — confirmed live 2026-05-19: a
-        // 30 MB → 77 MB shrinkage (40%) got blocked even though user
+        // shrinkage is legitimate â€” user deleted chats, cleared cache).
+        // Instead: show alert with TWO buttons: "Há»§y" (keep old) and
+        // "Váº«n cáº­p nháº­t" (force-publish new). The hard-reject behavior
+        // from v2.4.15 was too strict â€” confirmed live 2026-05-19: a
+        // 30 MB â†’ 77 MB shrinkage (40%) got blocked even though user
         // intended to update. UX: confidence buyer.
         BOOL shrinkageRisk = (oldBytes > 5 * 1024 * 1024)
                           && (newBytes < oldBytes / 2);
@@ -6540,7 +6209,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSError *mvErr = nil;
             BOOL ok = [fmgr moveItemAtPath:tarNew toPath:tarPath error:&mvErr];
             if (ok) {
-                [fmgr removeItemAtPath:tarBak error:nil];  // success — drop the .bak
+                [fmgr removeItemAtPath:tarBak error:nil];  // success â€” drop the .bak
             } else {
                 [fmgr moveItemAtPath:tarBak toPath:tarPath error:nil];
                 [fmgr removeItemAtPath:tarNew error:nil];
@@ -6559,44 +6228,44 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         void (^showSuccessAlert)(unsigned long long) = ^(unsigned long long finalBytes){
             NSMutableString *body = [NSMutableString string];
-            [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n", labelForHUD];
-            [body appendFormat:@"Tar mới: %@ (cũ: %@)\n", CIBytesString(finalBytes), CIBytesString(oldBytes)];
+            [body appendFormat:@"Snapshot \"%@\" Ä‘Ã£ Ä‘Æ°á»£c cáº­p nháº­t.\n\n", labelForHUD];
+            [body appendFormat:@"Tar má»›i: %@ (cÅ©: %@)\n", CIBytesString(finalBytes), CIBytesString(oldBytes)];
             [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
                                 (unsigned long)foundDumps.count,
                                 (unsigned long)bids.count];
             if (missingDumps.count > 0) {
-                [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
+                [body appendFormat:@"\nâš ï¸ KhÃ´ng láº¥y Ä‘Æ°á»£c keychain cá»§a: %@\n(Má»Ÿ app Ä‘Ã³ 1 láº§n rá»“i cáº­p nháº­t láº¡i Ä‘á»ƒ cÃ³ session tÆ°Æ¡i)",
                                     [missingDumps componentsJoinedByString:@", "]];
             }
-            [self alert:@"Cập nhật RRS xong" msg:body];
+            [self alert:@"Cáº­p nháº­t RRS xong" msg:body];
         };
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self dismissHUD:hud completion:^{
                 if (rc != 0 || newBytes < 1024) {
                     [fmgr removeItemAtPath:tarNew error:nil];
-                    [self alert:@"Cập nhật lỗi"
-                            msg:[NSString stringWithFormat:@"❌ Tar lỗi (rc=%d, new=%llu bytes). Snapshot cũ giữ nguyên.",
+                    [self alert:@"Cáº­p nháº­t lá»—i"
+                            msg:[NSString stringWithFormat:@"âŒ Tar lá»—i (rc=%d, new=%llu bytes). Snapshot cÅ© giá»¯ nguyÃªn.",
                                   rc, newBytes]];
                     return;
                 }
                 if (shrinkageRisk) {
                     NSMutableString *body = [NSMutableString string];
-                    [body appendFormat:@"Tar mới: %@\nTar cũ: %@ (giảm %lu%%)\n\n",
+                    [body appendFormat:@"Tar má»›i: %@\nTar cÅ©: %@ (giáº£m %lu%%)\n\n",
                                         CIBytesString(newBytes),
                                         CIBytesString(oldBytes),
                                         (unsigned long)((oldBytes - newBytes) * 100 / oldBytes)];
-                    [body appendString:@"Có thể app target đang RỖNG (Reset Data / app tự wipe). Nếu bạn KHÔNG cố ý xóa data, hủy + mở app target rồi cập nhật lại.\n\nVẫn muốn cập nhật?"];
+                    [body appendString:@"CÃ³ thá»ƒ app target Ä‘ang Rá»–NG (Reset Data / app tá»± wipe). Náº¿u báº¡n KHÃ”NG cá»‘ Ã½ xÃ³a data, há»§y + má»Ÿ app target rá»“i cáº­p nháº­t láº¡i.\n\nVáº«n muá»‘n cáº­p nháº­t?"];
                     UIAlertController *a = [UIAlertController
-                        alertControllerWithTitle:@"⚠ Tar mới nhỏ hơn nhiều"
+                        alertControllerWithTitle:@"âš  Tar má»›i nhá» hÆ¡n nhiá»u"
                                          message:body
                                   preferredStyle:UIAlertControllerStyleAlert];
-                    [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel
+                    [a addAction:[UIAlertAction actionWithTitle:@"Há»§y" style:UIAlertActionStyleCancel
                         handler:^(UIAlertAction *_) {
                             // Keep old + drop new
                             [fmgr removeItemAtPath:tarNew error:nil];
                         }]];
-                    [a addAction:[UIAlertAction actionWithTitle:@"Vẫn cập nhật" style:UIAlertActionStyleDestructive
+                    [a addAction:[UIAlertAction actionWithTitle:@"Váº«n cáº­p nháº­t" style:UIAlertActionStyleDestructive
                         handler:^(UIAlertAction *_) {
                             publish();
                             showSuccessAlert(newBytes);
@@ -6604,7 +6273,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     [self presentViewController:a animated:YES completion:nil];
                     return;
                 }
-                // Healthy size — publish without confirmation.
+                // Healthy size â€” publish without confirmation.
                 publish();
                 showSuccessAlert(newBytes);
             }];
@@ -6626,7 +6295,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 //   5. Kill cfprefsd + sbreload so the tweak's cached config is invalidated
 //   6. Kill target apps so next launch is a cold-start with restored data
 - (void)restoreEntry:(CIRRSEntry *)e {
-    // Locate the archive — current builds write .tar (uncompressed) since
+    // Locate the archive â€” current builds write .tar (uncompressed) since
     // gzip isn't shipped on rootless. Pre-9a9f9ae backups are .tar.gz but
     // are 0-byte broken archives (the gzip child failed silently); detect
     // and warn instead of trying to restore.
@@ -6639,36 +6308,36 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     } else if ([fm0 fileExistsAtPath:tarLegacy]) {
         unsigned long long sz = [[fm0 attributesOfItemAtPath:tarLegacy error:nil][NSFileSize] unsignedLongLongValue];
         if (sz < 100) {
-            [self alert:@"Backup hỏng"
-                    msg:@"Backup này được tạo bởi version cũ trước khi fix bug gzip — file rỗng, không restore được. Vui lòng tạo backup mới (Backup + Reset Data) rồi xóa backup cũ."];
+            [self alert:@"Backup há»ng"
+                    msg:@"Backup nÃ y Ä‘Æ°á»£c táº¡o bá»Ÿi version cÅ© trÆ°á»›c khi fix bug gzip â€” file rá»—ng, khÃ´ng restore Ä‘Æ°á»£c. Vui lÃ²ng táº¡o backup má»›i (Backup + Reset Data) rá»“i xÃ³a backup cÅ©."];
             return;
         }
         tar = tarLegacy;
     }
     if (!tar) {
-        [self alert:@"Lỗi" msg:@"File backup không tồn tại trên máy."];
+        [self alert:@"Lá»—i" msg:@"File backup khÃ´ng tá»“n táº¡i trÃªn mÃ¡y."];
         return;
     }
 
     NSDictionary *tarAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tar error:nil];
     unsigned long long tarSize = [tarAttrs[NSFileSize] unsignedLongLongValue];
 
-    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore... (KHÔNG tắt app)"];
+    UIView *hud = [self showHUDWithTitle:@"Báº¯t Ä‘áº§u restore... (KHÃ”NG táº¯t app)"];
 
     // v2.5.35: wrap restore in UIBackgroundTask so iOS keeps the host app
     // alive while cp -a copies ~35MB across Documents/Library/tmp.
     // Without this, if the user switches away (or even taps the home bar
-    // hint mid-restore), iOS suspends the process within seconds → cp
-    // hangs partial → step5 fires HOURS later when user reopens the app,
-    // finds no fresh keychain dump → flag NOT dropped → Zalo launches
-    // with partial data → wipes profile.sqlite → blank login. This was
+    // hint mid-restore), iOS suspends the process within seconds â†’ cp
+    // hangs partial â†’ step5 fires HOURS later when user reopens the app,
+    // finds no fresh keychain dump â†’ flag NOT dropped â†’ Zalo launches
+    // with partial data â†’ wipes profile.sqlite â†’ blank login. This was
     // root cause of the May 22 12:20:52 / 13:07 / 14:09 incidents per
     // restoreEntry.log: step3 cp lines missing entirely, then step5
     // logged 13 hours later with NO DUMP.
     __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
     bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"ci_restore"
         expirationHandler:^{
-            NSLog(@"[ChangeInfoIos] restore: bg task EXPIRING — iOS killing soon");
+            NSLog(@"[ChangeInfoIos] restore: bg task EXPIRING â€” iOS killing soon");
             if (bgTask != UIBackgroundTaskInvalid) {
                 [[UIApplication sharedApplication] endBackgroundTask:bgTask];
                 bgTask = UIBackgroundTaskInvalid;
@@ -6676,7 +6345,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // Forensic log — appended to /var/jb/etc/changeinfoios/restoreEntry.log
+        // Forensic log â€” appended to /var/jb/etc/changeinfoios/restoreEntry.log
         // so SSH can read it even after respring kills the host process.
         // Each restoreEntry invocation appends a new block prefixed with
         // a timestamp + tar path. NSLog goes nowhere on Dopamine (no syslogd)
@@ -6696,8 +6365,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // ---- Step 1: Kill running instances of every target ----
         [self updateHUD:hud step:1 total:5
-                  title:@"Tắt apps đang chạy"
-               subtitle:[NSString stringWithFormat:@"%lu app sẽ bị restart sau respring",
+                  title:@"Táº¯t apps Ä‘ang cháº¡y"
+               subtitle:[NSString stringWithFormat:@"%lu app sáº½ bá»‹ restart sau respring",
                          (unsigned long)e.bundleIDs.count]];
         [NSThread sleepForTimeInterval:0.8];
         // v2.5.37: known-exec map for system apps. Their cmdline doesn't
@@ -6720,35 +6389,35 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // ---- Step 2: Untar to private temp dir ----
         [self updateHUD:hud step:2 total:5
-                  title:@"Giải nén backup"
-               subtitle:[NSString stringWithFormat:@"%@ đang đọc...",
+                  title:@"Giáº£i nÃ©n backup"
+               subtitle:[NSString stringWithFormat:@"%@ Ä‘ang Ä‘á»c...",
                          CIBytesString(tarSize)]];
         NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_restore_%@", e.uid];
         ci_run([[NSString stringWithFormat:@"rm -rf %@; mkdir -p %@", tmp, tmp] UTF8String]);
         // tar -xf auto-detects format (handles plain .tar AND .tar.gz when
         // gzip is present). Without -z, plain tar reads uncompressed
-        // archives directly — works on Dopamine where gzip isn't installed.
+        // archives directly â€” works on Dopamine where gzip isn't installed.
         // Capture stderr so a silent failure surfaces in syslog.
         NSString *untarErr = [NSString stringWithFormat:@"/tmp/ci_restore_%@.untar.err", e.uid];
         NSString *untar = [NSString stringWithFormat:@"tar -xf '%@' -C '%@' 2>%@", tar, tmp, untarErr];
         int untarRc = ci_run([untar UTF8String]);
         NSString *untarErrText = [NSString stringWithContentsOfFile:untarErr encoding:NSUTF8StringEncoding error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:untarErr error:nil];
-        NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ → %@%@",
+        NSLog(@"[ChangeInfoIos] restore: untar rc=%d archive=%@ â†’ %@%@",
               untarRc, tar, tmp,
               untarErrText.length ? [@"\nstderr: " stringByAppendingString:untarErrText] : @"");
         rlog([NSString stringWithFormat:@"[step2] untar rc=%d stderr=%@", untarRc, untarErrText ?: @""]);
 
-        // Sanity check — list what actually landed in /tmp.
+        // Sanity check â€” list what actually landed in /tmp.
         NSArray *tmpEntries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmp error:nil];
         NSLog(@"[ChangeInfoIos] restore: /tmp dir entries after untar = %@", tmpEntries);
         rlog([NSString stringWithFormat:@"[step2] /tmp entries=%@", tmpEntries]);
 
-        [NSThread sleepForTimeInterval:1.5]; // let user see "đang giải nén" before step 3 takes over
+        [NSThread sleepForTimeInterval:1.5]; // let user see "Ä‘ang giáº£i nÃ©n" before step 3 takes over
 
         // ---- Step 3: Rebind each archived UUID-container to the current live container ----
         // /var on iOS is a symlink to /private/var, and GNU tar resolves
-        // that symlink when archiving — entries appear as
+        // that symlink when archiving â€” entries appear as
         // "private/var/mobile/Containers/Data/Application/<UUID>/...".
         // The first restore implementation looked under "var/..." and got
         // an empty list every time, so 0 apps were restored even from a
@@ -6799,22 +6468,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
             NSString *curContainer = ci_findDataContainerForBundle(matchedBid);
             if (curContainer.length == 0) {
-                NSLog(@"[ChangeInfoIos] restore: NO live container for %@ — app may need to be launched once first", matchedBid);
+                NSLog(@"[ChangeInfoIos] restore: NO live container for %@ â€” app may need to be launched once first", matchedBid);
                 rlog([NSString stringWithFormat:@"[step3] matchedBid=%@ but NO LIVE CONTAINER", matchedBid]);
                 continue;
             }
             rlog([NSString stringWithFormat:@"[step3] uuid=%@ matchedBid=%@ container=%@", uuid, matchedBid, curContainer]);
 
             [self updateHUD:hud step:3 total:5
-                      title:@"Khôi phục dữ liệu app"
-                   subtitle:[NSString stringWithFormat:@"%lu/%lu — %@",
+                      title:@"KhÃ´i phá»¥c dá»¯ liá»‡u app"
+                   subtitle:[NSString stringWithFormat:@"%lu/%lu â€” %@",
                              (unsigned long)restoredApps + 1,
                              (unsigned long)bkUUIDs.count,
                              matchedBid]];
             [NSThread sleepForTimeInterval:0.6];
 
             // Copy each user-data subdir from backup over the live container.
-            // Don't touch the live container's metadata.plist — that's the
+            // Don't touch the live container's metadata.plist â€” that's the
             // UUID binding iOS itself manages.
             NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
             NSUInteger appFiles = 0;
@@ -6855,7 +6524,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                       matchedBid, sub, rc, (unsigned long)appFiles, appBytes,
                       errText.length ? errText : @"-"]);
             }
-            NSLog(@"[ChangeInfoIos] restore: %@ → %lu files, %@",
+            NSLog(@"[ChangeInfoIos] restore: %@ â†’ %lu files, %@",
                   matchedBid, (unsigned long)appFiles, CIBytesString(appBytes));
             filesCopied += appFiles;
             bytesCopied += appBytes;
@@ -6864,7 +6533,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // ---- Step 4: Restore tweak config + DC state ----
         [self updateHUD:hud step:4 total:5
-                  title:@"Khôi phục thông tin máy fake"
+                  title:@"KhÃ´i phá»¥c thÃ´ng tin mÃ¡y fake"
                subtitle:@"config.plist + DC tokens..."];
         [NSThread sleepForTimeInterval:0.8];
         // Same private/var symlink dance as the container scan above.
@@ -6890,7 +6559,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   (unsigned long)configFiles, rc);
 
             // CRITICAL: ALSO copy the restored config.plist to BOTH of the
-            // host app's other config paths — otherwise [cm load] right
+            // host app's other config paths â€” otherwise [cm load] right
             // below reads STALE (current) values from app sandbox /
             // /var/mobile/Library/Preferences and [cm save] would clobber
             // the just-restored /var/jb file. Pre-fix: every restore wrote
@@ -6898,14 +6567,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // current (not restored) hardware IDs after the restore.
             NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
             if ([fm fileExistsAtPath:bkConfigPlist]) {
-                // Local sandbox path (Documents/config.plist) — readable
+                // Local sandbox path (Documents/config.plist) â€” readable
                 // without sudo because it's inside the host app's container.
                 NSError *cpErr = nil;
                 [fm removeItemAtPath:CILocalConfigPath() error:nil];
                 BOOL ok = [fm copyItemAtPath:bkConfigPlist toPath:CILocalConfigPath() error:&cpErr];
                 NSLog(@"[ChangeInfoIos] restore: local config copy ok=%d err=%@", ok, cpErr);
 
-                // Shared prefs path /var/mobile/Library/Preferences/com.changeinfoios.plist —
+                // Shared prefs path /var/mobile/Library/Preferences/com.changeinfoios.plist â€”
                 // sometimes mobile-writable depending on rootless variant.
                 NSString *sharedCmd = [NSString stringWithFormat:
                     @"cp -f '%@' '%@' 2>/dev/null; chmod 0644 '%@' 2>/dev/null",
@@ -6913,7 +6582,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 ci_run([sharedCmd UTF8String]);
             }
         } else {
-            NSLog(@"[ChangeInfoIos] restore: WARNING — backup has no config snapshot. "
+            NSLog(@"[ChangeInfoIos] restore: WARNING â€” backup has no config snapshot. "
                   @"Created with old build before 3560b20? Hardware IDs won't match the saved env.");
         }
 
@@ -6925,7 +6594,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         // Push keychainReset=NO so the SecItemCopyMatching hook lets Zalo
         // read its keychain entries on next launch (instead of blocking
-        // them — that block is meant for fresh-account registration).
+        // them â€” that block is meant for fresh-account registration).
         [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
         [[CIConfigManager shared] save];
 
@@ -6934,7 +6603,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // current keychain entries, and re-applies the snapshot we
         // just untarred. Without this step, container is restored
         // but session token still belongs to whatever account was
-        // logged in last → Zalo asks for login again.
+        // logged in last â†’ Zalo asks for login again.
         //
         // CRITICAL: flag must land in <target container>/tmp/, not
         // /var/jb/etc/changeinfoios. The tweak runs inside the target
@@ -6945,7 +6614,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // every Reset Data, so we can't hardcode).
         // Drop keychain-restore flag IFF the dump file actually landed
         // in this bundle's tmp/ from cp -a. If missing (backup didn't
-        // catch the dump — see createRRSForBundles fix note), skip the
+        // catch the dump â€” see createRRSForBundles fix note), skip the
         // flag. Otherwise tweak's %ctor would try to read a non-existent
         // dump, fail silently, and we'd lose the user's keychain anyway
         // (worse: it would also wipe the bundle's existing keychain via
@@ -6957,7 +6626,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         for (NSString *bid in e.bundleIDs) {
             NSString *container = ci_findDataContainerForBundle(bid);
             if (container.length == 0) {
-                NSLog(@"[ChangeInfoIos] restore: cannot locate container for %@ — flag NOT dropped", bid);
+                NSLog(@"[ChangeInfoIos] restore: cannot locate container for %@ â€” flag NOT dropped", bid);
                 rlog([NSString stringWithFormat:@"[step5] bid=%@ NO CONTAINER", bid]);
                 continue;
             }
@@ -6971,14 +6640,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             //   - tweak reads wipe_counter_<bid> = T1 (set by Reset Data)
             //   - tweak reads <container>/.ci_last_wipe = T0 (from tar,
             //     written BEFORE the user's Reset that produced T1)
-            //   - T1 > T0 → tweak wipes Documents+Library+tmp →
+            //   - T1 > T0 â†’ tweak wipes Documents+Library+tmp â†’
             //     OUR FRESHLY RESTORED DATA IS DELETED.
             // Confirmed live 2026-05-19: profile.sqlite was 290 KB
             // after restore (had user data), but Zalo launched and
-            // tweak wiped it → profile.sqlite back to schema-only
-            // 0-row state → Zalo couldn't load session → login screen.
+            // tweak wiped it â†’ profile.sqlite back to schema-only
+            // 0-row state â†’ Zalo couldn't load session â†’ login screen.
             // Updating .ci_last_wipe to current counter tells tweak
-            // "wipe already done at this counter, skip" → preserves
+            // "wipe already done at this counter, skip" â†’ preserves
             // restored data.
             NSString *counterKey = [@"wipe_counter_" stringByAppendingString:bid];
             id counterVal = [[CIConfigManager shared] objectForKey:counterKey];
@@ -7013,8 +6682,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // the extracted tar at /tmp/ci_restore_<uid>/private/var/.../<UUID>/tmp/.
             // Observed live: UI Restore copies data correctly (step 3) BUT the
             // live-container dumpPath read here returned 0 bytes by the time
-            // step 5 ran — flag was never dropped, tweak saw NO FLAG, Zalo
-            // launched without keychain restore → blank login + chat_dbs wiped.
+            // step 5 ran â€” flag was never dropped, tweak saw NO FLAG, Zalo
+            // launched without keychain restore â†’ blank login + chat_dbs wiped.
             // The tar's tmp/hios_keychain.plist is always intact since the
             // extracted tar dir hasn't been cleaned up yet at this point.
             if (dumpSz == 0) {
@@ -7049,15 +6718,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
             if (dumpSz == 0) {
                 [noDumpBundles addObject:bid];
-                NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ (and no tar fallback) — flag NOT dropped (would wipe live keychain)", bid, dumpPath);
-                rlog([NSString stringWithFormat:@"[step5] bid=%@ NO DUMP (even after fallback) — flag SKIPPED", bid]);
+                NSLog(@"[ChangeInfoIos] restore: no keychain dump for %@ at %@ (and no tar fallback) â€” flag NOT dropped (would wipe live keychain)", bid, dumpPath);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ NO DUMP (even after fallback) â€” flag SKIPPED", bid]);
                 continue;
             }
             rlog([NSString stringWithFormat:@"[step5] bid=%@ dumpPath=%@ dumpSz=%llu", bid, dumpPath, dumpSz]);
 
             // v2.4.35: removed all dump-patch logic (triplet rewrite,
             // kCryptKeyData<OTHER_UID> nuke, mkdir chat_dbs/<UID>). User
-            // asked for baseline restore behavior — just drop the captured
+            // asked for baseline restore behavior â€” just drop the captured
             // keychain dump as-is and let the target app handle it. The
             // patches were Zalo-specific and the multi-account UID
             // bookkeeping introduced more failure modes than it fixed
@@ -7071,26 +6740,26 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // kSessionUid pointing to the LAST-active user. If the user
             // had switched accounts before backup, the keychain's
             // kSessionUid may point to a UID whose chat_dbs dir was
-            // cleaned up — leaving keychain.session=UID_A but disk
+            // cleaned up â€” leaving keychain.session=UID_A but disk
             // data only for UID_B.
             //
-            // On launch, Zalo reads kSessionUid → UID_A, looks for
-            // chat_dbs/UID_A → MISSING → assumes "session corrupt" →
-            // WIPES profile.sqlite (drops ProfileEntity to 0 rows) →
+            // On launch, Zalo reads kSessionUid â†’ UID_A, looks for
+            // chat_dbs/UID_A â†’ MISSING â†’ assumes "session corrupt" â†’
+            // WIPES profile.sqlite (drops ProfileEntity to 0 rows) â†’
             // login screen even though we restored everything.
             //
             // Confirmed live 2026-05-19: 30-entry Zalo dump with
             // kSessionUid=455815053 + Documents/chat_dbs/457384682
-            // (Hà An). After Zalo launch, profile.sqlite went from
+            // (HÃ  An). After Zalo launch, profile.sqlite went from
             // 290 KB / 3 rows to 290 KB / 0 rows. Patching the dump
-            // file to kSessionUid="457384682" before placing it →
-            // Zalo's check passes → profile.sqlite stays at 3 rows
-            // → auto-login as Hà An works.
+            // file to kSessionUid="457384682" before placing it â†’
+            // Zalo's check passes â†’ profile.sqlite stays at 3 rows
+            // â†’ auto-login as HÃ  An works.
             //
             // Heuristic: scan Documents/chat_dbs/ (Zalo-specific path
             // but harmless when missing for other apps) for numeric
             // subdir names. If kSessionUid in dump isn't one of them
-            // AND we found at least one numeric UID dir → rewrite
+            // AND we found at least one numeric UID dir â†’ rewrite
             // kSessionUid to the first found UID.
             NSString *chatDbsDir = [container stringByAppendingPathComponent:@"Documents/chat_dbs"];
             NSArray<NSString *> *dbUserDirs = [fm contentsOfDirectoryAtPath:chatDbsDir error:nil];
@@ -7109,12 +6778,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // Always parse + patch the dump if it exists. v2.4.27 left mkdir +
             // nuke logic inside the "kSessionUid doesn't match chat_dbs" branch,
             // so a fresh-registration backup (chat_dbs/<NEW_UID>/ matches dump's
-            // kSessionUid) skipped the nuke entirely — and any leftover
+            // kSessionUid) skipped the nuke entirely â€” and any leftover
             // kCryptKeyData<OLD_UID> from the previous account stayed in the
-            // dump → Zalo wiped on launch. Confirmed live 2026-05-20: dump had
-            // kCryptKeyData457384682 (Hà An) + kCryptKeyData457769976 (new
+            // dump â†’ Zalo wiped on launch. Confirmed live 2026-05-20: dump had
+            // kCryptKeyData457384682 (HÃ  An) + kCryptKeyData457769976 (new
             // acc), restore replayed both, Zalo wiped.
-            // v2.4.28 → v2.4.29: wrapped in @try because v2.4.28 hit
+            // v2.4.28 â†’ v2.4.29: wrapped in @try because v2.4.28 hit
             // -[NSURL lastPathComponent] ObjC exception in the user-initiated
             // dispatch queue (SIGABRT via std::terminate), crashing the host
             // mid-restore. Couldn't identify the line without dSYM; catching
@@ -7123,15 +6792,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 rlog(@"[patch] entered dump-patch block");
                 // CROSS-SANDBOX READ (v2.4.30): NSData dataWithContentsOfFile
                 // returns nil when host (sandboxed) reads another app's
-                // container — same sandbox MAC that broke
+                // container â€” same sandbox MAC that broke
                 // ci_findDataContainerForBundle (Bug 9). attributesOfItemAtPath
                 // returns size OK (probably uses lstat) but open(2) is blocked.
                 // Workaround: shell-cp the dump to /tmp first (posix_spawn
                 // bypass), then NSData read from /tmp. Confirmed live
                 // 2026-05-20 v2.4.29 exception: "data parameter is nil" because
-                // dumpData was nil → NSPropertyListSerialization threw →
-                // @try caught → mkdir + nuke + writeback all skipped → Zalo
-                // launch with stale kCryptKeyData<OTHER_UID> → wipe.
+                // dumpData was nil â†’ NSPropertyListSerialization threw â†’
+                // @try caught â†’ mkdir + nuke + writeback all skipped â†’ Zalo
+                // launch with stale kCryptKeyData<OTHER_UID> â†’ wipe.
                 NSString *readTmp = [NSString stringWithFormat:@"/tmp/ci_dump_read_%@.plist", bid];
                 NSString *readSafe = [readTmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
                 NSString *dumpSafeIn = [dumpPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
@@ -7175,9 +6844,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     NSString *currentUID = sessionEntry ? getVal(sessionEntry) : nil;
 
                     // Determine the effective targetUID.
-                    //   - If chat_dbs has candidates AND kSessionUid doesn't match → use first candidate (triplet patch).
-                    //   - Else if kSessionUid is numeric → use it as-is (typical fresh registration path).
-                    //   - Else if uidCandidates exist → use the first.
+                    //   - If chat_dbs has candidates AND kSessionUid doesn't match â†’ use first candidate (triplet patch).
+                    //   - Else if kSessionUid is numeric â†’ use it as-is (typical fresh registration path).
+                    //   - Else if uidCandidates exist â†’ use the first.
                     NSString *targetUID = nil;
                     BOOL needTripletPatch = NO;
                     if (uidCandidates.count > 0 && sessionEntry && ![uidCandidates containsObject:currentUID]) {
@@ -7202,7 +6871,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                         // mobile. Zalo's session check matches keychain's
                         // (kSessionUid, kSessionUsername, kPhoneNumber) against
                         // ProfileEntity's (userid, username, mobile). Just
-                        // patching kSessionUid isn't enough — Zalo wipes
+                        // patching kSessionUid isn't enough â€” Zalo wipes
                         // profile.sqlite (and chat_dbs/<UID>) when username
                         // or phone doesn't match.
                         NSString *profilePath = [container stringByAppendingPathComponent:
@@ -7241,10 +6910,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     // and nuke kCryptKeyData<OTHER_UID>. v2.4.27 left these
                     // inside the needTripletPatch branch, so a fresh-registration
                     // backup (kSessionUid already matches chat_dbs/<NEW_UID>/)
-                    // skipped the nuke entirely → leftover kCryptKeyData<OLD_UID>
-                    // from previous account stayed in the dump → Zalo wiped on
+                    // skipped the nuke entirely â†’ leftover kCryptKeyData<OLD_UID>
+                    // from previous account stayed in the dump â†’ Zalo wiped on
                     // launch. Confirmed live 2026-05-20: dump had
-                    // kCryptKeyData457384682 (Hà An) + kCryptKeyData457769976
+                    // kCryptKeyData457384682 (HÃ  An) + kCryptKeyData457769976
                     // (new acc); restore replayed both; Zalo wiped chat_dbs +
                     // profile rows. Pulling these out fixes ALL re-registration
                     // backups regardless of whether triplet patching is needed.
@@ -7317,26 +6986,26 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // Drop the restore flag via shell instead of NSFileManager.
             // NSFileManager-from-CIHomeViewController hits the iOS sandbox
             // MAC even with com.apple.private.security.no-sandbox=true on
-            // our app — confirmed live 2026-05-19: data restore via
+            // our app â€” confirmed live 2026-05-19: data restore via
             // shell `cp` (posix_spawn'd, bypasses sandbox) landed
             // hios_keychain.plist + 50 other files in Zalo's container,
             // but the parallel NSFileManager `writeToFile:atomically:`
             // for the flag silently EPERM'd because writing into another
             // app's container is gated by MAC at the NSFileManager layer
             // independently of the no-sandbox entitlement. Result:
-            // keychain dump present in tmp/, flag absent → tweak's %ctor
-            // on Zalo launch reads no flag → skips restore → Zalo asks
+            // keychain dump present in tmp/, flag absent â†’ tweak's %ctor
+            // on Zalo launch reads no flag â†’ skips restore â†’ Zalo asks
             // login again even though every byte of the session was
             // sitting in its own tmp/. Same shell path that worked for
             // the data copy works here for a 1-byte flag.
             // Drop flag + dump at /var/jb/etc/changeinfoios/ FIRST (primary
             // location). Zalo / iOS wipes the per-app tmp/ on every app
-            // launch — confirmed live 2026-05-19: a flag + 32 KB dump
+            // launch â€” confirmed live 2026-05-19: a flag + 32 KB dump
             // placed via SSH in Zalo's tmp/ DISAPPEARED before tweak %ctor
             // could read them, because Zalo's launch sequence purges tmp/.
             // /var/jb/etc/changeinfoios/ is owned by our deb and never
             // gets purged. Sandboxed apps can READ from there (we already
-            // store config.plist there) but cannot write — and that's
+            // store config.plist there) but cannot write â€” and that's
             // fine, host app (no-sandbox) writes both files via shell.
             //
             // The tmp/ path stays as a fallback for back-compat with
@@ -7361,7 +7030,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 @"echo 1 > '%@' && chmod 0644 '%@'",
                 sharedDir,                                 // mkdir shared dir
                 [flagSafe stringByDeletingLastPathComponent], // mkdir tmp
-                dumpSafe, sharedDumpSafe, sharedDumpSafe,  // cp dump → shared + chmod
+                dumpSafe, sharedDumpSafe, sharedDumpSafe,  // cp dump â†’ shared + chmod
                 sharedFlagSafe, sharedFlagSafe,            // echo flag at shared + chmod
                 flagSafe, flagSafe];                       // echo flag at tmp (legacy compat) + chmod
             int rc = ci_run([cmd UTF8String]);
@@ -7402,7 +7071,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // ---- Step 5: Cleanup + respring ----
         [self updateHUD:hud step:5 total:5
                   title:@"Restart SpringBoard"
-               subtitle:@"Reload tweak với config đã restore..."];
+               subtitle:@"Reload tweak vá»›i config Ä‘Ã£ restore..."];
         [NSThread sleepForTimeInterval:1.0];
         ci_run([[NSString stringWithFormat:@"rm -rf %@", tmp] UTF8String]);
         ci_run("killall -9 cfprefsd 2>/dev/null");
@@ -7419,30 +7088,30 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 NSString *msg;
                 if (restoredApps == 0) {
                     msg = [NSString stringWithFormat:
-                        @"⚠️ KHÔNG có app nào được restore.\n\n"
-                        @"Lý do có thể: app đã bị uninstall, hoặc UUID container đã đổi quá nhiều.\n"
-                        @"Hãy mở app target ít nhất 1 lần TRƯỚC khi restore để iOS tạo container.\n\n"
+                        @"âš ï¸ KHÃ”NG cÃ³ app nÃ o Ä‘Æ°á»£c restore.\n\n"
+                        @"LÃ½ do cÃ³ thá»ƒ: app Ä‘Ã£ bá»‹ uninstall, hoáº·c UUID container Ä‘Ã£ Ä‘á»•i quÃ¡ nhiá»u.\n"
+                        @"HÃ£y má»Ÿ app target Ã­t nháº¥t 1 láº§n TRÆ¯á»šC khi restore Ä‘á»ƒ iOS táº¡o container.\n\n"
                         @"Backup: %@", names];
                 } else {
                     msg = [NSString stringWithFormat:
                         @"%lu app: %@\n"
-                        @"%lu file (%@) đã copy\n"
-                        @"%lu file config được khôi phục\n\n"
-                        @"Mở app target để vào lại account cũ.",
+                        @"%lu file (%@) Ä‘Ã£ copy\n"
+                        @"%lu file config Ä‘Æ°á»£c khÃ´i phá»¥c\n\n"
+                        @"Má»Ÿ app target Ä‘á»ƒ vÃ o láº¡i account cÅ©.",
                         (unsigned long)restoredApps,
                         names,
                         (unsigned long)filesCopied,
                         CIBytesString(bytesCopied),
                         (unsigned long)configFiles];
                 }
-                NSString *title = (restoredApps == 0) ? @"⚠️ Restore không hoàn tất" : @"✅ Đã restore";
+                NSString *title = (restoredApps == 0) ? @"âš ï¸ Restore khÃ´ng hoÃ n táº¥t" : @"âœ… ÄÃ£ restore";
                 [self alert:title msg:msg];
             }];
         });
 
         // Release the UIBackgroundTask so iOS can suspend normally after we
         // finish. Without this, the host app would keep the bg slot until
-        // iOS times it out — fine but wasteful.
+        // iOS times it out â€” fine but wasteful.
         if (bgTask != UIBackgroundTaskInvalid) {
             UIBackgroundTaskIdentifier t = bgTask;
             bgTask = UIBackgroundTaskInvalid;
@@ -7455,7 +7124,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
 - (void)quickRestore {
     NSArray *items = [[CIRRSStore shared] entries];
-    if (items.count == 0) { [self alert:@"Không có RRS" msg:@"Chưa có snapshot nào để restore."]; return; }
+    if (items.count == 0) { [self alert:@"KhÃ´ng cÃ³ RRS" msg:@"ChÆ°a cÃ³ snapshot nÃ o Ä‘á»ƒ restore."]; return; }
     [self restoreEntry:items.firstObject];
 }
 
@@ -7477,7 +7146,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     [[CIConfigManager shared] config]; // warm
 
-    // Global nav bar appearance — match dark theme
+    // Global nav bar appearance â€” match dark theme
     if (@available(iOS 15.0, *)) {
         UINavigationBarAppearance *a = [[UINavigationBarAppearance alloc] init];
         [a configureWithOpaqueBackground];
@@ -7491,7 +7160,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 
-    // v2.4.37: bottom tab bar — Home / Backups / Settings (AZInfo-style).
+    // v2.4.37: bottom tab bar â€” Home / Backups / Settings (AZInfo-style).
     // Set tabBarItem on the ROOT view controller, not the nav stack, so
     // UINavigationController doesn't override the title with topViewController.title.
     CIHomeViewController *home = [[CIHomeViewController alloc] init];
