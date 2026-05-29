@@ -715,7 +715,7 @@ static NSDictionary *ci_fetchProxyGeo(NSString *url) {
         }];
     [t resume];
     dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
-    if (proxyCfg) [session finishTasksAndInvalidate];
+    // sharedSession — don't invalidate
     if (err || !data) return nil;
 
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
