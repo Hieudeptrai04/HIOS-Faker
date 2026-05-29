@@ -14,13 +14,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data = hios_load();
 
     if ($action === 'create') {
-        $days  = max(1, intval($_POST['days'] ?? 30));
-        $count = max(1, min(100, intval($_POST['count'] ?? 1)));
-        $note  = trim($_POST['note'] ?? '');
-        $made = [];
-        for ($i = 0; $i < $count; $i++) {
-            do { $nk = hios_gen_key(); } while (isset($data['keys'][$nk]));
-            $data['keys'][$nk] = [
+        $days   = max(1, intval($_POST['days'] ?? 30));
+        $count  = max(1, min(100, intval($_POST['count'] ?? 1)));
+        $note   = trim($_POST['note'] ?? '');
+        $custom = trim($_POST['customkey'] ?? '');
+        $mk = function($d) use ($days, $note) {
+            return [
                 'created'      => time(),
                 'durationDays' => $days,
                 'activatedAt'  => null,
@@ -30,10 +29,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'note'         => $note,
                 'lastSeen'     => null,
             ];
-            $made[] = $nk;
+        };
+        if ($custom !== '') {
+            // Tự đặt tên key. Cho phép chữ/số/-/_ , 3-40 ký tự.
+            if (!preg_match('/^[A-Za-z0-9\-_]{3,40}$/', $custom)) {
+                $msg = '⚠ Tên key chỉ gồm chữ, số, - hoặc _ (3–40 ký tự).';
+            } else if (isset($data['keys'][$custom])) {
+                $msg = '⚠ Key "' . $custom . '" đã tồn tại.';
+            } else {
+                $data['keys'][$custom] = $mk($custom);
+                hios_save($data);
+                $msg = 'Đã tạo key: ' . $custom . ' (' . $days . ' ngày)';
+            }
+        } else {
+            $made = [];
+            for ($i = 0; $i < $count; $i++) {
+                do { $nk = hios_gen_key(); } while (isset($data['keys'][$nk]));
+                $data['keys'][$nk] = $mk($nk);
+                $made[] = $nk;
+            }
+            hios_save($data);
+            $msg = 'Đã tạo ' . $count . ' key (' . $days . ' ngày): ' . implode(', ', $made);
         }
-        hios_save($data);
-        $msg = 'Đã tạo ' . $count . ' key (' . $days . ' ngày): ' . implode(', ', $made);
     }
     else if ($action === 'revoke' && !empty($_POST['key'])) {
         $kk = $_POST['key'];
@@ -111,8 +128,10 @@ form.inline{display:inline}
 <form method="post" class="bar">
   <input type="hidden" name="action" value="create">
   <div><label>Số ngày thuê</label><input type="number" name="days" value="30" min="1" style="width:90px"></div>
-  <div><label>Số lượng key</label><input type="number" name="count" value="1" min="1" max="100" style="width:90px"></div>
-  <div style="flex:1;min-width:160px"><label>Ghi chú (tên khách...)</label><input type="text" name="note" placeholder="vd: khách A - zalo" style="width:100%"></div>
+  <div style="min-width:220px"><label>Tên key tự đặt (để trống = tự sinh)</label>
+    <input type="text" name="customkey" placeholder="vd: KHACHA-ZALO-T12" style="width:100%"></div>
+  <div><label>SL (chỉ khi tự sinh)</label><input type="number" name="count" value="1" min="1" max="100" style="width:80px"></div>
+  <div style="flex:1;min-width:140px"><label>Ghi chú (tên khách...)</label><input type="text" name="note" placeholder="vd: khách A - zalo" style="width:100%"></div>
   <button type="submit">+ Tạo key</button>
 </form>
 
