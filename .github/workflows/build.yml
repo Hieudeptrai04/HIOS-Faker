@@ -247,36 +247,36 @@ jobs:
           SHA256=$(shasum -a 256 "$DEB" | awk '{print $1}')
           mkdir -p repo-v3/pool/main
           cp "$DEB" "repo-v3/pool/main/$DEBNAME"
-          cat > repo-v3/Packages <<EOF
-Package: com.changeinfoios.v3
-Name: HIOS Faker v3
-Version: ${VERSION}
-Architecture: iphoneos-arm64
-Section: Tweaks
-Author: ChangeInfoIos
-Maintainer: ChangeInfoIos
-Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
-Description: HIOS Faker v3 - 22-layer device spoof for Zalo/FB/TikTok/IG
-Filename: pool/main/${DEBNAME}
-Size: ${SIZE}
-MD5sum: ${MD5}
-SHA1: ${SHA1}
-SHA256: ${SHA256}
-
-EOF
+          # Use printf — heredocs in YAML run blocks have indented EOF terminators
+          # which bash doesn't recognise, causing the script to hang.
+          printf '%s\n' \
+            "Package: com.changeinfoios.v3" \
+            "Name: HIOS Faker v3" \
+            "Version: $VERSION" \
+            "Architecture: iphoneos-arm64" \
+            "Section: Tweaks" \
+            "Author: ChangeInfoIos" \
+            "Maintainer: ChangeInfoIos" \
+            "Depends: ellekit | mobilesubstrate, firmware (>= 15.0)" \
+            "Description: HIOS Faker v3 - 22-layer device spoof for Zalo/FB/TikTok/IG" \
+            "Filename: pool/main/$DEBNAME" \
+            "Size: $SIZE" \
+            "MD5sum: $MD5" \
+            "SHA1: $SHA1" \
+            "SHA256: $SHA256" \
+            "" > repo-v3/Packages
           bzip2 -k repo-v3/Packages
           gzip  -k repo-v3/Packages
-          cat > repo-v3/Release <<EOF
-Origin: HIOS Faker
-Label: HIOS Faker v3
-Suite: stable
-Version: ${VERSION}
-Codename: ios
-Architectures: iphoneos-arm64
-Components: main
-Description: HIOS Faker v3
-EOF
-          echo "Repo files built for v${VERSION}"
+          printf '%s\n' \
+            "Origin: HIOS Faker" \
+            "Label: HIOS Faker v3" \
+            "Suite: stable" \
+            "Version: $VERSION" \
+            "Codename: ios" \
+            "Architectures: iphoneos-arm64" \
+            "Components: main" \
+            "Description: HIOS Faker v3" > repo-v3/Release
+          echo "Repo built: v$VERSION, deb=$DEBNAME, size=$SIZE"
 
       - name: Deploy Sileo repo to gh-pages /v3/
         if: success() && github.ref == 'refs/heads/v3'
