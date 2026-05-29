@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.1";
+static NSString *const kAppVersion = @"3.3.2";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7811,19 +7811,29 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     self.window.backgroundColor = [CITheme bg];
 
     // ---- LICENSE GATE ----
+    // rootViewController MUST be set SYNCHRONOUSLY before makeKeyAndVisible —
+    // iOS asserts (SIGABRT) if a window has no root VC at end of launch.
     // Show main UI only if a cached-valid license exists; otherwise Login.
-    // Either way, kick off a fresh online recheck to catch revoke/expire.
     if ([[CILicenseManager shared] isLicenseValidCached]) {
-        [self showMain];
+        self.window.rootViewController = [self buildMainTab];
+        [self.window makeKeyAndVisible];
+        // fresh online recheck to catch server-side revoke/expire → kick out
         [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
-            if (!ok) [self showLogin];  // revoked / expired server-side → kick out
+            if (!ok) [self showLogin];
         }];
     } else {
-        [self showLogin];
+        self.window.rootViewController = [self buildLoginNav];
+        [self.window makeKeyAndVisible];
     }
-
-    [self.window makeKeyAndVisible];
     return YES;
+}
+
+// Build the Login screen wrapped in a (chromeless) nav controller.
+- (UINavigationController *)buildLoginNav {
+    CILoginViewController *login = [[CILoginViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:login];
+    nav.navigationBarHidden = YES;
+    return nav;
 }
 
 // Build the main tab UI (Home / Backups / Settings).
@@ -7880,12 +7890,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if ([self.window.rootViewController isKindOfClass:[UINavigationController class]] &&
             [((UINavigationController *)self.window.rootViewController).topViewController
                 isKindOfClass:[CILoginViewController class]]) return;
-        CILoginViewController *login = [[CILoginViewController alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:login];
-        nav.navigationBarHidden = YES;
         [UIView transitionWithView:self.window duration:0.3
             options:UIViewAnimationOptionTransitionCrossDissolve
-            animations:^{ self.window.rootViewController = nav; }
+            animations:^{ self.window.rootViewController = [self buildLoginNav]; }
             completion:nil];
     });
 }
