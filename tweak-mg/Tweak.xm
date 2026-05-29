@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
+#import <execinfo.h>
 #import <notify.h>
 #import <pthread.h>
 #import <stdarg.h>
@@ -1381,27 +1382,77 @@ static stat_fn_t   orig_stat_fn   = NULL;
 static stat_fn_t   orig_lstat_fn  = NULL;
 static access_fn_t orig_access_fn = NULL;
 
-// Pass-through for callers from JB tweak dylibs so they can access
-// their own files under /var/jb/ (e.g. VCam reading its video source).
-static BOOL statCallerIsJBTweak(void) {
-    Dl_info di; di.dli_fname = NULL;
-    dladdr(__builtin_return_address(1), &di);
-    if (!di.dli_fname) return NO;
-    return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
-            strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
-            strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0);
+// Return YES if the given dylib path belongs to a jailbreak tweak
+// (lives under /var/jb/Library/ or /var/jb/usr/lib/). Our own dylib
+// also lives there, so our internal accesses pass through too.
+static inline BOOL fnameIsJBTweak(const char *f) {
+    if (!f) return NO;
+    return (strncmp(f, "/var/jb/Library/", 16) == 0 ||
+            strncmp(f, "/var/jb/usr/lib/", 16) == 0 ||
+            strncmp(f, "/private/var/jb/Library/", 24) == 0 ||
+            strncmp(f, "/private/var/jb/usr/lib/", 24) == 0);
 }
 
+// Path of OUR OWN dylib (ChangeInfoIosMG.dylib), resolved once. Our hook
+// and helper functions live under /var/jb/Library/ too, so we must skip
+// our own frames when walking the stack — otherwise every call would
+// "look like" a JB-tweak caller and the hiding would never apply.
+static const char *g_selfImage = NULL;
+static void initSelfImage(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Dl_info di; di.dli_fname = NULL;
+        if (dladdr((void *)&initSelfImage, &di) && di.dli_fname)
+            g_selfImage = strdup(di.dli_fname);
+    });
+}
+
+// Walk several stack frames; YES if any frame belongs to a JB tweak dylib
+// OTHER than ourselves (e.g. VCam).
+//
+// The old check only looked at __builtin_return_address(1) — the single
+// immediate caller. That missed tweaks (e.g. VCam) that reach a hooked
+// function through one or two Foundation/libsystem wrapper frames
+// (VCam -> [NSFileManager fileExistsAtPath:] -> stat), so their own
+// /var/jb/ access got blocked. Walking up to 16 frames catches the tweak
+// wherever it sits in the proximate call chain.
+//
+// Safe against false-positives: anti-fraud JB scans run from app/SDK code
+// (no tweak frames in their stack), and tweaks like VCam only appear in
+// the stack while the app is actively using the camera/photos — a
+// different code path than the login-time JB detection. Only called after
+// isJBPath()/dyld match, so it stays off the hot path for normal files.
+static BOOL callerStackHasJBTweak(void) {
+    initSelfImage();
+    void *frames[16];
+    int n = backtrace(frames, 16);
+    for (int i = 2; i < n; i++) {            // skip backtrace + this fn
+        Dl_info di; di.dli_fname = NULL;
+        if (!dladdr(frames[i], &di) || !di.dli_fname) continue;
+        if (g_selfImage && strcmp(di.dli_fname, g_selfImage) == 0) continue; // skip self
+        if (fnameIsJBTweak(di.dli_fname)) return YES;
+    }
+    return NO;
+}
+
+// Pass-through for callers originating from JB tweak dylibs so they can
+// access their own files under /var/jb/ (e.g. VCam reading its resources).
+static BOOL statCallerIsJBTweak(void) {
+    return callerStackHasJBTweak();
+}
+
+// isJBPath() first (cheap strncmp) so the stack-walk caller check only
+// runs for the rare JB-sensitive path — keeps the hot path zero-overhead.
 static int hook_stat_fn(const char *path, struct stat *buf) {
-    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     return orig_stat_fn(path, buf);
 }
 static int hook_lstat_fn(const char *path, struct stat *buf) {
-    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     return orig_lstat_fn(path, buf);
 }
 static int hook_access_fn(const char *path, int mode) {
-    if (!statCallerIsJBTweak() && isJBPath(path)) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     return orig_access_fn(path, mode);
 }
 
@@ -1494,12 +1545,10 @@ static dyld_image_name_fn_t   orig_dyld_get_image_name_fn = NULL;
 // peers (e.g. VCam finding vcamrootless.dylib to locate its video file).
 // Only filter the view for app-bundle callers (the anti-fraud SDK path).
 static BOOL dyldCallerIsJBTweak(void) {
-    Dl_info di; di.dli_fname = NULL;
-    dladdr(__builtin_return_address(1), &di);
-    if (!di.dli_fname) return NO;
-    return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
-            strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
-            strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0);
+    // Multi-frame walk: VCam may reach _dyld_* through a wrapper frame
+    // when locating its own dylib / video source. Single-frame check
+    // missed those. App-side anti-fraud scans have no tweak frame.
+    return callerStackHasJBTweak();
 }
 
 static uint32_t hooked_dyld_image_count(void) {
