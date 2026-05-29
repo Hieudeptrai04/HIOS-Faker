@@ -1747,24 +1747,13 @@ static BOOL isZaloUDKey(NSString *k) {
 }
 %end
 
-// ============================================================
-// LAYER 19: fork / popen / system — block process-spawn JB detection.
-//
-// The iOS sandbox already blocks fork/popen/system on non-JB devices
-// (returns -1 / NULL / EPERM). If these succeed inside an App Store
-// app, it's a JB indicator. We restore sandbox behavior by always
-// returning failure — same result as on a stock device.
-// ============================================================
-typedef int   (*fork_fn_t)(void);
-typedef FILE *(*popen_fn_t)(const char *, const char *);
-typedef int   (*system_fn_t)(const char *);
-static fork_fn_t   orig_fork_fn   = NULL;
-static popen_fn_t  orig_popen_fn  = NULL;
-static system_fn_t orig_system_fn = NULL;
-
-static int   hooked_fork(void)                             { errno = EPERM; return -1; }
-static FILE *hooked_popen(const char *cmd, const char *t)  { errno = EPERM; return NULL; }
-static int   hooked_system(const char *cmd)                { return -1; }
+// LAYER 19: fork — block process-spawn JB detection.
+// popen/system NOT hooked: if app calls popen() and we return NULL,
+// the app may fread/fclose(NULL) → crash. fork() is safe to block
+// since it returns EPERM on stock iOS too; no app reads its FILE*.
+typedef int (*fork_fn_t)(void);
+static fork_fn_t orig_fork_fn = NULL;
+static int hooked_fork(void) { errno = EPERM; return -1; }
 
 // ============================================================
 // LAYER 20: PKPushRegistry — VoIP push token device fingerprint.
@@ -2007,18 +1996,11 @@ static void notify_cb(int t) {
         dbglog("ctor %s dyldHide cnt=%p name=%p\n",
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
 
-        // LAYER 19: block fork/popen/system — restore stock iOS sandbox behavior.
-        // On non-JB iOS these always return -1/NULL; succeeding = JB indicator.
-        orig_fork_fn   = (fork_fn_t)  dlsym(RTLD_DEFAULT, "fork");
-        orig_popen_fn  = (popen_fn_t) dlsym(RTLD_DEFAULT, "popen");
-        orig_system_fn = (system_fn_t)dlsym(RTLD_DEFAULT, "system");
+        // LAYER 19: block fork() only — popen/system omitted (crash risk).
+        orig_fork_fn = (fork_fn_t)dlsym(RTLD_DEFAULT, "fork");
         if (orig_fork_fn)
-            MSHookFunction((void*)orig_fork_fn,   (void*)hooked_fork,   (void**)&orig_fork_fn);
-        if (orig_popen_fn)
-            MSHookFunction((void*)orig_popen_fn,  (void*)hooked_popen,  (void**)&orig_popen_fn);
-        if (orig_system_fn)
-            MSHookFunction((void*)orig_system_fn, (void*)hooked_system, (void**)&orig_system_fn);
-        dbglog("ctor %s fork/popen/system blocked\n", g_procname);
+            MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
+        dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
 
         // open()/openat() hooks intentionally not installed — see comment above.
 
