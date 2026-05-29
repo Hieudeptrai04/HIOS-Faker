@@ -20,6 +20,7 @@
 #import <stdio.h>
 #import <unistd.h>
 #import <string.h>
+#import <strings.h>
 #import <sys/sysctl.h>
 #import <sys/stat.h>
 #import <errno.h>
@@ -1353,11 +1354,31 @@ static NSString *buildWKJSSpoof(void) {
 // Does NOT hide loaded dylib list — use Shadow/KernBypass for TikTok.
 // ============================================================
 
+// A path that media/camera tweaks (VCam) legitimately store user data at.
+// These are NOT jailbreak-detection targets — anti-fraud SDKs probe app and
+// binary paths (Cydia, apt, bash, substrate), never a user video file — so
+// exempting them lets VCam read its source while real JB paths stay hidden.
+// VCam (vcamrootless) uses /var/jb/var/mobile/Library/temp.mov and
+// /var/jb/var/mobile/Library/vcam_is_mirrored_mark.
+static BOOL isTweakDataPath(const char *path) {
+    if (strstr(path, "vcam") || strstr(path, "Vcam") || strstr(path, "VCam")) return YES;
+    size_t n = strlen(path);
+    if (n >= 4) {
+        const char *ext = path + n - 4;
+        if (strcasecmp(ext, ".mov") == 0 || strcasecmp(ext, ".mp4") == 0 ||
+            strcasecmp(ext, ".m4v") == 0)
+            return YES;   // video source files for camera tweaks
+    }
+    return NO;
+}
+
 static BOOL isJBPath(const char *path) {
     if (!path) return NO;
     // Never hide our own config directory — reloadConfig must still work
     static const char kCfgDir[] = "/var/jb/etc/changeinfoios/";
     if (strncmp(path, kCfgDir, sizeof(kCfgDir)-1) == 0) return NO;
+    // Never hide camera/media tweak data (VCam video + marker files).
+    if (isTweakDataPath(path)) return NO;
     static const char * const kHide[] = {
         "/var/jb", "/private/var/jb",
         "/var/lib/apt", "/private/var/lib/apt",
