@@ -19,8 +19,8 @@ $udid  = isset($_POST['udid'])  ? trim($_POST['udid'])  : '';
 $nonce = isset($_POST['nonce']) ? trim($_POST['nonce']) : '';
 $ts    = isset($_POST['ts'])    ? intval($_POST['ts'])  : 0;
 
-// Basic shape + anti-replay (request ts must be within window of server time).
-if ($key === '' || $udid === '' || $nonce === '') {
+// udid + nonce are mandatory. key MAY be empty → that's a DEVICE-LOGIN.
+if ($udid === '' || $nonce === '') {
     hios_respond(false, 'bad_request', '', 0, $nonce);
 }
 if ($ts > 0 && abs(time() - $ts) > HIOS_REPLAY_WINDOW) {
@@ -29,6 +29,23 @@ if ($ts > 0 && abs(time() - $ts) > HIOS_REPLAY_WINDOW) {
 }
 
 $data = hios_load();
+
+// DEVICE-LOGIN: empty key → resolve the active key already bound to this UDID.
+// Lets a device that was bound before (even after app reinstall) log in
+// straight away without re-typing the key. Returns need_key if none.
+if ($key === '') {
+    $found = '';
+    foreach ($data['keys'] as $kk => $kv) {
+        if (($kv['udid'] ?? '') === $udid && ($kv['status'] ?? 'active') !== 'revoked') {
+            $found = $kk; break;
+        }
+    }
+    if ($found === '') {
+        hios_respond(false, 'need_key', '', 0, $nonce);
+    }
+    $key = $found;
+}
+
 if (!isset($data['keys'][$key])) {
     hios_respond(false, 'not_found', '', 0, $nonce);
 }

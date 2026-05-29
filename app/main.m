@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.4";
+static NSString *const kAppVersion = @"3.3.5";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2502,21 +2502,48 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     // Change Device / RRS restore / respring / app reinstall.
     static NSString *cached = nil;
     if (cached.length) return cached;
+    // PRIMARY: real hardware UDID via MobileGestalt. The tweak does NOT hook
+    // this app, so MGCopyAnswer returns the REAL device UDID — intrinsic to the
+    // physical device, identical across app uninstall/reinstall, RRS restore,
+    // respring, Change Device. This makes the 1-key-1-device binding rock-solid:
+    // same phone = same id, forever, no storage needed.
+    NSString *real = nil;
+    void *h = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+    if (h) {
+        CFTypeRef (*MG)(CFStringRef) = (CFTypeRef(*)(CFStringRef))dlsym(h, "MGCopyAnswer");
+        if (MG) {
+            CFTypeRef v = MG(CFSTR("UniqueDeviceID"));
+            if (v) {
+                if (CFGetTypeID(v) == CFStringGetTypeID() && CFStringGetLength((CFStringRef)v) >= 16)
+                    real = [(__bridge NSString *)v copy];
+                CFRelease(v);
+            }
+        }
+    }
+    if (real.length >= 16) { cached = [self sha256Hex:[@"HIOSv3|" stringByAppendingString:real]]; return cached; }
+
+    // FALLBACK (MG unavailable): persistent UUID in /var/jb + NSUserDefaults.
     NSUserDefaults *ud = [self lstore];
     NSString *path = @"/var/jb/etc/changeinfoios/hwid";
-    // 1) file (survives app reinstall)  2) NSUserDefaults (reliable write,
-    //    survives restore/respring)  3) generate once.
     NSString *hwid = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (hwid.length < 8) hwid = [ud stringForKey:@"_ci_hwid"];
     if (hwid.length < 8) hwid = [[NSUUID UUID] UUIDString];
-    // persist to both (best-effort; NSUserDefaults is the reliable one)
     [ud setObject:hwid forKey:@"_ci_hwid"]; [ud synchronize];
     [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/jb/etc/changeinfoios"
         withIntermediateDirectories:YES attributes:nil error:nil];
     [hwid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
     cached = hwid;
     return cached;
+}
+
+- (NSString *)sha256Hex:(NSString *)s {
+    const char *c = [s UTF8String];
+    unsigned char d[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(c, (CC_LONG)strlen(c), d);
+    NSMutableString *o = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH*2];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [o appendFormat:@"%02x", d[i]];
+    return o;
 }
 
 // License is stored in NSUserDefaults (the app's own prefs), NOT in the
@@ -2544,14 +2571,13 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 }
 
 - (BOOL)isLicenseValidCached {
-    if (![self storedKey].length) return NO;
     NSDate *e = [self expiryDate];
-    if (!e || [e timeIntervalSinceNow] <= 0) return NO;          // expired
+    if (!e || [e timeIntervalSinceNow] <= 0) return NO;          // expired/none
     // require a successful online check within the grace window
     NSInteger lastOK = (NSInteger)[[self lstore] doubleForKey:kLicLastOK];
+    if (lastOK <= 0) return NO;
     NSTimeInterval since = [[NSDate date] timeIntervalSince1970] - lastOK;
-    if (lastOK <= 0 || since > kLicenseOfflineGraceHours * 3600) return NO;
-    return YES;
+    return since <= kLicenseOfflineGraceHours * 3600;
 }
 
 // HMAC-SHA256(canonical, secret) hex — must match server hios_sign().
@@ -2569,8 +2595,9 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
           completion:(void(^)(BOOL, NSString *, NSString *))completion {
     // Uppercase-normalize → keys are case-insensitive (server uppercases too),
     // so the login field no longer needs a forced-caps keyboard.
+    // Empty key is allowed: that's a DEVICE-LOGIN (server resolves the key
+    // bound to this hardware UDID → enables auto-login after reinstall).
     key = [[key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
-    if (!key.length) { if (completion) completion(NO, @"bad_request", @"Chưa nhập key"); return; }
 
     NSString *udid  = [self deviceUDID];
     NSString *nonce = [[NSUUID UUID] UUIDString];
@@ -2634,20 +2661,18 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 }
 
 - (void)recheckWithCompletion:(void(^)(BOOL, NSString *))completion {
-    NSString *k = [self storedKey];
-    if (!k.length) { if (completion) completion(NO, @"not_found"); return; }
-    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
+    // Device-login: validate by hardware UDID (empty key). Server finds the key
+    // bound to this device. Works after reinstall with no stored key.
+    [self validateKey:@"" completion:^(BOOL ok, NSString *st, NSString *e) {
         // network error → keep cached state (offline grace decides elsewhere)
         if (completion) completion(ok || [st isEqualToString:@"network"] , st);
     }];
 }
 
 - (BOOL)blockingRecheck {
-    NSString *k = [self storedKey];
-    if (!k.length) return NO;
     __block BOOL result = NO; __block BOOL networkErr = NO;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
+    [self validateKey:@"" completion:^(BOOL ok, NSString *st, NSString *e) {
         result = ok; networkErr = [st isEqualToString:@"network"];
         dispatch_semaphore_signal(sem);
     }];
@@ -7891,8 +7916,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (!ok) [self showLogin];
         }];
     } else {
+        // No cached session (e.g. fresh install). Show Login, but first try a
+        // DEVICE-LOGIN by hardware UDID: if this physical device already has a
+        // valid key bound, go straight in without re-typing the key.
         self.window.rootViewController = [self buildLoginNav];
         [self.window makeKeyAndVisible];
+        [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
+            if (ok) [self showMain];   // device already bound + valid → auto-login
+        }];
     }
     return YES;
 }

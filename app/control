@@ -1,9 +1,9 @@
 Package: com.changeinfoios.v3.app
 Name: HIOS Faker v3
-Version: 3.3.4
+Version: 3.3.5
 Architecture: iphoneos-arm64
 Description: HIOS Faker v3 — device-info spoof for popular iOS apps (Zalo / Facebook / TikTok / Instagram / Shopee / etc.). Zero injection into target apps — spoof happens centrally in MobileGestaltHelper. Smooth as native.
 Maintainer: ChangeInfoIos
 Author: ChangeInfoIos
 Section: Utilities
-Depends: ellekit | mobilesubstrate, firmware (>= 15.0), com.changeinfoios.mg (>= 3.3.4)
+Depends: ellekit | mobilesubstrate, firmware (>= 15.0), com.changeinfoios.mg (>= 3.3.5)
