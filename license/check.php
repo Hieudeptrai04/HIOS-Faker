@@ -13,7 +13,8 @@
 // ============================================================
 require __DIR__ . '/lib.php';
 
-$key   = isset($_POST['key'])   ? trim($_POST['key'])   : '';
+// Keys are case-insensitive: uppercase-normalize (app does the same).
+$key   = isset($_POST['key'])   ? strtoupper(trim($_POST['key'])) : '';
 $udid  = isset($_POST['udid'])  ? trim($_POST['udid'])  : '';
 $nonce = isset($_POST['nonce']) ? trim($_POST['nonce']) : '';
 $ts    = isset($_POST['ts'])    ? intval($_POST['ts'])  : 0;

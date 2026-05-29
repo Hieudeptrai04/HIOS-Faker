@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $days   = max(1, intval($_POST['days'] ?? 30));
         $count  = max(1, min(100, intval($_POST['count'] ?? 1)));
         $note   = trim($_POST['note'] ?? '');
-        $custom = trim($_POST['customkey'] ?? '');
+        $custom = strtoupper(trim($_POST['customkey'] ?? '')); // keys are case-insensitive (stored uppercase)
         $mk = function($d) use ($days, $note) {
             return [
                 'created'      => time(),

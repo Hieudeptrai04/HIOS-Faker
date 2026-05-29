@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.3";
+static NSString *const kAppVersion = @"3.3.4";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2495,18 +2495,39 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 }
 
 - (NSString *)deviceUDID {
-    // The tweak does NOT inject into this app, so identifierForVendor is the
-    // REAL, stable, per-device value here. Fall back to a hashed utsname if nil.
-    NSUUID *idfv = [UIDevice currentDevice].identifierForVendor;
-    if (idfv) return idfv.UUIDString;
-    struct utsname u; uname(&u);
-    return [NSString stringWithFormat:@"M-%s", u.machine];
+    // Stable per-install device id persisted in the JB config dir. It must NOT
+    // be identifierForVendor — that proved unstable across respring/restore,
+    // so the bound key kept reporting wrong_device → forced re-login after a
+    // restore. A UUID written to /var/jb/etc/changeinfoios/hwid survives
+    // Change Device / RRS restore / respring / app reinstall.
+    static NSString *cached = nil;
+    if (cached.length) return cached;
+    NSUserDefaults *ud = [self lstore];
+    NSString *path = @"/var/jb/etc/changeinfoios/hwid";
+    // 1) file (survives app reinstall)  2) NSUserDefaults (reliable write,
+    //    survives restore/respring)  3) generate once.
+    NSString *hwid = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
+                      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (hwid.length < 8) hwid = [ud stringForKey:@"_ci_hwid"];
+    if (hwid.length < 8) hwid = [[NSUUID UUID] UUIDString];
+    // persist to both (best-effort; NSUserDefaults is the reliable one)
+    [ud setObject:hwid forKey:@"_ci_hwid"]; [ud synchronize];
+    [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/jb/etc/changeinfoios"
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    [hwid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    cached = hwid;
+    return cached;
 }
 
-- (NSString *)storedKey { return [[CIConfigManager shared] stringForKey:kLicKey]; }
+// License is stored in NSUserDefaults (the app's own prefs), NOT in the
+// CIConfigManager plist — that config is rewritten by Change Device and can be
+// overwritten by RRS restore, which was wiping the session and forcing re-login.
+- (NSUserDefaults *)lstore { return [NSUserDefaults standardUserDefaults]; }
+
+- (NSString *)storedKey { return [[self lstore] stringForKey:kLicKey]; }
 
 - (NSDate *)expiryDate {
-    NSString *iso = [[CIConfigManager shared] stringForKey:kLicExpiry];
+    NSString *iso = [[self lstore] stringForKey:kLicExpiry];
     if (!iso.length) return nil;
     NSDateFormatter *f = [[NSDateFormatter alloc] init];
     f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
@@ -2527,7 +2548,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     NSDate *e = [self expiryDate];
     if (!e || [e timeIntervalSinceNow] <= 0) return NO;          // expired
     // require a successful online check within the grace window
-    NSInteger lastOK = [[CIConfigManager shared] integerForKey:kLicLastOK];
+    NSInteger lastOK = (NSInteger)[[self lstore] doubleForKey:kLicLastOK];
     NSTimeInterval since = [[NSDate date] timeIntervalSince1970] - lastOK;
     if (lastOK <= 0 || since > kLicenseOfflineGraceHours * 3600) return NO;
     return YES;
@@ -2546,7 +2567,9 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 
 - (void)validateKey:(NSString *)key
           completion:(void(^)(BOOL, NSString *, NSString *))completion {
-    key = [key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // Uppercase-normalize → keys are case-insensitive (server uppercases too),
+    // so the login field no longer needs a forced-caps keyboard.
+    key = [[key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (!key.length) { if (completion) completion(NO, @"bad_request", @"Chưa nhập key"); return; }
 
     NSString *udid  = [self deviceUDID];
@@ -2589,12 +2612,12 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
         }
 
         if (ok) {
-            CIConfigManager *cm = [CIConfigManager shared];
-            [cm setObject:key forKey:kLicKey];
-            [cm setObject:exp forKey:kLicExpiry];
-            [cm setObject:udid forKey:kLicUDID];
-            [cm setObject:@((long)[[NSDate date] timeIntervalSince1970]) forKey:kLicLastOK];
-            [cm save];
+            NSUserDefaults *ud = [self lstore];
+            [ud setObject:key forKey:kLicKey];
+            [ud setObject:exp forKey:kLicExpiry];
+            [ud setObject:udid forKey:kLicUDID];
+            [ud setDouble:[[NSDate date] timeIntervalSince1970] forKey:kLicLastOK];
+            [ud synchronize];
             done(YES, st, nil);
         } else {
             done(NO, st, [self msgForStatus:st]);
@@ -2634,11 +2657,11 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 }
 
 - (void)logout {
-    CIConfigManager *cm = [CIConfigManager shared];
-    [cm setObject:@"" forKey:kLicKey];
-    [cm setObject:@"" forKey:kLicExpiry];
-    [cm setObject:@(0) forKey:kLicLastOK];
-    [cm save];
+    NSUserDefaults *ud = [self lstore];
+    [ud removeObjectForKey:kLicKey];
+    [ud removeObjectForKey:kLicExpiry];
+    [ud removeObjectForKey:kLicLastOK];
+    [ud synchronize];
 }
 
 - (NSString *)urlEnc:(NSString *)s {
@@ -2684,7 +2707,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     _keyField.textColor = [CITheme text];
     _keyField.layer.cornerRadius = 12;
     _keyField.layer.borderWidth = 1; _keyField.layer.borderColor = [CITheme border].CGColor;
-    _keyField.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+    _keyField.autocapitalizationType = UITextAutocapitalizationTypeNone; // không ép viết hoa; key case-insensitive
     _keyField.autocorrectionType = UITextAutocorrectionTypeNo;
     _keyField.clearButtonMode = UITextFieldViewModeWhileEditing;
     _keyField.returnKeyType = UIReturnKeyGo;
