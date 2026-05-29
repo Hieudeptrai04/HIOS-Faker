@@ -9,12 +9,18 @@ FILE:
   keys.json    — database (tự tạo, để rỗng {"keys":{}} ban đầu)
 
 ───────────────────────────────────────────────────────────────
-BƯỚC 1 — CẤU HÌNH (sửa lib.php, 2 dòng đầu)
+BƯỚC 1 — CẤU HÌNH (lib.php) — ĐÃ ĐẶT SẴN, không cần sửa
 ───────────────────────────────────────────────────────────────
-  HIOS_SECRET     = chuỗi bí mật ngẫu nhiên >=48 ký tự.
-                    ⚠ PHẢI GIỐNG HỆT giá trị kLicenseSecret trong app.
-                    Tôi sẽ đặt cùng giá trị này khi build app.
-  HIOS_ADMIN_PASS = mật khẩu đăng nhập trang admin.php
+  HIOS_SECRET     = đã đặt sẵn, KHỚP với app. KHÔNG sửa.
+  HIOS_ADMIN_USER = hieunguyen1819   (tài khoản admin)
+  HIOS_ADMIN_PASS = hieunguyen1819   (mật khẩu admin)
+
+  Bảo mật: user/pass chỉ nằm ở server (PHP), không gửi xuống trình duyệt
+  → F12 xem source KHÔNG thấy. Lúc đăng nhập, trình duyệt hash SHA-256
+  trước khi gửi → F12 Network chỉ thấy hash, không thấy "hieunguyen1819".
+
+  ⚠ Phải mở admin qua HTTPS (https://flightmy.info/hios/admin.php) —
+    cơ chế hash cần HTTPS mới chạy.
 
 ───────────────────────────────────────────────────────────────
 BƯỚC 2 — UPLOAD

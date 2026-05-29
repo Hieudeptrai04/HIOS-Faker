@@ -8,8 +8,13 @@
 // 1) HMAC secret — MUST match kLicenseSecret in the iOS app.
 //    Generate a random 48-char string and paste the SAME value here and in the app.
 const HIOS_SECRET = 'hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6';
-// 2) Admin password for admin.php login.
-const HIOS_ADMIN_PASS = 'CHANGE_ME_admin_password';
+// 2) Admin login (trang admin.php). User + pass cố định.
+//    Hai giá trị này chỉ nằm ở server (PHP), KHÔNG bao giờ gửi xuống trình
+//    duyệt → F12 xem source không thấy. Lúc đăng nhập, trình duyệt hash
+//    SHA-256 trước khi gửi nên F12 Network chỉ thấy chuỗi hash, không thấy
+//    mật khẩu thật.
+const HIOS_ADMIN_USER = 'hieunguyen1819';
+const HIOS_ADMIN_PASS = 'hieunguyen1819';
 // ------------------------------------------------------------
 
 const HIOS_DATA_FILE = __DIR__ . '/keys.json';
@@ -86,26 +91,58 @@ function hios_gen_key() {
 function hios_iso($ts) { return $ts ? gmdate('Y-m-d\TH:i:s\Z', $ts) : ''; }
 
 // ---- Admin session auth ------------------------------------
+// The browser hashes SHA-256(user:pass) client-side and submits ONLY the
+// hash (field 'auth'). The user/pass inputs have no name attribute, so the
+// plaintext never appears in the POST body / F12 Network tab. The expected
+// hash is computed server-side and never sent to the client.
+function hios_admin_expected_hash() {
+    return hash('sha256', HIOS_ADMIN_USER . ':' . HIOS_ADMIN_PASS);
+}
+
 function hios_admin_require() {
+    // HttpOnly session cookie (not readable by JS / F12 console)
+    session_set_cookie_params(['httponly' => true, 'samesite' => 'Lax']);
     session_start();
     if (!empty($_SESSION['hios_admin'])) return;
-    // login form post
-    if (isset($_POST['admin_pass'])) {
-        if (hash_equals(HIOS_ADMIN_PASS, $_POST['admin_pass'])) {
+
+    if (isset($_POST['auth'])) {
+        if (hash_equals(hios_admin_expected_hash(), (string)$_POST['auth'])) {
+            session_regenerate_id(true);
             $_SESSION['hios_admin'] = true;
             header('Location: admin.php'); exit;
         }
     }
-    // show login form
+    $err = isset($_POST['auth']) ? 'Sai tài khoản hoặc mật khẩu.' : '';
     ?><!DOCTYPE html><html lang="vi"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>HIOS Admin</title>
     <style>body{font-family:-apple-system,sans-serif;background:#1a1a1a;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
     form{background:#262626;padding:32px;border-radius:12px;width:300px}h2{color:#FF8C00;margin-top:0}
     input{width:100%;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #444;background:#1a1a1a;color:#fff;box-sizing:border-box}
-    button{width:100%;padding:12px;background:#FF8C00;color:#fff;border:0;border-radius:8px;font-weight:600;font-size:16px;margin-top:8px}</style>
-    </head><body><form method="post"><h2>HIOS Admin</h2>
-    <input type="password" name="admin_pass" placeholder="Mật khẩu admin" autofocus>
-    <button type="submit">Đăng nhập</button></form></body></html><?php
+    button{width:100%;padding:12px;background:#FF8C00;color:#fff;border:0;border-radius:8px;font-weight:600;font-size:16px;margin-top:8px}
+    .e{color:#e74c3c;font-size:13px;min-height:16px}</style>
+    </head><body>
+    <form id="lf" method="post" autocomplete="off">
+      <h2>HIOS Admin</h2>
+      <div class="e"><?=$err?></div>
+      <input id="u" placeholder="Tài khoản" autocomplete="off" autofocus>
+      <input id="p" type="password" placeholder="Mật khẩu" autocomplete="off">
+      <input type="hidden" name="auth" id="auth">
+      <button type="submit">Đăng nhập</button>
+    </form>
+    <script>
+    document.getElementById('lf').addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var u=document.getElementById('u').value, p=document.getElementById('p').value;
+      var data=new TextEncoder().encode(u+':'+p);
+      var buf=await crypto.subtle.digest('SHA-256', data);
+      var hex=Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+      document.getElementById('auth').value=hex;
+      // clear plaintext fields before the form submits (defense-in-depth)
+      document.getElementById('u').value=''; document.getElementById('p').value='';
+      ev.target.submit();
+    });
+    </script>
+    </body></html><?php
     exit;
 }
