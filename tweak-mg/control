@@ -1,6 +1,6 @@
 Package: com.changeinfoios.mg
 Name: ChangeInfoIosMG
-Version: 3.3.2
+Version: 3.3.3
 Architecture: iphoneos-arm64
 Description: ChangeInfoIos v3 — Full device spoof + LAYER 14: WKWebView JS fingerprint spoof (navigator/screen/canvas/WebGL) + Keychain ephemeral mode (SecItemAdd/Update blocked) + WKWebsiteDataStore + Pasteboard wipe on identity change.
 Maintainer: ChangeInfoIos

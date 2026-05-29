@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.2";
+static NSString *const kAppVersion = @"3.3.3";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3273,7 +3273,23 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:ac animated:YES completion:nil];
 }
 
-- (void)done { [[CIConfigManager shared] save]; [self.navigationController popViewControllerAnimated:YES]; }
+- (void)done {
+    [self.view endEditing:YES];                 // dismiss keyboard if editing
+    [[CIConfigManager shared] save];
+    [[CIConfigManager shared] notifyReload];     // push config to the tweak now
+    // Settings is a tab root — popViewController is a no-op there, so give
+    // visible feedback. If it WAS pushed (e.g. from a menu), pop instead.
+    if (self.navigationController.viewControllers.count > 1) {
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
+    UIAlertController *t = [UIAlertController alertControllerWithTitle:nil
+        message:@"✓ Đã lưu cấu hình" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:t animated:YES completion:^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [t dismissViewControllerAnimated:YES completion:nil]; });
+    }];
+}
 
 - (void)toggleAllFakes {
     // Count current fake_* that are on
@@ -3840,7 +3856,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
                                                       target:self action:@selector(closeBtn)];
 }
-- (void)closeBtn { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)closeBtn {
+    // CIRRSManager shows up two ways: presented modally (Home → "Quản lý RRS")
+    // and as the "Backups" TAB root. dismiss only works for the modal case; on
+    // the tab root it's a no-op, so the Cancel button looked dead. Handle both.
+    if (self.navigationController.presentingViewController || self.presentingViewController) {
+        [self dismissViewControllerAnimated:YES completion:nil];   // modal
+    } else if (self.tabBarController) {
+        self.tabBarController.selectedIndex = 0;                    // tab → back to Home
+    } else {
+        [self.navigationController popViewControllerAnimated:YES];
+    }
+}
 
 - (void)refreshTitle {
     self.title = _view.count > 0
@@ -5028,11 +5055,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
                                         target:self action:@selector(openMenu)];
     if (@available(iOS 13.0, *)) {
         UIImage *logoutImg = [[UIImage systemImageNamed:@"rectangle.portrait.and.arrow.right"]
-                              imageWithTintColor:[CITheme blue]
+                              imageWithTintColor:[CITheme red]
                               renderingMode:UIImageRenderingModeAlwaysOriginal];
         self.navigationItem.rightBarButtonItem =
             [[UIBarButtonItem alloc] initWithImage:logoutImg style:UIBarButtonItemStylePlain
-                                            target:self action:@selector(openMenu)];
+                                            target:self action:@selector(logoutKey)];
     }
 
     UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
@@ -5569,6 +5596,25 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 - (void)dismissAny { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+// Logout key (top-right): clear stored license + return to Login screen.
+- (void)logoutKey {
+    NSInteger d = [[CILicenseManager shared] daysLeft];
+    NSString *msg = d > 0
+        ? [NSString stringWithFormat:@"Key còn %ld ngày. Đăng xuất sẽ cần nhập lại key. Tiếp tục?", (long)d]
+        : @"Đăng xuất sẽ cần nhập lại key. Tiếp tục?";
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Đăng xuất key"
+                                                              message:msg
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Đăng xuất" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *_) {
+            [[CILicenseManager shared] logout];
+            id del = [UIApplication sharedApplication].delegate;
+            if ([del respondsToSelector:@selector(showLogin)]) [del performSelector:@selector(showLogin)];
+        }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
 
 - (void)pickResetApps {
     CIAppPickerViewController *vc = [[CIAppPickerViewController alloc] init];
