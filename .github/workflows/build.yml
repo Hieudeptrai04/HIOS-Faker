@@ -232,13 +232,11 @@ jobs:
 
       # Deploy APT repo to gh-pages under /v3/ subdirectory.
       # v2 repo lives at root of gh-pages; v3 lives at /v3/ — no conflict.
-      - name: Deploy Sileo repo to gh-pages /v3/
+      - name: Build Sileo repo structure
         if: success() && github.ref == 'refs/heads/v3'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
-          echo ">>> STEP: Deploy Sileo repo <<<"
+          echo ">>> STEP: Build Sileo repo structure <<<"
           set -euo pipefail
           DEB=$(ls out/*.deb | head -1)
           DEBNAME=$(basename "$DEB")
@@ -247,45 +245,48 @@ jobs:
           MD5=$(md5 -q "$DEB" 2>/dev/null || md5sum "$DEB" | awk '{print $1}')
           SHA1=$(shasum -a 1 "$DEB" | awk '{print $1}')
           SHA256=$(shasum -a 256 "$DEB" | awk '{print $1}')
+          mkdir -p repo-v3/pool/main
+          cp "$DEB" "repo-v3/pool/main/$DEBNAME"
+          cat > repo-v3/Packages <<EOF
+Package: com.changeinfoios.v3
+Name: HIOS Faker v3
+Version: ${VERSION}
+Architecture: iphoneos-arm64
+Section: Tweaks
+Author: ChangeInfoIos
+Maintainer: ChangeInfoIos
+Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+Description: HIOS Faker v3 - 22-layer device spoof for Zalo/FB/TikTok/IG
+Filename: pool/main/${DEBNAME}
+Size: ${SIZE}
+MD5sum: ${MD5}
+SHA1: ${SHA1}
+SHA256: ${SHA256}
 
-          # Build APT repo in temp dir
-          mkdir -p /tmp/v3repo/pool/main
-          cp "$DEB" "/tmp/v3repo/pool/main/$DEBNAME"
-          printf "Package: com.changeinfoios.v3\nName: HIOS Faker v3\nVersion: %s\nArchitecture: iphoneos-arm64\nSection: Tweaks\nAuthor: ChangeInfoIos\nMaintainer: ChangeInfoIos\nDepends: ellekit | mobilesubstrate, firmware (>= 15.0)\nDescription: HIOS Faker v3 - 22-layer device spoof\nFilename: pool/main/%s\nSize: %s\nMD5sum: %s\nSHA1: %s\nSHA256: %s\n\n" \
-            "$VERSION" "$DEBNAME" "$SIZE" "$MD5" "$SHA1" "$SHA256" > /tmp/v3repo/Packages
-          bzip2 -k /tmp/v3repo/Packages
-          gzip  -k /tmp/v3repo/Packages
-          printf "Origin: HIOS Faker\nLabel: HIOS Faker v3\nSuite: stable\nVersion: %s\nCodename: ios\nArchitectures: iphoneos-arm64\nComponents: main\nDescription: HIOS Faker v3\n" \
-            "$VERSION" > /tmp/v3repo/Release
+EOF
+          bzip2 -k repo-v3/Packages
+          gzip  -k repo-v3/Packages
+          cat > repo-v3/Release <<EOF
+Origin: HIOS Faker
+Label: HIOS Faker v3
+Suite: stable
+Version: ${VERSION}
+Codename: ios
+Architectures: iphoneos-arm64
+Components: main
+Description: HIOS Faker v3
+EOF
+          echo "Repo files built for v${VERSION}"
 
-          # Clone gh-pages fresh into /tmp/ghpages (avoids shallow-clone issues)
-          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git clone --depth=1 --branch=gh-pages "$REMOTE" /tmp/ghpages; then
-            echo "gh-pages branch cloned"
-          else
-            echo "gh-pages not found — creating orphan branch"
-            mkdir /tmp/ghpages
-            cd /tmp/ghpages
-            git init
-            git remote add origin "$REMOTE"
-            git checkout --orphan gh-pages
-            cd -
-          fi
-
-          # Update /v3/ only, leave v2 root untouched
-          rm -rf /tmp/ghpages/v3
-          cp -r /tmp/v3repo /tmp/ghpages/v3
-          cd /tmp/ghpages
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git add v3/
-          if git diff --cached --quiet; then
-            echo "No changes to gh-pages/v3/"
-          else
-            git commit -m "repo: v3 ${VERSION} (${GITHUB_SHA::7})"
-            git push origin gh-pages
-            echo "Deployed: https://hieudeptrai04.github.io/HIOS-Faker/v3/"
-          fi
+      - name: Deploy Sileo repo to gh-pages /v3/
+        if: success() && github.ref == 'refs/heads/v3'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo-v3
+          destination_dir: v3
+          keep_files: true
+          commit_message: "repo: v3 ${{ github.sha }}"
 
       - name: Publish GitHub Release
         if: success() && github.ref == 'refs/heads/v3'
