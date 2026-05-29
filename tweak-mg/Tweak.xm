@@ -992,6 +992,12 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
 // AIDA64 + most analytics SDKs query these directly.
 // ============================================================
 %hook UIDevice
+- (NSInteger)userInterfaceIdiom {
+    NSString *pt = getConfigStr(@"ProductType");
+    if (!pt) return %orig;
+    if ([pt hasPrefix:@"iPad"]) return 1; // UIUserInterfaceIdiomPad
+    return 0; // UIUserInterfaceIdiomPhone
+}
 - (NSString *)name {
     NSString *v = getConfigStr(@"deviceName");
     dbglog("UIDevice.name %s spoof=%c orig?=%c\n", g_procname, v?'Y':'N', v?'.':'?');
@@ -1571,6 +1577,97 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     if (ours.minorVersion != v.minorVersion) return ours.minorVersion > v.minorVersion;
     return ours.patchVersion >= v.patchVersion;
 }
+- (NSString *)operatingSystemVersionString {
+    NSString *v = getConfigStr(@"systemVersion");
+    NSString *b = getConfigStr(@"BuildVersion");
+    if (!v) return %orig;
+    return b ? [NSString stringWithFormat:@"Version %@ (Build %@)", v, b]
+             : [NSString stringWithFormat:@"Version %@", v];
+}
+- (NSUInteger)processorCount {
+    id v = getConfig(@"processorCount");
+    return v ? (NSUInteger)[v integerValue] : %orig;
+}
+- (NSUInteger)activeProcessorCount { return [self processorCount]; }
+%end
+
+// ============================================================
+// LAYER 15: UIScreen — DPR + native pixel dimensions must match
+// the spoofed ProductType. Do NOT hook bounds — breaks app layout.
+// Fingerprinters read scale/nativeScale/nativeBounds separately.
+// ============================================================
+%hook UIScreen
+- (CGFloat)scale {
+    NSString *pt = getConfigStr(@"ProductType");
+    if (!pt) return %orig;
+    int sw, sh, hc; double dpr;
+    screenDimsForProductType(pt, &sw, &sh, &dpr, &hc);
+    return (CGFloat)dpr;
+}
+- (CGFloat)nativeScale { return [self scale]; }
+- (CGRect)nativeBounds {
+    NSString *pt = getConfigStr(@"ProductType");
+    if (!pt) return %orig;
+    int sw, sh, hc; double dpr;
+    screenDimsForProductType(pt, &sw, &sh, &dpr, &hc);
+    return CGRectMake(0, 0, (CGFloat)(sw * dpr), (CGFloat)(sh * dpr));
+}
+%end
+
+// ============================================================
+// LAYER 16: NSUserDefaults — Zalo caches device fingerprints in
+// UserDefaults as a fast read path before falling back to Keychain.
+// Block known device-ID keys so every session starts cold and hits
+// the Keychain path (which our SecItemCopyMatching hook blocks).
+// Conservative exact-match list to avoid breaking unrelated prefs.
+// ============================================================
+static NSString * const kZaloUDKeys[] = {
+    @"kZAIDForDevice", @"kZAIDForAdvertisingKey", @"zda_device_udid",
+    @"kSecurityIndentifierKey", @"deviceUUID", @"deviceModel",
+    @"firstTimeInstallApp", @"installSource", @"kThisDeviceOnlyKey",
+    @"ZADeviceID", @"zalo_device_id", @"za_device_fingerprint",
+    @"FIRInstallationsID", @"firebase_iid", @"GoogleAppID",
+    nil
+};
+static BOOL isZaloUDKey(NSString *k) {
+    if (!k) return NO;
+    if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return NO;
+    for (int i = 0; kZaloUDKeys[i]; i++)
+        if ([k isEqualToString:kZaloUDKeys[i]]) return YES;
+    return NO;
+}
+%hook NSUserDefaults
+- (id)objectForKey:(NSString *)k {
+    if (isZaloUDKey(k)) {
+        dbglog("UDef.block %s key=%s\n", g_procname, [k UTF8String]);
+        return nil;
+    }
+    return %orig;
+}
+- (NSString *)stringForKey:(NSString *)k  { return isZaloUDKey(k) ? nil : %orig; }
+- (NSData   *)dataForKey:(NSString *)k    { return isZaloUDKey(k) ? nil : %orig; }
+- (BOOL)boolForKey:(NSString *)k          { return isZaloUDKey(k) ? NO  : %orig; }
+%end
+
+// ============================================================
+// LAYER 17: CTTelephonyNetworkInfo — radio access technology
+// string (CTRadioAccessTechnologyLTE / NR etc.) must be consistent
+// with the spoofed carrier and device capabilities.
+// ============================================================
+%hook CTTelephonyNetworkInfo
+- (NSString *)currentRadioAccessTechnology {
+    NSString *v = getConfigStr(@"radioAccessTechnology");
+    return v ?: %orig;
+}
+- (NSDictionary *)serviceCurrentRadioAccessTechnology {
+    NSString *v = getConfigStr(@"radioAccessTechnology");
+    if (!v) return %orig;
+    NSDictionary *o = %orig;
+    if (!o || o.count == 0) return o;
+    NSMutableDictionary *d = [o mutableCopy];
+    for (NSString *k in o) d[k] = v;
+    return [d copy];
+}
 %end
 
 // ============================================================
@@ -1877,10 +1974,15 @@ static void notify_cb(int t) {
                               completionHandler:^{
                             dbglog("ctor.autoWipe WKDataStore cleared %s\n", g_procname);
                         }];
+                        // Wipe NSUserDefaults device fingerprint cache
+                        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+                        for (int i = 0; kZaloUDKeys[i]; i++)
+                            [ud removeObjectForKey:kZaloUDKeys[i]];
+                        [ud synchronize];
                         // Pasteboard NOT cleared here — VCam stores its video path
                         // in the general pasteboard; clearing it breaks VCam.
                         // Pasteboard is only cleared in notify_cb (user-triggered).
-                        dbglog("ctor.autoWipe KC+WebStore cleared %s\n", g_procname);
+                        dbglog("ctor.autoWipe KC+WebStore+UD cleared %s\n", g_procname);
                     }
                 });
                 dbglog("ctor %s scheduled autoWipe in 1.5s\n", g_procname);
