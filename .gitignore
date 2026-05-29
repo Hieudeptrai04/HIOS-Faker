@@ -1,13 +1,2 @@
-node_modules/
-theos-staging/
-*/packages/
-*/.theos/
-*/obj/
-.claude/
-.DS_Store
+NOTES.md
 *.deb
-*.log
-ssh-tools/
-*-from-iphone.plist
-combined/
-out/

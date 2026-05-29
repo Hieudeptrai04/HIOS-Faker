@@ -13,8 +13,9 @@ const HIOS_SECRET = 'hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6';
 //    duyệt → F12 xem source không thấy. Lúc đăng nhập, trình duyệt hash
 //    SHA-256 trước khi gửi nên F12 Network chỉ thấy chuỗi hash, không thấy
 //    mật khẩu thật.
-const HIOS_ADMIN_USER = 'hieunguyen1819';
-const HIOS_ADMIN_PASS = 'hieunguyen1819';
+// ⚠ ĐẶT TRỰC TIẾP TRÊN SERVER, KHÔNG commit giá trị thật lên GitHub (repo public).
+const HIOS_ADMIN_USER = 'CHANGE_ME_admin_user';
+const HIOS_ADMIN_PASS = 'CHANGE_ME_admin_pass';
 // ------------------------------------------------------------
 
 const HIOS_DATA_FILE = __DIR__ . '/keys.json';
