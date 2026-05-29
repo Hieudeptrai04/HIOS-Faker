@@ -1441,36 +1441,57 @@ static BOOL statCallerIsJBTweak(void) {
     return callerStackHasJBTweak();
 }
 
+// DEBUG: log a blocked JB-path access + the proximate caller images, so we
+// can see exactly what a tweak (e.g. VCam) needed but we denied. Volume is
+// bounded — only fires on isJBPath() hits, which are rare in normal apps.
+static void dbgLogJBBlock(const char *tag, const char *path) {
+    void *fr[16];
+    int n = backtrace(fr, 16);
+    char callers[220]; int off = 0; callers[0] = 0;
+    for (int i = 2; i < n && off < 180; i++) {
+        Dl_info di; di.dli_fname = NULL;
+        if (!dladdr(fr[i], &di) || !di.dli_fname) continue;
+        if (g_selfImage && strcmp(di.dli_fname, g_selfImage) == 0) continue;
+        const char *b = strrchr(di.dli_fname, '/');
+        b = b ? b + 1 : di.dli_fname;
+        int w = snprintf(callers + off, sizeof(callers) - off, "%s ", b);
+        if (w > 0) off += w;
+        if (i >= 7) break;
+    }
+    dbglog("JBblk.%s %s path=%s callers=[%s]\n", tag, g_procname, path ? path : "(null)", callers);
+}
+
 // isJBPath() first (cheap strncmp) so the stack-walk caller check only
 // runs for the rare JB-sensitive path — keeps the hot path zero-overhead.
 static int hook_stat_fn(const char *path, struct stat *buf) {
-    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { dbgLogJBBlock("stat", path); errno = ENOENT; return -1; }
     return orig_stat_fn(path, buf);
 }
 static int hook_lstat_fn(const char *path, struct stat *buf) {
-    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { dbgLogJBBlock("lstat", path); errno = ENOENT; return -1; }
     return orig_lstat_fn(path, buf);
 }
 static int hook_access_fn(const char *path, int mode) {
-    if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    if (isJBPath(path) && !statCallerIsJBTweak()) { dbgLogJBBlock("access", path); errno = ENOENT; return -1; }
     return orig_access_fn(path, mode);
 }
 
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return NO;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) { dbgLogJBBlock("fm.exists", path.UTF8String); return NO; }
     return %orig;
 }
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDir {
-    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return NO;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) { dbgLogJBBlock("fm.existsDir", path.UTF8String); return NO; }
     return %orig;
 }
 - (NSData *)contentsAtPath:(NSString *)path {
-    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) return nil;
+    if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) { dbgLogJBBlock("fm.contents", path.UTF8String); return nil; }
     return %orig;
 }
 - (NSDictionary *)attributesOfItemAtPath:(NSString *)path error:(NSError **)err {
     if (path && isJBPath(path.UTF8String) && !statCallerIsJBTweak()) {
+        dbgLogJBBlock("fm.attrs", path.UTF8String);
         if (err) *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:nil];
         return nil;
     }
@@ -1553,7 +1574,13 @@ static BOOL dyldCallerIsJBTweak(void) {
 
 static uint32_t hooked_dyld_image_count(void) {
     if (!orig_dyld_image_count_fn) return 0;
-    if (dyldCallerIsJBTweak()) return orig_dyld_image_count_fn();
+    if (dyldCallerIsJBTweak()) {
+        static int loggedTweak = 0;
+        if (!loggedTweak) { loggedTweak = 1; dbgLogJBBlock("dyld.count.PASS", "tweak-caller"); }
+        return orig_dyld_image_count_fn();
+    }
+    static int loggedApp = 0;
+    if (!loggedApp) { loggedApp = 1; dbgLogJBBlock("dyld.count.FILTER", "app-caller"); }
     uint32_t total = orig_dyld_image_count_fn();
     uint32_t hidden = 0;
     for (uint32_t i = 0; i < total; i++) {
