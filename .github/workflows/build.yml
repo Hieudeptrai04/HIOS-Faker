@@ -230,9 +230,67 @@ jobs:
           path: out/*.deb
           retention-days: 14
 
-      # v3 branch lives alongside v2.x master in same repo. We do NOT
-      # deploy v3 to gh-pages Sileo (would clobber v2.x repo). Install
-      # via SSH-curl from GitHub Release artifact instead.
+      # Deploy APT repo to gh-pages under /v3/ subdirectory.
+      # v2 repo lives at root of gh-pages; v3 lives at /v3/ — no conflict.
+      - name: Deploy Sileo repo to gh-pages /v3/
+        if: success() && github.ref == 'refs/heads/v3'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DEB=$(ls out/*.deb | head -1)
+          DEBNAME=$(basename "$DEB")
+          VERSION=$(grep '^Version:' tweak-mg/control | awk '{print $2}')
+          SIZE=$(stat -f%z "$DEB" 2>/dev/null || stat -c%s "$DEB")
+          MD5=$(md5 -q "$DEB"   2>/dev/null || md5sum "$DEB" | cut -d' ' -f1)
+          SHA1=$(shasum -a 1 "$DEB"   | cut -d' ' -f1)
+          SHA256=$(shasum -a 256 "$DEB" | cut -d' ' -f1)
+
+          # Build APT repo structure in a temp dir
+          mkdir -p /tmp/v3repo/pool/main
+          cp "$DEB" "/tmp/v3repo/pool/main/$DEBNAME"
+
+          cat > /tmp/v3repo/Packages << PKGEOF
+Package: com.changeinfoios.v3
+Name: HIOS Faker v3
+Version: ${VERSION}
+Architecture: iphoneos-arm64
+Section: Tweaks
+Author: ChangeInfoIos
+Maintainer: ChangeInfoIos
+Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+Description: HIOS Faker v3 — 22-layer device spoof for Zalo/FB/TikTok/IG/Shopee. Zero injection into target apps.
+Filename: pool/main/${DEBNAME}
+Size: ${SIZE}
+MD5sum: ${MD5}
+SHA1: ${SHA1}
+SHA256: ${SHA256}
+
+PKGEOF
+          bzip2 -k /tmp/v3repo/Packages
+          gzip  -k /tmp/v3repo/Packages
+
+          cat > /tmp/v3repo/Release << RELEOF
+Origin: HIOS Faker
+Label: HIOS Faker v3
+Suite: stable
+Version: ${VERSION}
+Codename: ios
+Architectures: iphoneos-arm64
+Components: main
+Description: HIOS Faker v3 - Deep device spoof tweak
+RELEOF
+
+          # Push to gh-pages/v3/ without touching v2 root
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git fetch origin gh-pages 2>/dev/null || true
+          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
+          rm -rf v3
+          mv /tmp/v3repo v3
+          git add v3/
+          git diff --cached --quiet || git commit -m "repo: v3 ${VERSION} (${GITHUB_SHA::7})"
+          git push origin gh-pages
 
       - name: Publish GitHub Release
         if: success() && github.ref == 'refs/heads/v3'
