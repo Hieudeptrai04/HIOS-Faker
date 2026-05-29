@@ -1292,7 +1292,7 @@ static NSString *buildWKJSSpoof(void) {
     NSString *tag  = [NSString stringWithFormat:@"%@-%@", lang, rgn];
     int sw, sh, hc; double dpr;
     screenDimsForProductType(getConfigStr(@"ProductType"), &sw, &sh, &dpr, &hc);
-    NSString *base = [NSString stringWithFormat:
+    return [NSString stringWithFormat:
         @"(function(){"
          "var l='%@',ls=['%@','en-US'],sw=%d,sh=%d,dpr=%.1f,hc=%d;"
          "function d(o,k,v){"
@@ -1327,68 +1327,17 @@ static NSString *buildWKJSSpoof(void) {
          "if(window.WebGL2RenderingContext)pg(window.WebGL2RenderingContext);"
          "})();",
         tag, tag, sw, sh, dpr, hc];
-
-    // ---- LAYER 14b: cross-layer JS consistency (added after audit) ----
-    // Zalo's registration runs inside a WKWebView. These close the highest-
-    // value leaks the audit found: JS timezone != native NSTimeZone (a
-    // deterministic device-swap flag), real UA string, real geolocation, and
-    // WebRTC exposing the real IP behind the VPN. Only iOS-Safari-appropriate
-    // properties are touched — deviceMemory/connection/performance.memory are
-    // intentionally NOT spoofed because real iOS Safari does not expose them
-    // (adding them would make the WebView look like Android/Chrome = worse).
-    NSString *tzName = getConfigStr(@"timezoneName");
-    long jsTZO = -420; // default UTC+7 (Vietnam) → JS offset minutes west of UTC
-    if (tzName) {
-        NSTimeZone *tz = [NSTimeZone timeZoneWithName:tzName]; // not hooked here
-        if (tz) jsTZO = -([tz secondsFromGMT] / 60);
-    }
-    NSString *uaC  = getConfigStr(@"zalo_fakeWebViewUA");
-    NSString *latC = getConfigStr(@"latitude");
-    NSString *lonC = getConfigStr(@"longitude");
-
-    NSMutableString *ex = [NSMutableString stringWithString:
-        @"(function(){"
-         "function d(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v;},configurable:true});}catch(e){}}"];
-
-    // Timezone — match the spoofed native NSTimeZone exactly.
-    [ex appendFormat:@"var _tzo=%ld;try{Date.prototype.getTimezoneOffset=function(){return _tzo;};}catch(e){}", jsTZO];
-    if (tzName) {
-        [ex appendFormat:@"try{var _ro=Intl.DateTimeFormat.prototype.resolvedOptions;"
-                          "Intl.DateTimeFormat.prototype.resolvedOptions=function(){"
-                          "var o=_ro.apply(this,arguments);o.timeZone='%@';return o;};}catch(e){}", tzName];
-    }
-
-    // navigator.userAgent / vendor / appVersion — JS context (not just HTTP header).
-    if (uaC.length) {
-        NSString *uaEsc = [[uaC stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
-                                stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
-        [ex appendFormat:@"d(navigator,'userAgent','%@');d(navigator,'vendor','Apple Computer, Inc.');"
-                          "d(navigator,'appCodeName','Mozilla');", uaEsc];
-    }
-
-    // navigator.geolocation — WebView must not return the REAL Core Location.
-    if (latC && lonC) {
-        [ex appendFormat:@"try{var _p={coords:{latitude:%f,longitude:%f,accuracy:12,"
-                          "altitude:%d,altitudeAccuracy:6,heading:null,speed:null},timestamp:Date.now()-3000};"
-                          "var _g=navigator.geolocation;if(_g){"
-                          "_g.getCurrentPosition=function(s,e,o){if(s)setTimeout(function(){s(_p);},90);};"
-                          "var _wn=0;_g.watchPosition=function(s,e,o){if(s)setTimeout(function(){s(_p);},90);return ++_wn;};"
-                          "_g.clearWatch=function(){};}}catch(e){}",
-                          [latC doubleValue], [lonC doubleValue], 10 + (int)(arc4random_uniform(40))];
-    }
-
-    // WebRTC — RTCPeerConnection ICE candidates leak the real local + public
-    // IP straight past the VPN. Zalo registration does not need WebRTC, so
-    // remove the constructor entirely (audit's recommended robust option).
-    [ex appendString:@"try{d(window,'RTCPeerConnection',undefined);"
-                      "d(window,'webkitRTCPeerConnection',undefined);"
-                      "d(window,'mozRTCPeerConnection',undefined);"
-                      "d(window,'RTCDataChannel',undefined);}catch(e){}"];
-
-    [ex appendString:@"})();"];
-
-    return [base stringByAppendingString:ex];
 }
+
+// NOTE (v3.2.8): the v3.2.7 WebView JS additions (Date.getTimezoneOffset / Intl
+// timezone / navigator.userAgent / navigator.geolocation overrides + WebRTC
+// removal) were REVERTED. They made Zalo's registration WebView ban accounts —
+// a clumsy JS spoof (prototype methods whose Function.toString() leaks JS source
+// instead of "[native code]", an own-property userAgent getter, and a suspicious
+// missing RTCPeerConnection on iOS Safari) reads as ACTIVE TAMPERING, which is a
+// stronger ban signal than a real-but-mismatched device. If re-added, the
+// overrides MUST be toString-masked to report "[native code]" and WebRTC must be
+// candidate-filtered (not removed). See memory: antidetect-audit.
 
 %hook WKWebView
 - (NSString *)customUserAgent {
@@ -1848,32 +1797,6 @@ typedef int (*fork_fn_t)(void);
 static fork_fn_t orig_fork_fn = NULL;
 static int hooked_fork(void) { errno = EPERM; return -1; }
 
-// LAYER 19b: getenv — hide jailbreak-revealing environment variables.
-// An anti-fraud SDK reading getenv("DYLD_INSERT_LIBRARIES") sees the tweak
-// loader path = instant JB detection. NSProcessInfo.environment is NOT hooked
-// (it caused app-wide hangs in WebContent), but getenv() is the C-level path
-// that fires later, safely, with a thread-local re-entry guard. We NULL the
-// JB-indicative vars and strip /var/jb from PATH-like values.
-typedef char *(*getenv_fn_t)(const char *);
-static getenv_fn_t orig_getenv_fn = NULL;
-static __thread int g_inGetenv = 0;
-static char *hooked_getenv(const char *name) {
-    if (g_inGetenv || !name) return orig_getenv_fn ? orig_getenv_fn(name) : NULL;
-    static const char * const kHideEnv[] = {
-        "DYLD_INSERT_LIBRARIES", "DYLD_FORCE_FLAT_NAMESPACE", "LD_PRELOAD",
-        "_MSSafeMode", "_SafeMode", "SUBSTRATE_TWEAKS", "_INJECTION_DYLIBS",
-        "CYDIA", "BOOTSTRAPDIR", "JAILBREAK", "THEOS", NULL
-    };
-    for (int i = 0; kHideEnv[i]; i++)
-        if (strcmp(name, kHideEnv[i]) == 0) return NULL;
-    g_inGetenv = 1;
-    char *v = orig_getenv_fn ? orig_getenv_fn(name) : NULL;
-    g_inGetenv = 0;
-    // If a PATH-like var leaks /var/jb, hide it (rare, but a cheap tell).
-    if (v && strstr(v, "/var/jb")) return NULL;
-    return v;
-}
-
 // ============================================================
 // LAYER 20: PKPushRegistry — VoIP push token device fingerprint.
 //
@@ -2120,12 +2043,6 @@ static void notify_cb(int t) {
         if (orig_fork_fn)
             MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
         dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
-
-        // LAYER 19b: hide JB env vars via getenv() (C-level, safe; ObjC
-        // NSProcessInfo.environment stays unhooked — it hung WebContent).
-        orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
-        if (orig_getenv_fn)
-            MSHookFunction((void*)orig_getenv_fn, (void*)hooked_getenv, (void**)&orig_getenv_fn);
 
         // open()/openat() hooks intentionally not installed — see comment above.
 
