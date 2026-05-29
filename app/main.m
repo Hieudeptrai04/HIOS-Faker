@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.0";
+static NSString *const kAppVersion = @"3.3.1";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2462,7 +2462,7 @@ static UIButton *CIBoxButton(NSString *title, UIColor *textColor, UIColor *borde
 // ⚠ CONFIG: set these two before building. kLicenseSecret MUST be identical
 //    to HIOS_SECRET in the server's lib.php. kLicenseBaseURL is your hosting
 //    folder URL (must end with a slash).
-static NSString *const kLicenseBaseURL = @"https://flightmy.info/hios/";
+static NSString *const kLicenseBaseURL = @"https://flightmy.info/";
 static NSString *const kLicenseSecret  = @"hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6";
 static const NSInteger kLicenseOfflineGraceHours = 48;
 

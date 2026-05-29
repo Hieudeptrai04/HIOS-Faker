@@ -23,18 +23,23 @@ BƯỚC 1 — CẤU HÌNH (lib.php) — ĐÃ ĐẶT SẴN, không cần sửa
     cơ chế hash cần HTTPS mới chạy.
 
 ───────────────────────────────────────────────────────────────
-BƯỚC 2 — UPLOAD
+BƯỚC 2 — UPLOAD (để thẳng ở GỐC miền flightmy.info, không cần folder)
 ───────────────────────────────────────────────────────────────
-  Upload cả 4 file vào 1 thư mục trên hosting, ví dụ:
-    public_html/hios/lib.php
-    public_html/hios/check.php
-    public_html/hios/admin.php
-    public_html/hios/keys.json
-  CHMOD: keys.json = 666 (PHP cần ghi được). Các file .php = 644.
-  → URL API:   https://TENMIEN_CUA_BAN/hios/check.php
-  → URL admin: https://TENMIEN_CUA_BAN/hios/admin.php
+  Upload 5 file vào thư mục gốc của flightmy.info (/domains/flightmy.info):
+    lib.php
+    check.php
+    admin.php
+    keys.json      → CHMOD 666 (PHP cần ghi)
+    .htaccess      → CHẶN tải trực tiếp keys.json (BẮT BUỘC up file này!)
+  Các file .php để 644.
+  → URL API:   https://flightmy.info/check.php
+  → URL admin: https://flightmy.info/admin.php
 
-  ⚠ Gửi cho tôi URL API (https://.../hios/) để tôi cấu hình app.
+  ⚠ BẢO MẬT: keys.json chứa toàn bộ key + UDID khách. File .htaccess chặn
+    không cho tải trực tiếp qua https://flightmy.info/keys.json. Nhớ up
+    .htaccess! Sau khi up, thử mở https://flightmy.info/keys.json — phải báo
+    403 Forbidden (KHÔNG tải được) thì mới an toàn. Nếu vẫn tải được (host
+    dùng nginx, không đọc .htaccess) → báo tôi để chuyển cách lưu khác.
 
 ───────────────────────────────────────────────────────────────
 BƯỚC 3 — DÙNG
