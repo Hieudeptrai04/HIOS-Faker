@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.7";
+static NSString *const kAppVersion = @"3.3.8";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -129,10 +129,11 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"web_canvasNoise"] == nil) { _cfg[@"web_canvasNoise"] = @(YES); seeded = YES; }
     if (_cfg[@"keychainReset"]   == nil) { _cfg[@"keychainReset"]   = @(YES); seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
-    // Hardware lock default ON: always spoof the real device model so the chip
-    // profile (cpufamily/GPU/cache) is genuinely consistent — no cross-account
-    // "tampered device" signal. User can turn it off in Fake Settings for variety.
-    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
+    // Hardware lock default OFF: keep the FAKE model (the tweak now spoofs the
+    // SoC profile — cpufamily/cache — to match the faked model, so consistency
+    // no longer requires claiming the real model). Optional: turn it ON to claim
+    // the real device model for maximum consistency.
+    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -1179,7 +1180,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // force the spoofed model to the REAL device model so the hardware profile is
     // genuinely consistent; only the unique IDs (serial/UDID/IMEI/MAC/IDFA) rotate.
     id hwLockObj = [cm objectForKey:@"_ci_hw_lock"];
-    BOOL hwLock = hwLockObj ? [hwLockObj boolValue] : YES;
+    BOOL hwLock = hwLockObj ? [hwLockObj boolValue] : NO;
     if (hwLock) {
         NSString *realPT = ci_realProductType();
         if (realPT.length) {
@@ -3481,8 +3482,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C range:@"" labels:iosLabels minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
 
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
-    [_rows addObject:[C toggle:@"🔒 Khóa đúng máy thật (chống lệch phần cứng)" key:@"_ci_hw_lock" indent:24]];
-    [_rows addObject:[C note:@"BẬT (khuyến nghị): mỗi lần Đổi thiết bị luôn giả ĐÚNG model máy thật của bạn → chip/GPU/cache khớp 100%, tránh bị gom nhóm vì lệch phần cứng. Khi BẬT, thanh chọn dải model bên dưới bị bỏ qua. TẮT: cho giả model khác (chấp nhận rủi ro lộ chip thật)." indent:24]];
+    [_rows addObject:[C toggle:@"🔒 Khóa đúng máy thật (tùy chọn)" key:@"_ci_hw_lock" indent:24]];
+    [_rows addObject:[C note:@"TẮT (mặc định): giả model khác máy thật — tweak tự spoof cpufamily/cache theo chip của model giả (A11–A14, tới iPhone 12 Pro Max) để khớp. BẬT: luôn giả ĐÚNG model máy thật → khớp tuyệt đối nhưng đúng model thật; khi BẬT thanh chọn dải model bị bỏ qua." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];

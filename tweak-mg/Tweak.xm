@@ -651,6 +651,71 @@ static int writeIntegerSysctl(int64_t v, void *oldp, size_t *oldlenp, size_t wid
     return 0;
 }
 
+// ============================================================
+// Chip-spec CPU/cache spoof. When the faked ProductType's SoC differs from the
+// real silicon (e.g. claiming iPhone 12 / A14 on a physical iPhone X / A11),
+// these sysctls leak the REAL chip — cpufamily is the strongest chip
+// discriminator, and Zalo's anti-fraud SDK was observed reading hw.l2cachesize.
+// Returning the FAKED chip's values keeps the hardware profile consistent.
+// cpufamily constants are from <mach/machine.h> (A11 value verified on-device).
+// Cache sizes are best-effort per generation.
+// ============================================================
+typedef struct {
+    uint32_t cpufamily, cpusubfamily, cputype, cpusubtype;
+    int64_t  l1i, l1d, l2, cacheline, tbfreq;
+} ChipSpec;
+
+static BOOL chipSpecForProductType(NSString *pt, ChipSpec *out) {
+    if (!pt) return NO;
+    ChipSpec s = {0};
+    s.cputype = 16777228;   // CPU_TYPE_ARM64 (same for every modern iPhone)
+    s.cpusubfamily = 1;
+    s.cacheline = 128;      // 128-byte lines on all Apple A-series (verified A11)
+    s.tbfreq = 24000000;
+    if ([pt hasPrefix:@"iPhone10,"]) {          // A11 Bionic (8 / 8+ / X)
+        s.cpufamily = 0xe81e5fa6; s.cpusubtype = 1;
+        s.l1i = 49152;  s.l1d = 32768;  s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone11,"]) {   // A12 (XS / XS Max / XR)
+        s.cpufamily = 0x07d34b9f; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone12,"]) {   // A13 (11 / 11 Pro / 11 Pro Max)
+        s.cpufamily = 0x462504d2; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone13,"]) {   // A14 (12 / 12 mini / 12 Pro / Max)
+        s.cpufamily = 0x1b588bb3; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 16777216;
+    } else {
+        return NO;   // unknown SoC → don't spoof (avoid inventing wrong data)
+    }
+    *out = s;
+    return YES;
+}
+
+// Returns YES + fills *outVal if `name` is a chip-spec sysctl we should spoof
+// for the currently-configured ProductType.
+static BOOL chipIntForSysctl(const char *name, int64_t *outVal) {
+    NSString *pt = getConfigStr(@"ProductType");
+    if (!pt) return NO;
+    ChipSpec s;
+    if (!chipSpecForProductType(pt, &s)) return NO;
+    if (strcmp(name, "hw.cpufamily")      == 0) { *outVal = (int64_t)s.cpufamily;    return YES; }
+    if (strcmp(name, "hw.cpusubfamily")   == 0) { *outVal = (int64_t)s.cpusubfamily; return YES; }
+    if (strcmp(name, "hw.cputype")        == 0) { *outVal = (int64_t)s.cputype;      return YES; }
+    if (strcmp(name, "hw.cpusubtype")     == 0) { *outVal = (int64_t)s.cpusubtype;   return YES; }
+    if (strcmp(name, "hw.l1icachesize")   == 0) { *outVal = s.l1i;       return YES; }
+    if (strcmp(name, "hw.l1dcachesize")   == 0) { *outVal = s.l1d;       return YES; }
+    if (strcmp(name, "hw.l2cachesize")    == 0) { *outVal = s.l2;        return YES; }
+    if (strcmp(name, "hw.cachelinesize")  == 0) { *outVal = s.cacheline; return YES; }
+    if (strcmp(name, "hw.tbfrequency")    == 0) { *outVal = s.tbfreq;    return YES; }
+    if (strcmp(name, "hw.perflevel0.l2cachesize") == 0 ||
+        strcmp(name, "hw.perflevel1.l2cachesize") == 0) { *outVal = s.l2;  return YES; }
+    if (strcmp(name, "hw.perflevel0.l1icachesize") == 0 ||
+        strcmp(name, "hw.perflevel1.l1icachesize") == 0) { *outVal = s.l1i; return YES; }
+    if (strcmp(name, "hw.perflevel0.l1dcachesize") == 0 ||
+        strcmp(name, "hw.perflevel1.l1dcachesize") == 0) { *outVal = s.l1d; return YES; }
+    return NO;
+}
+
 static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
                                 void *newp, size_t newlen) {
     if (g_inSysctl || !name || newp) {
@@ -658,6 +723,24 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     }
     g_inSysctl = 1;
     initSysctlMap();
+
+    // Chip-spec CPU/cache spoof — keep the SoC profile consistent with the
+    // faked ProductType. Match the caller's expected integer width by probing
+    // the real sysctl first (these vary: cpufamily=4B, cache sizes often 8B).
+    {
+        int64_t chipVal = 0;
+        if (chipIntForSysctl(name, &chipVal)) {
+            size_t ol = 0;
+            orig_sysctlbyname(name, NULL, &ol, NULL, 0);
+            size_t width = (ol == 4) ? 4 : 8;
+            int rc = writeIntegerSysctl(chipVal, oldp, oldlenp, width);
+            dbglog("sysctl.chip %s name=%s -> %lld (w=%zu) rc=%d\n",
+                   g_procname, name, (long long)chipVal, width, rc);
+            g_inSysctl = 0;
+            return rc;
+        }
+    }
+
     NSString *ns = [NSString stringWithUTF8String:name];
     NSString *cfgKey = g_sysctlMap[ns];
     if (!cfgKey) {
