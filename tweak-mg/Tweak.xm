@@ -918,13 +918,13 @@ static BOOL isZaloFingerprintQuery(CFDictionaryRef query) {
     for (int i = 0; kZaloFpAccounts[i]; i++) {
         if (strcmp(ab, kZaloFpAccounts[i]) == 0) return YES;
     }
-    // Block Firebase Installation ID by service (prevents device-level tracking)
-    CFStringRef svc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrService);
-    if (svc && CFGetTypeID(svc) == CFStringGetTypeID()) {
-        char sb[128]; sb[0] = 0;
-        CFStringGetCString(svc, sb, sizeof(sb), kCFStringEncodingUTF8);
-        if (strstr(sb, "FIRInstallations") || strstr(sb, "firebase")) return YES;
-    }
+    // Firebase Installation ID is intentionally NOT blocked.
+    // Blocking it forced Firebase to re-register the FID over the network on
+    // every keychain read (it could never cache one) → a ~3s main-thread stall
+    // at Zalo's "create account" step (confirmed via SSH A/B test 2026-06).
+    // Firebase FID is Google analytics, not VNG's ban vector (we still block
+    // kZAID/deviceUUID/_pfo above), and it is refreshed by the host app's
+    // container reset on a real Change Device anyway.
     return NO;
 }
 
@@ -944,7 +944,11 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
 // Called when running inside Zalo's process on identity reload (ReloadConfig).
 // From inside the target process we have Zalo's keychain-access-groups entitlement
 // so SecItemDelete succeeds where it would fail from an outside process.
-static void wipeZaloKeychainFingerprints(void) {
+// includeFirebase: YES only on a real Change Device (notify_cb) so a fresh
+// identity gets a fresh Firebase FID. The per-launch autoWipe passes NO —
+// deleting the FID on every launch forced a ~3s network re-registration at
+// Zalo's "create account" step. Keeping it lets Firebase cache its FID.
+static void wipeZaloKeychainFingerprints(BOOL includeFirebase) {
     NSString *const kAgrp = @"CVB6BX97VM.group.keychain.vn.com.vng.zalo";
     int deleted = 0;
     for (int i = 0; kZaloFpAccounts[i]; i++) {
@@ -955,14 +959,16 @@ static void wipeZaloKeychainFingerprints(void) {
         };
         if (SecItemDelete((__bridge CFDictionaryRef)q) == errSecSuccess) deleted++;
     }
-    // Delete Firebase Installation record (matches by service, not account)
-    NSDictionary *fbq = @{
-        (__bridge id)kSecClass:           (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService:     @"com.firebase.FIRInstallations.installations",
-        (__bridge id)kSecAttrAccessGroup: kAgrp,
-    };
-    if (SecItemDelete((__bridge CFDictionaryRef)fbq) == errSecSuccess) deleted++;
-    dbglog("wipeZaloKC %s deleted=%d\n", g_procname, deleted);
+    if (includeFirebase) {
+        // Delete Firebase Installation record (matches by service, not account)
+        NSDictionary *fbq = @{
+            (__bridge id)kSecClass:           (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService:     @"com.firebase.FIRInstallations.installations",
+            (__bridge id)kSecAttrAccessGroup: kAgrp,
+        };
+        if (SecItemDelete((__bridge CFDictionaryRef)fbq) == errSecSuccess) deleted++;
+    }
+    dbglog("wipeZaloKC %s deleted=%d fb=%d\n", g_procname, deleted, includeFirebase ? 1 : 0);
 }
 
 // LAYER 11 (cont): Block SecItemAdd/SecItemUpdate for device fingerprint keys.
@@ -1835,7 +1841,11 @@ static void notify_cb(int t) {
         const char *pn = getprogname();
         if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
                    strstr(pn, "zingalo") || strstr(pn, "imess"))) {
-            wipeZaloKeychainFingerprints();
+            // Real Change Device → fresh identity: full wipe INCLUDING Firebase
+            // FID. Keychain deletes are synchronous I/O → run off the main thread.
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                wipeZaloKeychainFingerprints(YES);
+            });
             // Clear WKWebView persistent storage (cookies, localStorage, IndexedDB,
             // service worker caches) — Zalo's embedded WebView stores session tokens
             // and device fingerprints in localStorage that survive app reinstalls.
@@ -2125,7 +2135,9 @@ static void notify_cb(int t) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)),
                                dispatch_get_main_queue(), ^{
                     @autoreleasepool {
-                        wipeZaloKeychainFingerprints();
+                        // WKWebsiteDataStore must be touched on the main thread; the
+                        // removal itself is async (completionHandler), so it does not
+                        // block here.
                         WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
                         NSSet *types = [WKWebsiteDataStore allWebsiteDataTypes];
                         [store removeDataOfTypes:types
@@ -2133,16 +2145,21 @@ static void notify_cb(int t) {
                               completionHandler:^{
                             dbglog("ctor.autoWipe WKDataStore cleared %s\n", g_procname);
                         }];
-                        // Wipe NSUserDefaults device fingerprint cache
-                        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-                        for (int i = 0; kZaloUDKeys[i]; i++)
-                            [ud removeObjectForKey:kZaloUDKeys[i]];
-                        [ud synchronize];
-                        // Pasteboard NOT cleared here — VCam stores its video path
-                        // in the general pasteboard; clearing it breaks VCam.
-                        // Pasteboard is only cleared in notify_cb (user-triggered).
-                        dbglog("ctor.autoWipe KC+WebStore+UD cleared %s\n", g_procname);
                     }
+                    // Keychain + NSUserDefaults wipe is synchronous I/O — run OFF the
+                    // main thread so it never adds a launch-time hitch. includeFirebase
+                    // = NO: keep the Firebase FID so Firebase does not re-register over
+                    // the network (that was the ~3s "create account" stall).
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @autoreleasepool {
+                            wipeZaloKeychainFingerprints(NO);
+                            NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+                            for (int i = 0; kZaloUDKeys[i]; i++)
+                                [ud removeObjectForKey:kZaloUDKeys[i]];
+                            [ud synchronize];
+                            dbglog("ctor.autoWipe KC+UD cleared %s\n", g_procname);
+                        }
+                    });
                 });
                 dbglog("ctor %s scheduled autoWipe in 1.5s\n", g_procname);
             }
