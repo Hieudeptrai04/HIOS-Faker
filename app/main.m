@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.8";
+static NSString *const kAppVersion = @"4.0.0 beta";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1965,7 +1965,11 @@ static int ci_run(const char *cmd) {
 @end
 
 static NSString *CITweakFilterPath(void) {
-    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
+    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.plist";
+}
+
+static NSString *CICTTweakFilterPath(void) {
+    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosCT.plist";
 }
 
 // v2.6.1: ALL user-selected target apps go through the ultra-thin
@@ -2000,6 +2004,10 @@ static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
         if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
         if (exec.length) [executables addObject:exec];
     }
+    if ([bundles containsObject:@"com.apple.mobilesafari"]) {
+        [bundles addObject:@"com.apple.WebKit.WebContent"];
+        [executables addObject:@"com.apple.WebKit.WebContent"];
+    }
     NSDictionary *filter = @{
         @"Filter": @{
             @"Bundles": bundles.array,
@@ -2015,7 +2023,7 @@ static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
         NSLog(@"[ChangeInfoIos] sidecar filter sync: plist serialization failed");
         return;
     }
-    NSString *path = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosZalo.plist";
+    NSString *path = CITweakFilterPath();
     BOOL ok = [data writeToFile:path atomically:YES];
     if (ok) chmod([path fileSystemRepresentation], 0644);
     NSLog(@"[ChangeInfoIos] sidecar filter sync: %@ (%lu bundles, %lu execs)",
@@ -2024,7 +2032,51 @@ static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
           (unsigned long)executables.count);
 }
 
+static void ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps) {
+    NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
+    NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
+    for (CIAppInfo *app in apps) {
+        if (app.bundleID.length) [bundles addObject:app.bundleID];
+        if (!app.bundlePath.length) continue;
+        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
+        NSString *exec = [[bundle executablePath] lastPathComponent];
+        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
+        if (exec.length) [executables addObject:exec];
+    }
+    [executables addObject:@"CommCenter"];
+    [executables addObject:@"commcenter"];
+    [executables addObject:@"CoreTelephonyHelper"];
+
+    NSDictionary *filter = @{
+        @"Filter": @{
+            @"Bundles": bundles.array,
+            @"Executables": executables.array,
+            @"Mode": @"Any",
+        }
+    };
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:filter
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:nil];
+    if (!data) {
+        NSLog(@"[ChangeInfoIos] CT filter sync: plist serialization failed");
+        return;
+    }
+    NSString *path = CICTTweakFilterPath();
+    BOOL ok = [data writeToFile:path atomically:YES];
+    if (ok) chmod([path fileSystemRepresentation], 0644);
+    NSLog(@"[ChangeInfoIos] CT filter sync: %@ (%lu bundles, %lu execs)",
+          ok ? @"OK" : @"FAIL",
+          (unsigned long)bundles.count,
+          (unsigned long)executables.count);
+}
+
 static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
+    ci_syncSidecarFilterForApps(apps);
+    ci_syncCarrierFilterForApps(apps);
+    return;
+
+#if 0
     // v2.6.1: main tweak loads ONLY into SpringBoard + Preferences for system
     // integration (Darwin notify post / UIDevice-from-Settings spoof). All
     // user-selected target apps are excluded — they're handled by the
@@ -2064,6 +2116,7 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
           ok ? @"OK" : @"FAIL",
           (unsigned long)bundles.count,
           (unsigned long)executables.count);
+#endif
 }
 
 @implementation CIAppLister
@@ -5263,6 +5316,33 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self refreshFakeProfile];
     y += 376;
 
+    // ---- Verify fake values ----
+    UIView *verifyCard = [self _ciNewCard:CGRectMake(P, y, cardW, 64)];
+    [sv addSubview:verifyCard];
+    UIButton *verifyBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    verifyBtn.frame = CGRectMake(0, 0, cardW, 64);
+    [verifyBtn addTarget:self action:@selector(showFakeInfoReport) forControlEvents:UIControlEventTouchUpInside];
+    [verifyCard addSubview:verifyBtn];
+    if (@available(iOS 13.0, *)) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+        UIImageView *iv = [[UIImageView alloc] initWithImage:
+            [[UIImage systemImageNamed:@"checkmark.shield.fill" withConfiguration:cfg]
+             imageWithTintColor:[CITheme green] renderingMode:UIImageRenderingModeAlwaysOriginal]];
+        iv.frame = CGRectMake(14, 17, 30, 30);
+        [verifyBtn addSubview:iv];
+    }
+    UILabel *vt = [[UILabel alloc] initWithFrame:CGRectMake(54, 10, cardW-70, 22)];
+    vt.text = @"Verify Fake Info";
+    vt.font = [UIFont boldSystemFontOfSize:15];
+    vt.textColor = [CITheme text];
+    [verifyBtn addSubview:vt];
+    UILabel *vs = [[UILabel alloc] initWithFrame:CGRectMake(54, 32, cardW-70, 20)];
+    vs.text = @"MG / CT / GPS / Web / Keychain";
+    vs.font = [UIFont systemFontOfSize:12];
+    vs.textColor = [CITheme dim];
+    [verifyBtn addSubview:vs];
+    y += 80;
+
     // ---- Secondary actions (kept compact) ----
     UIView *bottomCard = [self _ciNewCard:CGRectMake(P, y, cardW, 56)];
     [sv addSubview:bottomCard];
@@ -6137,8 +6217,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         sharedSize, (unsigned long)sharedKeys];
 
     // 2. Dylib + filter plist in the substrate dir
-    NSString *dylibPath  = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.dylib";
-    NSString *filterPath = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIos.plist";
+    NSString *dylibPath  = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.dylib";
+    NSString *filterPath = CITweakFilterPath();
     BOOL dylibExists = [fm fileExistsAtPath:dylibPath];
     unsigned long long dylibSize = 0;
     if (dylibExists) {

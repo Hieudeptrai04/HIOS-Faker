@@ -1814,11 +1814,11 @@ static BOOL isZaloUDKey(NSString *k) {
 // ============================================================
 %hook CTTelephonyNetworkInfo
 - (NSString *)currentRadioAccessTechnology {
-    NSString *v = getConfigStr(@"radioAccessTechnology");
+    NSString *v = getConfigStr(@"carrierRadioAccess") ?: getConfigStr(@"radioAccessTechnology");
     return v ?: %orig;
 }
 - (NSDictionary *)serviceCurrentRadioAccessTechnology {
-    NSString *v = getConfigStr(@"radioAccessTechnology");
+    NSString *v = getConfigStr(@"carrierRadioAccess") ?: getConfigStr(@"radioAccessTechnology");
     if (!v) return %orig;
     NSDictionary *o = %orig;
     if (!o || o.count == 0) return o;
