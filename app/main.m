@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"3.3.9";
+static NSString *const kAppVersion = @"3.3.10";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1420,8 +1420,20 @@ static NSUInteger ci_randomizeIdentities(void) {
     // 14 extras and triggered the same crash chain. Restore once we
     // identify the actual trigger.
 
-    // Additional keys for deep spoofing (AIDA64 reads these)
-    [cm setObject:ci_randSerial() forKey:@"IOPlatformSerialNumber"];
+    // Additional keys for deep spoofing (AIDA64 reads these).
+    // ONE serial for the whole device: MG SerialNumber, IORegistry serial /
+    // IOPlatformSerialNumber and sysctl hw.serialnumber must all match (a real
+    // device has a single serial). Was previously 3 DIFFERENT random serials.
+    NSString *theSerial = ci_randSerial();
+    [cm setObject:theSerial forKey:@"SerialNumber"];
+    [cm setObject:theSerial forKey:@"serialNumber"];
+    [cm setObject:theSerial forKey:@"IOPlatformSerialNumber"];
+    // Baseband identifiers are device-unique; never randomized before, so they
+    // leaked the REAL baseband ids (a constant cross-account fingerprint).
+    [cm setObject:ci_randAlnum(11) forKey:@"BasebandSerialNumber"];
+    [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(8)] forKey:@"BasebandChipId"];
+    [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(8)] forKey:@"BasebandCertId"];
+    [cm setObject:ci_randAlnum(17) forKey:@"IODeviceTreeMLBSerial"];  // MLB serial (IORegistry)
     // Real iOS uses canonical UUID format (8-4-4-4-12 with dashes). Apps
     // calling [NSUUID UUID initWithUUIDString:] on a 40-char hex blob
     // get nil back and may then crash when dereferencing.
@@ -1595,8 +1607,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // add the missing-from-report fields back individually once we know
     // which one is the trigger.
     NSDictionary *ids = @{
-        @"serialNumber":                          ci_randSerial(),
-        @"SerialNumber":                          ci_randSerial(),
+        // serialNumber / SerialNumber / IOPlatformSerialNumber set above (one shared serial)
         @"advertisingIdentifier":                 ci_randUUID(),
         @"identifierForVendor":                   ci_randUUID(),
         @"UniqueDeviceID":                        ci_randHexLower(40),
