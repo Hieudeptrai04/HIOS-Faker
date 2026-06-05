@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.0 beta";
+static NSString *const kAppVersion = @"3.3.9";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1144,6 +1144,67 @@ static NSString *ci_realProductType(void) {
     return m.length ? m : nil;
 }
 
+// Valid storage capacities (GB) per model — REAL Apple SKUs only. Prevents
+// impossible combos (512GB iPhone 12, 64GB iPhone 12 Pro, ...) that anti-fraud
+// flags. Sources: 9to5mac iPhone storage list + Apple spec pages.
+static unsigned long long ci_randStorageBytesForModel(NSString *pt) {
+    NSArray<NSNumber *> *o;
+    if      ([pt isEqualToString:@"iPhone10,3"] || [pt isEqualToString:@"iPhone10,6"]) o = @[@64,@256];               // X
+    else if ([pt isEqualToString:@"iPhone11,2"] || [pt isEqualToString:@"iPhone11,6"]) o = @[@64,@256,@512];          // XS / XS Max
+    else if ([pt isEqualToString:@"iPhone11,8"]) o = @[@64,@128,@256];                                                // XR
+    else if ([pt isEqualToString:@"iPhone12,1"]) o = @[@64,@128,@256];                                                // 11
+    else if ([pt isEqualToString:@"iPhone12,3"] || [pt isEqualToString:@"iPhone12,5"]) o = @[@64,@256,@512];          // 11 Pro / Max
+    else if ([pt isEqualToString:@"iPhone12,8"]) o = @[@64,@128,@256];                                                // SE2
+    else if ([pt isEqualToString:@"iPhone13,1"] || [pt isEqualToString:@"iPhone13,2"]) o = @[@64,@128,@256];          // 12 mini / 12
+    else if ([pt isEqualToString:@"iPhone13,3"] || [pt isEqualToString:@"iPhone13,4"]) o = @[@128,@256,@512];         // 12 Pro / Max
+    else if ([pt isEqualToString:@"iPhone10,1"] || [pt isEqualToString:@"iPhone10,2"]) o = @[@64,@256];               // 8 / 8+
+    else if ([pt isEqualToString:@"iPhone9,1"]  || [pt isEqualToString:@"iPhone9,2"])  o = @[@32,@128,@256];          // 7 / 7+
+    else if ([pt hasPrefix:@"iPhone8,"]) o = @[@16,@32,@64,@128];                                                     // 6s / 6s+ / SE1 (A9)
+    else if ([pt isEqualToString:@"iPhone14,4"] || [pt isEqualToString:@"iPhone14,5"]) o = @[@128,@256,@512];         // 13 mini / 13
+    else if ([pt isEqualToString:@"iPhone14,2"] || [pt isEqualToString:@"iPhone14,3"]) o = @[@128,@256,@512,@1024];   // 13 Pro / Max
+    else if ([pt isEqualToString:@"iPhone14,7"] || [pt isEqualToString:@"iPhone14,8"]) o = @[@128,@256,@512];         // 14 / Plus
+    else if ([pt isEqualToString:@"iPhone15,2"] || [pt isEqualToString:@"iPhone15,3"]) o = @[@128,@256,@512,@1024];   // 14 Pro / Max
+    else if ([pt isEqualToString:@"iPhone15,4"] || [pt isEqualToString:@"iPhone15,5"]) o = @[@128,@256,@512];         // 15 / Plus
+    else if ([pt isEqualToString:@"iPhone16,1"]) o = @[@128,@256,@512,@1024];                                         // 15 Pro
+    else if ([pt isEqualToString:@"iPhone16,2"]) o = @[@256,@512,@1024];                                              // 15 Pro Max
+    else o = @[@64,@128,@256];
+    unsigned long long gb = [o[arc4random_uniform((uint32_t)o.count)] unsignedLongLongValue];
+    return gb * 1000000000ULL;   // Apple reports capacity in decimal GB
+}
+
+// Regulatory model number (A-number) per model — model-specific, the field
+// Settings shows when you tap the part number. Source: theiphonewiki Models.
+static NSString *ci_regulatoryModelForProductType(NSString *pt) {
+    static NSDictionary *m = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        m = @{
+            @"iPhone8,1":@"A1688", @"iPhone8,2":@"A1687", @"iPhone8,4":@"A1723",
+            @"iPhone9,1":@"A1778", @"iPhone9,2":@"A1784",
+            @"iPhone10,1":@"A1863", @"iPhone10,2":@"A1864", @"iPhone10,3":@"A1901", @"iPhone10,6":@"A1901",
+            @"iPhone11,8":@"A2108", @"iPhone11,2":@"A2100", @"iPhone11,6":@"A2104",
+            @"iPhone12,1":@"A2223", @"iPhone12,3":@"A2217", @"iPhone12,5":@"A2218", @"iPhone12,8":@"A2298",
+            @"iPhone13,1":@"A2400", @"iPhone13,2":@"A2404", @"iPhone13,3":@"A2408", @"iPhone13,4":@"A2412",
+            @"iPhone14,4":@"A2629", @"iPhone14,5":@"A2634", @"iPhone14,2":@"A2639", @"iPhone14,3":@"A2644",
+            @"iPhone14,6":@"A2784", @"iPhone14,7":@"A2884", @"iPhone14,8":@"A2888",
+            @"iPhone15,2":@"A2892", @"iPhone15,3":@"A2896", @"iPhone15,4":@"A3092", @"iPhone15,5":@"A3096",
+            @"iPhone16,1":@"A3104", @"iPhone16,2":@"A3108",
+        };
+    });
+    return pt ? m[pt] : nil;
+}
+
+// Part number (e.g. "MGJ93VN/A"). The region suffix MUST equal RegionInfo (VN/A);
+// the old fixed pool wrongly mixed Canada (VC/A) codes. Exact letters aren't
+// DB-validatable, so generate a plausible VN/A code; model-matching is carried
+// by the regulatory A-number above + RegionInfo.
+static NSString *ci_randPartNumberVN(void) {
+    static const char *A = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+    NSMutableString *s = [NSMutableString stringWithString:@"M"];
+    for (int i = 0; i < 4; i++) [s appendFormat:@"%c", A[arc4random_uniform(33)]];
+    [s appendString:@"VN/A"];
+    return s;
+}
+
 static NSUInteger ci_randomizeIdentities(void) {
     CIConfigManager *cm = [CIConfigManager shared];
 
@@ -1367,9 +1428,9 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:[[NSUUID UUID] UUIDString] forKey:@"IOPlatformUUID"];
     [cm setObject:[NSString stringWithFormat:@"iBoot-%d.%d.%d", arc4random_uniform(100)+7000, arc4random_uniform(99)+1, arc4random_uniform(9)+1] forKey:@"FirmwareVersion"];
     [cm setObject:[NSString stringWithFormat:@"%d.%d.%d", arc4random_uniform(9)+1, arc4random_uniform(99)+10, arc4random_uniform(9)] forKey:@"BasebandVersion"];
-    static NSArray *kModelNumbers = nil;
-    if (!kModelNumbers) kModelNumbers = @[@"MTGM2VC/A", @"MQ8L3VN/A", @"MN9P3VN/A", @"MQ7N3VN/A", @"MTU13VN/A", @"MGAH3VN/A"];
-    [cm setObject:kModelNumbers[arc4random_uniform((uint32_t)kModelNumbers.count)] forKey:@"ModelNumber"];
+    [cm setObject:ci_randPartNumberVN() forKey:@"ModelNumber"];
+    NSString *regModel = ci_regulatoryModelForProductType(productTyp);
+    if (regModel) [cm setObject:regModel forKey:@"RegulatoryModelNumber"];
     [cm setObject:@"VN" forKey:@"RegionCode"];
     [cm setObject:@"VN/A" forKey:@"RegionInfo"];
     [cm setObject:boardIDHex forKey:@"BoardId"];
@@ -1381,11 +1442,11 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:cpuCores  forKey:@"processorCount"];
     [cm setObject:cpuCores  forKey:@"hw_physicalcpu"];
     [cm setObject:cpuCores  forKey:@"hw_logicalcpu_max"];
-    // Valid iPhone storage sizes (GB). 192 GB never shipped on any iPhone.
-    static const unsigned int kStorGBPool[] = {64, 128, 256, 512};
-    unsigned int storGB = kStorGBPool[arc4random_uniform(4)];
-    unsigned long long capacity64 = (unsigned long long)storGB * 1073741824ULL;
-    unsigned long long usedBytes = (unsigned long long)(arc4random_uniform(storGB/4) + storGB/8) * 1073741824ULL;
+    // Storage — pick a REAL SKU for THIS exact model (no impossible combos like
+    // 512GB iPhone 12 or 64GB iPhone 12 Pro). Capacity in decimal GB (Apple).
+    unsigned long long capacity64 = ci_randStorageBytesForModel(productTyp);
+    unsigned long long usedBytes = (unsigned long long)(arc4random_uniform(40) + 15)
+                                   * (capacity64 / 100);   // 15–55% used
     if (usedBytes >= capacity64) usedBytes = capacity64 / 4;
     [cm setObject:@(capacity64) forKey:@"TotalDiskCapacity"];
     [cm setObject:@(capacity64 - usedBytes) forKey:@"TotalSystemAvailable"];

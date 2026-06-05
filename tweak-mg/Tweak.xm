@@ -672,8 +672,14 @@ static BOOL chipSpecForProductType(NSString *pt, ChipSpec *out) {
     s.cpusubfamily = 1;
     s.cacheline = 128;      // 128-byte lines on all Apple A-series (verified A11)
     s.tbfreq = 24000000;
-    if ([pt hasPrefix:@"iPhone10,"]) {          // A11 Bionic (8 / 8+ / X)
-        s.cpufamily = 0xe81e5fa6; s.cpusubtype = 1;
+    if ([pt hasPrefix:@"iPhone8,"]) {           // A9 Twister (6s / 6s Plus / SE1)
+        s.cpufamily = 0x92fb37c8; s.cpusubtype = 1; s.cacheline = 64;
+        s.l1i = 65536;  s.l1d = 65536;  s.l2 = 3145728;
+    } else if ([pt hasPrefix:@"iPhone9,"]) {    // A10 Fusion (7 / 7 Plus)
+        s.cpufamily = 0x67ceee93; s.cpusubtype = 1; s.cacheline = 64;
+        s.l1i = 65536;  s.l1d = 65536;  s.l2 = 3145728;
+    } else if ([pt hasPrefix:@"iPhone10,"]) {   // A11 Bionic (8 / 8+ / X)
+        s.cpufamily = 0xe81e7ef6; s.cpusubtype = 1;   // verified: dump -400654602 == 0xE81E7EF6
         s.l1i = 49152;  s.l1d = 32768;  s.l2 = 8388608;
     } else if ([pt hasPrefix:@"iPhone11,"]) {   // A12 (XS / XS Max / XR)
         s.cpufamily = 0x07d34b9f; s.cpusubtype = 2;
@@ -683,7 +689,16 @@ static BOOL chipSpecForProductType(NSString *pt, ChipSpec *out) {
         s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
     } else if ([pt hasPrefix:@"iPhone13,"]) {   // A14 (12 / 12 mini / 12 Pro / Max)
         s.cpufamily = 0x1b588bb3; s.cpusubtype = 2;
-        s.l1i = 131072; s.l1d = 131072; s.l2 = 16777216;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone14,"]) {   // A15 (13 series / 14 / 14 Plus / SE3)
+        s.cpufamily = 0xda33d83d; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone15,"]) {   // A16 (14 Pro / Max / 15 / 15 Plus)
+        s.cpufamily = 0x8765edea; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone16,"]) {   // A17 Pro (15 Pro / 15 Pro Max)
+        s.cpufamily = 0x2876f5b5; s.cpusubtype = 2;
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
     } else {
         return NO;   // unknown SoC → don't spoof (avoid inventing wrong data)
     }
