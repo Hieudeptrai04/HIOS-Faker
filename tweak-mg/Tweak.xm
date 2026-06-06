@@ -1510,6 +1510,15 @@ static BOOL isJBPath(const char *path) {
         "/usr/lib/libsubstrate.dylib", "/usr/lib/substrate",
         "/var/checkra1n.dmg", "/.bootstraprc", "/bootstraprc",
         "/private/etc/apt", "/etc/apt",
+        // JB binaries / markers — none ship on stock iOS, so hiding them is safe.
+        "/bin/bash", "/bin/sh", "/bin/zsh",
+        "/usr/sbin/sshd", "/usr/bin/ssh", "/etc/ssh",
+        "/usr/libexec/cydia", "/usr/libexec/substrate",
+        "/usr/bin/cycript", "/usr/lib/libcycript.dylib",
+        "/usr/lib/TweakInject", "/var/lib/dpkg", "/Library/dpkg",
+        "/.installed_unc0ver", "/.bootstrapped_electra", "/.bootstrapped",
+        "/taurine", "/var/binpack", "/private/var/binpack", "/jb",
+        "/Applications/Filza.app",
         NULL
     };
     for (int i = 0; kHide[i]; i++) {
@@ -1552,6 +1561,27 @@ static int hook_lstat_fn(const char *path, struct stat *buf) {
 static int hook_access_fn(const char *path, int mode) {
     if (isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     return orig_access_fn(path, mode);
+}
+
+// fopen — the single most common JB-file check (fopen("/Applications/Cydia.app"),
+// fopen("/bin/bash"), ...). Non-variadic → safe to hook (unlike open(), which was
+// removed for a variadic-ABI crash). Our own dbglog targets are exempt: config dir
+// is whitelisted in isJBPath and our caller is a /var/jb tweak (statCallerIsJBTweak).
+typedef FILE *(*fopen_fn_t)(const char *, const char *);
+static fopen_fn_t orig_fopen_fn = NULL;
+static FILE *hook_fopen_fn(const char *path, const char *mode) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return NULL; }
+    return orig_fopen_fn(path, mode);
+}
+
+// getenv — hide the injection env vars some anti-fraud SDKs probe.
+typedef char *(*getenv_fn_t)(const char *);
+static getenv_fn_t orig_getenv_fn = NULL;
+static char *hook_getenv_fn(const char *name) {
+    if (name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
+                 strcmp(name, "_MSSafeMode") == 0 ||
+                 strcmp(name, "_SubstrateMode") == 0)) return NULL;
+    return orig_getenv_fn(name);
 }
 
 %hook NSFileManager
@@ -2131,8 +2161,17 @@ static void notify_cb(int t) {
             MSHookFunction((void*)orig_lstat_fn,  (void*)hook_lstat_fn,  (void**)&orig_lstat_fn);
         if (orig_access_fn)
             MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
-        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p\n",
-               g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn);
+        // fopen — covers the most common JB-file check (open() stays unhooked).
+        orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
+        if (orig_fopen_fn)
+            MSHookFunction((void*)orig_fopen_fn, (void*)hook_fopen_fn, (void**)&orig_fopen_fn);
+        // getenv — hide DYLD_INSERT_LIBRARIES / substrate env probes.
+        orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
+        if (orig_getenv_fn)
+            MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
+        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
+               g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
+               (void*)orig_fopen_fn, (void*)orig_getenv_fn);
 
         // LAYER 10: dyld image list hiding
         orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
