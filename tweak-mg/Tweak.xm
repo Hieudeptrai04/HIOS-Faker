@@ -139,14 +139,64 @@ static NSString *const kAppNote     = @"com.changeinfoios/ReloadPrefs"; // app s
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
 
+// ============================================================
+// License gate. Spoofing is allowed ONLY when config holds a valid signed
+// token "_ci_lic_tok" = "<expiryEpoch>|<HMAC(epoch, secret)>" that the host app
+// writes after a server-validated, unexpired license. So writing config.plist
+// by hand (SSH) no longer enables spoofing. Secret is obfuscated (bytes XOR
+// 0x37) — the SAME bytes as the app's ci_licSecret(), so the HMACs match.
+// ============================================================
+#import <CommonCrypto/CommonCrypto.h>
+#import <time.h>
+static int g_licOK = 0;
+static NSString *tw_licSecret(void) {
+    static NSString *s = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        static const unsigned char kS[] = {
+            0x5f, 0x71, 0x0e, 0x5c, 0x66, 0x05, 0x5a, 0x6d, 0x00, 0x41, 0x6f, 0x06,
+            0x47, 0x65, 0x03, 0x59, 0x7b, 0x0f, 0x40, 0x75, 0x01, 0x54, 0x63, 0x04,
+            0x4e, 0x73, 0x02, 0x44, 0x70, 0x07, 0x56, 0x7d, 0x52, 0x62, 0x05, 0x5e,
+            0x78, 0x0e, 0x45, 0x7c, 0x03, 0x5b, 0x7a, 0x00, 0x59, 0x67, 0x06, 0x46,
+            0x61, 0x0f, 0x4f, 0x6d, 0x04, 0x55, 0x79, 0x01,
+        };
+        char buf[sizeof(kS) + 1];
+        for (size_t i = 0; i < sizeof(kS); i++) buf[i] = kS[i] ^ 0x37;
+        buf[sizeof(kS)] = 0;
+        s = [NSString stringWithUTF8String:buf];
+    });
+    return s;
+}
+static void computeLicOK(void) {
+    g_licOK = 0;
+    id tv = g_config[@"_ci_lic_tok"];
+    if (![tv isKindOfClass:[NSString class]]) return;
+    NSString *tok = (NSString *)tv;
+    NSRange bar = [tok rangeOfString:@"|"];
+    if (bar.location == NSNotFound) return;
+    NSString *es  = [tok substringToIndex:bar.location];
+    NSString *sig = [tok substringFromIndex:bar.location + 1];
+    if (!es.length || !sig.length) return;
+    if ([es longLongValue] <= (long long)time(NULL)) return;     // expired
+    const char *k = [tw_licSecret() UTF8String];
+    const char *m = [es UTF8String];
+    unsigned char mac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, k, strlen(k), m, strlen(m), mac);
+    char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + i*2, 3, "%02x", mac[i]);
+    if (strcmp(hex, [sig UTF8String]) == 0) g_licOK = 1;
+}
+
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     g_config = d ?: @{};
+    computeLicOK();
 }
 
 static inline NSDictionary *cfg(void) {
     dispatch_once(&g_loadOnce, ^{ reloadConfig(); });
-    return g_config;
+    // Not licensed → empty config → every spoof read returns nil → tweak is a
+    // no-op (real values pass through). Fail-closed, never crashes.
+    return g_licOK ? g_config : @{};
 }
 
 static inline id getConfig(NSString *k) { return cfg()[k]; }

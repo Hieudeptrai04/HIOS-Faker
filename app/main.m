@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.2";
+static NSString *const kAppVersion = @"4.0.3";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2622,7 +2622,25 @@ static UIButton *CIBoxButton(NSString *title, UIColor *textColor, UIColor *borde
 //    to HIOS_SECRET in the server's lib.php. kLicenseBaseURL is your hosting
 //    folder URL (must end with a slash).
 static NSString *const kLicenseBaseURL = @"https://flightmy.info/";
-static NSString *const kLicenseSecret  = @"hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6";
+// Secret obfuscated (bytes XOR 0x37, assembled at runtime) so `strings`/grep on
+// the binary can't recover it. Value MUST equal HIOS_SECRET in the server lib.php.
+static NSString *ci_licSecret(void) {
+    static NSString *s = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        static const unsigned char kS[] = {
+            0x5f, 0x71, 0x0e, 0x5c, 0x66, 0x05, 0x5a, 0x6d, 0x00, 0x41, 0x6f, 0x06,
+            0x47, 0x65, 0x03, 0x59, 0x7b, 0x0f, 0x40, 0x75, 0x01, 0x54, 0x63, 0x04,
+            0x4e, 0x73, 0x02, 0x44, 0x70, 0x07, 0x56, 0x7d, 0x52, 0x62, 0x05, 0x5e,
+            0x78, 0x0e, 0x45, 0x7c, 0x03, 0x5b, 0x7a, 0x00, 0x59, 0x67, 0x06, 0x46,
+            0x61, 0x0f, 0x4f, 0x6d, 0x04, 0x55, 0x79, 0x01,
+        };
+        char buf[sizeof(kS) + 1];
+        for (size_t i = 0; i < sizeof(kS); i++) buf[i] = kS[i] ^ 0x37;
+        buf[sizeof(kS)] = 0;
+        s = [NSString stringWithUTF8String:buf];
+    });
+    return s;
+}
 static const NSInteger kLicenseOfflineGraceHours = 48;
 
 // config plist keys
@@ -2741,13 +2759,31 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 
 // HMAC-SHA256(canonical, secret) hex — must match server hios_sign().
 - (NSString *)hmac:(NSString *)canonical {
-    const char *cKey = [kLicenseSecret UTF8String];
+    const char *cKey = [ci_licSecret() UTF8String];
     const char *cMsg = [canonical UTF8String];
     unsigned char mac[CC_SHA256_DIGEST_LENGTH];
     CCHmac(kCCHmacAlgSHA256, cKey, strlen(cKey), cMsg, strlen(cMsg), mac);
     NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH*2];
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", mac[i]];
     return hex;
+}
+
+// Write a signed license token into the spoof config that the injected tweak
+// verifies BEFORE it will spoof anything. Token = "<expiryEpoch>|<HMAC(epoch,
+// secret)>". Only producible with the secret + an unexpired license, so writing
+// config.plist by hand (SSH) no longer enables spoofing. Cleared when invalid.
+- (void)writeTweakToken {
+    CIConfigManager *cm = [CIConfigManager shared];
+    NSDate *e = [self expiryDate];
+    if (e && [e timeIntervalSinceNow] > 0) {
+        long epoch = (long)[e timeIntervalSince1970];
+        NSString *es = [NSString stringWithFormat:@"%ld", epoch];
+        [cm setObject:[NSString stringWithFormat:@"%@|%@", es, [self hmac:es]]
+               forKey:@"_ci_lic_tok"];
+    } else {
+        [cm setObject:nil forKey:@"_ci_lic_tok"];   // expired/none → clear
+    }
+    [cm save];
 }
 
 - (void)validateKey:(NSString *)key
@@ -2846,6 +2882,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     [ud removeObjectForKey:kLicExpiry];
     [ud removeObjectForKey:kLicLastOK];
     [ud synchronize];
+    [self writeTweakToken];   // expiry now gone → clears the tweak token (no spoof)
 }
 
 - (NSString *)urlEnc:(NSString *)s {
@@ -2937,6 +2974,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     [[CILicenseManager shared] validateKey:key completion:^(BOOL ok, NSString *st, NSString *e) {
         [self->_spin stopAnimating]; self->_loginBtn.enabled = YES;
         if (ok) {
+            [[CILicenseManager shared] writeTweakToken];   // sign config for the tweak
             NSInteger d = [[CILicenseManager shared] daysLeft];
             self->_statusLbl.textColor = [CITheme green];
             self->_statusLbl.text = [NSString stringWithFormat:@"✓ Kích hoạt thành công — còn %ld ngày", (long)d];
@@ -6712,6 +6750,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
         [cm setTargetBundles:allBids];
         ci_syncTweakFilterForApps(fullTargets);
+        // Sign the fresh config so the tweak will spoof it (fail-closed gate).
+        [[CILicenseManager shared] writeTweakToken];
         for (NSString *bid in allBids) {
             [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
         }
@@ -8099,9 +8139,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     if ([[CILicenseManager shared] isLicenseValidCached]) {
         self.window.rootViewController = [self buildMainTab];
         [self.window makeKeyAndVisible];
+        // Refresh the tweak token from the cached license immediately so the
+        // existing spoof config keeps working right after an update.
+        [[CILicenseManager shared] writeTweakToken];
         // fresh online recheck to catch server-side revoke/expire → kick out
         [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
             if (!ok) [self showLogin];
+            else [[CILicenseManager shared] writeTweakToken];
         }];
     } else {
         // No cached session (e.g. fresh install). Show Login, but first try a
@@ -8110,7 +8154,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         self.window.rootViewController = [self buildLoginNav];
         [self.window makeKeyAndVisible];
         [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
-            if (ok) [self showMain];   // device already bound + valid → auto-login
+            if (ok) { [self showMain]; [[CILicenseManager shared] writeTweakToken]; }
         }];
     }
     return YES;
