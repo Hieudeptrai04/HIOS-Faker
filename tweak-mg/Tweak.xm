@@ -1437,6 +1437,25 @@ static void screenDimsForProductType(NSString *pt, int *sw, int *sh, double *dpr
     } else if ([pt hasPrefix:@"iPhone15,3"] || [pt hasPrefix:@"iPhone15,5"] ||
                [pt hasPrefix:@"iPhone16,2"]) {
         *sw = 430; *sh = 932; *dpr = 3.0; *hc = ([pt hasPrefix:@"iPhone16"] ? 8 : 6);
+    // --- older models (pre-XR) — previously fell through to the wrong 390×844 ---
+    // iPhone X / XS (5.8" OLED, 3x)
+    } else if ([pt hasPrefix:@"iPhone10,3"] || [pt hasPrefix:@"iPhone10,6"] ||
+               [pt hasPrefix:@"iPhone11,2"]) {
+        *sw = 375; *sh = 812; *dpr = 3.0; *hc = 6;
+    // iPhone XS Max (6.5" OLED, 3x)
+    } else if ([pt hasPrefix:@"iPhone11,4"] || [pt hasPrefix:@"iPhone11,6"]) {
+        *sw = 414; *sh = 896; *dpr = 3.0; *hc = 6;
+    // iPhone 6s / 7 / 8 (4.7" LCD; 6s/7 = 2x A9/A10 2-core, 8 = 2x A11 6-core)
+    } else if ([pt hasPrefix:@"iPhone8,1"] || [pt hasPrefix:@"iPhone9,1"] ||
+               [pt hasPrefix:@"iPhone10,1"]) {
+        *sw = 375; *sh = 667; *dpr = 2.0; *hc = ([pt hasPrefix:@"iPhone10,1"] ? 6 : 2);
+    // iPhone 6s+ / 7+ / 8+ (5.5" LCD, 3x)
+    } else if ([pt hasPrefix:@"iPhone8,2"] || [pt hasPrefix:@"iPhone9,2"] ||
+               [pt hasPrefix:@"iPhone10,2"]) {
+        *sw = 414; *sh = 736; *dpr = 3.0; *hc = ([pt hasPrefix:@"iPhone10,2"] ? 6 : 2);
+    // iPhone SE (1st gen) (4.0" LCD, 2x)
+    } else if ([pt hasPrefix:@"iPhone8,4"]) {
+        *sw = 320; *sh = 568; *dpr = 2.0; *hc = 2;
     }
 }
 
@@ -1632,6 +1651,15 @@ static char *hook_getenv_fn(const char *name) {
                  strcmp(name, "_MSSafeMode") == 0 ||
                  strcmp(name, "_SubstrateMode") == 0)) return NULL;
     return orig_getenv_fn(name);
+}
+
+// realpath — JB-detection canonicalizes a path then checks it; hide JB paths
+// like the stat/fopen hooks (non-variadic → safe).
+typedef char *(*realpath_fn_t)(const char *, char *);
+static realpath_fn_t orig_realpath_fn = NULL;
+static char *hook_realpath_fn(const char *path, char *resolved) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return NULL; }
+    return orig_realpath_fn(path, resolved);
 }
 
 %hook NSFileManager
@@ -2219,9 +2247,13 @@ static void notify_cb(int t) {
         orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
         if (orig_getenv_fn)
             MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
-        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
+        // realpath — symlink-canonicalized JB-path detection.
+        orig_realpath_fn = (realpath_fn_t)dlsym(RTLD_DEFAULT, "realpath");
+        if (orig_realpath_fn)
+            MSHookFunction((void*)orig_realpath_fn, (void*)hook_realpath_fn, (void**)&orig_realpath_fn);
+        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p realpath=%p\n",
                g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
-               (void*)orig_fopen_fn, (void*)orig_getenv_fn);
+               (void*)orig_fopen_fn, (void*)orig_getenv_fn, (void*)orig_realpath_fn);
 
         // LAYER 10: dyld image list hiding
         orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
