@@ -180,14 +180,15 @@ jobs:
             esac
           done
 
-          # v4.0.4: strip Apple system apps (Weather/Maps) from the injection
-          # filters. Our dylib crashes them (WeatherCore dispatchPrecondition
-          # SIGTRAP on the main queue) and they carry zero spoof value. This
-          # rescues devices whose runtime-written filter still lists them from
-          # a build before the app-side exclusion landed. Idempotent.
+          # v4.0.4: strip com.apple.weather from the injection filters. Our dylib
+          # crashes it (WeatherCore dispatchPrecondition SIGTRAP on the main
+          # queue) and it has zero spoof value. Rescues devices whose
+          # runtime-written filter still lists it. Idempotent.
+          # (com.apple.Maps is intentionally NOT stripped — it is safe to inject
+          #  and shows the faked GPS via the light CLLocationManager hook.)
           for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
             [ -f "$P" ] || continue
-            sed -i '/<string>com\.apple\.weather<\/string>/d; /<string>com\.apple\.Maps<\/string>/d' "$P" 2>/dev/null || true
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
 
           mkdir -p "$ETC" 2>/dev/null || true

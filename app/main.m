@@ -2051,18 +2051,18 @@ static NSString *CICTTweakFilterPath(void) {
 // injection, etc.) but loads ONLY into the host/system processes that
 // integrate with the HIOS Faker UI — never into user-facing apps where
 // the 60-hook surface re-introduces the chat-scroll lag.
-// v4.0.5: Apple first-party system apps (Weather, Maps) get KILLED ~1s after
-// launch when our full-feature spoof dylib is injected — the death happens so
-// early (dylib ctor / dyld validation) that no usable .ips crash report is even
-// written. They also provide ZERO account-registration value (you don't sign up
-// for Zalo inside Weather). So: keep them selectable for data-WIPE, but NEVER add
-// them to an injection filter. Safari/WebContent stay injected (web fingerprint
-// spoof works there and is genuinely useful).
+// v4.0.4: com.apple.weather must NEVER be injected — our dylib crashes it
+// (WeatherCore dispatchPrecondition SIGTRAP on the main queue, ~1s after
+// launch) and it carries zero spoof value. Kept selectable for data-WIPE only.
+// NOTE: com.apple.Maps is deliberately NOT here — Maps is safe to inject and
+// genuinely uses the public CLLocationManager, so injecting it makes the map
+// show the faked GPS (verified on device: CLLocation.start fires, no crash).
+// The dylib self-limits Maps to the light location hook in its %ctor guard.
 static BOOL ci_isNoInjectBundle(NSString *bid) {
     static NSSet<NSString *> *s = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        s = [NSSet setWithObjects:@"com.apple.weather", @"com.apple.Maps", nil];
+        s = [NSSet setWithObjects:@"com.apple.weather", nil];
     });
     return bid.length && [s containsObject:bid];
 }

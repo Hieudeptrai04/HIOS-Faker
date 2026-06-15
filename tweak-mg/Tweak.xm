@@ -2085,15 +2085,19 @@ static void notify_cb(int t) {
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
 
-        // v4.0.5: hard guard. Apple's Weather/Maps die ~1s after launch when
-        // our full-feature dylib loads into them (killed in ctor/dyld load, no
-        // usable .ips). They carry zero account-registration value, so bail out
-        // BEFORE installing any hook. This also rescues devices whose injection
-        // filter still lists Weather/Maps from a build before this one.
+        // v4.0.4: lightweight mode for two Apple system apps. The Logos %hook
+        // on CLLocationManager is already registered before this point, so the
+        // GPS spoof stays active; returning here only skips the heavy C-function
+        // hooks (sysctl / IORegistry / JB-hide fishhooks) installed below.
+        //  - com.apple.Maps: SAFE to inject and DOES use public CLLocationManager,
+        //    so the map shows the faked GPS. We keep it light so the map app
+        //    stays rock-solid (verified: CLLocation.start fires, no crash).
+        //  - com.apple.weather: also kept out of the filter entirely because the
+        //    heavy hooks crash WeatherCore; this bail is belt-and-suspenders.
         NSString *mainBID = [[NSBundle mainBundle] bundleIdentifier];
         if ([mainBID isEqualToString:@"com.apple.weather"] ||
             [mainBID isEqualToString:@"com.apple.Maps"]) {
-            dbglog("ctor %s SKIP (no-inject system app %s)\n",
+            dbglog("ctor %s lightweight (loc-hook only, skip C-hooks) %s\n",
                    g_procname, mainBID.UTF8String);
             return;
         }
