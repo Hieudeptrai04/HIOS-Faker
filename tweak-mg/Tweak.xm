@@ -2085,6 +2085,19 @@ static void notify_cb(int t) {
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
 
+        // v4.0.5: hard guard. Apple's Weather/Maps die ~1s after launch when
+        // our full-feature dylib loads into them (killed in ctor/dyld load, no
+        // usable .ips). They carry zero account-registration value, so bail out
+        // BEFORE installing any hook. This also rescues devices whose injection
+        // filter still lists Weather/Maps from a build before this one.
+        NSString *mainBID = [[NSBundle mainBundle] bundleIdentifier];
+        if ([mainBID isEqualToString:@"com.apple.weather"] ||
+            [mainBID isEqualToString:@"com.apple.Maps"]) {
+            dbglog("ctor %s SKIP (no-inject system app %s)\n",
+                   g_procname, mainBID.UTF8String);
+            return;
+        }
+
         // Resolve originals first so the hook can chain to them even
         // if fishhook fails to rebind a particular symbol (e.g. when
         // it's eagerly bound or pre-resolved via __DATA __got).

@@ -48,7 +48,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.4";
+static NSString *const kAppVersion = @"4.0.5";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2051,6 +2051,22 @@ static NSString *CICTTweakFilterPath(void) {
 // injection, etc.) but loads ONLY into the host/system processes that
 // integrate with the HIOS Faker UI — never into user-facing apps where
 // the 60-hook surface re-introduces the chat-scroll lag.
+// v4.0.5: Apple first-party system apps (Weather, Maps) get KILLED ~1s after
+// launch when our full-feature spoof dylib is injected — the death happens so
+// early (dylib ctor / dyld validation) that no usable .ips crash report is even
+// written. They also provide ZERO account-registration value (you don't sign up
+// for Zalo inside Weather). So: keep them selectable for data-WIPE, but NEVER add
+// them to an injection filter. Safari/WebContent stay injected (web fingerprint
+// spoof works there and is genuinely useful).
+static BOOL ci_isNoInjectBundle(NSString *bid) {
+    static NSSet<NSString *> *s = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s = [NSSet setWithObjects:@"com.apple.weather", @"com.apple.Maps", nil];
+    });
+    return bid.length && [s containsObject:bid];
+}
+
 static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
     // v2.6.3: REMOVED com.apple.springboard from sidecar filter — the v2.6.2
     // sidecar with MGCopyAnswer hook crashed SpringBoard into SafeMode
@@ -2069,6 +2085,7 @@ static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
     for (CIAppInfo *app in apps) {
+        if (ci_isNoInjectBundle(app.bundleID)) continue;   // v4.0.5: never inject Weather/Maps
         if (app.bundleID.length) [bundles addObject:app.bundleID];
         if (!app.bundlePath.length) continue;
         NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
@@ -2108,6 +2125,7 @@ static void ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps) {
     NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
     NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
     for (CIAppInfo *app in apps) {
+        if (ci_isNoInjectBundle(app.bundleID)) continue;   // v4.0.5: never inject Weather/Maps
         if (app.bundleID.length) [bundles addObject:app.bundleID];
         if (!app.bundlePath.length) continue;
         NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
