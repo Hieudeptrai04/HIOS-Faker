@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
+#import <objc/runtime.h>
 #import <notify.h>
 #import <pthread.h>
 #import <stdarg.h>
@@ -2021,6 +2022,53 @@ static int hooked_fork(void) { errno = EPERM; return -1; }
 // ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
+// ============================================================
+// LAYER 21: Metal GPU name — Zalo's anti-fraud SDK reads
+// MTLCreateSystemDefaultDevice().name (e.g. "Apple A11 GPU"),
+// which leaks the TRUE chip no matter which model we spoof — the
+// single biggest reason a high faked model gets flagged on real
+// older hardware. Swizzle -name on the concrete MTLDevice class
+// (resolved lazily on the app's first device creation, so Metal is
+// never force-loaded early) to return zalo_metalGPU, which the app
+// already generates coherent with the faked chip.
+//
+// ONLY the name string is faked. recommendedMaxWorkingSetSize / GPU
+// family / registryID are left REAL — they drive buffer & heap
+// sizing, and faking them risks a UIScreen.scale-style render crash.
+// Name is a pure fingerprint string and is safe to change.
+// ============================================================
+typedef id (*MTLCreate_t)(void);
+static MTLCreate_t orig_MTLCreate = NULL;
+static IMP orig_mtl_name_imp = NULL;
+
+static NSString *hooked_mtl_name(id self, SEL _cmd) {
+    if ([getConfig(@"fake_metal") boolValue]) {
+        NSString *s = getConfigStr(@"zalo_metalGPU");
+        if (s.length) return s;
+    }
+    if (orig_mtl_name_imp)
+        return ((NSString *(*)(id, SEL))orig_mtl_name_imp)(self, _cmd);
+    return nil;
+}
+
+static id hooked_MTLCreate(void) {
+    id dev = orig_MTLCreate ? orig_MTLCreate() : nil;
+    if (dev) {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            Method m = class_getInstanceMethod(object_getClass(dev), @selector(name));
+            if (m) {
+                orig_mtl_name_imp = method_getImplementation(m);
+                method_setImplementation(m, (IMP)hooked_mtl_name);
+                dbglog("metalName swizzled cls=%s -> %s\n",
+                       class_getName(object_getClass(dev)),
+                       getConfigStr(@"zalo_metalGPU").UTF8String ?: "(none)");
+            }
+        });
+    }
+    return dev;
+}
+
 static void notify_cb(int t) {
     (void)t;
     reloadConfig();
@@ -2116,6 +2164,10 @@ static void notify_cb(int t) {
               (void **)&orig_getifaddrs },
             { "gethostname",  (void *)hooked_gethostname,
               (void **)&orig_gethostname },
+            // LAYER 21: Metal GPU name (string-only spoof; swizzle installed
+            // lazily inside the hook on first device creation).
+            { "MTLCreateSystemDefaultDevice", (void *)hooked_MTLCreate,
+              (void **)&orig_MTLCreate },
         };
         int fh = rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
         dbglog("ctor %s fishhook MG+libc rc=%d orig: sysctl=%p getif=%p ghn=%p\n",
