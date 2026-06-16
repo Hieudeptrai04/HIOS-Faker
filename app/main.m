@@ -49,7 +49,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.7";
+static NSString *const kAppVersion = @"4.0.8";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -649,6 +649,73 @@ static NSDictionary *ci_parseProxyString(NSString *s) {
     if (parts.count >= 3 && [parts[2] length] > 0) out[@"user"] = parts[2];
     if (parts.count >= 4 && [parts[3] length] > 0) out[@"pass"] = parts[3];
     return out;
+}
+
+// Rotating-proxy provider API. The user pastes the full API link their proxy
+// service gives (token/key already in the URL). On each Change Device we GET it
+// over a DIRECT connection (sharedSession does NOT use our app proxy) to
+// rotate/fetch a fresh IP; the normal geo-sync then runs through the new proxy.
+// Returns "host:port[:user:pass]" parsed from the response, or nil if none is
+// present (e.g. the API only rotates the existing endpoint — caller then keeps
+// the current proxyString). Format-agnostic: it scans the raw body, so JSON or
+// plain text both work.
+static NSString *ci_fetchProxyFromAPI(NSString *apiURL) {
+    NSString *u = [apiURL stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (u.length == 0) return nil;
+    NSURL *url = [NSURL URLWithString:u];
+    if (!url || url.scheme.length == 0) return nil;
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.timeoutInterval = 15.0;
+    [req setValue:@"application/json, text/plain, */*" forHTTPHeaderField:@"Accept"];
+    [req setValue:@"HIOSFaker/4.0" forHTTPHeaderField:@"User-Agent"];
+
+    __block NSString *body = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+            if (data.length && !err)
+                body = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            dispatch_semaphore_signal(sem);
+        }];
+    [task resume];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW,
+                                                   (int64_t)(16 * NSEC_PER_SEC))) != 0)
+        return nil;
+    if (body.length == 0) return nil;
+
+    // 1) ip:port:user:pass anywhere in the body (JSON field or plain text).
+    NSRegularExpression *rx4 = [NSRegularExpression regularExpressionWithPattern:
+        @"(\\d{1,3}(?:\\.\\d{1,3}){3}):(\\d{2,5}):([^:\\s\",}\\\\]+):([^:\\s\",}\\\\]+)"
+        options:0 error:nil];
+    NSTextCheckingResult *m = [rx4 firstMatchInString:body options:0
+                                                range:NSMakeRange(0, body.length)];
+    if (m) {
+        return [NSString stringWithFormat:@"%@:%@:%@:%@",
+                [body substringWithRange:[m rangeAtIndex:1]],
+                [body substringWithRange:[m rangeAtIndex:2]],
+                [body substringWithRange:[m rangeAtIndex:3]],
+                [body substringWithRange:[m rangeAtIndex:4]]];
+    }
+    // 2) ip:port anywhere.
+    NSRegularExpression *rx2 = [NSRegularExpression regularExpressionWithPattern:
+        @"(\\d{1,3}(?:\\.\\d{1,3}){3}):(\\d{2,5})" options:0 error:nil];
+    m = [rx2 firstMatchInString:body options:0 range:NSMakeRange(0, body.length)];
+    if (m) {
+        return [NSString stringWithFormat:@"%@:%@",
+                [body substringWithRange:[m rangeAtIndex:1]],
+                [body substringWithRange:[m rangeAtIndex:2]]];
+    }
+    // 3) plain "host:port[:user:pass]" with a hostname (no IP in body).
+    NSString *t = [body stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (![t containsString:@"{"] &&
+        [t rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location == NSNotFound &&
+        ci_parseProxyString(t)) {
+        return t;
+    }
+    return nil;
 }
 
 // Build NSURLSessionConfiguration with the user's proxy applied (HTTP or
@@ -1657,6 +1724,24 @@ static NSUInteger ci_randomizeIdentities(void) {
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
         [cm setObject:v forKey:k];
     }];
+
+    // Rotating-proxy API: if the user pasted a provider API link, call it now
+    // (direct, BEFORE the geo fetch) so each Change Device rotates/pulls a fresh
+    // IP without changing the proxy by hand. If it returns a proxy, apply it; if
+    // not (rotate-only endpoint or failure) keep the current proxyString so the
+    // geo fetch below still routes through whatever proxy is configured.
+    if ([cm boolForKey:@"proxyApiEnabled"]) {
+        NSString *np = ci_fetchProxyFromAPI([cm stringForKey:@"proxyApiUrl"]);
+        if (np.length) {
+            [cm setObject:np     forKey:@"proxyString"];
+            [cm setObject:@(YES) forKey:@"proxyEnabled"];
+            if ([cm stringForKey:@"proxyType"].length == 0)
+                [cm setObject:@"http" forKey:@"proxyType"];
+            NSLog(@"[ChangeInfoIos] proxy API: applied new proxy %@", np);
+        } else {
+            NSLog(@"[ChangeInfoIos] proxy API: no new proxy parsed — keeping current proxyString");
+        }
+    }
 
     // Geo strategy:
     //   • Proxy ON  → ip-api sees proxy's country → GPS pinned to proxy IP
@@ -4994,6 +5079,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UIButton           *_testBtn;
     UIButton           *_geoBtn;
     UIButton           *_saveBtn;
+    UISwitch           *_apiSwitch;
+    UITextField        *_apiField;
+    UIButton           *_apiTestBtn;
 }
 
 - (void)viewDidLoad {
@@ -5053,6 +5141,45 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [sv addSubview:_proxyField];
     y += 60;
 
+    // --- Auto-rotate IP via the proxy provider's API ---
+    UILabel *apiEnLbl = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M - 60, 32)];
+    apiEnLbl.text = @"Tự đổi IP qua API"; apiEnLbl.textColor = [CITheme text];
+    apiEnLbl.font = [UIFont boldSystemFontOfSize:17];
+    [sv addSubview:apiEnLbl];
+    _apiSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(W - M - 51, y, 51, 32)];
+    _apiSwitch.onTintColor = [CITheme orange];
+    [sv addSubview:_apiSwitch];
+    y += 42;
+
+    UILabel *apiHint = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 36)];
+    apiHint.text = @"Dán full link API web proxy (đã có sẵn token/key).\nMỗi lần Change Device tự gọi để lấy/đổi IP.";
+    apiHint.numberOfLines = 2; apiHint.textColor = [CITheme dim];
+    apiHint.font = [UIFont systemFontOfSize:12];
+    [sv addSubview:apiHint]; y += 42;
+
+    _apiField = [[UITextField alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 44)];
+    _apiField.placeholder = @"https://api.proxy.xxx/get?key=...";
+    _apiField.font = [UIFont fontWithName:@"Menlo" size:13];
+    _apiField.textColor = [CITheme text];
+    _apiField.backgroundColor = [CITheme card];
+    _apiField.layer.cornerRadius = 8;
+    _apiField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _apiField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _apiField.spellCheckingType = UITextSpellCheckingTypeNo;
+    _apiField.keyboardType = UIKeyboardTypeURL;
+    _apiField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _apiField.delegate = self;
+    UIView *apad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 1)];
+    _apiField.leftView = apad; _apiField.leftViewMode = UITextFieldViewModeAlways;
+    [sv addSubview:_apiField];
+    y += 56;
+
+    _apiTestBtn = CIBoxButton(@"Test API lấy IP", [CITheme green], [CITheme green]);
+    _apiTestBtn.frame = CGRectMake(M, y, W - 2*M, 48);
+    [_apiTestBtn addTarget:self action:@selector(apiTestTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:_apiTestBtn];
+    y += 60;
+
     // Status label
     _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(M, y, W - 2*M, 60)];
     _statusLabel.numberOfLines = 0;
@@ -5090,6 +5217,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     NSString *type = [cm stringForKey:@"proxyType"];
     _typeSegment.selectedSegmentIndex = [type isEqualToString:@"socks5"] ? 1 : 0;
     _proxyField.text = [cm stringForKey:@"proxyString"] ?: @"";
+    _apiSwitch.on = [cm boolForKey:@"proxyApiEnabled"];
+    _apiField.text = [cm stringForKey:@"proxyApiUrl"] ?: @"";
     [self refreshStatus:nil error:NO];
 }
 
@@ -5116,6 +5245,35 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [cm setObject:(_typeSegment.selectedSegmentIndex == 1 ? @"socks5" : @"http")
            forKey:@"proxyType"];
     [cm setObject:(_proxyField.text ?: @"") forKey:@"proxyString"];
+    [cm setObject:@(_apiSwitch.on) forKey:@"proxyApiEnabled"];
+    [cm setObject:(_apiField.text ?: @"") forKey:@"proxyApiUrl"];
+}
+
+// Test the pasted API link without a full Change Device: GET it (direct),
+// show the proxy it returned, and stage it into the proxy field.
+- (void)apiTestTapped {
+    [self.view endEditing:YES];
+    [self stageConfigFromUI];
+    NSString *u = _apiField.text ?: @"";
+    if (u.length == 0) { [self refreshStatus:@"Dán link API proxy trước." error:YES]; return; }
+    [self refreshStatus:@"Đang gọi API lấy IP…" error:NO];
+    _apiTestBtn.enabled = NO;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *proxy = ci_fetchProxyFromAPI(u);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_apiTestBtn.enabled = YES;
+            if (proxy.length) {
+                self->_proxyField.text = proxy;
+                [[CIConfigManager shared] setObject:proxy forKey:@"proxyString"];
+                [self refreshStatus:[NSString stringWithFormat:
+                    @"✅ API trả proxy: %@\nĐã điền vào ô proxy — bấm Lưu.", proxy] error:NO];
+            } else {
+                [self refreshStatus:
+                    @"⚠ API không trả proxy (ip:port). Kiểm tra link, hoặc API chỉ xoay cùng endpoint (giữ nguyên proxy hiện tại)."
+                              error:YES];
+            }
+        });
+    });
 }
 
 - (void)testTapped {
