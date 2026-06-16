@@ -1553,6 +1553,25 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
     [cm setObject:gpuName       forKey:@"web_glRenderer"];
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
+    // MetalPluginName / MetalPluginClassName (IORegistry) — Zalo reads these and
+    // they otherwise leak the REAL chip. Apple GPUs (A11+) use "AGXMetalA<N>" /
+    // "AGXA<N>Device" (A11 verified on-device; A12-A14 follow the same pattern).
+    // Pre-A11 (A8/A9/A10 = PowerVR) naming is NOT verified yet — leave those
+    // keys unset so the tweak returns the real value instead of a wrong guess.
+    NSInteger chipGen = 0;
+    if ([chipName hasPrefix:@"A"] && chipName.length > 1) {
+        NSScanner *cs = [NSScanner scannerWithString:[chipName substringFromIndex:1]];
+        if (![cs scanInteger:&chipGen]) chipGen = 0;
+    }
+    if (chipGen >= 11) {
+        [cm setObject:[NSString stringWithFormat:@"AGXMetalA%ld", (long)chipGen]
+               forKey:@"zalo_metalPluginName"];
+        [cm setObject:[NSString stringWithFormat:@"AGXA%ldDevice", (long)chipGen]
+               forKey:@"zalo_metalPluginClass"];
+    } else {
+        [cm removeObjectForKey:@"zalo_metalPluginName"];
+        [cm removeObjectForKey:@"zalo_metalPluginClass"];
+    }
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
     // WKWebView UA string — randomize every Change Device (v2.5.13).
