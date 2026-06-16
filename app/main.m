@@ -1569,8 +1569,9 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:[NSString stringWithFormat:@"AGXA%ldDevice", (long)chipGen]
                forKey:@"zalo_metalPluginClass"];
     } else {
-        [cm removeObjectForKey:@"zalo_metalPluginName"];
-        [cm removeObjectForKey:@"zalo_metalPluginClass"];
+        // pre-A11 (PowerVR): clear any stale value -> tweak returns the real one
+        [cm setObject:nil forKey:@"zalo_metalPluginName"];
+        [cm setObject:nil forKey:@"zalo_metalPluginClass"];
     }
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
