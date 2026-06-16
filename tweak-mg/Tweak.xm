@@ -76,8 +76,21 @@ static const char *kDbgPath = "/var/jb/etc/changeinfoios/v3_mg_debug.log";
 static char g_dbgTmpPath[256] = "";
 static char g_dbgTmpResolved = 0;
 
+// Stealth gate (4.0.11): by DEFAULT write NO debug files anywhere. Leaving a
+// v3_mg_debug.log inside every injected app's own tmp is a trivially-detectable
+// "this process is hooked" artifact — Zalo can scan its OWN sandbox (no JB
+// bypass needed) and flag/ban. Logging is OFF unless the marker file
+// /var/jb/etc/changeinfoios/.debug exists (touch it to enable while debugging).
+static int g_dbgOn = -1;
+static int ci_dbgEnabled(void) {
+    if (g_dbgOn < 0)
+        g_dbgOn = (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0) ? 1 : 0;
+    return g_dbgOn;
+}
+
 __attribute__((format(printf, 1, 2)))
 static void dbglog(const char *fmt, ...) {
+    if (!ci_dbgEnabled()) return;
     if (g_dbglog_count > kMaxDbgLines) return;
     pthread_mutex_lock(&g_dbglog_mu);
     if (g_dbglog_count > kMaxDbgLines) { pthread_mutex_unlock(&g_dbglog_mu); return; }
@@ -2341,12 +2354,13 @@ static void notify_cb(int t) {
             }
         }
 
-        NSString *marker = @"/var/jb/etc/changeinfoios/v3_mg_loaded.txt";
-        NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
-        NSString *body = [NSString stringWithFormat:@"%@ %@\n", exec, [NSDate date]];
-        // Append (not overwrite) so multiple apps' loads are visible.
-        FILE *f = fopen([marker UTF8String], "a");
-        if (f) { fputs([body UTF8String], f); fclose(f); }
+        if (ci_dbgEnabled()) {
+            NSString *marker = @"/var/jb/etc/changeinfoios/v3_mg_loaded.txt";
+            NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
+            NSString *body = [NSString stringWithFormat:@"%@ %@\n", exec, [NSDate date]];
+            FILE *f = fopen([marker UTF8String], "a");
+            if (f) { fputs([body UTF8String], f); fclose(f); }
+        }
 
         // Auto-clear Zalo persistent fingerprints on every launch when spoof is active.
         // This runs without any user action — just kill Zalo and reopen.

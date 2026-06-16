@@ -7,6 +7,7 @@
 // best-effort fallback.
 
 #import <Foundation/Foundation.h>
+#import <unistd.h>
 #import <CoreTelephony/CTCarrier.h>
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <notify.h>
@@ -141,15 +142,18 @@ static void notify_cb(int token) {
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
-        NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
-        NSString *body = [NSString stringWithFormat:@"%@ %ld carrier=%@/%@/%@\n",
-                          exec, (long)time(NULL),
-                          cfgStr(@"carrierName") ?: @"",
-                          cfgStr(@"carrierMCC") ?: @"",
-                          cfgStr(@"carrierMNC") ?: @""];
-        [body writeToFile:@"/var/jb/etc/changeinfoios/v3_ct_loaded.txt"
-               atomically:YES
-                 encoding:NSUTF8StringEncoding
-                    error:nil];
+        // Stealth (4.0.11): only drop the load-marker when debugging is enabled.
+        if (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0) {
+            NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
+            NSString *body = [NSString stringWithFormat:@"%@ %ld carrier=%@/%@/%@\n",
+                              exec, (long)time(NULL),
+                              cfgStr(@"carrierName") ?: @"",
+                              cfgStr(@"carrierMCC") ?: @"",
+                              cfgStr(@"carrierMNC") ?: @""];
+            [body writeToFile:@"/var/jb/etc/changeinfoios/v3_ct_loaded.txt"
+                   atomically:YES
+                     encoding:NSUTF8StringEncoding
+                        error:nil];
+        }
     }
 }
