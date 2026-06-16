@@ -49,7 +49,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.9";
+static NSString *const kAppVersion = @"4.0.10";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1889,26 +1889,52 @@ static NSArray<NSString *> *ci_loadContactPool(void) {
     return set.array ?: @[];
 }
 
-static NSArray<NSString *> *ci_randomVietnameseNameParts(void) {
-    static NSArray<NSString *> *families = nil, *middles = nil, *givens = nil;
+// Shared HIOS name pools — used BOTH to generate seed names AND to recognise
+// (then delete) previously-seeded contacts. Cleanup matches by these pools, so
+// it never depends on a fragile identifier list (the old id-tracking leaked:
+// unified-contact ids didn't match, old batches were never deleted and piled
+// up -> hundreds of random numbers -> bot-looking address book -> Zalo lock).
+static void ci_hiosNamePools(NSArray<NSString *> **families,
+                             NSArray<NSString *> **middles,
+                             NSArray<NSString *> **givens) {
+    static NSArray<NSString *> *f = nil, *m = nil, *g = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        families = @[@"Nguyen", @"Tran", @"Le", @"Pham", @"Hoang", @"Huynh",
-                     @"Phan", @"Vu", @"Vo", @"Dang", @"Bui", @"Do", @"Ho",
-                     @"Ngo", @"Duong", @"Ly", @"Truong", @"Dinh", @"Mai",
-                     @"Cao", @"Ta", @"Luong", @"Luu", @"Trinh"];
-        middles = @[@"Van", @"Thi", @"Minh", @"Thanh", @"Gia", @"Quoc",
-                    @"Hoai", @"Ngoc", @"Anh", @"Duc", @"Bao", @"Huu",
-                    @"Phuong", @"Khanh", @"Tuan", @"Thuy", @"Nhat", @"Hong"];
-        givens = @[@"An", @"Anh", @"Bao", @"Binh", @"Chau", @"Cuong",
-                   @"Dat", @"Dung", @"Duy", @"Giang", @"Ha", @"Hai",
-                   @"Hang", @"Hanh", @"Hieu", @"Hoa", @"Hoang", @"Hung",
-                   @"Huy", @"Khanh", @"Khoa", @"Lan", @"Linh", @"Long",
-                   @"Minh", @"My", @"Nam", @"Nga", @"Ngan", @"Ngoc",
-                   @"Nhi", @"Phat", @"Phong", @"Phuc", @"Quan", @"Quynh",
-                   @"Son", @"Tam", @"Tan", @"Thao", @"Thien", @"Thu",
-                   @"Trang", @"Trung", @"Tuan", @"Tung", @"Vy", @"Yen"];
+        f = @[@"Nguyen", @"Tran", @"Le", @"Pham", @"Hoang", @"Huynh",
+              @"Phan", @"Vu", @"Vo", @"Dang", @"Bui", @"Do", @"Ho",
+              @"Ngo", @"Duong", @"Ly", @"Truong", @"Dinh", @"Mai",
+              @"Cao", @"Ta", @"Luong", @"Luu", @"Trinh"];
+        m = @[@"Van", @"Thi", @"Minh", @"Thanh", @"Gia", @"Quoc",
+              @"Hoai", @"Ngoc", @"Anh", @"Duc", @"Bao", @"Huu",
+              @"Phuong", @"Khanh", @"Tuan", @"Thuy", @"Nhat", @"Hong"];
+        g = @[@"An", @"Anh", @"Bao", @"Binh", @"Chau", @"Cuong",
+              @"Dat", @"Dung", @"Duy", @"Giang", @"Ha", @"Hai",
+              @"Hang", @"Hanh", @"Hieu", @"Hoa", @"Hoang", @"Hung",
+              @"Huy", @"Khanh", @"Khoa", @"Lan", @"Linh", @"Long",
+              @"Minh", @"My", @"Nam", @"Nga", @"Ngan", @"Ngoc",
+              @"Nhi", @"Phat", @"Phong", @"Phuc", @"Quan", @"Quynh",
+              @"Son", @"Tam", @"Tan", @"Thao", @"Thien", @"Thu",
+              @"Trang", @"Trung", @"Tuan", @"Tung", @"Vy", @"Yen"];
     });
+    if (families) *families = f;
+    if (middles)  *middles  = m;
+    if (givens)   *givens   = g;
+}
+
+// which: 0 = families, 1 = middles, 2 = givens
+static NSSet<NSString *> *ci_hiosNameSet(int which) {
+    static NSSet<NSString *> *sf = nil, *sm = nil, *sg = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray<NSString *> *f, *m, *g; ci_hiosNamePools(&f, &m, &g);
+        sf = [NSSet setWithArray:f]; sm = [NSSet setWithArray:m]; sg = [NSSet setWithArray:g];
+    });
+    return which == 0 ? sf : (which == 1 ? sm : sg);
+}
+
+static NSArray<NSString *> *ci_randomVietnameseNameParts(void) {
+    NSArray<NSString *> *families, *middles, *givens;
+    ci_hiosNamePools(&families, &middles, &givens);
     NSString *family = families[arc4random_uniform((uint32_t)families.count)];
     NSString *middle = middles[arc4random_uniform((uint32_t)middles.count)];
     NSString *given  = givens[arc4random_uniform((uint32_t)givens.count)];
@@ -2041,6 +2067,52 @@ static void ci_trackSeedContact(CNContactStore *store, CNMutableContact *c,
     if (ident.length) [out addObject:ident];
 }
 
+// A contact is HIOS-seeded iff ALL three name parts come from our pools AND it
+// has exactly one +84 phone and none of the fields we never set. Strict on
+// purpose so a user's real contact is never matched/deleted.
+static BOOL ci_isHIOSContact(CNContact *c) {
+    if (![ci_hiosNameSet(0) containsObject:(c.familyName ?: @"")]) return NO;
+    if (![ci_hiosNameSet(1) containsObject:(c.middleName ?: @"")]) return NO;
+    if (![ci_hiosNameSet(2) containsObject:(c.givenName  ?: @"")]) return NO;
+    if (c.emailAddresses.count || c.organizationName.length ||
+        c.urlAddresses.count   || c.postalAddresses.count) return NO;
+    if (c.phoneNumbers.count != 1) return NO;
+    NSString *p = ci_normalizeVNPhone(c.phoneNumbers.firstObject.value.stringValue);
+    return [p hasPrefix:@"+84"];
+}
+
+// Delete EVERY HIOS-seeded contact by signature (not by a tracked id list), so
+// each Change Device fully REPLACES the previous batch instead of piling up.
+static NSUInteger ci_clearHIOSContacts(CNContactStore *store) {
+    NSArray *keys = @[CNContactIdentifierKey, CNContactFamilyNameKey,
+                      CNContactMiddleNameKey, CNContactGivenNameKey,
+                      CNContactPhoneNumbersKey, CNContactEmailAddressesKey,
+                      CNContactOrganizationNameKey, CNContactUrlAddressesKey,
+                      CNContactPostalAddressesKey];
+    CNContactFetchRequest *fetch = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
+    CNSaveRequest *req = [CNSaveRequest new];
+    __block NSUInteger n = 0;
+    NSError *err = nil;
+    BOOL ok = [store enumerateContactsWithFetchRequest:fetch error:&err
+                                            usingBlock:^(CNContact *c, BOOL *stop) {
+        (void)stop;
+        if (ci_isHIOSContact(c)) { [req deleteContact:[c mutableCopy]]; n++; }
+    }];
+    if (!ok) {
+        NSLog(@"[ChangeInfoIos] contacts clear: enumerate failed err=%@", err);
+        return 0;
+    }
+    if (n == 0) return 0;
+    NSError *saveErr = nil;
+    if (![store executeSaveRequest:req error:&saveErr]) {
+        NSLog(@"[ChangeInfoIos] contacts clear: delete failed n=%lu err=%@",
+              (unsigned long)n, saveErr);
+        return 0;
+    }
+    NSLog(@"[ChangeInfoIos] contacts clear: removed %lu HIOS contacts", (unsigned long)n);
+    return n;
+}
+
 static NSUInteger ci_seedRandomContacts(void) {
     NSArray<NSString *> *pool = ci_loadContactPool();
     if (pool.count == 0) {
@@ -2051,7 +2123,7 @@ static NSUInteger ci_seedRandomContacts(void) {
     CNContactStore *store = [CNContactStore new];
     if (!ci_contactsEnsureAccess(store)) return 0;
 
-    NSUInteger deleted = ci_clearGeneratedContacts(store);
+    NSUInteger deleted = ci_clearHIOSContacts(store);
     NSMutableArray<NSString *> *shuffled = [pool mutableCopy];
     for (NSUInteger i = shuffled.count; i > 1; i--) {
         NSUInteger j = arc4random_uniform((uint32_t)i);
