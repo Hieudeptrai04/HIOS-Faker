@@ -1554,22 +1554,26 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:gpuName       forKey:@"web_glRenderer"];
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
     // MetalPluginName / MetalPluginClassName (IORegistry) — Zalo reads these and
-    // they otherwise leak the REAL chip. Apple GPUs (A11+) use "AGXMetalA<N>" /
-    // "AGXA<N>Device" (A11 verified on-device; A12-A14 follow the same pattern).
-    // Pre-A11 (A8/A9/A10 = PowerVR) naming is NOT verified yet — leave those
-    // keys unset so the tweak returns the real value instead of a wrong guess.
+    // they otherwise leak the REAL chip. A8..A14 use "AGXMetalA<N>" /
+    // "AGXA<N>Device" — verified: A8/A9 (SDK driver bundles AGXMetalA8/A9),
+    // A10 (AGXMetalA10 + class AGXA10Device), A11 (measured on-device:
+    // AGXMetalA11 / AGXA11Device), A12-A14 (AGXMetalA12/13/14 + AGXA14Device).
+    // A15+ switched to a G-codename scheme ("AGXMetalG15"…) we don't map yet,
+    // so leave those unset -> the tweak returns the real value rather than a
+    // wrong "AGXMetalA15". chipName looks like "A8" / "A10 Fusion" / "A11 Bionic".
     NSInteger chipGen = 0;
     if ([chipName hasPrefix:@"A"] && chipName.length > 1) {
         NSScanner *cs = [NSScanner scannerWithString:[chipName substringFromIndex:1]];
         if (![cs scanInteger:&chipGen]) chipGen = 0;
     }
-    if (chipGen >= 11) {
+    if (chipGen >= 8 && chipGen <= 14) {
         [cm setObject:[NSString stringWithFormat:@"AGXMetalA%ld", (long)chipGen]
                forKey:@"zalo_metalPluginName"];
         [cm setObject:[NSString stringWithFormat:@"AGXA%ldDevice", (long)chipGen]
                forKey:@"zalo_metalPluginClass"];
     } else {
-        // pre-A11 (PowerVR): clear any stale value -> tweak returns the real one
+        // A15+ (G-codename, not mapped) or unknown chip: clear stale value ->
+        // tweak returns the real one instead of a wrong guess.
         [cm setObject:nil forKey:@"zalo_metalPluginName"];
         [cm setObject:nil forKey:@"zalo_metalPluginClass"];
     }
