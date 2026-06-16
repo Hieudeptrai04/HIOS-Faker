@@ -22,6 +22,7 @@
         <string>kTCCServiceCamera</string>
         <string>kTCCServiceMicrophone</string>
         <string>kTCCServiceMediaLibrary</string>
+        <string>kTCCServiceAddressBook</string>
     </array>
 </dict>
 </plist>

@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>  // CAShapeLayer / CABasicAnimation for ring HUD
 #import <AVFoundation/AVFoundation.h>  // AVAssetExportSession for video import (CICameraVC)
 #import <Photos/Photos.h>               // PHAsset / PHImageManager — proper cross-container path for picker assets
+#import <Contacts/Contacts.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <sys/wait.h>
@@ -1730,6 +1731,285 @@ static NSUInteger ci_randomizeIdentities(void) {
 
     [cm save];
     return ids.count + 12;
+}
+
+// ============================================================
+// CONTACT SEEDING
+// ============================================================
+static NSString *CIContactsPoolPath(void) {
+    NSString *p = [[NSBundle mainBundle] pathForResource:@"contacts_pool" ofType:@"txt"];
+    return p ?: @"";
+}
+
+static NSString *CIContactsGeneratedPath(void) {
+    return @"/var/jb/etc/changeinfoios/generated_contacts.plist";
+}
+
+static NSString *ci_normalizeVNPhone(NSString *raw) {
+    if (![raw isKindOfClass:[NSString class]] || raw.length == 0) return nil;
+    NSMutableString *digits = [NSMutableString stringWithCapacity:raw.length];
+    NSCharacterSet *decimal = [NSCharacterSet decimalDigitCharacterSet];
+    for (NSUInteger i = 0; i < raw.length; i++) {
+        unichar ch = [raw characterAtIndex:i];
+        if ([decimal characterIsMember:ch]) [digits appendFormat:@"%C", ch];
+    }
+    while ([digits hasPrefix:@"00"] && digits.length > 2) {
+        [digits deleteCharactersInRange:NSMakeRange(0, 2)];
+    }
+    if (digits.length == 0) return nil;
+
+    NSString *out = nil;
+    if ([digits hasPrefix:@"84"] && digits.length >= 11 && digits.length <= 12) {
+        out = [@"+" stringByAppendingString:digits];
+    } else if ([digits hasPrefix:@"0"] && digits.length >= 10 && digits.length <= 11) {
+        out = [@"+84" stringByAppendingString:[digits substringFromIndex:1]];
+    } else if (digits.length >= 8 && digits.length <= 10) {
+        out = [@"+84" stringByAppendingString:digits];
+    }
+    if (out.length < 11 || out.length > 14) return nil;
+    return out;
+}
+
+static NSArray<NSString *> *ci_loadContactPool(void) {
+    NSString *path = CIContactsPoolPath();
+    if (path.length == 0) return @[];
+    NSError *err = nil;
+    NSString *raw = [NSString stringWithContentsOfFile:path
+                                              encoding:NSUTF8StringEncoding
+                                                 error:&err];
+    if (!raw.length || err) {
+        NSLog(@"[ChangeInfoIos] contacts seed: pool read failed path=%@ err=%@", path, err);
+        return @[];
+    }
+    NSRegularExpression *rx = [NSRegularExpression regularExpressionWithPattern:@"\\d{8,15}"
+                                                                        options:0
+                                                                          error:nil];
+    NSMutableOrderedSet<NSString *> *set = [NSMutableOrderedSet orderedSet];
+    [rx enumerateMatchesInString:raw options:0 range:NSMakeRange(0, raw.length)
+                      usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+        (void)flags; (void)stop;
+        if (!m || m.range.location == NSNotFound) return;
+        NSString *n = ci_normalizeVNPhone([raw substringWithRange:m.range]);
+        if (n.length) [set addObject:n];
+    }];
+    return set.array ?: @[];
+}
+
+static NSArray<NSString *> *ci_randomVietnameseNameParts(void) {
+    static NSArray<NSString *> *families = nil, *middles = nil, *givens = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        families = @[@"Nguyen", @"Tran", @"Le", @"Pham", @"Hoang", @"Huynh",
+                     @"Phan", @"Vu", @"Vo", @"Dang", @"Bui", @"Do", @"Ho",
+                     @"Ngo", @"Duong", @"Ly", @"Truong", @"Dinh", @"Mai",
+                     @"Cao", @"Ta", @"Luong", @"Luu", @"Trinh"];
+        middles = @[@"Van", @"Thi", @"Minh", @"Thanh", @"Gia", @"Quoc",
+                    @"Hoai", @"Ngoc", @"Anh", @"Duc", @"Bao", @"Huu",
+                    @"Phuong", @"Khanh", @"Tuan", @"Thuy", @"Nhat", @"Hong"];
+        givens = @[@"An", @"Anh", @"Bao", @"Binh", @"Chau", @"Cuong",
+                   @"Dat", @"Dung", @"Duy", @"Giang", @"Ha", @"Hai",
+                   @"Hang", @"Hanh", @"Hieu", @"Hoa", @"Hoang", @"Hung",
+                   @"Huy", @"Khanh", @"Khoa", @"Lan", @"Linh", @"Long",
+                   @"Minh", @"My", @"Nam", @"Nga", @"Ngan", @"Ngoc",
+                   @"Nhi", @"Phat", @"Phong", @"Phuc", @"Quan", @"Quynh",
+                   @"Son", @"Tam", @"Tan", @"Thao", @"Thien", @"Thu",
+                   @"Trang", @"Trung", @"Tuan", @"Tung", @"Vy", @"Yen"];
+    });
+    NSString *family = families[arc4random_uniform((uint32_t)families.count)];
+    NSString *middle = middles[arc4random_uniform((uint32_t)middles.count)];
+    NSString *given  = givens[arc4random_uniform((uint32_t)givens.count)];
+    return @[family, middle, given];
+}
+
+static NSString *ci_randomVietnameseFullName(void) {
+    return [ci_randomVietnameseNameParts() componentsJoinedByString:@" "];
+}
+
+static BOOL ci_contactsEnsureAccess(CNContactStore *store) {
+    CNAuthorizationStatus st = [CNContactStore authorizationStatusForEntityType:CNEntityTypeContacts];
+    if (st == CNAuthorizationStatusAuthorized) return YES;
+    if (st != CNAuthorizationStatusNotDetermined) {
+        NSLog(@"[ChangeInfoIos] contacts seed: permission status=%ld", (long)st);
+        return NO;
+    }
+    __block BOOL granted = NO;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [store requestAccessForEntityType:CNEntityTypeContacts completionHandler:^(BOOL ok, NSError *err) {
+        granted = ok;
+        if (!ok || err) NSLog(@"[ChangeInfoIos] contacts seed: request access ok=%d err=%@", ok, err);
+        dispatch_semaphore_signal(sem);
+    }];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+    return granted;
+}
+
+static void ci_writeGeneratedContactIDs(NSArray<NSString *> *ids) {
+    NSString *path = CIContactsGeneratedPath();
+    NSString *dir = [path stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    if (ids.count > 0) {
+        [ids writeToFile:path atomically:YES];
+        chmod([path fileSystemRepresentation], 0644);
+    } else {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    }
+}
+
+static NSUInteger ci_clearGeneratedContacts(CNContactStore *store) {
+    NSArray<NSString *> *ids = [NSArray arrayWithContentsOfFile:CIContactsGeneratedPath()];
+    if (![ids isKindOfClass:[NSArray class]] || ids.count == 0) return 0;
+
+    CNSaveRequest *req = [CNSaveRequest new];
+    NSUInteger pending = 0;
+    NSArray *keys = @[CNContactIdentifierKey];
+    for (id obj in ids) {
+        if (![obj isKindOfClass:[NSString class]]) continue;
+        NSString *ident = (NSString *)obj;
+        if (ident.length == 0) continue;
+        NSError *fetchErr = nil;
+        CNContact *c = [store unifiedContactWithIdentifier:ident
+                                               keysToFetch:keys
+                                                     error:&fetchErr];
+        if (!c || fetchErr) continue;
+        [req deleteContact:[c mutableCopy]];
+        pending++;
+    }
+    if (pending == 0) {
+        ci_writeGeneratedContactIDs(@[]);
+        return 0;
+    }
+    NSError *saveErr = nil;
+    if (![store executeSaveRequest:req error:&saveErr]) {
+        NSLog(@"[ChangeInfoIos] contacts seed: clear failed count=%lu err=%@",
+              (unsigned long)pending, saveErr);
+        return 0;
+    }
+    ci_writeGeneratedContactIDs(@[]);
+    return pending;
+}
+
+static NSString *ci_findContactIdentifier(CNContactStore *store,
+                                          NSString *phone,
+                                          NSString *family,
+                                          NSString *middle,
+                                          NSString *given) {
+    CNPhoneNumber *pn = [CNPhoneNumber phoneNumberWithStringValue:phone];
+    NSPredicate *pred = [CNContact predicateForContactsMatchingPhoneNumber:pn];
+    NSArray *keys = @[CNContactIdentifierKey, CNContactFamilyNameKey,
+                      CNContactMiddleNameKey, CNContactGivenNameKey,
+                      CNContactPhoneNumbersKey];
+    NSError *err = nil;
+    NSArray<CNContact *> *matches = [store unifiedContactsMatchingPredicate:pred
+                                                                keysToFetch:keys
+                                                                      error:&err];
+    if (err) return nil;
+    for (CNContact *c in matches) {
+        if (![c.familyName isEqualToString:family] ||
+            ![c.middleName isEqualToString:middle] ||
+            ![c.givenName isEqualToString:given]) {
+            continue;
+        }
+        for (CNLabeledValue<CNPhoneNumber *> *lv in c.phoneNumbers) {
+            NSString *p = ci_normalizeVNPhone(lv.value.stringValue);
+            if ([p isEqualToString:phone]) return c.identifier;
+        }
+    }
+    return nil;
+}
+
+// Build one seed contact (random VN name + the given phone). CNMutableContact
+// assigns its identifier at creation time and that identifier survives the
+// save, so the caller can read it straight back after persisting.
+static CNMutableContact *ci_buildSeedContact(NSString *phone) {
+    NSArray<NSString *> *parts = ci_randomVietnameseNameParts();
+    CNMutableContact *c = [CNMutableContact new];
+    c.familyName = parts[0];
+    c.middleName = parts[1];
+    c.givenName  = parts[2];
+    c.phoneNumbers = @[
+        [CNLabeledValue labeledValueWithLabel:CNLabelPhoneNumberMobile
+                                        value:[CNPhoneNumber phoneNumberWithStringValue:phone]]
+    ];
+    return c;
+}
+
+// Record the persisted identifier for a saved seed contact so the next run can
+// delete exactly this batch. Falls back to a predicate lookup only when the
+// object somehow didn't carry an identifier (effectively never).
+static void ci_trackSeedContact(CNContactStore *store, CNMutableContact *c,
+                                NSString *phone, NSMutableArray<NSString *> *out) {
+    NSString *ident = c.identifier;
+    if (ident.length == 0)
+        ident = ci_findContactIdentifier(store, phone, c.familyName, c.middleName, c.givenName);
+    if (ident.length) [out addObject:ident];
+}
+
+static NSUInteger ci_seedRandomContacts(void) {
+    NSArray<NSString *> *pool = ci_loadContactPool();
+    if (pool.count == 0) {
+        NSLog(@"[ChangeInfoIos] contacts seed: empty pool");
+        return 0;
+    }
+
+    CNContactStore *store = [CNContactStore new];
+    if (!ci_contactsEnsureAccess(store)) return 0;
+
+    NSUInteger deleted = ci_clearGeneratedContacts(store);
+    NSMutableArray<NSString *> *shuffled = [pool mutableCopy];
+    for (NSUInteger i = shuffled.count; i > 1; i--) {
+        NSUInteger j = arc4random_uniform((uint32_t)i);
+        [shuffled exchangeObjectAtIndex:i - 1 withObjectAtIndex:j];
+    }
+
+    NSUInteger wanted = 30 + arc4random_uniform(71); // 30...100
+    if (wanted > shuffled.count) wanted = shuffled.count;
+
+    // Build the whole batch up front and persist it in ONE save request — a
+    // single round-trip to the Contacts store instead of one per contact.
+    NSMutableArray<CNMutableContact *> *contacts = [NSMutableArray arrayWithCapacity:wanted];
+    CNSaveRequest *batch = [CNSaveRequest new];
+    for (NSUInteger i = 0; i < wanted; i++) {
+        CNMutableContact *c = ci_buildSeedContact(shuffled[i]);
+        [contacts addObject:c];
+        [batch addContact:c toContainerWithIdentifier:nil];
+    }
+
+    NSMutableArray<NSString *> *newIDs = [NSMutableArray arrayWithCapacity:wanted];
+    NSUInteger created = 0;
+    NSError *batchErr = nil;
+    if ([store executeSaveRequest:batch error:&batchErr]) {
+        // Fast path: the entire 30-100 batch saved in one go.
+        for (NSUInteger i = 0; i < contacts.count; i++) {
+            created++;
+            ci_trackSeedContact(store, contacts[i], shuffled[i], newIDs);
+        }
+    } else {
+        // Rare: a batch save is atomic, so one bad entry rolls back the whole
+        // lot. Retry one-by-one so a single failure can't drop the rest.
+        NSLog(@"[ChangeInfoIos] contacts seed: batch save failed (%lu) err=%@ — retry one-by-one",
+              (unsigned long)wanted, batchErr);
+        for (NSUInteger i = 0; i < contacts.count; i++) {
+            CNMutableContact *c = contacts[i];
+            CNSaveRequest *one = [CNSaveRequest new];
+            [one addContact:c toContainerWithIdentifier:nil];
+            NSError *err = nil;
+            if (![store executeSaveRequest:one error:&err]) {
+                NSLog(@"[ChangeInfoIos] contacts seed: add failed phone=%@ err=%@", shuffled[i], err);
+                continue;
+            }
+            created++;
+            ci_trackSeedContact(store, c, shuffled[i], newIDs);
+        }
+    }
+
+    ci_writeGeneratedContactIDs(newIDs);
+    NSLog(@"[ChangeInfoIos] contacts seed: pool=%lu deleted=%lu wanted=%lu created=%lu tracked=%lu",
+          (unsigned long)pool.count, (unsigned long)deleted, (unsigned long)wanted,
+          (unsigned long)created, (unsigned long)newIDs.count);
+    return created;
 }
 
 // Resolve the on-disk Containers/Data path for a given bundle ID by
@@ -6627,6 +6907,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
         NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
+        NSUInteger seededContacts = ci_seedRandomContacts();
+        NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
 
         // Step 2: Kill + wipe target app sandboxes.
         // Kill FIRST so file handles release and the app can't re-create files
@@ -6886,6 +7168,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [body appendFormat:@"⚠️ Respring fail (rc=%d).\n→ Hãy **force-quit** target app (vuốt lên) rồi mở lại.\n\n", respringRC];
             }
             [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
+            [body appendFormat:@"Danh ba goi y: %lu contact moi\n\n", (unsigned long)seededContacts];
             [body appendFormat:@"Model: %@\niOS: %@\nSerial: %@\nIDFA: %@\nUDID: %@\nIMEI: %@\n\n",
                 model, ios, shortSerial, idfa, shortUDID, imei];
             if (prefsOK) {

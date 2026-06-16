@@ -61,5 +61,7 @@
 	<string>Chọn video từ thư viện làm nguồn camera giả cho video call.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Lưu video đã xử lý vào thư viện.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>HIOS Faker tao danh ba goi y tu danh sach lien he cua ban sau moi lan Change Device.</string>
 </dict>
 </plist>
