@@ -4065,6 +4065,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // 4. Check IP + location
     [_rows addObject:[C header:@"4. Check IP Address"]];
     [_rows addObject:[C note:@"Chọn server: ip-api.com" indent:24]];
+    [_rows addObject:[C toggle:@"4.0 Tự đổi IP qua API proxy" key:@"proxyApiEnabled" indent:24]];
+    [_rows addObject:[C note:@"Dán full link API của web proxy (token/key có sẵn trong link). Mỗi lần Change Device tự gọi link để đổi/lấy IP — khỏi đổi tay." indent:48]];
+    [_rows addObject:[C text:@"Link API proxy" key:@"proxyApiUrl" placeholder:@"https://api.proxy.xxx/get?key=..." indent:48]];
     [_rows addObject:[C toggle:@"4.1 Fake GPS Location" key:@"fake_location" indent:24]];
     // v2.5.31: random VN city per Change Device. OFF (default) = pin GPS to
     // proxy IP (IP/GPS coherent, anti-detection). ON = ignore proxy, pick
