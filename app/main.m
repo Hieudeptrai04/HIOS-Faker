@@ -49,7 +49,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8";
+static NSString *const kAppVersion = @"4.0.9";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1620,30 +1620,15 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
     [cm setObject:gpuName       forKey:@"web_glRenderer"];
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
-    // MetalPluginName / MetalPluginClassName (IORegistry) — Zalo reads these and
-    // they otherwise leak the REAL chip. A8..A14 use "AGXMetalA<N>" /
-    // "AGXA<N>Device" — verified: A8/A9 (SDK driver bundles AGXMetalA8/A9),
-    // A10 (AGXMetalA10 + class AGXA10Device), A11 (measured on-device:
-    // AGXMetalA11 / AGXA11Device), A12-A14 (AGXMetalA12/13/14 + AGXA14Device).
-    // A15+ switched to a G-codename scheme ("AGXMetalG15"…) we don't map yet,
-    // so leave those unset -> the tweak returns the real value rather than a
-    // wrong "AGXMetalA15". chipName looks like "A8" / "A10 Fusion" / "A11 Bionic".
-    NSInteger chipGen = 0;
-    if ([chipName hasPrefix:@"A"] && chipName.length > 1) {
-        NSScanner *cs = [NSScanner scannerWithString:[chipName substringFromIndex:1]];
-        if (![cs scanInteger:&chipGen]) chipGen = 0;
-    }
-    if (chipGen >= 8 && chipGen <= 14) {
-        [cm setObject:[NSString stringWithFormat:@"AGXMetalA%ld", (long)chipGen]
-               forKey:@"zalo_metalPluginName"];
-        [cm setObject:[NSString stringWithFormat:@"AGXA%ldDevice", (long)chipGen]
-               forKey:@"zalo_metalPluginClass"];
-    } else {
-        // A15+ (G-codename, not mapped) or unknown chip: clear stale value ->
-        // tweak returns the real one instead of a wrong guess.
-        [cm setObject:nil forKey:@"zalo_metalPluginName"];
-        [cm setObject:nil forKey:@"zalo_metalPluginClass"];
-    }
+    // GPU MetalPluginName spoof REMOVED in 4.0.9 (4.0.8 regression). Spoofing
+    // only MetalPluginName/MetalPluginClassName while GPUConfigurationVariable
+    // (gpu_gen / num_cores), the AGXAccelerator class hierarchy and
+    // recommendedMaxWorkingSetSize still report the REAL chip created an
+    // internal GPU contradiction -> fresh Zalo accounts got locked at
+    // registration. 4.0.6 (no GPU spoof, fully self-consistent) was stable, so
+    // we go back to that: clear any stale values so the GPU identity stays real.
+    [cm setObject:nil forKey:@"zalo_metalPluginName"];
+    [cm setObject:nil forKey:@"zalo_metalPluginClass"];
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
     // WKWebView UA string — randomize every Change Device (v2.5.13).

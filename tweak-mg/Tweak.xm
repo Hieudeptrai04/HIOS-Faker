@@ -440,14 +440,12 @@ static void initIOKeyMap(void) {
             @"IO80211InterfaceMACAddress":@"WiFiAddress",
             @"IO80211HardwareAddress":@"WiFiAddress",
             @"IOEthernetMACAddress":@"EthernetAddress",
-            // GPU / Metal driver identity — Zalo's anti-fraud reads these from
-            // the GPU IORegistry node (verified in-app log). Un-spoofed they
-            // leak the REAL chip (e.g. "AGXMetalA11") regardless of the faked
-            // model — that mismatch is why faking a higher model gets flagged.
-            // Host app sets them per faked chip (A11+); pre-A11 stay unset ->
-            // ci_ioLookup returns NULL -> the hook returns the real value.
-            @"MetalPluginName":@"zalo_metalPluginName",
-            @"MetalPluginClassName":@"zalo_metalPluginClass",
+            // NOTE (4.0.9): MetalPluginName/MetalPluginClassName spoof REMOVED.
+            // Spoofing only the GPU driver-name strings while gpu_gen/num_cores
+            // (GPUConfigurationVariable) + the AGXAccelerator class still report
+            // the real chip is an internal contradiction that locked fresh Zalo
+            // accounts at registration (4.0.8). Leave GPU identity real and
+            // self-consistent, like the stable 4.0.6.
         };
     });
 }
