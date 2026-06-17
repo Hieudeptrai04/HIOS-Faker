@@ -2534,6 +2534,25 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
+// Reset an app's TCC privacy permissions (Contacts / Photos / Camera /
+// Microphone / Tracking) so a freshly-registered account is re-prompted for
+// access EXACTLY like a brand-new install. TCC.db (/var/mobile/Library/TCC/
+// TCC.db) is mobile-owned, so the host (uid 501) can DELETE the client's rows
+// directly — no root needed. Location is deliberately NOT reset here: it lives
+// in locationd (root-owned) AND the MG tweak keeps feeding the FAKED GPS, so
+// even if the user later taps "Allow While Using" the real position never
+// leaks — Zalo only ever sees the spoofed coordinates. The caller must kill
+// tccd afterwards (it runs as uid 501, so it IS killable) so its in-memory
+// cache reloads and the deletions take effect on the very next launch.
+static void ci_resetAppTCC(NSString *bundleID) {
+    if (!bundleID.length) return;
+    NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *cmd = [NSString stringWithFormat:
+        @"/var/jb/usr/bin/sqlite3 '/var/mobile/Library/TCC/TCC.db' "
+        @"\"DELETE FROM access WHERE client='%@';\" 2>/dev/null", bid];
+    ci_run([cmd UTF8String]);
+}
+
 // ============================================================
 // APP INFO + LIST
 // ============================================================
@@ -7273,6 +7292,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     full, full, full];
                 ci_run([cmd UTF8String]);
             }
+            // Fresh-install permission state: drop this app's TCC rows so it
+            // re-prompts for Contacts / Photos / Camera / Mic / Tracking on the
+            // next launch (tccd reloaded once after the loop). Location stays
+            // intact + spoofed by the tweak (see ci_resetAppTCC).
+            ci_resetAppTCC(a.bundleID);
             // v2.5.39: write marker inside Documents/ so iOS sandbox lets
             // the file land (host's writeToFile: to another app's container
             // ROOT silently fails — observed live on Zalo 2026-05-23:
@@ -7295,6 +7319,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   a.bundleID, mrc, docMarker, rootMarker);
             wiped++;
         }
+        // Reload tccd ONCE so the per-app TCC deletions above take effect on
+        // the next launch (tccd runs as uid 501 → killable by the host; it
+        // respawns immediately and re-reads TCC.db). Without this its live
+        // cache would keep serving the old "granted" until a reboot.
+        ci_run("killall -9 tccd 2>/dev/null");
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
