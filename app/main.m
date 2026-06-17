@@ -1066,6 +1066,8 @@ static NSArray *ci_randomPresets(void) {
         NSArray *colors15Pro   = @[@"Black Titanium", @"White Titanium", @"Blue Titanium", @"Natural Titanium"];
         NSArray *colors16      = @[@"Black", @"White", @"Pink", @"Teal", @"Ultramarine"];
         NSArray *colors16Pro   = @[@"Black Titanium", @"White Titanium", @"Natural Titanium", @"Desert Titanium"];
+        NSArray *colors17      = @[@"Black", @"White", @"Sage", @"Mist Blue", @"Lavender"];
+        NSArray *colors17Pro   = @[@"Deep Blue", @"Cosmic Orange", @"Silver"];
 
         presets = @[
             // iPhone 5/5s/6/6 Plus removed — their max real iOS is 10-12,
@@ -1108,6 +1110,16 @@ static NSArray *ci_randomPresets(void) {
             @[@"iPhone 15 Plus",    @"iPhone15,5", @"iPhone15,5", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A16 Bionic",@"0x8120", @"0x28", @(6442450944),  @(6),  @(17), @(18), colors15],
             @[@"iPhone 15 Pro",     @"iPhone16,1", @"iPhone16,1", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A17 Pro",   @"0x8130", @"0x2C", @(8589934592),  @(6),  @(17), @(18), colors15Pro],
             @[@"iPhone 15 Pro Max", @"iPhone16,2", @"iPhone16,2", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A17 Pro",   @"0x8130", @"0x2C", @(8589934592),  @(6),  @(17), @(18), colors15Pro],
+            // iPhone 16 series — A18 / A18 Pro. iOS 18-26.
+            @[@"iPhone 16",         @"iPhone17,3", @"iPhone17,3", @"393", @"852", @"3", @"1179", @"2556", @"3", @"A18",       @"0x8140", @"0x30", @(8589934592),  @(6),  @(18), @(26), colors16],
+            @[@"iPhone 16 Plus",    @"iPhone17,4", @"iPhone17,4", @"430", @"932", @"3", @"1290", @"2796", @"3", @"A18",       @"0x8140", @"0x30", @(8589934592),  @(6),  @(18), @(26), colors16],
+            @[@"iPhone 16 Pro",     @"iPhone17,1", @"iPhone17,1", @"402", @"874", @"3", @"1206", @"2622", @"3", @"A18 Pro",   @"0x8150", @"0x34", @(8589934592),  @(6),  @(18), @(26), colors16Pro],
+            @[@"iPhone 16 Pro Max", @"iPhone17,2", @"iPhone17,2", @"440", @"956", @"3", @"1320", @"2868", @"3", @"A18 Pro",   @"0x8150", @"0x34", @(8589934592),  @(6),  @(18), @(26), colors16Pro],
+            @[@"iPhone 16e",        @"iPhone17,5", @"iPhone17,5", @"390", @"844", @"3", @"1170", @"2532", @"3", @"A18",       @"0x8140", @"0x30", @(8589934592),  @(6),  @(18), @(26), colors16],
+            // iPhone 17 series — A19 / A19 Pro. iOS 26 only.
+            @[@"iPhone 17",         @"iPhone18,3", @"iPhone18,3", @"402", @"874", @"3", @"1206", @"2622", @"3", @"A19",       @"0x8160", @"0x38", @(8589934592),  @(6),  @(26), @(26), colors17],
+            @[@"iPhone 17 Pro",     @"iPhone18,1", @"iPhone18,1", @"402", @"874", @"3", @"1206", @"2622", @"3", @"A19 Pro",   @"0x8170", @"0x3C", @(12884901888), @(6),  @(26), @(26), colors17Pro],
+            @[@"iPhone 17 Pro Max", @"iPhone18,2", @"iPhone18,2", @"440", @"956", @"3", @"1320", @"2868", @"3", @"A19 Pro",   @"0x8170", @"0x3C", @(12884901888), @(6),  @(26), @(26), colors17Pro],
         ];
     }
     return presets;
@@ -1196,6 +1208,9 @@ static NSArray *ci_randomIOSPresets(void) {
             @[@"iOS 18.3",   @"18.3",   @"22D63"],
             @[@"iOS 18.3.1", @"18.3.1", @"22D72"],
             @[@"iOS 18.3.2", @"18.3.2", @"22D82"],
+            // iOS 26 — required by iPhone 16 (optional) and iPhone 17 (only runs 26).
+            @[@"iOS 26.0",   @"26.0",   @"23A341"],
+            @[@"iOS 26.5.1", @"26.5.1", @"23F81"],
         ];
     }
     return iosList;
@@ -1428,10 +1443,12 @@ static NSUInteger ci_randomizeIdentities(void) {
     else if ([productTyp hasPrefix:@"iPhone13,"]) {
         hasFaceID = YES; hasOLED = YES; has5G = YES; hasTouchID = NO; hasHomeButton = NO;
     }
-    // iPhone 13/14/15/16 series — FaceID + OLED + 5G. SE3 (iPhone14,6) keeps TouchID.
+    // iPhone 13/14/15/16/17 series — FaceID + OLED + 5G. SE3 (iPhone14,6) keeps TouchID.
     else if ([productTyp hasPrefix:@"iPhone14,"] ||
              [productTyp hasPrefix:@"iPhone15,"] ||
-             [productTyp hasPrefix:@"iPhone16,"]) {
+             [productTyp hasPrefix:@"iPhone16,"] ||
+             [productTyp hasPrefix:@"iPhone17,"] ||
+             [productTyp hasPrefix:@"iPhone18,"]) {
         if ([productTyp isEqualToString:@"iPhone14,6"]) {
             // SE (3rd gen) — TouchID + HomeButton, no FaceID, LCD
             hasTouchID = YES; hasHomeButton = YES; hasFaceID = NO; hasOLED = NO; has5G = YES;
@@ -3895,34 +3912,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // nil for any reason (it shouldn't — both arrays are static dispatch_once'd).
 // Columns: name, productType, machine, width, height, scale, nativeW, nativeH, nativeScale
 + (NSArray *)devicePresetsLegacy {
-    static NSArray *presets = nil;
-    if (!presets) {
-        presets = @[
-            // iPhone 5/5s/6/6 Plus removed (max iOS 10-12, can't pair with
-            // our 14-18 iOS list).
-            @[@"iPhone SE (1)",     @"iPhone8,4",  @"iPhone8,4",  @"320", @"568", @"2", @"640",  @"1136", @"2"],
-            @[@"iPhone 6s",         @"iPhone8,1",  @"iPhone8,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 6s Plus",    @"iPhone8,2",  @"iPhone8,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone 7",          @"iPhone9,1",  @"iPhone9,1",  @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 7 Plus",     @"iPhone9,2",  @"iPhone9,2",  @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone 8",          @"iPhone10,1", @"iPhone10,1", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 8 Plus",     @"iPhone10,2", @"iPhone10,2", @"414", @"736", @"3", @"1242", @"2208", @"3"],
-            @[@"iPhone X",          @"iPhone10,3", @"iPhone10,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone XR",         @"iPhone11,8", @"iPhone11,8", @"414", @"896", @"2", @"828",  @"1792", @"2"],
-            @[@"iPhone XS",         @"iPhone11,2", @"iPhone11,2", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone XS Max",     @"iPhone11,6", @"iPhone11,6", @"414", @"896", @"3", @"1242", @"2688", @"3"],
-            @[@"iPhone SE (2)",     @"iPhone12,8", @"iPhone12,8", @"375", @"667", @"2", @"750",  @"1334", @"2"],
-            @[@"iPhone 11",         @"iPhone12,1", @"iPhone12,1", @"414", @"896", @"2", @"828",  @"1792", @"2"],
-            @[@"iPhone 11 Pro",     @"iPhone12,3", @"iPhone12,3", @"375", @"812", @"3", @"1125", @"2436", @"3"],
-            @[@"iPhone 11 Pro Max", @"iPhone12,5", @"iPhone12,5", @"414", @"896", @"3", @"1242", @"2688", @"3"],
-            @[@"iPhone 12 mini",    @"iPhone13,1", @"iPhone13,1", @"375", @"812", @"3", @"1080", @"2340", @"3"],
-            @[@"iPhone 12",         @"iPhone13,2", @"iPhone13,2", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 12 Pro",     @"iPhone13,3", @"iPhone13,3", @"390", @"844", @"3", @"1170", @"2532", @"3"],
-            @[@"iPhone 12 Pro Max", @"iPhone13,4", @"iPhone13,4", @"428", @"926", @"3", @"1284", @"2778", @"3"],
-            // NOTE: iPhone 13+ removed — Zalo only recognizes models up to iPhone 12 Pro Max.
-        ];
-    }
-    return presets;
+    // UI list = the SAME array the Change Device engine uses (ci_randomPresets),
+    // so the slider index ALWAYS maps to the model that actually gets spoofed.
+    // The old separate 19-entry list drifted from the 31-entry engine -> picking
+    // 13+ spoofed the wrong model / Zalo showed iPhone 7. Single source of truth.
+    // ci_randomPresets entries are [name, PT, PT, w, h, scale, nW, nH, dpr, ...];
+    // the first 9 fields match this method's expected format exactly.
+    return ci_randomPresets();
 }
 
 // iOS version presets — name, systemVersion, BuildVersion
@@ -4017,7 +4013,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)showPresets {
     NSArray *presets = [CIFakeSettingsViewController devicePresets];
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Chọn Model iPhone"
-        message:@"iPhone 5 → iPhone 12 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
+        message:@"iPhone SE → iPhone 17 Pro Max" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSArray *p in presets) {
         [ac addAction:[UIAlertAction actionWithTitle:p[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
             [self applyPreset:p];
@@ -6210,6 +6206,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             @"iPhone17,1": @"iPhone 16 Pro", @"iPhone17,2": @"iPhone 16 Pro Max",
             @"iPhone17,3": @"iPhone 16",     @"iPhone17,4": @"iPhone 16 Plus",
             @"iPhone17,5": @"iPhone 16e",
+            @"iPhone18,1": @"iPhone 17 Pro", @"iPhone18,2": @"iPhone 17 Pro Max",
+            @"iPhone18,3": @"iPhone 17",     @"iPhone18,4": @"iPhone Air",
             // iPad (selected — common in test fleets)
             @"iPad2,1": @"iPad 2",           @"iPad2,2": @"iPad 2",           @"iPad2,3": @"iPad 2",           @"iPad2,4": @"iPad 2",
             @"iPad2,5": @"iPad mini",        @"iPad2,6": @"iPad mini",        @"iPad2,7": @"iPad mini",

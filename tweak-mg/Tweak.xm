@@ -769,6 +769,21 @@ static BOOL chipSpecForProductType(NSString *pt, ChipSpec *out) {
     } else if ([pt hasPrefix:@"iPhone16,"]) {   // A17 Pro (15 Pro / 15 Pro Max)
         s.cpufamily = 0x2876f5b5; s.cpusubtype = 2;
         s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt isEqualToString:@"iPhone17,1"] ||
+               [pt isEqualToString:@"iPhone17,2"]) {   // A18 Pro (16 Pro / 16 Pro Max)
+        s.cpufamily = 0x75d4acb9; s.cpusubtype = 2;     // TAHITI
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone17,"]) {           // A18 (16 / 16 Plus / 16e)
+        s.cpufamily = 0x204526d0; s.cpusubtype = 2;     // TUPAI
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt isEqualToString:@"iPhone18,1"] ||
+               [pt isEqualToString:@"iPhone18,2"] ||
+               [pt isEqualToString:@"iPhone18,4"]) {   // A19 Pro (17 Pro / Pro Max / Air)
+        s.cpufamily = 0xab345f09; s.cpusubtype = 2;     // THERA
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
+    } else if ([pt hasPrefix:@"iPhone18,"]) {           // A19 (17)
+        s.cpufamily = 0x01d7a72b; s.cpusubtype = 2;     // TILOS
+        s.l1i = 131072; s.l1d = 131072; s.l2 = 8388608;
     } else {
         return NO;   // unknown SoC → don't spoof (avoid inventing wrong data)
     }
@@ -1457,6 +1472,20 @@ static void screenDimsForProductType(NSString *pt, int *sw, int *sh, double *dpr
     } else if ([pt hasPrefix:@"iPhone15,3"] || [pt hasPrefix:@"iPhone15,5"] ||
                [pt hasPrefix:@"iPhone16,2"]) {
         *sw = 430; *sh = 932; *dpr = 3.0; *hc = ([pt hasPrefix:@"iPhone16"] ? 8 : 6);
+    // iPhone 16 / 16e (393×852 / 390×844 falls to default)
+    } else if ([pt isEqualToString:@"iPhone17,3"]) {        // iPhone 16
+        *sw = 393; *sh = 852; *dpr = 3.0; *hc = 6;
+    } else if ([pt isEqualToString:@"iPhone17,4"]) {        // iPhone 16 Plus
+        *sw = 430; *sh = 932; *dpr = 3.0; *hc = 6;
+    // iPhone 16 Pro / 17 / 17 Pro (6.3", 402×874)
+    } else if ([pt isEqualToString:@"iPhone17,1"] ||
+               [pt isEqualToString:@"iPhone18,1"] ||
+               [pt isEqualToString:@"iPhone18,3"]) {
+        *sw = 402; *sh = 874; *dpr = 3.0; *hc = 6;
+    // iPhone 16 Pro Max / 17 Pro Max (6.9", 440×956)
+    } else if ([pt isEqualToString:@"iPhone17,2"] ||
+               [pt isEqualToString:@"iPhone18,2"]) {
+        *sw = 440; *sh = 956; *dpr = 3.0; *hc = 6;
     }
     // NOTE (4.0.6): do NOT add branches for older models (X/XS/8/7/6s/SE).
     // They intentionally fall through to the dpr 3.0 default above. The 4.0.4
