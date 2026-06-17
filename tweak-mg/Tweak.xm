@@ -28,6 +28,7 @@
 #import <ifaddrs.h>
 #import <net/if_dl.h>
 #import <net/if.h>
+#import <IOKit/IOKitLib.h>
 #import <CoreLocation/CoreLocation.h>
 #import <CoreTelephony/CTCarrier.h>
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
@@ -532,6 +533,82 @@ static CFTypeRef ci_ioLookup(NSString *keyStr) {
     return (__bridge_retained CFTypeRef)val;
 }
 
+// ============================================================
+// GPU identity spoof (4.0.9-test). The GPU node (AGXAccelerator*) hard-codes
+// the REAL chip across ~8 interlocking keys. Faking a different model leaves
+// the GPU shouting the true SoC -> Zalo reads MetalPluginName /
+// MetalPluginClassName and reports the real device (an A11 -> "iPhone X")
+// despite a spoofed hw.machine. 4.0.8 spoofed only the two driver-name
+// strings while gpu_gen / num_cores / class still leaked the real chip =
+// internal contradiction = account lock. So here we spoof the WHOLE
+// chip-encoding set CONSISTENTLY from the per-chip profile the host app wrote
+// into config (gpu_metalName etc.) — present ONLY when the faked ProductType
+// differs from the real one; absent -> these helpers no-op -> real GPU.
+// ============================================================
+static BOOL ci_isGPUNode(mach_port_t entry) {
+    io_name_t cls;
+    if (IOObjectGetClass(entry, cls) == KERN_SUCCESS) {
+        if (strncmp(cls, "AGXAccelerator", 14) == 0) return YES;
+        if (strncmp(cls, "AGXDevice", 9) == 0)       return YES;
+        if (strncmp(cls, "IOGPU", 5) == 0)           return YES;
+    }
+    return NO;
+}
+
+// GPUConfigurationVariable dict, rebuilt from the spoofed gpu_gen / num_cores
+// so it can't contradict MetalPluginName (the 4.0.8 failure mode).
+static CFTypeRef ci_gpuConfigVar(void) {
+    NSString *g = getConfigStr(@"gpu_gen");
+    NSString *c = getConfigStr(@"gpu_cores");
+    if (!g.length || !c.length) return NULL;
+    int gi = g.intValue, ci = c.intValue;
+    if (gi <= 0 || ci <= 0) return NULL;
+    NSDictionary *d = @{ @"gpu_gen":@(gi), @"num_cores":@(ci),
+                         @"num_gps":@(ci),  @"num_frags":@(ci),
+                         @"usc_gen":@(gi >= 13 ? 4 : 2), @"num_mgpus":@(1) };
+    return (__bridge_retained CFTypeRef)d;
+}
+
+// GPU-UNIQUE keys — these names exist ONLY on the GPU node, so spoofing them
+// on any node is collision-free.
+static CFTypeRef ci_gpuUnique(NSString *key) {
+    NSString *ck = nil;
+    if      ([key isEqualToString:@"MetalPluginName"])         ck = @"gpu_metalName";
+    else if ([key isEqualToString:@"MetalPluginClassName"])    ck = @"gpu_metalClass";
+    else if ([key isEqualToString:@"MetalStatisticsName"])     ck = @"gpu_metalStats";
+    else if ([key isEqualToString:@"GPUConfigurationVariable"]) return ci_gpuConfigVar();
+    if (ck) { NSString *v = getConfigStr(ck); if (v.length) return (__bridge_retained CFTypeRef)[v copy]; }
+    return NULL;
+}
+
+// GENERIC IOKit keys that ALSO live on non-GPU nodes — only spoof once the
+// caller has confirmed `entry` is the GPU node (else we'd corrupt others).
+static CFTypeRef ci_gpuGeneric(NSString *key) {
+    if      ([key isEqualToString:@"IOClass"])                 { NSString *v = getConfigStr(@"gpu_ioClass");     if (v.length) return (__bridge_retained CFTypeRef)[v copy]; }
+    else if ([key isEqualToString:@"CFBundleIdentifier"] ||
+             [key isEqualToString:@"CFBundleIdentifierKernel"]){ NSString *v = getConfigStr(@"gpu_bundleId");    if (v.length) return (__bridge_retained CFTypeRef)[v copy]; }
+    else if ([key isEqualToString:@"IONameMatched"])           { NSString *v = getConfigStr(@"gpu_nameMatched"); if (v.length) return (__bridge_retained CFTypeRef)[v copy]; }
+    else if ([key isEqualToString:@"IONameMatch"])             { NSString *v = getConfigStr(@"gpu_nameMatched"); if (v.length) return (__bridge_retained CFTypeRef)@[v]; }
+    return NULL;
+}
+
+static BOOL ci_isGenericGPUKey(NSString *key) {
+    return [key isEqualToString:@"IOClass"] ||
+           [key isEqualToString:@"CFBundleIdentifier"] ||
+           [key isEqualToString:@"CFBundleIdentifierKernel"] ||
+           [key isEqualToString:@"IONameMatched"] ||
+           [key isEqualToString:@"IONameMatch"];
+}
+
+// Per-key GPU spoof for the IORegSearch/Create hooks.
+static CFTypeRef ci_gpuSpoof(mach_port_t entry, NSString *key) {
+    CFTypeRef u = ci_gpuUnique(key);
+    if (u) return u;
+    // Only pay the IOObjectGetClass cost for ambiguous generic keys.
+    if (ci_isGenericGPUKey(key) && ci_isGPUNode(entry)) return ci_gpuGeneric(key);
+    return NULL;
+}
+
 // Re-entry guard: NSData/NSString creation inside ci_ioLookup may call
 // IORegistry under the hood (NSLocale region lookup, memory tagging
 // metadata) → re-enters our hook → infinite recursion → AIDA64 burns
@@ -545,7 +622,8 @@ static CFTypeRef hooked_IORegCreate(mach_port_t entry, CFStringRef key,
     initIOKeyMap();
     char kb[128]; kb[0] = 0;
     CFStringGetCString(key, kb, sizeof(kb), kCFStringEncodingUTF8);
-    CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+    CFTypeRef sp = ci_gpuSpoof(entry, (__bridge NSString *)key);
+    if (!sp) sp = ci_ioLookup((__bridge NSString *)key);
     dbglog("IORegCreate %s key=%s spoof=%c\n", g_procname, kb, sp ? 'Y' : 'N');
     g_inIOReg = 0;
     if (sp) return sp;
@@ -560,7 +638,8 @@ static CFTypeRef hooked_IORegSearch(mach_port_t entry, const char *plane,
     initIOKeyMap();
     char kb[128]; kb[0] = 0;
     CFStringGetCString(key, kb, sizeof(kb), kCFStringEncodingUTF8);
-    CFTypeRef sp = ci_ioLookup((__bridge NSString *)key);
+    CFTypeRef sp = ci_gpuSpoof(entry, (__bridge NSString *)key);
+    if (!sp) sp = ci_ioLookup((__bridge NSString *)key);
     dbglog("IORegSearch %s plane=%s key=%s spoof=%c\n",
            g_procname, plane ? plane : "?", kb, sp ? 'Y' : 'N');
     g_inIOReg = 0;
@@ -608,6 +687,28 @@ static kern_return_t hooked_IORegCreateProps(mach_port_t entry,
                     CFDictionarySetValue(mut, cfKey, sp);
                     CFRelease(sp);
                     replaced++;
+                }
+            }
+            // GPU node: presence of MetalPluginName identifies the dict as the
+            // AGXAccelerator node — replace the WHOLE chip-encoding set (unique
+            // + generic) so an app iterating the dict locally can't catch a
+            // real gpu_gen / IOClass contradicting the spoofed driver name.
+            if (CFDictionaryContainsKey(mut, CFSTR("MetalPluginName"))) {
+                NSArray *gk = @[@"MetalPluginName", @"MetalPluginClassName",
+                                @"MetalStatisticsName", @"GPUConfigurationVariable",
+                                @"IOClass", @"CFBundleIdentifier",
+                                @"CFBundleIdentifierKernel", @"IONameMatched",
+                                @"IONameMatch"];
+                for (NSString *k in gk) {
+                    CFStringRef cfk = (__bridge CFStringRef)k;
+                    if (!CFDictionaryContainsKey(mut, cfk)) continue;
+                    CFTypeRef sp = ci_gpuUnique(k);
+                    if (!sp) sp = ci_gpuGeneric(k);
+                    if (sp) {
+                        CFDictionarySetValue(mut, cfk, sp);
+                        CFRelease(sp);
+                        replaced++;
+                    }
                 }
             }
             if (replaced > 0) {

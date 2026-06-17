@@ -49,7 +49,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8";
+static NSString *const kAppVersion = @"4.0.9-test";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1637,15 +1637,61 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
     [cm setObject:gpuName       forKey:@"web_glRenderer"];
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
-    // GPU MetalPluginName spoof REMOVED in 4.0.9 (4.0.8 regression). Spoofing
-    // only MetalPluginName/MetalPluginClassName while GPUConfigurationVariable
-    // (gpu_gen / num_cores), the AGXAccelerator class hierarchy and
-    // recommendedMaxWorkingSetSize still report the REAL chip created an
-    // internal GPU contradiction -> fresh Zalo accounts got locked at
-    // registration. 4.0.6 (no GPU spoof, fully self-consistent) was stable, so
-    // we go back to that: clear any stale values so the GPU identity stays real.
+    // === GPU identity (4.0.9-test) — FULL chip-encoding spoof ===
+    // The GPU node (AGXAccelerator*) hard-codes the REAL chip across ~8
+    // interlocking keys (MetalPluginName / MetalPluginClassName /
+    // MetalStatisticsName / GPUConfigurationVariable{gpu_gen,num_cores} /
+    // IOClass / CFBundleIdentifier / IONameMatched). Zalo reads
+    // MetalPluginName + MetalPluginClassName and reports the TRUE chip — an
+    // A11 device shows "iPhone X" even with hw.machine spoofed to iPhone18,x.
+    // 4.0.8 spoofed only the two driver-name strings while gpu_gen/num_cores/
+    // class stayed real -> internal contradiction -> account lock. So now we
+    // spoof the WHOLE set CONSISTENTLY, and ONLY when the faked chip differs
+    // from the real device (if equal, the real GPU node is already correct —
+    // leave it untouched, never introduce a contradiction on a matching rig).
+    // NOTE: A18/A19 values are best-effort (no ground-truth iPhone 16/17 to
+    // extract); chip-id / gpu_gen are kept consistent with the rest of the
+    // spoof. TEST build — verify account survival before any wide release.
     [cm setObject:nil forKey:@"zalo_metalPluginName"];
     [cm setObject:nil forKey:@"zalo_metalPluginClass"];
+    NSString *gpuFakePT = preset.count > 1 ? preset[1] : nil;
+    NSString *gpuRealPT = ci_realProductType();
+    NSArray *gpuKeys = @[@"gpu_metalName", @"gpu_metalClass", @"gpu_metalStats",
+                         @"gpu_bundleId", @"gpu_ioClass", @"gpu_nameMatched",
+                         @"gpu_gen", @"gpu_cores"];
+    // chipName -> @[A-name, gpu_gen, SoC t-id hex, GPU core count]
+    NSDictionary *gpuTab = @{
+        @"A11":     @[@"A11", @10, @"8015", @3],
+        @"A12":     @[@"A12", @11, @"8020", @4],
+        @"A13":     @[@"A13", @12, @"8030", @4],
+        @"A14":     @[@"A14", @13, @"8101", @4],
+        @"A15":     @[@"A15", @14, @"8110", @5],
+        @"A16":     @[@"A16", @15, @"8120", @5],
+        @"A17 Pro": @[@"A17", @16, @"8130", @6],
+        @"A18":     @[@"A18", @17, @"8140", @5],
+        @"A18 Pro": @[@"A18", @17, @"8150", @6],
+        @"A19":     @[@"A19", @18, @"8160", @5],
+        @"A19 Pro": @[@"A19", @18, @"8170", @6],
+    };
+    NSArray *gpuP = gpuTab[chipName];
+    if (gpuP && gpuFakePT.length && gpuRealPT.length &&
+        ![gpuFakePT isEqualToString:gpuRealPT]) {
+        NSString *aN = gpuP[0];                 // "A19"
+        int gGen   = [gpuP[1] intValue];        // 18
+        NSString *tId = gpuP[2];                // "8160"
+        int gCores = [gpuP[3] intValue];        // 5
+        [cm setObject:[@"AGXMetal" stringByAppendingString:aN]                       forKey:@"gpu_metalName"];   // AGXMetalA19
+        [cm setObject:[NSString stringWithFormat:@"AGX%@Device", aN]                 forKey:@"gpu_metalClass"];  // AGXA19Device
+        [cm setObject:[@"AGXMetalStatisticsExternal" stringByAppendingString:aN]     forKey:@"gpu_metalStats"];  // AGXMetalStatisticsExternalA19
+        [cm setObject:[NSString stringWithFormat:@"com.apple.AGXG%dP", gGen]         forKey:@"gpu_bundleId"];    // com.apple.AGXG18P
+        [cm setObject:[NSString stringWithFormat:@"AGXAcceleratorG%dP_B0", gGen]     forKey:@"gpu_ioClass"];     // AGXAcceleratorG18P_B0
+        [cm setObject:[NSString stringWithFormat:@"gpu,t%@", tId]                    forKey:@"gpu_nameMatched"]; // gpu,t8160
+        [cm setObject:[NSString stringWithFormat:@"%d", gGen]                        forKey:@"gpu_gen"];
+        [cm setObject:[NSString stringWithFormat:@"%d", gCores]                      forKey:@"gpu_cores"];
+    } else {
+        // Faking our own real model (or unknown chip): leave the real GPU node.
+        for (NSString *gk in gpuKeys) [cm setObject:nil forKey:gk];
+    }
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
     // WKWebView UA string — randomize every Change Device (v2.5.13).
