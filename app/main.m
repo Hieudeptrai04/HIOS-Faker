@@ -1674,8 +1674,17 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"A19 Pro": @[@"A19", @18, @"8170", @6],
     };
     NSArray *gpuP = gpuTab[chipName];
-    if (gpuP && gpuFakePT.length && gpuRealPT.length &&
-        ![gpuFakePT isEqualToString:gpuRealPT]) {
+    // Diagnostic (test build): capture the runtime gate inputs so we can see
+    // exactly what chipName / real-PT the app computed at Change Device time.
+    [cm setObject:[NSString stringWithFormat:@"chip=%@|gpuP=%@|fake=%@|real=%@",
+                   chipName ?: @"<nil>", gpuP ? @"Y" : @"N",
+                   gpuFakePT ?: @"<nil>", gpuRealPT ?: @"<nil>"]
+           forKey:@"_ci_gpu_dbg"];
+    // Spoof the GPU for ANY chip we have a profile for. The faked model is what
+    // the user explicitly chose; if it happens to equal the real chip the
+    // written profile just matches reality (harmless). The earlier real!=fake
+    // gate depended on uname() which proved unreliable here, so drop it.
+    if (gpuP) {
         NSString *aN = gpuP[0];                 // "A19"
         int gGen   = [gpuP[1] intValue];        // 18
         NSString *tId = gpuP[2];                // "8160"
