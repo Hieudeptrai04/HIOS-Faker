@@ -602,6 +602,11 @@ static BOOL ci_isGenericGPUKey(NSString *key) {
 
 // Per-key GPU spoof for the IORegSearch/Create hooks.
 static CFTypeRef ci_gpuSpoof(mach_port_t entry, NSString *key) {
+    // GPU spoof is OFF unless the host wrote a profile (it doesn't by default —
+    // it was reverted because faking the Metal driver name crashes Zalo's
+    // camera/video). Cheap dict lookup short-circuits the whole path (incl. the
+    // IOObjectGetClass call) so this is truly inert when disabled.
+    if (!getConfigStr(@"gpu_metalName")) return NULL;
     CFTypeRef u = ci_gpuUnique(key);
     if (u) return u;
     // Only pay the IOObjectGetClass cost for ambiguous generic keys.

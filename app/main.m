@@ -135,6 +135,12 @@ static NSString *CIRRSDir(void) {
     // no longer requires claiming the real model). Optional: turn it ON to claim
     // the real device model for maximum consistency.
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
+    // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
+    // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
+    // real device → show iPhone X), and a high chip can't be faked GPU-
+    // consistently on old hardware without crashing camera/video. Keeping Zalo
+    // registrations on ≤ iPhone 12 is the proven, stable strategy.
+    if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -1313,6 +1319,28 @@ static NSUInteger ci_randomizeIdentities(void) {
     dLo = MAX(0, MIN(devMaxI, dLo)); dHi = MAX(0, MIN(devMaxI, dHi)); if (dLo > dHi) { NSInteger t = dLo; dLo = dHi; dHi = t; }
     iLo = MAX(0, MIN(iosMaxI, iLo)); iHi = MAX(0, MIN(iosMaxI, iHi)); if (iLo > iHi) { NSInteger t = iLo; iLo = iHi; iHi = t; }
 
+    // === ZALO MODE — cap the device window at iPhone 12 Pro Max ===
+    // Default ON. Newer Zalo builds don't recognise iPhone 13+ identifiers and
+    // fall back to deriving the model from the real screen → show the real
+    // device (iPhone X); high chips also can't be faked GPU-consistently on old
+    // hardware (crashes camera/video). So whatever the user dialled on the
+    // slider, clamp the [dLo,dHi] selection window so the engine never picks a
+    // model above iPhone 12 Pro Max (iPhone13,4).
+    id zaloObj = [cm objectForKey:@"zalo_mode"];
+    BOOL zaloMode = zaloObj ? [zaloObj boolValue] : YES;
+    if (zaloMode) {
+        NSInteger capIdx = -1;
+        for (NSUInteger i = 0; i < presets.count; i++) {
+            NSArray *p = presets[i];
+            if (p.count > 1 && [p[1] isEqualToString:@"iPhone13,4"]) { capIdx = (NSInteger)i; break; }
+        }
+        if (capIdx >= 0) {
+            if (dHi > capIdx) dHi = capIdx;
+            if (dLo > capIdx) dLo = capIdx;
+            if (dLo > dHi) dLo = dHi;
+        }
+    }
+
     NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
 
     // === HARDWARE LOCK (chống lệch phần cứng) ===
@@ -1637,70 +1665,20 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:@"Apple Inc." forKey:@"web_glVendor"];
     [cm setObject:gpuName       forKey:@"web_glRenderer"];
     [cm setObject:gpuName       forKey:@"zalo_metalGPU"];
-    // === GPU identity (4.0.9-test) — FULL chip-encoding spoof ===
-    // The GPU node (AGXAccelerator*) hard-codes the REAL chip across ~8
-    // interlocking keys (MetalPluginName / MetalPluginClassName /
-    // MetalStatisticsName / GPUConfigurationVariable{gpu_gen,num_cores} /
-    // IOClass / CFBundleIdentifier / IONameMatched). Zalo reads
-    // MetalPluginName + MetalPluginClassName and reports the TRUE chip — an
-    // A11 device shows "iPhone X" even with hw.machine spoofed to iPhone18,x.
-    // 4.0.8 spoofed only the two driver-name strings while gpu_gen/num_cores/
-    // class stayed real -> internal contradiction -> account lock. So now we
-    // spoof the WHOLE set CONSISTENTLY, and ONLY when the faked chip differs
-    // from the real device (if equal, the real GPU node is already correct —
-    // leave it untouched, never introduce a contradiction on a matching rig).
-    // NOTE: A18/A19 values are best-effort (no ground-truth iPhone 16/17 to
-    // extract); chip-id / gpu_gen are kept consistent with the rest of the
-    // spoof. TEST build — verify account survival before any wide release.
-    [cm setObject:nil forKey:@"zalo_metalPluginName"];
-    [cm setObject:nil forKey:@"zalo_metalPluginClass"];
-    NSString *gpuFakePT = preset.count > 1 ? preset[1] : nil;
-    NSString *gpuRealPT = ci_realProductType();
+    // GPU identity stays REAL + self-consistent (like the stable 4.0.6/4.0.8).
+    // The 4.0.9-test full chip-encoding GPU spoof was REVERTED: it did NOT fix
+    // the "Zalo shows iPhone X" symptom (that is a Zalo-client limit — its model
+    // table ends ~iPhone 12, newer ids fall back to the real screen) AND faking
+    // the Metal driver name (AGXMetalA1x / AGXA1xDevice) made Zalo CRASH on
+    // camera/video (it looks up a Metal device class that doesn't exist on the
+    // real A11). With the device range now capped at iPhone 12 the GPU spoof is
+    // pointless, so clear every GPU key and let the real, crash-free GPU show.
     NSArray *gpuKeys = @[@"gpu_metalName", @"gpu_metalClass", @"gpu_metalStats",
                          @"gpu_bundleId", @"gpu_ioClass", @"gpu_nameMatched",
-                         @"gpu_gen", @"gpu_cores"];
-    // chipName -> @[A-name, gpu_gen, SoC t-id hex, GPU core count]
-    NSDictionary *gpuTab = @{
-        @"A11":     @[@"A11", @10, @"8015", @3],
-        @"A12":     @[@"A12", @11, @"8020", @4],
-        @"A13":     @[@"A13", @12, @"8030", @4],
-        @"A14":     @[@"A14", @13, @"8101", @4],
-        @"A15":     @[@"A15", @14, @"8110", @5],
-        @"A16":     @[@"A16", @15, @"8120", @5],
-        @"A17 Pro": @[@"A17", @16, @"8130", @6],
-        @"A18":     @[@"A18", @17, @"8140", @5],
-        @"A18 Pro": @[@"A18", @17, @"8150", @6],
-        @"A19":     @[@"A19", @18, @"8160", @5],
-        @"A19 Pro": @[@"A19", @18, @"8170", @6],
-    };
-    NSArray *gpuP = gpuTab[chipName];
-    // Diagnostic (test build): capture the runtime gate inputs so we can see
-    // exactly what chipName / real-PT the app computed at Change Device time.
-    [cm setObject:[NSString stringWithFormat:@"chip=%@|gpuP=%@|fake=%@|real=%@",
-                   chipName ?: @"<nil>", gpuP ? @"Y" : @"N",
-                   gpuFakePT ?: @"<nil>", gpuRealPT ?: @"<nil>"]
-           forKey:@"_ci_gpu_dbg"];
-    // Spoof the GPU for ANY chip we have a profile for. The faked model is what
-    // the user explicitly chose; if it happens to equal the real chip the
-    // written profile just matches reality (harmless). The earlier real!=fake
-    // gate depended on uname() which proved unreliable here, so drop it.
-    if (gpuP) {
-        NSString *aN = gpuP[0];                 // "A19"
-        int gGen   = [gpuP[1] intValue];        // 18
-        NSString *tId = gpuP[2];                // "8160"
-        int gCores = [gpuP[3] intValue];        // 5
-        [cm setObject:[@"AGXMetal" stringByAppendingString:aN]                       forKey:@"gpu_metalName"];   // AGXMetalA19
-        [cm setObject:[NSString stringWithFormat:@"AGX%@Device", aN]                 forKey:@"gpu_metalClass"];  // AGXA19Device
-        [cm setObject:[@"AGXMetalStatisticsExternal" stringByAppendingString:aN]     forKey:@"gpu_metalStats"];  // AGXMetalStatisticsExternalA19
-        [cm setObject:[NSString stringWithFormat:@"com.apple.AGXG%dP", gGen]         forKey:@"gpu_bundleId"];    // com.apple.AGXG18P
-        [cm setObject:[NSString stringWithFormat:@"AGXAcceleratorG%dP_B0", gGen]     forKey:@"gpu_ioClass"];     // AGXAcceleratorG18P_B0
-        [cm setObject:[NSString stringWithFormat:@"gpu,t%@", tId]                    forKey:@"gpu_nameMatched"]; // gpu,t8160
-        [cm setObject:[NSString stringWithFormat:@"%d", gGen]                        forKey:@"gpu_gen"];
-        [cm setObject:[NSString stringWithFormat:@"%d", gCores]                      forKey:@"gpu_cores"];
-    } else {
-        // Faking our own real model (or unknown chip): leave the real GPU node.
-        for (NSString *gk in gpuKeys) [cm setObject:nil forKey:gk];
-    }
+                         @"gpu_gen", @"gpu_cores",
+                         @"zalo_metalPluginName", @"zalo_metalPluginClass",
+                         @"_ci_gpu_dbg"];
+    for (NSString *gk in gpuKeys) [cm setObject:nil forKey:gk];
     [cm setObject:@(YES)        forKey:@"web_canvasNoise"];
 
     // WKWebView UA string — randomize every Change Device (v2.5.13).
@@ -2550,6 +2528,25 @@ static void ci_resetAppTCC(NSString *bundleID) {
     NSString *cmd = [NSString stringWithFormat:
         @"/var/jb/usr/bin/sqlite3 '/var/mobile/Library/TCC/TCC.db' "
         @"\"DELETE FROM access WHERE client='%@';\" 2>/dev/null", bid];
+    ci_run([cmd UTF8String]);
+}
+
+// A real "fresh install" also clears the app's EXTENSION data containers
+// (share sheet / notification-service / widgets live under
+// Containers/Data/PluginKitPlugin/<uuid>, NOT under the main app container).
+// Each carries the parent bundle id in its container metadata, so we grep for
+// it and wipe the data subdirs — otherwise old extension cache survives a Reset
+// and the app doesn't feel brand-new.
+static void ci_wipeAppExtensions(NSString *bundleID) {
+    if (!bundleID.length) return;
+    NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *cmd = [NSString stringWithFormat:
+        @"for m in $(grep -la '%@' /var/mobile/Containers/Data/PluginKitPlugin/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null); do "
+        @"  d=$(dirname \"$m\"); "
+        @"  for s in Library/Caches Documents tmp 'Library/Application Support' Library/Preferences Library/WebKit Library/Cookies; do "
+        @"    rm -rf \"$d/$s\"/* \"$d/$s\"/.[!.]* 2>/dev/null; "
+        @"  done; "
+        @"done", bid];
     ci_run([cmd UTF8String]);
 }
 
@@ -4179,6 +4176,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C range:@"" labels:iosLabels minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
 
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
+    [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
+    [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
     [_rows addObject:[C toggle:@"🔒 Khóa đúng máy thật (tùy chọn)" key:@"_ci_hw_lock" indent:24]];
     [_rows addObject:[C note:@"TẮT (mặc định): giả model khác máy thật — tweak tự spoof cpufamily/cache theo chip của model giả (A11–A14, tới iPhone 12 Pro Max) để khớp. BẬT: luôn giả ĐÚNG model máy thật → khớp tuyệt đối nhưng đúng model thật; khi BẬT thanh chọn dải model bị bỏ qua." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
@@ -7297,6 +7296,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // next launch (tccd reloaded once after the loop). Location stays
             // intact + spoofed by the tweak (see ci_resetAppTCC).
             ci_resetAppTCC(a.bundleID);
+            // Wipe the app's extension containers too so no old cache survives.
+            ci_wipeAppExtensions(a.bundleID);
             // v2.5.39: write marker inside Documents/ so iOS sandbox lets
             // the file land (host's writeToFile: to another app's container
             // ROOT silently fails — observed live on Zalo 2026-05-23:
