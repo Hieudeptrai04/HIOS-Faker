@@ -50,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 5";
+static NSString *const kAppVersion = @"4.0.8 Fix 6";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7365,6 +7365,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   a.bundleID, mrc, docMarker, rootMarker);
             wiped++;
         }
+        // Reload tccd so the per-app TCC deletions above take effect on the
+        // next launch — Contacts/Camera/Photos/Mic re-prompt like a fresh
+        // install WITHOUT a slow userspace reboot (market tools just respring).
+        // tccd runs as uid 501 → mobile can signal it. Use SIGTERM (plain
+        // killall), NOT `killall -9`: SIGTERM lets tccd flush + exit cleanly so
+        // launchd respawns it without the db corruption that the old `-9` left
+        // behind (that corruption was the avatar "văng"). Fast, respring-safe.
+        ci_run("killall tccd 2>/dev/null");
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
