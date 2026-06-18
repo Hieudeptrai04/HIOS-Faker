@@ -2533,19 +2533,24 @@ static void ci_resetAppTCC(NSString *bundleID) {
 }
 
 // Location is the one permission NOT in TCC: it lives in locationd's
-// ROOT-owned clients.plist, so the mobile host can't reset it directly.
-// Best-effort via sudo (present on this rig) — remove the app's entry and
-// nudge locationd to reload. On devices without sudo the command simply fails
-// harmlessly (non-interactive, errors suppressed) and location stays granted,
-// which is SAFE anyway: the MG tweak always feeds FAKED GPS, so the real
-// position never leaks even if the user already tapped Allow.
+// ROOT-owned clients.plist, so the mobile host can't edit it directly.
+// Best-effort via sudo (present on this rig): just REMOVE the app's entry.
+//
+// CRITICAL: do NOT restart locationd. An earlier build ran
+// `launchctl kickstart locationd` here — restarting the root location daemon
+// mid-flow is the SAME class of bug as the old `killall -9 tccd`: it
+// destabilised location services and Zalo crashed ("văng") right after the
+// contacts grant during registration. A real uninstall re-prompts every
+// permission WITHOUT restarting any daemon, so we mirror that: passive
+// plist edit only. The entry is re-read on the next natural locationd reload;
+// either way nothing crashes, and even if location stays granted the tweak
+// always feeds FAKED GPS so the real position never leaks.
 static void ci_resetAppLocation(NSString *bundleID) {
     if (!bundleID.length) return;
     NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
     NSString *cmd = [NSString stringWithFormat:
-        @"echo 1 | sudo -S sh -c \""
-        @"/var/jb/usr/bin/plutil -remove '%@' /var/root/Library/Caches/locationd/clients.plist; "
-        @"launchctl kickstart -k system/com.apple.locationd\" 2>/dev/null", bid];
+        @"echo 1 | sudo -S /var/jb/usr/bin/plutil -remove '%@' "
+        @"/var/root/Library/Caches/locationd/clients.plist 2>/dev/null", bid];
     ci_run([cmd UTF8String]);
 }
 
