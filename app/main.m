@@ -2512,6 +2512,43 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
+// Re-prompt the app for its privacy permissions on the next launch, exactly
+// like a freshly-downloaded app. DELETE the app's rows from the mobile-owned
+// TCC.db (Contacts / Photos / Camera / Microphone / Tracking). That ALONE is
+// enough: the wipe has already killed the app, and when it relaunches tccd
+// re-reads the now-empty state for it → the system shows the permission prompt
+// again. Confirmed on-device (delete-row + relaunch re-prompts).
+//
+// We deliberately do NOT kill tccd. The old 4.0.9 build did `killall -9 tccd`
+// to force a reload; SIGKILL'ing the permission daemon corrupted its state and
+// Zalo crashed (kicked to home) the moment it touched camera/photos during the
+// avatar/feed render. No daemon kill = no crash, and it still re-prompts.
+static void ci_resetAppTCC(NSString *bundleID) {
+    if (!bundleID.length) return;
+    NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *cmd = [NSString stringWithFormat:
+        @"/var/jb/usr/bin/sqlite3 '/var/mobile/Library/TCC/TCC.db' "
+        @"\"DELETE FROM access WHERE client='%@';\" 2>/dev/null", bid];
+    ci_run([cmd UTF8String]);
+}
+
+// Location is the one permission NOT in TCC: it lives in locationd's
+// ROOT-owned clients.plist, so the mobile host can't reset it directly.
+// Best-effort via sudo (present on this rig) — remove the app's entry and
+// nudge locationd to reload. On devices without sudo the command simply fails
+// harmlessly (non-interactive, errors suppressed) and location stays granted,
+// which is SAFE anyway: the MG tweak always feeds FAKED GPS, so the real
+// position never leaks even if the user already tapped Allow.
+static void ci_resetAppLocation(NSString *bundleID) {
+    if (!bundleID.length) return;
+    NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *cmd = [NSString stringWithFormat:
+        @"echo 1 | sudo -S sh -c \""
+        @"/var/jb/usr/bin/plutil -remove '%@' /var/root/Library/Caches/locationd/clients.plist; "
+        @"launchctl kickstart -k system/com.apple.locationd\" 2>/dev/null", bid];
+    ci_run([cmd UTF8String]);
+}
+
 // A real "fresh install" also clears the app's EXTENSION data containers
 // (share sheet / notification-service / widgets live under
 // Containers/Data/PluginKitPlugin/<uuid>, NOT under the main app container).
@@ -7272,12 +7309,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                     full, full, full];
                 ci_run([cmd UTF8String]);
             }
-            // NOTE: we deliberately DO NOT touch TCC permissions here. A prior
-            // 4.0.9-test build reset the app's TCC rows + `killall -9 tccd` to
-            // force fresh permission prompts; killing the permission daemon
-            // destabilised it so Zalo crashed (kicked to home) when it accessed
-            // camera/photos during avatar/feed render. "Thu hồi quyền" must only
-            // clear OLD CACHE — never revoke permissions or kill tccd.
+            // Fresh-device permissions: app is already killed above, so DELETE
+            // its TCC rows (contacts/photos/camera/mic/tracking) → re-prompts on
+            // relaunch. NO tccd kill (that was the crash) — relaunch alone makes
+            // tccd re-read. Location (root, not in TCC) reset best-effort.
+            ci_resetAppTCC(a.bundleID);
+            ci_resetAppLocation(a.bundleID);
             // Wipe the app's extension containers too so no old cache survives.
             ci_wipeAppExtensions(a.bundleID);
             // v2.5.39: write marker inside Documents/ so iOS sandbox lets
