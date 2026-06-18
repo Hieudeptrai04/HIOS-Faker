@@ -1341,7 +1341,34 @@ static NSUInteger ci_randomizeIdentities(void) {
         }
     }
 
-    NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
+    // === SCALE-MATCH FILTER (chống crash render avatar) ===
+    // The framebuffer is PHYSICAL. Faking a model whose UIScreen scale differs
+    // from the real device (e.g. a 2x iPhone XR / 11 / SE on a 3x iPhone X)
+    // makes Zalo allocate the avatar/feed image buffer at the wrong scale →
+    // crash → kicked to the home screen the instant you tap "skip avatar"
+    // (the 4.0.6 UIScreen.scale crash). So restrict the candidate models to
+    // those whose scale equals the real device's scale. Real scale comes from
+    // the real model's own preset (no UIScreen / background-thread UIKit).
+    NSString *realPTscale = ci_realProductType();
+    NSInteger realScale = 0;
+    for (NSArray *p in presets) {
+        if (p.count > 5 && [p[1] isEqualToString:realPTscale]) { realScale = [p[5] integerValue]; break; }
+    }
+    if (realScale <= 0) realScale = (NSInteger)lround([UIScreen mainScreen].scale);
+    NSMutableArray *scaleCand = [NSMutableArray array];
+    for (NSInteger i = dLo; i <= dHi; i++) {
+        NSArray *p = presets[(NSUInteger)i];
+        NSInteger ps = p.count > 5 ? [p[5] integerValue] : realScale;
+        if (ps == realScale) [scaleCand addObject:@(i)];
+    }
+    NSArray *preset;
+    if (scaleCand.count > 0) {
+        NSInteger pick = [scaleCand[arc4random_uniform((uint32_t)scaleCand.count)] integerValue];
+        preset = presets[(NSUInteger)pick];
+    } else {
+        // No same-scale model in the window — fall back (shouldn't happen).
+        preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
+    }
 
     // === HARDWARE LOCK (chống lệch phần cứng) ===
     // On a physical device, claiming a model whose chip differs from the real one
