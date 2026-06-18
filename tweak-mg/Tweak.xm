@@ -350,39 +350,45 @@ __thread int g_inMG = 0;
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (g_inMG || !property) return orig_MGCopyAnswer(property);
 
-    // MSHookFunction patches the MG prologue globally, so UIKit's internal
-    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also arrives here.
-    // That UIKit function reads ProductType to load device-specific config
-    // plists — returning a fake type for which no plist exists makes
-    // initWithContentsOfFile: throw → std::terminate → SIGABRT.
-    // Fix: pass through calls from /System/Library/ and /usr/lib/; only
-    // intercept calls from app bundles (AIDA64 dlopen/dlsym, Zalo/FB SDKs).
-    Dl_info _di; _di.dli_fname = NULL;
-    dladdr(__builtin_return_address(0), &_di);
-    if (_di.dli_fname) {
-        const char *_fn = _di.dli_fname;
-        if (strncmp(_fn, "/System/Library/", 16) == 0 ||
-            strncmp(_fn, "/usr/lib/", 9) == 0 ||
-            strncmp(_fn, "/var/jb/usr/lib/", 16) == 0) {
-            return orig_MGCopyAnswer(property);
-        }
-    }
-
-    g_inMG = 1;
-
+    // Map lookup FIRST (cheap NSDictionary hit). The vast majority of MG
+    // queries during scene-create are keys we do NOT spoof — pass them straight
+    // through so we never pay for the expensive caller check below.
+    //
+    // WHY THIS ORDER MATTERS (0x8BADF00D fix): dladdr() walks the loaded-image
+    // list and takes the dyld lock. The old code ran it on EVERY MG call, so
+    // while Zalo dlopen'd images during scene-create (right after "skip
+    // avatar") the main thread kept blocking on that lock → ~19s wall, ~0.2s
+    // CPU → FrontBoard "scene-create watchdog" SIGKILL ("văng ra màn hình
+    // chính"). Now dladdr fires only for the handful of keys we actually spoof.
     NSString *key = (__bridge NSString *)property;
     NSString *configKey = g_mgKeyMap[key];
     if (!configKey) {
-        // Log first time we see this unmapped key so we can extend
-        // the map after observing what AIDA / Zalo / FB actually query.
-        char kb[128]; kb[0] = 0;
-        if (CFStringGetCString(property, kb, sizeof(kb), kCFStringEncodingUTF8) && kb[0]) {
-            dbglog("MG.miss %s %s\n", g_procname, kb);
+        if (ci_dbgEnabled()) {   // only stringify the key when logging is on
+            char kb[128]; kb[0] = 0;
+            if (CFStringGetCString(property, kb, sizeof(kb), kCFStringEncodingUTF8) && kb[0])
+                dbglog("MG.miss %s %s\n", g_procname, kb);
         }
+        g_inMG = 1;
         CFTypeRef r = orig_MGCopyAnswer(property);
         g_inMG = 0;
         return r;
     }
+
+    // Only for keys we actually spoof: skip UIKit/system-internal callers.
+    // MSHookFunction patches MG globally, so UIKit's internal
+    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also lands here; feeding
+    // it a fake ProductType (no matching device plist) → initWithContentsOfFile:
+    // throws → std::terminate → SIGABRT. Pass those through.
+    Dl_info _di; _di.dli_fname = NULL;
+    dladdr(__builtin_return_address(0), &_di);
+    if (_di.dli_fname &&
+        (strncmp(_di.dli_fname, "/System/Library/", 16) == 0 ||
+         strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
+         strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
+        return orig_MGCopyAnswer(property);
+    }
+
+    g_inMG = 1;
 
     CFTypeRef result = NULL;
 
@@ -681,6 +687,24 @@ static kern_return_t hooked_IORegCreateProps(mach_port_t entry,
     if (kr == 0 && *out) {
         initIOKeyMap();
         CFIndex total = CFDictionaryGetCount(*out);
+        // CHEAP pre-scan before the costly mutable copy. The GPU / IOSurface
+        // nodes fetched constantly during image/video render carry a huge
+        // IOReportLegend dict; copying it on every fetch added needless
+        // scene-create overhead. CFDictionaryContainsKey is O(1) + zero alloc —
+        // only copy when this dict actually holds something we spoof.
+        BOOL needCopy = NO;
+        for (NSString *ioKey in g_ioKeyMap) {
+            if (CFDictionaryContainsKey(*out, (__bridge CFStringRef)ioKey)) { needCopy = YES; break; }
+        }
+        // GPU node only matters when the GPU spoof is actually configured
+        // (default OFF — it was reverted because it crashed Zalo camera/video).
+        if (!needCopy && getConfigStr(@"gpu_metalName") &&
+            CFDictionaryContainsKey(*out, CFSTR("MetalPluginName"))) needCopy = YES;
+        if (!needCopy) {
+            dbglog("IORegCreateProps %s keys=%ld replaced=0 skip\n", g_procname, (long)total);
+            g_inIOReg = 0;
+            return kr;
+        }
         CFMutableDictionaryRef mut = CFDictionaryCreateMutableCopy(alloc, 0, *out);
         int replaced = 0;
         if (mut) {
