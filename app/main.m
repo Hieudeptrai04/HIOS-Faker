@@ -50,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 2";
+static NSString *const kAppVersion = @"4.0.8 Fix 4";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2515,10 +2515,17 @@ static int ci_run(const char *cmd) {
 
 // Re-prompt the app for its privacy permissions on the next launch, exactly
 // like a freshly-downloaded app. DELETE the app's rows from the mobile-owned
-// TCC.db (Contacts / Photos / Camera / Microphone / Tracking). That ALONE is
-// enough: the wipe has already killed the app, and when it relaunches tccd
-// re-reads the now-empty state for it → the system shows the permission prompt
-// again. Confirmed on-device (delete-row + relaunch re-prompts).
+// TCC.db — but DELIBERATELY KEEP kTCCServiceAddressBook (Contacts) granted.
+//
+// WHY KEEP CONTACTS: resetting the Contacts permission makes Zalo treat it as
+// "access revoked → re-granted", which wipes its synced address book and the
+// "gợi ý kết bạn" (friend suggestions) never rebuild → the account looks
+// empty/bot-like. Keeping Contacts granted (like the stable 4.0.7) means Zalo
+// keeps reading the freshly seeded contacts and KEEPS showing suggestions —
+// which matters far more for the account looking real than a cosmetic prompt.
+// Camera / Photos / Microphone / Tracking are still reset (they re-prompt like
+// a new install and have no "suggestions" to break). Location is handled
+// separately in ci_resetAppLocation.
 //
 // We deliberately do NOT kill tccd. The old 4.0.9 build did `killall -9 tccd`
 // to force a reload; SIGKILL'ing the permission daemon corrupted its state and
@@ -2537,7 +2544,9 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
         sqlite3_busy_timeout(db, 1500);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1", -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1 "
+                                   "AND service != 'kTCCServiceAddressBook'",
+                               -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
             sqlite3_step(st);
             sqlite3_finalize(st);
@@ -7266,9 +7275,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         //   1) killall -9 '<ExecName>' — the canonical path
         //   2) pkill -9 -f '<bundleID>' — matches cmdline (catches ext processes)
         //   3) pkill -9 -f '<bundle-path>' — in case exec name was spoofed
-        NSArray *subs = @[@"Documents", @"Library/Caches", @"Library/Preferences",
-                          @"Library/Cookies", @"Library/WebKit",
-                          @"Library/Application Support", @"tmp"];
+        // Deep wipe: clear the WHOLE Library (not just a few subdirs) +
+        // Documents + tmp + StoreKit + SystemData — i.e. everything a real
+        // uninstall removes, so the target app cold-starts genuinely fresh
+        // (no stale session / cache / saved-state surviving a Reset).
+        NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
         NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
         NSUInteger totalApps = fullTargets.count;
