@@ -50,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 3";
+static NSString *const kAppVersion = @"4.0.8 Fix 2";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4338,8 +4338,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // still rotate correctly. The only thing the user loses is
     // SpringBoard's icon cache refresh, which is fine if you're not
     // installing/uninstalling apps mid-session.
-    [_rows addObject:[C toggle:@"21. Bỏ qua khởi động lại sau Reset Data" key:@"skipRespringAfterReset" indent:0]];
-    [_rows addObject:[C note:@"TẮT (mặc định): sau Reset Data sẽ khởi động lại userspace (~15-20s) để reload tccd → app target HỎI LẠI quyền danh bạ/camera/ảnh như máy mới tải. BẬT: chỉ respring nhanh, KHÔNG thu hồi quyền (target apps vẫn fake config mới nhưng giữ quyền cũ)." indent:24]];
+    [_rows addObject:[C toggle:@"21. Bỏ qua respring sau Reset Data" key:@"skipRespringAfterReset" indent:0]];
+    [_rows addObject:[C note:@"Bật để khỏi mất 6s reload SpringBoard mỗi lần Reset. Target apps vẫn bị kill + reload tweak ở lần mở tiếp theo." indent:24]];
 
     [self.tableView reloadData];
 }
@@ -7437,36 +7437,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSLog(@"[ChangeInfoIos] Step 4 skipped (skipRespringAfterReset=YES)");
         } else {
             [self updateHUD:hud step:(backup ? 5 : 4) total:totalSteps
-                      title:@"Khởi động lại (thu hồi quyền)"
-                   subtitle:@"Reload tccd để hỏi lại quyền như máy mới…"];
+                      title:@"Restart SpringBoard"
+                   subtitle:@"Reload tweak với config mới…"];
             [NSThread sleepForTimeInterval:1.5];
-            // USERSPACE REBOOT — not just a respring. A respring reloads
-            // SpringBoard but NOT tccd, so the TCC rows we DELETEd above stay
-            // cached in tccd's memory → Settings still shows them granted → no
-            // fresh permission prompt (the dev rig only "worked" because every
-            // install reboots it). A clean userspace reboot restarts EVERYTHING
-            // incl. tccd → the permissions are genuinely revoked in Settings,
-            // exactly like a fresh install. mobile CAN do this with no root,
-            // and it's crash-free: the avatar/contacts "văng" came from ABRUPT
-            // partial daemon kills (`killall -9 tccd`, locationd kickstart); a
-            // full userspace reboot has no inconsistent-daemon window. This
-            // call usually doesn't return — the reboot SIGKILLs us mid-wait,
-            // which is fine (everything cold-starts fresh). The sbreload
-            // fallbacks only fire on the rare device where reboot is blocked.
             const char *respringCmd =
-                "/var/jb/usr/bin/launchctl reboot userspace 2>/dev/null"
-                " || /var/jb/bin/launchctl reboot userspace 2>/dev/null"
-                " || launchctl reboot userspace 2>/dev/null"
-                " || /var/jb/usr/bin/sbreload 2>/dev/null"
+                "/var/jb/usr/bin/sbreload 2>/dev/null"
                 " || sbreload 2>/dev/null"
+                " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
                 " || killall -9 SpringBoard 2>/dev/null";
             respringRC = ci_run(respringCmd);
-            // Only reached if the userspace reboot did NOT happen (fallbacks).
             [NSThread sleepForTimeInterval:4.0];
             ci_run("/var/jb/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null");
             [NSThread sleepForTimeInterval:2.0];
             respringOK = (respringRC == 0);
-            NSLog(@"[ChangeInfoIos] Step 4 done: userspace reboot rc=%d (fallback path)", respringRC);
+            NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
         }
 
         // Step 5: Final kill sweep. After SpringBoard respring, iOS often
