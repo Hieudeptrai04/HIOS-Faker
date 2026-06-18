@@ -15,6 +15,7 @@
 #import <fcntl.h>
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
+#import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -49,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Test";
+static NSString *const kAppVersion = @"4.0.8 Test2";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2525,11 +2526,24 @@ static int ci_run(const char *cmd) {
 // avatar/feed render. No daemon kill = no crash, and it still re-prompts.
 static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
-    NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
-    NSString *cmd = [NSString stringWithFormat:
-        @"/var/jb/usr/bin/sqlite3 '/var/mobile/Library/TCC/TCC.db' "
-        @"\"DELETE FROM access WHERE client='%@';\" 2>/dev/null", bid];
-    ci_run([cmd UTF8String]);
+    // IMPORTANT: use the libsqlite3 C API directly, NOT the `sqlite3` CLI.
+    // /var/jb/usr/bin/sqlite3 is a STANDALONE Procursus package that most
+    // customer devices DON'T have installed — so the old shell-out silently
+    // failed there and contacts never re-prompted (worked only on the dev rig
+    // which happens to have the package). libsqlite3 ships with iOS itself, so
+    // this runs everywhere, in-process, as the same mobile uid (TCC.db +
+    // its dir/WAL are mobile-owned → writable).
+    sqlite3 *db = NULL;
+    if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 1500);
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1", -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+    }
+    if (db) sqlite3_close(db);
 }
 
 // Location is the one permission NOT in TCC: it lives in locationd's
