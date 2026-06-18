@@ -50,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 4";
+static NSString *const kAppVersion = @"4.0.8 Fix 5";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2513,19 +2513,16 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
-// Re-prompt the app for its privacy permissions on the next launch, exactly
-// like a freshly-downloaded app. DELETE the app's rows from the mobile-owned
-// TCC.db — but DELIBERATELY KEEP kTCCServiceAddressBook (Contacts) granted.
-//
-// WHY KEEP CONTACTS: resetting the Contacts permission makes Zalo treat it as
-// "access revoked → re-granted", which wipes its synced address book and the
-// "gợi ý kết bạn" (friend suggestions) never rebuild → the account looks
-// empty/bot-like. Keeping Contacts granted (like the stable 4.0.7) means Zalo
-// keeps reading the freshly seeded contacts and KEEPS showing suggestions —
-// which matters far more for the account looking real than a cosmetic prompt.
-// Camera / Photos / Microphone / Tracking are still reset (they re-prompt like
-// a new install and have no "suggestions" to break). Location is handled
-// separately in ci_resetAppLocation.
+// Re-prompt the app for ALL its privacy permissions on the next launch, just
+// like a freshly-downloaded app: DELETE every one of the app's rows from the
+// mobile-owned TCC.db (Contacts / Photos / Camera / Microphone / Tracking).
+// Contacts IS reset too — a real uninstall+reinstall re-asks the FULL set and
+// that's what we mirror. The "gợi ý kết bạn" still shows because the wipe is
+// now DEEP (whole Library + Documents + tmp + StoreKit + SystemData): Zalo
+// cold-starts with no stale sync state, re-reads the freshly seeded contacts
+// after the user grants, and rebuilds suggestions from scratch — like a fresh
+// install. (fix2 broke suggestions because its SHALLOW wipe left stale Zalo
+// state behind while still revoking Contacts.)
 //
 // We deliberately do NOT kill tccd. The old 4.0.9 build did `killall -9 tccd`
 // to force a reload; SIGKILL'ing the permission daemon corrupted its state and
@@ -2544,8 +2541,7 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
         sqlite3_busy_timeout(db, 1500);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1 "
-                                   "AND service != 'kTCCServiceAddressBook'",
+        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1",
                                -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
             sqlite3_step(st);
