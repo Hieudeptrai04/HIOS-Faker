@@ -50,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 6";
+static NSString *const kAppVersion = @"4.0.8 Fix 7";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2547,8 +2547,20 @@ static void ci_resetAppTCC(NSString *bundleID) {
             sqlite3_step(st);
             sqlite3_finalize(st);
         }
+        // Checkpoint the WAL into the main db so tccd (separate connection)
+        // sees the delete immediately, not just in our private -wal.
+        sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     }
     if (db) sqlite3_close(db);
+    // The row is gone from disk, but tccd caches grants in RAM, so Settings
+    // (and the app's next preflight) still see "granted" until tccd reloads.
+    // EVERY way of restarting tccd crashes Zalo ("văng"), so instead post the
+    // SAME darwin notification tccd broadcasts when access changes. If tccd (or
+    // a sync path) re-reads the db on it, the per-app cache drops to
+    // notDetermined and Contacts/Location re-prompt — no daemon down-window,
+    // no văng, respring-fast. (fix7 probe: if this doesn't reset tccd's cache,
+    // escalate to the tcc.manager entitlement + per-bundle reset call.)
+    notify_post("com.apple.tcc.access.changed");
 }
 
 // Location is the one permission NOT in TCC: it lives in locationd's
@@ -7365,14 +7377,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   a.bundleID, mrc, docMarker, rootMarker);
             wiped++;
         }
-        // Reload tccd so the per-app TCC deletions above take effect on the
-        // next launch — Contacts/Camera/Photos/Mic re-prompt like a fresh
-        // install WITHOUT a slow userspace reboot (market tools just respring).
-        // tccd runs as uid 501 → mobile can signal it. Use SIGTERM (plain
-        // killall), NOT `killall -9`: SIGTERM lets tccd flush + exit cleanly so
-        // launchd respawns it without the db corruption that the old `-9` left
-        // behind (that corruption was the avatar "văng"). Fast, respring-safe.
-        ci_run("killall tccd 2>/dev/null");
+        // DO NOT restart tccd here. EVERY kill signal (-9 AND plain SIGTERM)
+        // crashes Zalo ("văng") on the avatar screen: other live processes
+        // (SpringBoard, Zalo) hit TCC while tccd is down and fault. The per-app
+        // cache reload is instead nudged inside ci_resetAppTCC via a passive
+        // notify_post (no daemon down-window). fix7: removed the SIGTERM that
+        // fix6 added — confirmed văng by user.
         NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
