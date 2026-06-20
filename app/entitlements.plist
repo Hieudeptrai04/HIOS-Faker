@@ -38,5 +38,12 @@
     <true/>
     <key>com.apple.private.tcc.manager.access.read</key>
     <true/>
+    <!-- LOCATION manager rights: location auth lives in locationd (not TCC), so
+         resetting another app's location needs locationd's own "authorize other
+         applications" right. effective_bundle lets us act for the target bundle. -->
+    <key>com.apple.locationd.authorizeapplications</key>
+    <true/>
+    <key>com.apple.locationd.effective_bundle</key>
+    <true/>
 </dict>
 </plist>

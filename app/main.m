@@ -3,6 +3,7 @@
 #import <AVFoundation/AVFoundation.h>  // AVAssetExportSession for video import (CICameraVC)
 #import <Photos/Photos.h>               // PHAsset / PHImageManager — proper cross-container path for picker assets
 #import <Contacts/Contacts.h>
+#import <CoreLocation/CoreLocation.h>   // private CLLocationManager setters reset another app's location auth via locationd
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <sys/wait.h>
@@ -70,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 8";
+static NSString *const kAppVersion = @"4.0.8 Fix 9";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2649,13 +2650,41 @@ static void ci_resetAppTCC(NSString *bundleID) {
 // plist edit only. The entry is re-read on the next natural locationd reload;
 // either way nothing crashes, and even if location stays granted the tweak
 // always feeds FAKED GPS so the real position never leaks.
+// Private CLLocationManager setters (Settings/tccutil-equivalent for location).
+// They funnel to locationd's CLDaemonSetAuthorizationStatusByType /
+// CLDaemonResetClient, which drops the bundle's in-RAM auth so it re-prompts —
+// no daemon restart. Honored because we sign com.apple.locationd.authorizeapplications.
+@interface CLLocationManager (CIPrivate)
++ (void)setAuthorizationStatus:(BOOL)status forBundleIdentifier:(NSString *)bundleID;
++ (void)setAuthorizationStatusByType:(int)status forBundleIdentifier:(NSString *)bundleID;
+@end
+
 static void ci_resetAppLocation(NSString *bundleID) {
     if (!bundleID.length) return;
+    // Discovery: log which location SPI this iOS exposes (read over SSH to tune).
+    for (NSString *s in @[@"setAuthorizationStatusByType:forBundleIdentifier:",
+                          @"setAuthorizationStatus:forBundleIdentifier:",
+                          @"resetAuthorizationForBundleIdentifier:",
+                          @"resetLocationAuthorizationForBundleIdentifier:"]) {
+        ci_tccXpcLog([NSString stringWithFormat:@"loc sel %@ -> %d", s,
+            [CLLocationManager respondsToSelector:NSSelectorFromString(s)]]);
+    }
+    BOOL did = NO;
+    // Status 0 = kCLAuthorizationStatusNotDetermined → app re-prompts next launch.
+    if ([CLLocationManager respondsToSelector:@selector(setAuthorizationStatusByType:forBundleIdentifier:)]) {
+        [CLLocationManager setAuthorizationStatusByType:0 forBundleIdentifier:bundleID];
+        ci_tccXpcLog(@"loc: setAuthorizationStatusByType:0 sent"); did = YES;
+    } else if ([CLLocationManager respondsToSelector:@selector(setAuthorizationStatus:forBundleIdentifier:)]) {
+        [CLLocationManager setAuthorizationStatus:NO forBundleIdentifier:bundleID];
+        ci_tccXpcLog(@"loc: setAuthorizationStatus:NO sent"); did = YES;
+    }
+    // Fallback (dev rig has sudo): also remove the on-disk entry.
     NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
     NSString *cmd = [NSString stringWithFormat:
         @"echo 1 | sudo -S /var/jb/usr/bin/plutil -remove '%@' "
         @"/var/root/Library/Caches/locationd/clients.plist 2>/dev/null", bid];
     ci_run([cmd UTF8String]);
+    if (!did) ci_tccXpcLog(@"loc: no CL SPI; plist-remove fallback only");
 }
 
 // A real "fresh install" also clears the app's EXTENSION data containers
@@ -8885,6 +8914,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if (!bid.length) bid = @"vn.com.vng.zingalo";
         ci_tccResetViaXPC(bid, @[@"kTCCServiceAddressBook", @"kTCCServiceCamera",
             @"kTCCServicePhotos", @"kTCCServiceMicrophone"]);
+        ci_resetAppLocation(bid);
         [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/.tcc_probe" error:nil];
     }
 
