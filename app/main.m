@@ -16,6 +16,7 @@
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
+#import <xpc/xpc.h>                       // direct XPC to tccd for per-bundle permission reset (no daemon restart)
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -50,7 +51,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 7";
+static NSString *const kAppVersion = @"4.0.8 Fix 8";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2513,6 +2514,53 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
+// ---- Direct-to-tccd permission reset (the no-văng path) ----------------
+// The DB delete clears the row on disk but tccd keeps the grant CACHED in RAM,
+// so Settings still shows the permission ON until tccd reloads. Restarting
+// tccd reloads it but crashes Zalo ("văng"). The ONLY clean way is to ask the
+// RUNNING tccd to reset the bundle itself — the same XPC TCC.framework/tccutil
+// use: tccd deletes the row AND drops its cache in one shot, no restart.
+// Requires com.apple.private.tcc.manager.access.delete (signed in entitlements).
+// EXPERIMENTAL: tccd's reply is appended to /var/mobile/.tcc_xpc_log so the
+// exact message shape can be tuned by reading that file over SSH.
+static void ci_tccXpcLog(NSString *line) {
+    NSString *path = @"/var/mobile/.tcc_xpc_log";
+    NSString *stamped = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], line];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) { [stamped writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]; return; }
+    @try { [fh seekToEndOfFile]; [fh writeData:[stamped dataUsingEncoding:NSUTF8StringEncoding]]; }
+    @finally { [fh closeFile]; }
+}
+
+static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services) {
+    if (!bundleID.length) return;
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("ci.tcc.xpc", DISPATCH_QUEUE_SERIAL); });
+    xpc_connection_t conn = xpc_connection_create_mach_service("com.apple.tccd", q, 0);
+    if (!conn) { ci_tccXpcLog(@"conn=NULL (com.apple.tccd)"); return; }
+    xpc_connection_set_event_handler(conn, ^(xpc_object_t e){ (void)e; });
+    xpc_connection_resume(conn);
+    for (NSString *svc in services) {
+        xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+        xpc_dictionary_set_string(msg, "function", "TCCAccessResetInternal");
+        xpc_dictionary_set_string(msg, "service", svc.UTF8String);
+        // Target the bundle by id (Zalo isn't running during reset, so no
+        // target_token). attribution_chain = [ {identifier, identifier_type} ].
+        xpc_object_t elem = xpc_dictionary_create(NULL, NULL, 0);
+        xpc_dictionary_set_string(elem, "identifier", bundleID.UTF8String);
+        xpc_dictionary_set_int64(elem, "identifier_type", 0); // 0 = bundle id (guess)
+        xpc_object_t chain = xpc_array_create(NULL, 0);
+        xpc_array_append_value(chain, elem);
+        xpc_dictionary_set_value(msg, "attribution_chain", chain);
+        xpc_dictionary_set_string(msg, "bundle_id", bundleID.UTF8String);
+        xpc_object_t reply = xpc_connection_send_message_with_reply_sync(conn, msg);
+        char *d = xpc_copy_description(reply);
+        ci_tccXpcLog([NSString stringWithFormat:@"svc=%@ reply=%s", svc, d ? d : "(null)"]);
+        if (d) free(d);
+    }
+    xpc_connection_cancel(conn);
+}
+
 // Re-prompt the app for ALL its privacy permissions on the next launch, just
 // like a freshly-downloaded app: DELETE every one of the app's rows from the
 // mobile-owned TCC.db (Contacts / Photos / Camera / Microphone / Tracking).
@@ -2530,6 +2578,13 @@ static int ci_run(const char *cmd) {
 // avatar/feed render. No daemon kill = no crash, and it still re-prompts.
 static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
+    // PRIMARY path: ask the RUNNING tccd to reset this bundle (clears the
+    // on-disk row AND its RAM cache) so Settings shows it reset and the app
+    // re-prompts — no daemon restart, no văng. The DB delete below is only a
+    // fallback for the on-disk row in case the XPC isn't honored.
+    ci_tccResetViaXPC(bundleID, @[@"kTCCServiceAddressBook", @"kTCCServiceCamera",
+        @"kTCCServicePhotos", @"kTCCServicePhotosAdd", @"kTCCServiceMicrophone",
+        @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking"]);
     // IMPORTANT: use the libsqlite3 C API directly, NOT the `sqlite3` CLI.
     // /var/jb/usr/bin/sqlite3 is a STANDALONE Procursus package that most
     // customer devices DON'T have installed — so the old shell-out silently
@@ -2552,15 +2607,9 @@ static void ci_resetAppTCC(NSString *bundleID) {
         sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     }
     if (db) sqlite3_close(db);
-    // The row is gone from disk, but tccd caches grants in RAM, so Settings
-    // (and the app's next preflight) still see "granted" until tccd reloads.
-    // EVERY way of restarting tccd crashes Zalo ("văng"), so instead post the
-    // SAME darwin notification tccd broadcasts when access changes. If tccd (or
-    // a sync path) re-reads the db on it, the per-app cache drops to
-    // notDetermined and Contacts/Location re-prompt — no daemon down-window,
-    // no văng, respring-fast. (fix7 probe: if this doesn't reset tccd's cache,
-    // escalate to the tcc.manager entitlement + per-bundle reset call.)
-    notify_post("com.apple.tcc.access.changed");
+    // (The XPC reset above is what actually drops tccd's RAM cache so Settings
+    // reflects the reset; this DB delete only guarantees the on-disk row is
+    // gone as a fallback.)
 }
 
 // Location is the one permission NOT in TCC: it lives in locationd's
@@ -8800,6 +8849,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 @implementation CIAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     [[CIConfigManager shared] config]; // warm
+
+    // DEV PROBE: if /var/mobile/.tcc_probe exists, fire the tccd XPC reset for
+    // the bundle id named inside it (default Zalo) and consume the marker. Lets
+    // the XPC message shape be tuned by touching the marker over SSH, opening
+    // this app, then reading /var/mobile/.tcc_xpc_log — no full Reset needed.
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/.tcc_probe"]) {
+        NSString *bid = [[NSString stringWithContentsOfFile:@"/var/mobile/.tcc_probe"
+            encoding:NSUTF8StringEncoding error:nil]
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!bid.length) bid = @"vn.com.vng.zingalo";
+        ci_tccResetViaXPC(bid, @[@"kTCCServiceAddressBook", @"kTCCServiceCamera",
+            @"kTCCServicePhotos", @"kTCCServiceMicrophone"]);
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/.tcc_probe" error:nil];
+    }
 
     // Global nav bar appearance — match dark theme
     if (@available(iOS 15.0, *)) {

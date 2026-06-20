@@ -24,5 +24,19 @@
         <string>kTCCServiceMediaLibrary</string>
         <string>kTCCServiceAddressBook</string>
     </array>
+    <!-- TCC MANAGER rights: let this app ask the running tccd to RESET another
+         bundle's permissions (the no-văng path — tccd drops its RAM cache in
+         place instead of us restarting it). delete = reset/remove an entry,
+         modify = change it, read = query it. This is the entitlement tccutil
+         and Settings hold. Honored on a jailbroken device because our cdhash is
+         in the trustcache and the app is a platform-application. -->
+    <key>com.apple.private.tcc.manager</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.delete</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.modify</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.read</key>
+    <true/>
 </dict>
 </plist>
