@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = HIOSFakerV3
 HIOSFakerV3_FILES = main.m
 HIOSFakerV3_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
-HIOSFakerV3_FRAMEWORKS = UIKit Foundation AVFoundation CoreMedia Photos Security Contacts CoreLocation
+HIOSFakerV3_FRAMEWORKS = UIKit Foundation AVFoundation CoreMedia Photos Security Contacts
 HIOSFakerV3_LIBRARIES = sqlite3
 HIOSFakerV3_CODESIGN_FLAGS = -Sentitlements.plist
 
