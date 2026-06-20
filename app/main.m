@@ -16,7 +16,26 @@
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
-#import <xpc/xpc.h>                       // direct XPC to tccd for per-bundle permission reset (no daemon restart)
+// xpc/xpc.h is stripped from the Theos iPhoneOS SDK, so declare the handful of
+// libxpc C symbols we need ourselves (they live in libSystem, always linked).
+// xpc objects are opaque void* here, so ARC can't track them — refcounts are
+// managed manually with xpc_release.
+typedef void *xpc_object_t;
+typedef void *xpc_connection_t;
+typedef void (^xpc_handler_t)(xpc_object_t object);
+extern xpc_connection_t xpc_connection_create_mach_service(const char *name, dispatch_queue_t targetq, uint64_t flags);
+extern void xpc_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler);
+extern void xpc_connection_resume(xpc_connection_t connection);
+extern void xpc_connection_cancel(xpc_connection_t connection);
+extern xpc_object_t xpc_connection_send_message_with_reply_sync(xpc_connection_t connection, xpc_object_t message);
+extern xpc_object_t xpc_dictionary_create(const char *const *keys, const xpc_object_t *values, size_t count);
+extern void xpc_dictionary_set_string(xpc_object_t xdict, const char *key, const char *string);
+extern void xpc_dictionary_set_int64(xpc_object_t xdict, const char *key, int64_t value);
+extern void xpc_dictionary_set_value(xpc_object_t xdict, const char *key, xpc_object_t value);
+extern xpc_object_t xpc_array_create(const xpc_object_t *values, size_t count);
+extern void xpc_array_append_value(xpc_object_t xarray, xpc_object_t value);
+extern char *xpc_copy_description(xpc_object_t object);
+extern void xpc_release(xpc_object_t object);
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -2557,8 +2576,13 @@ static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services)
         char *d = xpc_copy_description(reply);
         ci_tccXpcLog([NSString stringWithFormat:@"svc=%@ reply=%s", svc, d ? d : "(null)"]);
         if (d) free(d);
+        xpc_release(reply);
+        xpc_release(chain);
+        xpc_release(elem);
+        xpc_release(msg);
     }
     xpc_connection_cancel(conn);
+    xpc_release(conn);
 }
 
 // Re-prompt the app for ALL its privacy permissions on the next launch, just
