@@ -16,26 +16,6 @@
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
-// xpc/xpc.h is stripped from the Theos iPhoneOS SDK, so declare the handful of
-// libxpc C symbols we need ourselves (they live in libSystem, always linked).
-// xpc objects are opaque void* here, so ARC can't track them — refcounts are
-// managed manually with xpc_release.
-typedef void *xpc_object_t;
-typedef void *xpc_connection_t;
-typedef void (^xpc_handler_t)(xpc_object_t object);
-extern xpc_connection_t xpc_connection_create_mach_service(const char *name, dispatch_queue_t targetq, uint64_t flags);
-extern void xpc_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler);
-extern void xpc_connection_resume(xpc_connection_t connection);
-extern void xpc_connection_cancel(xpc_connection_t connection);
-extern xpc_object_t xpc_connection_send_message_with_reply_sync(xpc_connection_t connection, xpc_object_t message);
-extern xpc_object_t xpc_dictionary_create(const char *const *keys, const xpc_object_t *values, size_t count);
-extern void xpc_dictionary_set_string(xpc_object_t xdict, const char *key, const char *string);
-extern void xpc_dictionary_set_int64(xpc_object_t xdict, const char *key, int64_t value);
-extern void xpc_dictionary_set_value(xpc_object_t xdict, const char *key, xpc_object_t value);
-extern xpc_object_t xpc_array_create(const xpc_object_t *values, size_t count);
-extern void xpc_array_append_value(xpc_object_t xarray, xpc_object_t value);
-extern char *xpc_copy_description(xpc_object_t object);
-extern void xpc_release(xpc_object_t object);
 
 // ============================================================
 // PRIVATE FRAMEWORK STUBS
@@ -70,7 +50,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 10";
+static NSString *const kAppVersion = @"4.0.8 Fix 11";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2533,61 +2513,14 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
-// ---- Direct-to-tccd permission reset (the no-văng path) ----------------
-// The DB delete clears the row on disk but tccd keeps the grant CACHED in RAM,
-// so Settings still shows the permission ON until tccd reloads. Restarting
-// tccd reloads it but crashes Zalo ("văng"). The ONLY clean way is to ask the
-// RUNNING tccd to reset the bundle itself — the same XPC TCC.framework/tccutil
-// use: tccd deletes the row AND drops its cache in one shot, no restart.
-// Requires com.apple.private.tcc.manager.access.delete (signed in entitlements).
-// EXPERIMENTAL: tccd's reply is appended to /var/mobile/.tcc_xpc_log so the
-// exact message shape can be tuned by reading that file over SSH.
-static void ci_tccXpcLog(NSString *line) {
-    // Gated behind the stealth debug flag so customer devices never get a log
-    // artifact (cf. the v3_mg_debug.log detection incident). Enable by touching
-    // /var/jb/etc/changeinfoios/.debug.
-    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/etc/changeinfoios/.debug"]) return;
-    NSString *path = @"/var/mobile/.tcc_xpc_log";
-    NSString *stamped = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], line];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
-    if (!fh) { [stamped writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]; return; }
-    @try { [fh seekToEndOfFile]; [fh writeData:[stamped dataUsingEncoding:NSUTF8StringEncoding]]; }
-    @finally { [fh closeFile]; }
-}
-
-static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services) {
-    if (!bundleID.length) return;
-    static dispatch_queue_t q; static dispatch_once_t once;
-    dispatch_once(&once, ^{ q = dispatch_queue_create("ci.tcc.xpc", DISPATCH_QUEUE_SERIAL); });
-    xpc_connection_t conn = xpc_connection_create_mach_service("com.apple.tccd", q, 0);
-    if (!conn) { ci_tccXpcLog(@"conn=NULL (com.apple.tccd)"); return; }
-    xpc_connection_set_event_handler(conn, ^(xpc_object_t e){ (void)e; });
-    xpc_connection_resume(conn);
-    for (NSString *svc in services) {
-        xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
-        xpc_dictionary_set_string(msg, "function", "TCCAccessResetInternal");
-        xpc_dictionary_set_string(msg, "service", svc.UTF8String);
-        // Target the bundle by id (Zalo isn't running during reset, so no
-        // target_token). attribution_chain = [ {identifier, identifier_type} ].
-        xpc_object_t elem = xpc_dictionary_create(NULL, NULL, 0);
-        xpc_dictionary_set_string(elem, "identifier", bundleID.UTF8String);
-        xpc_dictionary_set_int64(elem, "identifier_type", 0); // 0 = bundle id (guess)
-        xpc_object_t chain = xpc_array_create(NULL, 0);
-        xpc_array_append_value(chain, elem);
-        xpc_dictionary_set_value(msg, "attribution_chain", chain);
-        xpc_dictionary_set_string(msg, "bundle_id", bundleID.UTF8String);
-        xpc_object_t reply = xpc_connection_send_message_with_reply_sync(conn, msg);
-        char *d = xpc_copy_description(reply);
-        ci_tccXpcLog([NSString stringWithFormat:@"svc=%@ reply=%s", svc, d ? d : "(null)"]);
-        if (d) free(d);
-        xpc_release(reply);
-        xpc_release(chain);
-        xpc_release(elem);
-        xpc_release(msg);
-    }
-    xpc_connection_cancel(conn);
-    xpc_release(conn);
-}
+// NOTE: there is intentionally NO direct-to-tccd XPC reset here. fix8–fix10
+// reset the bundle's TCC for real (via the tccd manager XPC) so Settings showed
+// the permissions cleared — but that LOCKED accounts right after registration,
+// because a freshly un-granted permission state contradicts the spoofed device
+// profile (especially location, which the MG tweak forces to AuthorizedAlways
+// for the GPS spoof). The proven-safe 4.0.8-test behaviour is a DB-only delete
+// (below) that leaves the live, tccd-cached grant intact. DO NOT re-introduce
+// the XPC reset, the tcc.manager entitlements, or any daemon restart.
 
 // Re-prompt the app for ALL its privacy permissions on the next launch, just
 // like a freshly-downloaded app: DELETE every one of the app's rows from the
@@ -2606,13 +2539,6 @@ static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services)
 // avatar/feed render. No daemon kill = no crash, and it still re-prompts.
 static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
-    // PRIMARY path: ask the RUNNING tccd to reset this bundle (clears the
-    // on-disk row AND its RAM cache) so Settings shows it reset and the app
-    // re-prompts — no daemon restart, no văng. The DB delete below is only a
-    // fallback for the on-disk row in case the XPC isn't honored.
-    ci_tccResetViaXPC(bundleID, @[@"kTCCServiceAddressBook", @"kTCCServiceCamera",
-        @"kTCCServicePhotos", @"kTCCServicePhotosAdd", @"kTCCServiceMicrophone",
-        @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking"]);
     // IMPORTANT: use the libsqlite3 C API directly, NOT the `sqlite3` CLI.
     // /var/jb/usr/bin/sqlite3 is a STANDALONE Procursus package that most
     // customer devices DON'T have installed — so the old shell-out silently
@@ -2630,29 +2556,10 @@ static void ci_resetAppTCC(NSString *bundleID) {
             sqlite3_step(st);
             sqlite3_finalize(st);
         }
-        // Checkpoint the WAL into the main db so tccd (separate connection)
-        // sees the delete immediately, not just in our private -wal.
-        sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     }
     if (db) sqlite3_close(db);
-    // (The XPC reset above is what actually drops tccd's RAM cache so Settings
-    // reflects the reset; this DB delete only guarantees the on-disk row is
-    // gone as a fallback.)
 }
 
-// Location is the one permission NOT in TCC: it lives in locationd's
-// ROOT-owned clients.plist, so the mobile host can't edit it directly.
-// Best-effort via sudo (present on this rig): just REMOVE the app's entry.
-//
-// CRITICAL: do NOT restart locationd. An earlier build ran
-// `launchctl kickstart locationd` here — restarting the root location daemon
-// mid-flow is the SAME class of bug as the old `killall -9 tccd`: it
-// destabilised location services and Zalo crashed ("văng") right after the
-// contacts grant during registration. A real uninstall re-prompts every
-// permission WITHOUT restarting any daemon, so we mirror that: passive
-// plist edit only. The entry is re-read on the next natural locationd reload;
-// either way nothing crashes, and even if location stays granted the tweak
-// always feeds FAKED GPS so the real position never leaks.
 // LOCATION IS DELIBERATELY NOT RESET — doing so LOCKS the account.
 // The MG tweak's GPS spoof forces +[CLLocationManager authorizationStatus] == 3
 // (AuthorizedAlways) whenever a fake coordinate is configured, so Zalo accepts
