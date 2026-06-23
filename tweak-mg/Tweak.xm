@@ -1379,35 +1379,29 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
     return %orig;
 }
 + (int)authorizationStatus {
-    // kCLAuthorizationStatusAuthorizedAlways = 3
-    if (getConfigStr(@"latitude")) return 3;
-    return %orig;
+    // kCLAuthorizationStatus: 0=notDetermined 1=restricted 2=denied 3=Always 4=WhenInUse.
+    // Assert the spoofed Always ONLY when location is ACTUALLY granted. While
+    // notDetermined/restricted/denied, return the REAL status — faking "Always"
+    // over a notDetermined system (e.g. right after a fresh-install Reset) is a
+    // system-vs-app contradiction that LOCKS the account (cost 2 accs on fix9/10).
+    // Letting real notDetermined through makes the app show the real prompt; once
+    // the user allows, this returns Always and startUpdatingLocation feeds fake.
+    int real = %orig;
+    if (getConfigStr(@"latitude") && (real == 3 || real == 4)) return 3;
+    return real;
 }
 - (int)authorizationStatus {
-    if (getConfigStr(@"latitude")) return 3;
-    return %orig;
+    int real = %orig;
+    if (getConfigStr(@"latitude") && (real == 3 || real == 4)) return 3;
+    return real;
 }
 - (void)requestWhenInUseAuthorization {
-    if (!getConfigStr(@"latitude")) { %orig; return; }
-    // Simulate "user tapped Allow" by firing the auth-change callback,
-    // then immediately deliver a fake location fix.
-    __weak id<CLLocationManagerDelegate> wdel = self.delegate;
-    __weak CLLocationManager *wself = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC)),
-                   dispatch_get_main_queue(), ^{
-        CLLocationManager *mgr = wself;
-        id<CLLocationManagerDelegate> del = wdel;
-        if (!mgr || !del) return;
-        // iOS 14+ unified callback
-        if ([del respondsToSelector:@selector(locationManagerDidChangeAuthorization:)])
-            [del locationManagerDidChangeAuthorization:mgr];
-        // Pre-iOS 14 callback (CLAuthorizationStatus = int)
-        if ([del respondsToSelector:@selector(locationManager:didChangeAuthorizationStatus:)])
-            [del locationManager:mgr didChangeAuthorizationStatus:kCLAuthorizationStatusAuthorizedAlways];
-        [mgr startUpdatingLocation];
-    });
+    // Show the REAL system prompt (no more simulated auto-grant). When the user
+    // allows, +authorizationStatus returns Always and -startUpdatingLocation
+    // feeds the fake fix — the spoof works AND system/app stay consistent.
+    %orig;
 }
-- (void)requestAlwaysAuthorization { [self requestWhenInUseAuthorization]; }
+- (void)requestAlwaysAuthorization { %orig; }
 - (void)startUpdatingLocation {
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");

@@ -35,10 +35,13 @@
     <true/>
     <key>com.apple.private.tcc.manager.access.read</key>
     <true/>
-    <!-- NB: do NOT reset LOCATION (no locationd manager entitlement, no location
-         service in the reset list). The GPS spoof forces location
-         authorizationStatus=AuthorizedAlways, so a notDetermined location is a
-         system-vs-app contradiction that LOCKS the account (cost 2 accounts on
-         fix9/10). Location stays granted. -->
+    <!-- locationd manager right: lets the app reset another bundle's LOCATION
+         authorization (to notDetermined) so it re-prompts like a fresh install.
+         SAFE now that the MG tweak only claims AuthorizedAlways when location is
+         REALLY granted (returns the real status while notDetermined) — so a
+         reset no longer creates the system-vs-app contradiction that locked the
+         fix9/10 accounts. -->
+    <key>com.apple.locationd.authorizeapplications</key>
+    <true/>
 </dict>
 </plist>

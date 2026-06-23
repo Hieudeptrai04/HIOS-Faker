@@ -16,6 +16,7 @@
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
+#import <CoreLocation/CoreLocation.h>    // CLLocationManager manager SPI — reset app location auth
 // xpc/xpc.h is stripped from the Theos iPhoneOS SDK, so declare the libxpc C
 // symbols we need (they live in libSystem, always linked). xpc objects are
 // opaque void* here, so ARC can't track them — managed manually via xpc_release.
@@ -68,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.8 Fix 12";
+static NSString *const kAppVersion = @"4.0.8 Fix 13";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2614,18 +2615,28 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (db) sqlite3_close(db);
 }
 
-// LOCATION IS DELIBERATELY NOT RESET — doing so LOCKS the account.
-// The MG tweak's GPS spoof forces +[CLLocationManager authorizationStatus] == 3
-// (AuthorizedAlways) whenever a fake coordinate is configured, so Zalo accepts
-// the spoofed position. If we reset location to notDetermined, locationd says
-// "not granted" while the tweak keeps telling the app "AuthorizedAlways" — a
-// system-vs-app contradiction. fix9 did exactly this and an account got LOCKED
-// right after registration (same class of bug as the GPU/SoC partial-spoof
-// bans). Location must stay GRANTED to match the spoof. A real fresh install
-// would re-prompt location, but we cannot have that AND a working GPS spoof
-// without the contradiction — so location is left untouched on Reset.
+// Reset the app's LOCATION authorization to notDetermined so it disappears from
+// Settings and re-prompts on next launch — like a fresh install.
+//
+// SAFE ONLY because the MG tweak's location hook now returns the REAL status
+// while not granted (it no longer claims AuthorizedAlways over a notDetermined
+// system). So the chain stays consistent: Reset → notDetermined everywhere →
+// Zalo shows the real prompt → user allows → tweak feeds fake GPS. No
+// system-vs-app contradiction = no account lock (the fix9/10 lock was exactly
+// that contradiction, back when the tweak forced Always unconditionally).
+//
+// Uses the private CLLocationManager manager SPI → funnels to locationd, which
+// drops the live auth (Settings + cache both updated, no daemon restart).
+// Requires com.apple.locationd.authorizeapplications (signed in entitlements).
+@interface CLLocationManager (CIPrivate)
++ (void)setAuthorizationStatusByType:(int)status forBundleIdentifier:(NSString *)bundleID;
+@end
+
 static void ci_resetAppLocation(NSString *bundleID) {
-    (void)bundleID; // intentionally a no-op — see comment above.
+    if (!bundleID.length) return;
+    if ([CLLocationManager respondsToSelector:@selector(setAuthorizationStatusByType:forBundleIdentifier:)]) {
+        [CLLocationManager setAuthorizationStatusByType:0 forBundleIdentifier:bundleID]; // 0 = notDetermined
+    }
 }
 
 // A real "fresh install" also clears the app's EXTENSION data containers
