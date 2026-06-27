@@ -1549,6 +1549,14 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");
     if (!latS || !lonS) return %orig;
+    // Only hand out a fake fix when location is ACTUALLY authorized. A
+    // notDetermined/denied app whose -location returns a real coordinate is an
+    // impossible iOS state (no auth -> nil) that anti-fraud flags. [self
+    // authorizationStatus] is our hooked value: the real status while not
+    // granted, AuthorizedAlways(3) once granted. When not granted, fall through
+    // to %orig (which is nil for an unauthorized app) → stays consistent.
+    int st = (int)[self authorizationStatus];
+    if (st != 3 && st != 4) return %orig;
     CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
     double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
     return [[CLLocation alloc] initWithCoordinate:c altitude:alt

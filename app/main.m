@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.0.9";
+static NSString *const kAppVersion = @"4.1.0";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2624,28 +2624,21 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (db) sqlite3_close(db);
 }
 
-// Reset the app's LOCATION authorization to notDetermined so it disappears from
-// Settings and re-prompts on next launch — like a fresh install.
+// LOCATION RESET DISABLED (4.1.0) — re-enabling it in fix13 re-introduced the
+// fix9/10 ACCOUNT LOCK. After resetting location auth to notDetermined, the app
+// shows notDetermined, but the MG tweak still returns a fake
+// -[CLLocationManager location] AND locationServicesEnabled=YES — an impossible
+// "no permission yet has a valid fix" state that Zalo's anti-fraud flags and
+// locks the account (exactly the fix9/10 ban). The fix13 "made safe by a
+// consistent GPS hook" claim was wrong: the location getter still handed out a
+// fake fix regardless of auth.
 //
-// SAFE ONLY because the MG tweak's location hook now returns the REAL status
-// while not granted (it no longer claims AuthorizedAlways over a notDetermined
-// system). So the chain stays consistent: Reset → notDetermined everywhere →
-// Zalo shows the real prompt → user allows → tweak feeds fake GPS. No
-// system-vs-app contradiction = no account lock (the fix9/10 lock was exactly
-// that contradiction, back when the tweak forced Always unconditionally).
-//
-// Uses the private CLLocationManager manager SPI → funnels to locationd, which
-// drops the live auth (Settings + cache both updated, no daemon restart).
-// Requires com.apple.locationd.authorizeapplications (signed in entitlements).
-@interface CLLocationManager (CIPrivate)
-+ (void)setAuthorizationStatusByType:(int)status forBundleIdentifier:(NSString *)bundleID;
-@end
-
+// Leaving location UNTOUCHED keeps it GRANTED, so the GPS hook reports a
+// consistent AuthorizedAlways + fake fix — the proven-safe fix2/fix11 behavior.
+// (The location getter is also hardened to return nil when not authorized — see
+// tweak-mg/Tweak.xm — as defense-in-depth.)
 static void ci_resetAppLocation(NSString *bundleID) {
-    if (!bundleID.length) return;
-    if ([CLLocationManager respondsToSelector:@selector(setAuthorizationStatusByType:forBundleIdentifier:)]) {
-        [CLLocationManager setAuthorizationStatusByType:0 forBundleIdentifier:bundleID]; // 0 = notDetermined
-    }
+    (void)bundleID; // intentionally a NO-OP — see ban history fix9/10/11.
 }
 
 // A real "fresh install" also clears the app's EXTENSION data containers
