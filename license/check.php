@@ -59,11 +59,16 @@ if (($k['status'] ?? 'active') === 'revoked') {
 
 $now = time();
 
-// First activation → bind udid + start clock.
+// Bind udid. Start the clock ONLY on the very first activation (activatedAt
+// unset). An admin 'unbind' clears just the udid, so re-binding a key that was
+// already activated must NOT reset expiry to a fresh full term — otherwise
+// 'unbind' doubles as a free renewal for whoever logs in next.
 if (empty($k['udid'])) {
-    $k['udid']        = $udid;
-    $k['activatedAt'] = $now;
-    $k['expiry']      = $now + (intval($k['durationDays'] ?? 30) * 86400);
+    $k['udid'] = $udid;
+    if (empty($k['activatedAt'])) {
+        $k['activatedAt'] = $now;
+        $k['expiry']      = $now + (intval($k['durationDays'] ?? 30) * 86400);
+    }
     hios_save($data);
 } else if (!hash_equals($k['udid'], $udid)) {
     // bound to a different device

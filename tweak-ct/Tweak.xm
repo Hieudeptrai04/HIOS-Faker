@@ -12,6 +12,7 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <notify.h>
 #import <time.h>
+#import <os/lock.h>
 
 static NSString *const kConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kReloadNote = @"com.changeinfoios.v3/ReloadConfig";
@@ -20,15 +21,26 @@ static NSString *const kAppNote    = @"com.changeinfoios/ReloadPrefs";
 
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
+// g_config is reassigned from the main-queue reload notifications while CT
+// getters read it on arbitrary host-app threads. Under ARC the reassignment
+// releases the previous dictionary, so a concurrent reader could retain an
+// object whose dealloc has begun (UAF / torn pointer). Serialize both sides
+// with a lock and hand readers a +1-retained snapshot taken under the lock.
+static os_unfair_lock g_cfgLock = OS_UNFAIR_LOCK_INIT;
 
 static void reloadConfig(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    g_config = d ?: @{};
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    os_unfair_lock_lock(&g_cfgLock);
+    g_config = d;
+    os_unfair_lock_unlock(&g_cfgLock);
 }
 
 static inline NSDictionary *cfg(void) {
     dispatch_once(&g_loadOnce, ^{ reloadConfig(); });
-    return g_config;
+    os_unfair_lock_lock(&g_cfgLock);
+    NSDictionary *snapshot = g_config;   // ARC retains while we hold the lock
+    os_unfair_lock_unlock(&g_cfgLock);
+    return snapshot;                      // caller owns its own strong ref
 }
 
 static inline NSString *cfgStr(NSString *key) {

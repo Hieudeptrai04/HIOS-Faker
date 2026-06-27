@@ -1,1 +1,3 @@
 *.deb
+# Never commit the live HMAC secret (loaded by license/lib.php hios_secret()).
+license/secret.php

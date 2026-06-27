@@ -4,10 +4,15 @@
 // Shared library: config, JSON store (flock), HMAC, admin auth.
 // ============================================================
 
-// ---- CONFIG: CHANGE THESE TWO BEFORE DEPLOY ----------------
-// 1) HMAC secret — MUST match kLicenseSecret in the iOS app.
-//    Generate a random 48-char string and paste the SAME value here and in the app.
-const HIOS_SECRET = 'hF9kQ2mZ7vX1pR4nL8wB6cT3yD5sG0aJeU2iO9rK4lM7nP1qV8xZ3bN6';
+// ---- CONFIG: CHANGE THESE BEFORE DEPLOY --------------------
+// 1) HMAC secret — MUST match the value embedded in the iOS app/tweak.
+//    It is NO LONGER hardcoded here. It is loaded at runtime from the
+//    HIOS_SECRET environment variable, or from a non-committed
+//    license/secret.php that returns the string — see hios_secret() below.
+//    ⚠ Create license/secret.php on the server (gitignored) or set the
+//    HIOS_SECRET env var, else every signature fails (fail-closed). For real
+//    security, rotate the secret and move to ASYMMETRIC signing (server holds
+//    a private key, the app embeds only the public key).
 // 2) Admin login (trang admin.php). User + pass cố định.
 //    Hai giá trị này chỉ nằm ở server (PHP), KHÔNG bao giờ gửi xuống trình
 //    duyệt → F12 xem source không thấy. Lúc đăng nhập, trình duyệt hash
@@ -52,12 +57,30 @@ function hios_save($data) {
     return true;
 }
 
+// ---- HMAC secret loader ------------------------------------
+// Env first, then a non-committed license/secret.php that `return`s the string.
+// Keeps the secret OUT of the repo. Returns '' (fail-closed: every signature
+// mismatches) if nothing is configured.
+function hios_secret() {
+    static $s = null;
+    if ($s !== null) return $s;
+    $env = getenv('HIOS_SECRET');
+    if (is_string($env) && strlen($env) >= 16) return $s = $env;
+    $f = __DIR__ . '/secret.php';            // secret.php:  <?php return 'THE_SECRET';
+    if (is_file($f)) {
+        $v = include $f;
+        if (is_string($v) && strlen($v) >= 16) return $s = $v;
+    }
+    error_log('HIOS: HMAC secret not configured (set HIOS_SECRET env or license/secret.php)');
+    return $s = '';
+}
+
 // ---- HMAC signing (responses) ------------------------------
 // Canonical string the app re-computes and verifies.
 function hios_sign($ok, $status, $expiry, $daysLeft, $ts, $nonce) {
     $canon = ($ok ? '1' : '0') . '|' . $status . '|' . $expiry . '|' .
              $daysLeft . '|' . $ts . '|' . $nonce;
-    return hash_hmac('sha256', $canon, HIOS_SECRET);
+    return hash_hmac('sha256', $canon, hios_secret());
 }
 
 function hios_respond($ok, $status, $expiry, $daysLeft, $nonce) {

@@ -1880,6 +1880,11 @@ static NSUInteger ci_randomizeIdentities(void) {
         [cm setObject:car[1]   forKey:@"carrierMCC"];
         [cm setObject:car[2]   forKey:@"carrierMNC"];
         [cm setObject:@"vn"    forKey:@"carrierISO"];
+        // SSID coherent with the forced VN profile (mirrors the PROXY_OK path);
+        // otherwise the generic "WiFi-XXXX" placeholder shipped with a full VN
+        // GPS/carrier/locale set — an avoidable cross-field inconsistency.
+        NSString *vnssid = ci_wifiSSIDForCountry(@"VN");
+        if (vnssid.length) [cm setObject:vnssid forKey:@"wifiSSID"];
     }
 
     // Timezone coherence: if carrier or locale is Vietnamese, force
@@ -1923,14 +1928,16 @@ static NSString *ci_normalizeVNPhone(NSString *raw) {
     if (digits.length == 0) return nil;
 
     NSString *out = nil;
-    if ([digits hasPrefix:@"84"] && digits.length >= 11 && digits.length <= 12) {
-        out = [@"+" stringByAppendingString:digits];
-    } else if ([digits hasPrefix:@"0"] && digits.length >= 10 && digits.length <= 11) {
-        out = [@"+84" stringByAppendingString:[digits substringFromIndex:1]];
-    } else if (digits.length >= 8 && digits.length <= 10) {
-        out = [@"+84" stringByAppendingString:digits];
+    if ([digits hasPrefix:@"84"] && digits.length == 11) {
+        out = [@"+" stringByAppendingString:digits];                   // 84 + 9 digits
+    } else if ([digits hasPrefix:@"0"] && digits.length == 10) {
+        out = [@"+84" stringByAppendingString:[digits substringFromIndex:1]]; // 0 + 9 digits
+    } else if (digits.length == 9) {
+        out = [@"+84" stringByAppendingString:digits];                 // bare subscriber
     }
-    if (out.length < 11 || out.length > 14) return nil;
+    // A valid VN mobile in E.164 is exactly "+84" followed by 9 digits (12 chars).
+    // This rejects 8-digit area-code/partial junk that previously slipped through.
+    if (out.length != 12) return nil;
     return out;
 }
 
@@ -1945,7 +1952,9 @@ static NSArray<NSString *> *ci_loadContactPool(void) {
         NSLog(@"[ChangeInfoIos] contacts seed: pool read failed path=%@ err=%@", path, err);
         return @[];
     }
-    NSRegularExpression *rx = [NSRegularExpression regularExpressionWithPattern:@"\\d{8,15}"
+    // VN phone tokens are 9 (bare) / 10 (0-prefixed) / 11 (84-prefixed) digits.
+    // Narrowed from \d{8,15} so 8-digit area-codes / 12-15 digit junk aren't pulled.
+    NSRegularExpression *rx = [NSRegularExpression regularExpressionWithPattern:@"\\d{9,11}"
                                                                         options:0
                                                                           error:nil];
     NSMutableOrderedSet<NSString *> *set = [NSMutableOrderedSet orderedSet];
@@ -3453,13 +3462,30 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 - (void)writeTweakToken {
     CIConfigManager *cm = [CIConfigManager shared];
     NSDate *e = [self expiryDate];
-    if (e && [e timeIntervalSinceNow] > 0) {
-        long epoch = (long)[e timeIntervalSince1970];
+    long lastOK = (long)[[self lstore] doubleForKey:kLicLastOK];
+    if (e && [e timeIntervalSinceNow] > 0 && lastOK > 0) {
+        // Token epoch = MIN(license expiry, lastSuccessfulCheck + offline grace).
+        // The spoof token itself stops validating once the offline grace lapses,
+        // so a revoked/expired user can't keep spoofing offline past the window,
+        // and re-emitting the token can't extend it beyond the last online check.
+        long expEpoch   = (long)[e timeIntervalSince1970];
+        long graceEpoch = lastOK + (long)(kLicenseOfflineGraceHours * 3600);
+        long epoch = expEpoch < graceEpoch ? expEpoch : graceEpoch;
         NSString *es = [NSString stringWithFormat:@"%ld", epoch];
-        [cm setObject:[NSString stringWithFormat:@"%@|%@", es, [self hmac:es]]
+        // Bind the signature to THIS device: the tweak reconstructs the same
+        // canonical from the real (un-spoofed) UDID, so a token copied to another
+        // device fails verification → no cross-device license sharing.
+        NSString *dev = [self deviceUDID];
+        NSString *canon = [NSString stringWithFormat:@"%@|%@", es, dev];
+        [cm setObject:[NSString stringWithFormat:@"%@|%@", es, [self hmac:canon]]
                forKey:@"_ci_lic_tok"];
+        // Reference device id for the tweak's fallback when MGCopyAnswer is
+        // restricted inside the target app (keeps spoofing working there). When
+        // the tweak CAN read MG it ignores this and binds to the real UDID.
+        [cm setObject:dev forKey:@"_ci_lic_dev"];
     } else {
         [cm setObject:nil forKey:@"_ci_lic_tok"];   // expired/none → clear
+        [cm setObject:nil forKey:@"_ci_lic_dev"];
     }
     [cm save];
 }
@@ -3520,6 +3546,19 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
             [ud synchronize];
             done(YES, st, nil);
         } else {
+            // Hard-deny from the server (revoked / expired / wrong_device): drop
+            // the cached license so isLicenseValidCached fails and the tweak token
+            // is cleared. Revocation now bites even if the user later goes offline
+            // (previously the 48h grace + cached expiry let a revoked user keep
+            // spoofing). "network"/"bad_sig" etc. are NOT cleared — keep grace.
+            if ([st isEqualToString:@"revoked"] || [st isEqualToString:@"expired"] ||
+                [st isEqualToString:@"wrong_device"]) {
+                NSUserDefaults *ud = [self lstore];
+                [ud removeObjectForKey:kLicExpiry];
+                [ud removeObjectForKey:kLicLastOK];
+                [ud synchronize];
+                [self writeTweakToken];   // expiry gone → clears the tweak token
+            }
             done(NO, st, [self msgForStatus:st]);
         }
     }] resume];
