@@ -454,24 +454,19 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
         return r;
     }
 
-    // Only for keys we actually spoof: skip UIKit/system-internal callers.
-    // MSHookFunction patches MG globally, so UIKit's internal
-    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also lands here; feeding
-    // it a fake ProductType (no matching device plist) → initWithContentsOfFile:
-    // throws → std::terminate → SIGABRT. Pass those through.
-    Dl_info _di; _di.dli_fname = NULL;
-    dladdr(__builtin_return_address(0), &_di);
-    if (_di.dli_fname &&
-        (strncmp(_di.dli_fname, "/System/Library/", 16) == 0 ||
-         strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
-         strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
-        return orig_MGCopyAnswer(property);
-    }
-
+    // Resolve the spoof value FIRST, under the re-entry guard. Only if we
+    // actually have one do we pay for the dladdr caller-check below.
+    //
+    // WHY (second half of the 0x8BADF00D fix, 4.1.4): dladdr walks the image
+    // list + takes the dyld lock. Running it on EVERY mapped-key query — even
+    // when we're going to pass through anyway — re-created the scene-create
+    // watchdog stall, because UIKit hammers capability keys (HasFaceID,
+    // HasCellularConnectivity, HasTouchID, …) hundreds of times during
+    // scene-create, and an UNLICENSED tweak (cfg()==@{} → every value nil)
+    // was doing a dyld-locking dladdr on each one for nothing. Now: no spoof
+    // value → straight passthrough, no dladdr.
     g_inMG = 1;
-
     CFTypeRef result = NULL;
-
     if ([g_boolKeys containsObject:key]) {
         if (getConfig(configKey)) {
             // Real MGCopyAnswer returns a CFBoolean for these keys. Return an
@@ -490,14 +485,25 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
         NSString *s = getConfigStr(configKey);
         if (s) result = (__bridge_retained CFTypeRef)s;
     }
-
-    if (result) {
-        g_inMG = 0;
-        return result;
-    }
-    CFTypeRef orig = orig_MGCopyAnswer(property);
     g_inMG = 0;
-    return orig;
+
+    if (!result) return orig_MGCopyAnswer(property);
+
+    // We have a spoof value → NOW skip UIKit/system-internal callers.
+    // MSHookFunction patches MG globally, so UIKit's internal
+    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also lands here; feeding
+    // it a fake ProductType (no matching device plist) → initWithContentsOfFile:
+    // throws → std::terminate → SIGABRT. Pass those through (real value).
+    Dl_info _di; _di.dli_fname = NULL;
+    dladdr(__builtin_return_address(0), &_di);
+    if (_di.dli_fname &&
+        (strncmp(_di.dli_fname, "/System/Library/", 16) == 0 ||
+         strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
+         strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
+        CFRelease(result);
+        return orig_MGCopyAnswer(property);
+    }
+    return result;
 }
 
 // ============================================================
@@ -2190,48 +2196,78 @@ typedef const char *(*dyld_image_name_fn_t)(uint32_t);
 static dyld_image_count_fn_t  orig_dyld_image_count_fn    = NULL;
 static dyld_image_name_fn_t   orig_dyld_get_image_name_fn = NULL;
 
-// If the caller of _dyld_image_count / _dyld_get_image_name is itself
-// a JB tweak (its code lives in /var/jb/Library/ or /var/jb/usr/lib/),
-// pass through the real list — that tweak needs to locate itself or its
-// peers (e.g. VCam finding vcamrootless.dylib to locate its video file).
-// Only filter the view for app-bundle callers (the anti-fraud SDK path).
-static BOOL dyldCallerIsJBTweak(void) {
-    // Single-frame check — fast. _dyld_* is called heavily by AVFoundation on
-    // the camera hot path; a backtrace walk here hung video calls. VCam's own
-    // dylib path ("vcamrootless.dylib") is whitelisted via isTweakDataPath so
-    // its file access never depends on this anyway.
-    Dl_info di; di.dli_fname = NULL;
-    dladdr(__builtin_return_address(1), &di);
-    if (!di.dli_fname) return NO;
-    return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
-            strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
-            strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0);
+// Filtered-view cache (0x8BADF00D fix, 4.1.4). The OLD hook was O(N) PER CALL:
+// every _dyld_get_image_name(i) re-counted all images AND ran dladdr() on the
+// return address. Anti-fraud SDKs — above all FirebaseCrashlytics — enumerate
+// the WHOLE image list at launch, so N name-calls × O(N)-per-call = O(N²), and
+// the per-call dladdr kept grabbing the dyld lock while Zalo was dlopen'ing more
+// images on other threads. On a ~600-image launch that burned ~100s of CPU in
+// under 26s wall → FrontBoard scene-create watchdog SIGKILL ("treo logo → văng",
+// confirmed: with these hooks removed Zalo launches fine, with them it dies).
+//
+// Now we cache a visible→real index map, rebuilt only when the real image count
+// changes: O(N) once per enumeration, O(1) per name lookup, no per-call dladdr.
+// The old caller-passthrough (real list for JB-tweak callers) is dropped — the
+// filtered view is self-consistent (count matches names), so app SDKs iterate
+// cleanly; a JB tweak that needs a peer dylib resolves it via dlopen(known-path),
+// not by scanning this list. The mutex is held ONLY for O(1) reads/swaps and
+// never across a dyld call, so it can't invert lock order with dyld's own lock.
+static pthread_mutex_t g_dyldMapMu = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t  g_dyldCachedTotal   = 0;
+static uint32_t  g_dyldVisibleCount  = 0;
+static uint32_t *g_dyldVisibleToReal = NULL;   // visible index -> real dyld index
+static int       g_dyldMapBuilt      = 0;
+
+// Make the cache reflect `total`. Builds into a fresh local buffer with NO lock
+// held (dyld calls happen outside our mutex), then swaps it in under a short lock
+// and frees the old buffer. Two racing rebuilders both produce valid maps; last
+// swap wins, the loser's buffer is freed. Readers only ever copy an int index out
+// under the lock, so a freed buffer can never be dereferenced by another thread.
+static void dyldEnsureMap(uint32_t total) {
+    pthread_mutex_lock(&g_dyldMapMu);
+    int ok = (g_dyldMapBuilt && total == g_dyldCachedTotal);
+    pthread_mutex_unlock(&g_dyldMapMu);
+    if (ok) return;
+
+    uint32_t *m = (uint32_t *)malloc((total ? total : 1) * sizeof(uint32_t));
+    if (!m) return;                       // OOM: keep the stale map, degrade gracefully
+    uint32_t vis = 0;
+    for (uint32_t i = 0; i < total; i++) {
+        const char *name = orig_dyld_get_image_name_fn(i);
+        if (isDyldNameHidden(name)) continue;
+        m[vis++] = i;
+    }
+
+    pthread_mutex_lock(&g_dyldMapMu);
+    uint32_t *old = g_dyldVisibleToReal;
+    g_dyldVisibleToReal = m;
+    g_dyldVisibleCount  = vis;
+    g_dyldCachedTotal   = total;
+    g_dyldMapBuilt      = 1;
+    pthread_mutex_unlock(&g_dyldMapMu);
+    free(old);
 }
 
 static uint32_t hooked_dyld_image_count(void) {
-    if (!orig_dyld_image_count_fn) return 0;
-    if (dyldCallerIsJBTweak()) return orig_dyld_image_count_fn();
+    if (!orig_dyld_image_count_fn || !orig_dyld_get_image_name_fn)
+        return orig_dyld_image_count_fn ? orig_dyld_image_count_fn() : 0;
     uint32_t total = orig_dyld_image_count_fn();
-    uint32_t hidden = 0;
-    for (uint32_t i = 0; i < total; i++) {
-        const char *name = orig_dyld_get_image_name_fn ? orig_dyld_get_image_name_fn(i) : NULL;
-        if (isDyldNameHidden(name)) hidden++;
-    }
-    return total - hidden;
+    dyldEnsureMap(total);
+    pthread_mutex_lock(&g_dyldMapMu);
+    uint32_t vc = (g_dyldMapBuilt && g_dyldCachedTotal == total) ? g_dyldVisibleCount : total;
+    pthread_mutex_unlock(&g_dyldMapMu);
+    return vc;
 }
 
 static const char *hooked_dyld_get_image_name(uint32_t index) {
     if (!orig_dyld_get_image_name_fn || !orig_dyld_image_count_fn) return NULL;
-    if (dyldCallerIsJBTweak()) return orig_dyld_get_image_name_fn(index);
     uint32_t total = orig_dyld_image_count_fn();
-    uint32_t visible = 0;
-    for (uint32_t i = 0; i < total; i++) {
-        const char *name = orig_dyld_get_image_name_fn(i);
-        if (isDyldNameHidden(name)) continue;
-        if (visible == index) return name;
-        visible++;
-    }
-    return NULL;
+    dyldEnsureMap(total);
+    pthread_mutex_lock(&g_dyldMapMu);
+    uint32_t real = (g_dyldMapBuilt && g_dyldCachedTotal == total && index < g_dyldVisibleCount)
+                    ? g_dyldVisibleToReal[index] : UINT32_MAX;
+    pthread_mutex_unlock(&g_dyldMapMu);
+    return (real == UINT32_MAX) ? NULL : orig_dyld_get_image_name_fn(real);
 }
 
 // open()/openat() hooks removed: variadic signature + Foundation's
