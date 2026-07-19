@@ -427,6 +427,60 @@ typedef CFTypeRef (*MGCopyAnswer_t)(CFStringRef property);
 static MGCopyAnswer_t orig_MGCopyAnswer = NULL;
 __thread int g_inMG = 0;
 
+// Memoized real-MGCopyAnswer passthrough (0x8BADF00D fix, 4.1.5).
+//
+// ROOT CAUSE, proven on-device: a LICENSED launch answers the hot keys from
+// config and launches Zalo fine; an UNLICENSED launch (expired/missing token →
+// every value nil) sends EVERY query to the real MGCopyAnswer — and Firebase
+// hammers -[UIDevice systemVersion] (→ MGCopyAnswer("ProductVersion")) while
+// UIKit hammers the capability keys, so the real fn runs tens of thousands of
+// times during scene-create → ~80-100s CPU in <26s wall → FrontBoard watchdog
+// SIGKILL ("treo logo → văng", and the crash on restore-to-another-account,
+// which relaunches Zalo cold — unlicensed if the restored profile lacks a live
+// token). MG hardware/version/capability values are immutable for a process, so
+// caching the real answer per key makes the real fn run at most once per key;
+// every later query is an O(1) dict hit. Spoofing is untouched — only the
+// passthrough (non-spoofed) answers are cached.
+static pthread_mutex_t g_mgCacheMu = PTHREAD_MUTEX_INITIALIZER;
+static CFMutableDictionaryRef g_mgOrigCache = NULL;
+
+static CFTypeRef mgOrigCached(CFStringRef property) {
+    if (!property) return NULL;
+    // A few keys genuinely change within a session — never cache them.
+    static NSSet *volatileKeys = nil; static dispatch_once_t vo;
+    dispatch_once(&vo, ^{
+        volatileKeys = [NSSet setWithObjects:
+            @"DiskUsage", @"TotalDiskCapacity", @"TotalSystemAvailable",
+            @"BatteryCurrentCapacity", @"BatteryIsCharging", @"AirplaneMode", nil];
+    });
+    if ([volatileKeys containsObject:(__bridge NSString *)property]) {
+        g_inMG = 1; CFTypeRef r = orig_MGCopyAnswer(property); g_inMG = 0;
+        return r;
+    }
+
+    pthread_mutex_lock(&g_mgCacheMu);
+    if (!g_mgOrigCache)
+        g_mgOrigCache = CFDictionaryCreateMutable(NULL, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef cached = g_mgOrigCache ? CFDictionaryGetValue(g_mgOrigCache, property) : NULL;
+    if (cached) {
+        if (cached != kCFNull) CFRetain(cached);   // hand the caller its own +1
+        pthread_mutex_unlock(&g_mgCacheMu);
+        return (cached == kCFNull) ? NULL : cached;
+    }
+    pthread_mutex_unlock(&g_mgCacheMu);
+
+    // Miss: run the real fn ONCE (guarded against re-entry), then cache it.
+    g_inMG = 1;
+    CFTypeRef r = orig_MGCopyAnswer(property);
+    g_inMG = 0;
+
+    pthread_mutex_lock(&g_mgCacheMu);
+    if (g_mgOrigCache) CFDictionarySetValue(g_mgOrigCache, property, r ? r : (CFTypeRef)kCFNull);
+    pthread_mutex_unlock(&g_mgCacheMu);
+    return r;   // caller owns the +1 the real fn returned; the dict took its own
+}
+
 static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     if (g_inMG || !property) return orig_MGCopyAnswer(property);
 
@@ -448,10 +502,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
             if (CFStringGetCString(property, kb, sizeof(kb), kCFStringEncodingUTF8) && kb[0])
                 dbglog("MG.miss %s %s\n", g_procname, kb);
         }
-        g_inMG = 1;
-        CFTypeRef r = orig_MGCopyAnswer(property);
-        g_inMG = 0;
-        return r;
+        return mgOrigCached(property);
     }
 
     // Resolve the spoof value FIRST, under the re-entry guard. Only if we
@@ -487,7 +538,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     }
     g_inMG = 0;
 
-    if (!result) return orig_MGCopyAnswer(property);
+    if (!result) return mgOrigCached(property);
 
     // We have a spoof value → NOW skip UIKit/system-internal callers.
     // MSHookFunction patches MG globally, so UIKit's internal
@@ -501,7 +552,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
          strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
          strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
         CFRelease(result);
-        return orig_MGCopyAnswer(property);
+        return mgOrigCached(property);
     }
     return result;
 }
