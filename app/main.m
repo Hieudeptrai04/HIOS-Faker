@@ -3030,7 +3030,13 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
                             type = [proxy performSelector:@selector(applicationType)] ?: @"";
                         if (![type isEqualToString:@"User"]) continue;
                         if ([bid hasPrefix:@"com.apple."]) continue;
-                        if ([bid isEqualToString:@"com.changeinfoios.app"]) continue;
+                        // v4.1.9: prefix match. The old exact check was
+                        // "com.changeinfoios.app" but this build's own bundle id is
+                        // "com.changeinfoios.v3.app", so the tool could list ITSELF
+                        // as a target — and a Change Device would then rm -rf its own
+                        // container (killing the app mid-run and destroying its
+                        // license/settings). Never let any of our own bundles be a target.
+                        if ([bid hasPrefix:@"com.changeinfoios"]) continue;
                         CIAppInfo *info = [[CIAppInfo alloc] init];
                         info.bundleID = bid;
                         NSString *nm = nil;
@@ -3419,6 +3425,42 @@ static NSString *const kLicExpiry   = @"_ci_lic_expiry";    // ISO8601
 static NSString *const kLicLastOK   = @"_ci_lic_lastok";    // epoch of last good online check
 static NSString *const kLicUDID     = @"_ci_lic_udid";
 
+// v4.1.9 — DURABLE license store.
+// The license state used to live ONLY in NSUserDefaults. On this app that never
+// reaches disk: the app container's Library/Preferences stays EMPTY (verified
+// on-device — no _ci_lic_expiry anywhere on the filesystem), so expiry/lastOK were
+// lost on every app restart / respring. isLicenseValidCached then read nil and the
+// Change Device gate fired "Key hết hạn" + bounced to the Login screen even right
+// after a successful key activation. Persist to the same JB config dir that already
+// reliably holds `hwid` (that file survives respring / Change Device / RRS restore).
+// NSUserDefaults is still written as a mirror so nothing else regresses.
+static NSString *const kLicStorePath = @"/var/jb/etc/changeinfoios/license.plist";
+static NSMutableDictionary *ci_licStore(void) {
+    static NSMutableDictionary *s = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        s = [NSMutableDictionary dictionaryWithContentsOfFile:kLicStorePath];
+        if (!s) s = [NSMutableDictionary dictionary];
+    });
+    return s;
+}
+static void ci_licStoreSave(void) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/jb/etc/changeinfoios"
+        withIntermediateDirectories:YES attributes:nil error:nil];
+    [ci_licStore() writeToFile:kLicStorePath atomically:YES];
+}
+// Read a license value: durable store first, NSUserDefaults as legacy fallback
+// (migrates transparently on the next write).
+static id ci_licGet(NSString *k, NSUserDefaults *ud) {
+    id v = ci_licStore()[k];
+    if (v) return v;
+    return ud ? [ud objectForKey:k] : nil;
+}
+static void ci_licSet(NSString *k, id v, NSUserDefaults *ud) {
+    if (v) ci_licStore()[k] = v; else [ci_licStore() removeObjectForKey:k];
+    if (ud) { if (v) [ud setObject:v forKey:k]; else [ud removeObjectForKey:k]; }
+    ci_licStoreSave();
+}
+
 @interface CILicenseManager : NSObject
 + (instancetype)shared;
 - (NSString *)deviceUDID;                 // REAL idfv (un-spoofed in this app)
@@ -3498,16 +3540,33 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 // overwritten by RRS restore, which was wiping the session and forcing re-login.
 - (NSUserDefaults *)lstore { return [NSUserDefaults standardUserDefaults]; }
 
-- (NSString *)storedKey { return [[self lstore] stringForKey:kLicKey]; }
+- (NSString *)storedKey {
+    id v = ci_licGet(kLicKey, [self lstore]);
+    return [v isKindOfClass:[NSString class]] ? v : nil;
+}
 
 - (NSDate *)expiryDate {
-    NSString *iso = [[self lstore] stringForKey:kLicExpiry];
+    id raw = ci_licGet(kLicExpiry, [self lstore]);
+    NSString *iso = [raw isKindOfClass:[NSString class]] ? raw : nil;
     if (!iso.length) return nil;
-    NSDateFormatter *f = [[NSDateFormatter alloc] init];
-    f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    f.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
-    f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    return [f dateFromString:iso];
+    // Primary format is the server's ISO8601 Z form. The extra patterns are
+    // defensive: a server-side format tweak used to make this return nil, which
+    // reads as "expired" everywhere (daysLeft 0, Change Device gate blocked).
+    static NSArray<NSString *> *fmts = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{ fmts = @[ @"yyyy-MM-dd'T'HH:mm:ss'Z'",
+                                   @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                                   @"yyyy-MM-dd'T'HH:mm:ssZ",
+                                   @"yyyy-MM-dd HH:mm:ss",
+                                   @"yyyy-MM-dd" ]; });
+    for (NSString *pat in fmts) {
+        NSDateFormatter *f = [[NSDateFormatter alloc] init];
+        f.dateFormat = pat;
+        f.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+        f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        NSDate *d = [f dateFromString:iso];
+        if (d) return d;
+    }
+    return nil;
 }
 
 - (NSInteger)daysLeft {
@@ -3521,7 +3580,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
     NSDate *e = [self expiryDate];
     if (!e || [e timeIntervalSinceNow] <= 0) return NO;          // expired/none
     // require a successful online check within the grace window
-    NSInteger lastOK = (NSInteger)[[self lstore] doubleForKey:kLicLastOK];
+    double lastOK = [ci_licGet(kLicLastOK, [self lstore]) doubleValue];
     if (lastOK <= 0) return NO;
     NSTimeInterval since = [[NSDate date] timeIntervalSince1970] - lastOK;
     return since <= kLicenseOfflineGraceHours * 3600;
@@ -3545,7 +3604,7 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 - (void)writeTweakToken {
     CIConfigManager *cm = [CIConfigManager shared];
     NSDate *e = [self expiryDate];
-    long lastOK = (long)[[self lstore] doubleForKey:kLicLastOK];
+    long lastOK = (long)[ci_licGet(kLicLastOK, [self lstore]) doubleValue];
     if (e && [e timeIntervalSinceNow] > 0 && lastOK > 0) {
         // Token epoch = MIN(license expiry, lastSuccessfulCheck + offline grace).
         // The spoof token itself stops validating once the offline grace lapses,
@@ -3617,10 +3676,13 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 
         if (ok) {
             NSUserDefaults *ud = [self lstore];
-            [ud setObject:key forKey:kLicKey];
-            [ud setObject:exp forKey:kLicExpiry];
-            [ud setObject:udid forKey:kLicUDID];
-            [ud setDouble:[[NSDate date] timeIntervalSince1970] forKey:kLicLastOK];
+            // v4.1.9: write to the DURABLE store (+ NSUserDefaults mirror). Writing
+            // only to NSUserDefaults never reached disk on this app, so the license
+            // vanished on the next app start / respring.
+            ci_licSet(kLicKey,    key,  ud);
+            ci_licSet(kLicExpiry, exp,  ud);
+            ci_licSet(kLicUDID,   udid, ud);
+            ci_licSet(kLicLastOK, @([[NSDate date] timeIntervalSince1970]), ud);
             [ud synchronize];
             done(YES, st, nil);
         } else {
@@ -3632,8 +3694,8 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
             if ([st isEqualToString:@"revoked"] || [st isEqualToString:@"expired"] ||
                 [st isEqualToString:@"wrong_device"]) {
                 NSUserDefaults *ud = [self lstore];
-                [ud removeObjectForKey:kLicExpiry];
-                [ud removeObjectForKey:kLicLastOK];
+                ci_licSet(kLicExpiry, nil, ud);
+                ci_licSet(kLicLastOK, nil, ud);
                 [ud synchronize];
                 [self writeTweakToken];   // expiry gone → clears the tweak token
             }
@@ -3651,9 +3713,13 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 }
 
 - (void)recheckWithCompletion:(void(^)(BOOL, NSString *))completion {
-    // Device-login: validate by hardware UDID (empty key). Server finds the key
-    // bound to this device. Works after reinstall with no stored key.
-    [self validateKey:@"" completion:^(BOOL ok, NSString *st, NSString *e) {
+    // v4.1.9: send the STORED key when we have one. Sending an empty key makes the
+    // server resolve the key by hardware UDID, which can return an OLDER key still
+    // bound to this device (e.g. the expired one the user just replaced) → the
+    // Change Device gate then reported "Key hết hạn" right after a successful
+    // activation. Empty key remains the fallback (device-login after a reinstall).
+    NSString *k = [self storedKey] ?: @"";
+    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
         // network error → keep cached state (offline grace decides elsewhere)
         if (completion) completion(ok || [st isEqualToString:@"network"] , st);
     }];
@@ -3662,7 +3728,10 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 - (BOOL)blockingRecheck {
     __block BOOL result = NO; __block BOOL networkErr = NO;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [self validateKey:@"" completion:^(BOOL ok, NSString *st, NSString *e) {
+    // Same as recheckWithCompletion: prefer the stored key so the server validates
+    // THIS key, not whatever older key is still bound to the hardware UDID.
+    NSString *k = [self storedKey] ?: @"";
+    [self validateKey:k completion:^(BOOL ok, NSString *st, NSString *e) {
         result = ok; networkErr = [st isEqualToString:@"network"];
         dispatch_semaphore_signal(sem);
     }];
@@ -3673,9 +3742,9 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 
 - (void)logout {
     NSUserDefaults *ud = [self lstore];
-    [ud removeObjectForKey:kLicKey];
-    [ud removeObjectForKey:kLicExpiry];
-    [ud removeObjectForKey:kLicLastOK];
+    ci_licSet(kLicKey,    nil, ud);
+    ci_licSet(kLicExpiry, nil, ud);
+    ci_licSet(kLicLastOK, nil, ud);
     [ud synchronize];
     [self writeTweakToken];   // expiry now gone → clears the tweak token (no spoof)
 }
