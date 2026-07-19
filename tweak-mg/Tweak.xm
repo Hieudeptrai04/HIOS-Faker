@@ -1669,11 +1669,17 @@ static void ci_restoreKeychainIfFlagged(void) {
             [del locationManager:mgr didUpdateLocations:@[fake]];
     });
 }
-- (void)requestLocation { [self startUpdatingLocation]; }
+- (void)requestLocation {
+    [self startUpdatingLocation];
+}
 // Significant-location-change service (used by Maps background tracking):
 // don't start real monitoring, just deliver one fake fix.
-- (void)startMonitoringSignificantLocationChanges { [self startUpdatingLocation]; }
-- (void)stopMonitoringSignificantLocationChanges  { /* no-op */ }
+- (void)startMonitoringSignificantLocationChanges {
+    [self startUpdatingLocation];
+}
+- (void)stopMonitoringSignificantLocationChanges {
+    /* no-op */
+}
 - (CLLocation *)location {
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");
@@ -1692,10 +1698,14 @@ static void ci_restoreKeychainIfFlagged(void) {
             horizontalAccuracy:5.0 verticalAccuracy:3.0 timestamp:[NSDate date]];
 }
 // speedFilter / distanceFilter don't matter since we own the delivery.
-- (CLLocationDistance)distanceFilter { return kCLDistanceFilterNone; }
+- (CLLocationDistance)distanceFilter {
+    return kCLDistanceFilterNone;
+}
 // pausesLocationUpdatesAutomatically = NO prevents iOS from stopping
 // our fake delivery when the app "stops moving".
-- (BOOL)pausesLocationUpdatesAutomatically { return NO; }
+- (BOOL)pausesLocationUpdatesAutomatically {
+    return NO;
+}
 %end
 
 // CLGeocoder: no hook needed. When Maps/Weather call
@@ -1748,8 +1758,12 @@ static void ci_restoreKeychainIfFlagged(void) {
     _inTZ = NO;
     return tz ?: %orig;
 }
-+ (NSTimeZone *)localTimeZone   { return [self systemTimeZone]; }
-+ (NSTimeZone *)defaultTimeZone { return [self systemTimeZone]; }
++ (NSTimeZone *)localTimeZone {
+    return [self systemTimeZone];
+}
++ (NSTimeZone *)defaultTimeZone {
+    return [self systemTimeZone];
+}
 %end
 
 // ============================================================
@@ -1775,7 +1789,9 @@ static void ci_restoreKeychainIfFlagged(void) {
     if (!iso) { iso = getConfigStr(@"RegionCode"); }
     return iso ? iso.lowercaseString : %orig;
 }
-- (BOOL)allowsVOIP { return YES; }
+- (BOOL)allowsVOIP {
+    return YES;
+}
 %end
 
 // ============================================================
@@ -1796,7 +1812,9 @@ static void ci_restoreKeychainIfFlagged(void) {
     }
     return %orig;
 }
-- (BOOL)isAdvertisingTrackingEnabled { return YES; }
+- (BOOL)isAdvertisingTrackingEnabled {
+    return YES;
+}
 %end
 
 // ============================================================
@@ -2272,7 +2290,9 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     id v = getConfig(@"processorCount");
     return v ? (NSUInteger)[v integerValue] : %orig;
 }
-- (NSUInteger)activeProcessorCount { return [self processorCount]; }
+- (NSUInteger)activeProcessorCount {
+    return [self processorCount];
+}
 // NSProcessInfo.environment NOT hooked — hooking it caused app-wide hangs
 // because WebContent (spawned by every WKWebView app) also receives this dylib
 // and the hook fired during early process init before ObjC runtime was stable.
@@ -2292,7 +2312,9 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     screenDimsForProductType(pt, &sw, &sh, &dpr, &hc);
     return (CGFloat)dpr;
 }
-- (CGFloat)nativeScale { return [self scale]; }
+- (CGFloat)nativeScale {
+    return [self scale];
+}
 - (CGRect)nativeBounds {
     NSString *pt = getConfigStr(@"ProductType");
     if (!pt) return %orig;
