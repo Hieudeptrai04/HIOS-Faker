@@ -1514,6 +1514,24 @@ static void ci_restoreKeychainIfFlagged(void) {
     else if ([fm fileExistsAtPath:lFlag] && [fm fileExistsAtPath:lDump])  dump = lDump;   // legacy
     if (!dump) return;   // nothing flagged for this app → no-op
 
+    // Run-once guard keyed by the dump's mtime, persisted in the app's own
+    // NSUserDefaults (survives the tmp purge). We usually CANNOT delete the
+    // /var/jb restore flag from a sandboxed app, so without this the restore
+    // would repeat every launch.
+    NSDate *mt = [[fm attributesOfItemAtPath:dump error:nil] fileModificationDate];
+    double mtime = mt ? [mt timeIntervalSince1970] : 0;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (mtime > 0 && [ud doubleForKey:@"_ci_kc_done"] == mtime) {
+        [fm removeItemAtPath:lFlag error:nil];
+        return;   // already applied this dump
+    }
+
+    // CRITICAL: run the SecItem work on a BACKGROUND queue, NEVER inline in
+    // %ctor — inline it blocked the app launch ~21s → FrontBoard watchdog
+    // SIGKILL (Zalo "treo logo rồi văng"). Off the launch path it cannot
+    // watchdog the app.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    @autoreleasepool {
     NSData *data = [NSData dataWithContentsOfFile:dump];
     id items = data.length ? [NSPropertyListSerialization propertyListWithData:data
                                   options:0 format:NULL error:NULL] : nil;
@@ -1550,10 +1568,12 @@ static void ci_restoreKeychainIfFlagged(void) {
             }
         }
     }
-    // Run once — clear the flags (dump files are cleaned by the host / next reset).
-    [fm removeItemAtPath:pFlag error:nil];
+    // Mark this dump processed (persists across tmp purge) + clear legacy flag.
+    if (mtime > 0) { [ud setDouble:mtime forKey:@"_ci_kc_done"]; }
     [fm removeItemAtPath:lFlag error:nil];
-    dbglog("Keychain.restore %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
+    dbglog("Keychain.restore(bg) %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
+    } // @autoreleasepool
+    }); // dispatch_async
 }
 
 // ============================================================
