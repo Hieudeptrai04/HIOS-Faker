@@ -1430,6 +1430,133 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
 }
 
 // ============================================================
+// RRS keychain DUMP (backup) + RESTORE (re-apply). The host app posts
+// "com.changeinfoios/dump_keychain" before a backup and expects us — running
+// INSIDE the target app, so we carry its keychain-access-groups — to serialize
+// the app's keychain to <container>/tmp/hios_keychain.plist. On restore the host
+// drops restore_<bid>.flag + dump_<bid>.plist in /var/jb/etc/changeinfoios/
+// (plus a legacy flag in tmp/); on the next launch our %ctor re-applies the
+// snapshot so the app's session + local-DB decryption key come back and it reads
+// its RESTORED local data instantly instead of re-syncing everything from the
+// server (the old 5–10 min wait). Format = array of item dicts keyed by the
+// short SecItem attribute names; binary values (incl. v_Data) are wrapped as
+// {"__b": <base64>} — the exact shape the host's dump patcher reads/writes.
+// ============================================================
+static id ci_kcWrap(id v) {
+    if ([v isKindOfClass:[NSData class]])
+        return @{ @"__b": [(NSData *)v base64EncodedStringWithOptions:0] };
+    return v;   // NSString / NSNumber pass through; NSDate handled by caller
+}
+static id ci_kcUnwrap(id v) {
+    if ([v isKindOfClass:[NSDictionary class]] && ((NSDictionary *)v)[@"__b"]) {
+        NSData *d = [[NSData alloc] initWithBase64EncodedString:((NSDictionary *)v)[@"__b"] options:0];
+        return d ?: v;
+    }
+    return v;
+}
+
+static void ci_dumpKeychain(void) {
+    if (!orig_SecItemCopyMatching) return;   // origs not installed yet
+    NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
+                          (__bridge id)kSecClassInternetPassword,
+                          (__bridge id)kSecClassCertificate,
+                          (__bridge id)kSecClassKey,
+                          (__bridge id)kSecClassIdentity ];
+    NSMutableArray *out = [NSMutableArray array];
+    for (id cls in classes) {
+        NSDictionary *q = @{ (__bridge id)kSecClass:            cls,
+                             (__bridge id)kSecMatchLimit:       (__bridge id)kSecMatchLimitAll,
+                             (__bridge id)kSecReturnAttributes: (__bridge id)kCFBooleanTrue,
+                             (__bridge id)kSecReturnData:       (__bridge id)kCFBooleanTrue };
+        CFTypeRef res = NULL;
+        // orig_ bypasses our own blocking hook so ALL items are captured.
+        OSStatus st = orig_SecItemCopyMatching((__bridge CFDictionaryRef)q, &res);
+        if (st == errSecSuccess && res) {
+            NSArray *arr = (CFGetTypeID(res) == CFArrayGetTypeID())
+                           ? (__bridge NSArray *)res : @[ (__bridge id)res ];
+            for (id itd in arr) {
+                if (![itd isKindOfClass:[NSDictionary class]]) continue;
+                NSDictionary *it = (NSDictionary *)itd;
+                NSMutableDictionary *ser = [NSMutableDictionary dictionary];
+                ser[@"class"] = cls;   // SecItemCopyMatching doesn't return the class
+                for (NSString *k in it) {
+                    id v = it[k];
+                    if ([v isKindOfClass:[NSDate class]]) continue;   // cdat/mdat read-only
+                    id w = ci_kcWrap(v);
+                    if (w) ser[k] = w;
+                }
+                [out addObject:ser];
+            }
+        }
+        if (res) CFRelease(res);
+    }
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
+    NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
+                        format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
+    if (plist.length) [plist writeToFile:path atomically:YES];
+    dbglog("Keychain.dump %s items=%lu -> %s\n", g_procname,
+           (unsigned long)out.count, [path UTF8String]);
+}
+
+static void ci_restoreKeychainIfFlagged(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid.length) return;
+    NSString *shared = @"/var/jb/etc/changeinfoios";
+    NSString *pFlag = [shared stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"restore_%@.flag", bid]];
+    NSString *pDump = [shared stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"dump_%@.plist", bid]];
+    NSString *lFlag = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
+    NSString *lDump = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dump = nil;
+    if ([fm fileExistsAtPath:pFlag] && [fm fileExistsAtPath:pDump])       dump = pDump;   // primary
+    else if ([fm fileExistsAtPath:lFlag] && [fm fileExistsAtPath:lDump])  dump = lDump;   // legacy
+    if (!dump) return;   // nothing flagged for this app → no-op
+
+    NSData *data = [NSData dataWithContentsOfFile:dump];
+    id items = data.length ? [NSPropertyListSerialization propertyListWithData:data
+                                  options:0 format:NULL error:NULL] : nil;
+    int applied = 0, total = 0;
+    if ([items isKindOfClass:[NSArray class]]) {
+        for (id itd in (NSArray *)items) {
+            if (![itd isKindOfClass:[NSDictionary class]]) continue;
+            total++;
+            @autoreleasepool {
+                NSMutableDictionary *add = [NSMutableDictionary dictionary];
+                for (NSString *k in (NSDictionary *)itd) {
+                    if ([k isEqualToString:@"cdat"] || [k isEqualToString:@"mdat"]) continue;
+                    add[k] = ci_kcUnwrap(((NSDictionary *)itd)[k]);
+                }
+                if (!add[@"class"]) continue;   // no kSecClass → cannot add
+                // Delete an existing item with the SAME identity first (avoids
+                // errSecDuplicateItem). Only when we have identifying attrs, so
+                // we never nuke a whole class.
+                if (add[@"acct"] || add[@"svce"]) {
+                    NSMutableDictionary *del = [NSMutableDictionary dictionary];
+                    for (NSString *dk in @[ @"class", @"acct", @"agrp", @"svce" ])
+                        if (add[dk]) del[dk] = add[dk];
+                    SecItemDelete((__bridge CFDictionaryRef)del);
+                }
+                OSStatus st = orig_SecItemAdd ? orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL)
+                                              : SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+                if (st != errSecSuccess && st != errSecDuplicateItem && add[@"agrp"]) {
+                    // access group might not be writable from here → retry without it
+                    [add removeObjectForKey:@"agrp"];
+                    st = orig_SecItemAdd ? orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL)
+                                         : SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+                }
+                if (st == errSecSuccess || st == errSecDuplicateItem) applied++;
+            }
+        }
+    }
+    // Run once — clear the flags (dump files are cleaned by the host / next reset).
+    [fm removeItemAtPath:pFlag error:nil];
+    [fm removeItemAtPath:lFlag error:nil];
+    dbglog("Keychain.restore %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
+}
+
+// ============================================================
 // LAYER 3: UIDevice ObjC — UIDevice.model / .name / .systemName /
 // .systemVersion / .identifierForVendor / .batteryLevel / .batteryState
 // AIDA64 + most analytics SDKs query these directly.
@@ -1515,7 +1642,9 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
     // feeds the fake fix — the spoof works AND system/app stay consistent.
     %orig;
 }
-- (void)requestAlwaysAuthorization { %orig; }
+- (void)requestAlwaysAuthorization {
+    %orig;
+}
 - (void)startUpdatingLocation {
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");
@@ -2203,9 +2332,15 @@ static BOOL isZaloUDKey(NSString *k) {
     }
     return %orig;
 }
-- (NSString *)stringForKey:(NSString *)k  { return isZaloUDKey(k) ? nil : %orig; }
-- (NSData   *)dataForKey:(NSString *)k    { return isZaloUDKey(k) ? nil : %orig; }
-- (BOOL)boolForKey:(NSString *)k          { return isZaloUDKey(k) ? NO  : %orig; }
+- (NSString *)stringForKey:(NSString *)k {
+    return isZaloUDKey(k) ? nil : %orig;
+}
+- (NSData *)dataForKey:(NSString *)k {
+    return isZaloUDKey(k) ? nil : %orig;
+}
+- (BOOL)boolForKey:(NSString *)k {
+    return isZaloUDKey(k) ? NO : %orig;
+}
 %end
 
 // ============================================================
@@ -2608,6 +2743,17 @@ static void notify_cb(int t) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+
+        // RRS keychain: (1) dump-on-request so a backup captures this app's
+        // session + local-DB key; (2) re-apply a flagged snapshot at launch so a
+        // restore brings data back INSTANTLY (no server re-sync). origs are set
+        // just above, so dump/restore can bypass our own SecItem hooks.
+        {
+            int tkc = 0;
+            notify_register_dispatch("com.changeinfoios/dump_keychain", &tkc,
+                dispatch_get_main_queue(), ^(int __unused x) { ci_dumpKeychain(); });
+        }
+        ci_restoreKeychainIfFlagged();
 
         // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
         // cached location. Safari / WebContent calls exit(0) so next launch reads
