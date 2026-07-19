@@ -1384,28 +1384,16 @@ typedef OSStatus (*SecItemDelete_t)(CFDictionaryRef);
 static SecItemCopyMatching_t orig_SecItemCopyMatching = NULL;
 
 static BOOL isZaloFingerprintQuery(CFDictionaryRef query) {
-    if (!query) return NO;
-    // After an RRS restore the host pushes keychainReset=NO so the restored Zalo
-    // session keychain stays readable. Honor it: block only when the key is
-    // absent or explicitly ON (the default during fresh-account spoofing).
-    id kr = getConfig(@"keychainReset");
-    if (kr && !getConfigBool(@"keychainReset")) return NO;
-    // Only active when device identity spoof is enabled
-    if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return NO;
-    CFStringRef acc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrAccount);
-    if (!acc || CFGetTypeID(acc) != CFStringGetTypeID()) return NO;
-    char ab[128]; ab[0] = 0;
-    CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
-    for (int i = 0; kZaloFpAccounts[i]; i++) {
-        if (strcmp(ab, kZaloFpAccounts[i]) == 0) return YES;
-    }
-    // Firebase Installation ID is intentionally NOT blocked.
-    // Blocking it forced Firebase to re-register the FID over the network on
-    // every keychain read (it could never cache one) → a ~3s main-thread stall
-    // at Zalo's "create account" step (confirmed via SSH A/B test 2026-06).
-    // Firebase FID is Google analytics, not VNG's ban vector (we still block
-    // kZAID/deviceUUID/_pfo above), and it is refreshed by the host app's
-    // container reset on a real Change Device anyway.
+    (void)query;
+    // v4.1.8 — DISABLED (always pass through). The keychain READ + WRITE blocks
+    // used to run on every launch, which meant Zalo could NEVER read or persist a
+    // device id: every account looked like a brand-new device forever, and an
+    // ADManager .adbk restore never came back as a "trusted device" (thiết bị
+    // quen). Device separation between registrations is now handled by a ONE-SHOT
+    // synchronous keychain wipe that fires exactly once per Change Device (see
+    // ci_runOneShotIfDue) — BEFORE Zalo's own code runs — so stale ids are gone
+    // without ever blocking the fresh/restored id that must persist. Blocking is
+    // therefore both unnecessary and actively harmful, so it is removed.
     return NO;
 }
 
@@ -2447,10 +2435,11 @@ static NSString * const kZaloUDKeys[] = {
     nil
 };
 static BOOL isZaloUDKey(NSString *k) {
-    if (!k) return NO;
-    if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return NO;
-    for (int i = 0; kZaloUDKeys[i]; i++)
-        if ([k isEqualToString:kZaloUDKeys[i]]) return YES;
+    (void)k;
+    // v4.1.8 — DISABLED (always pass through), same reasoning as
+    // isZaloFingerprintQuery: blocking the UserDefaults device-id reads on every
+    // launch stopped Zalo from ever caching a stable id. The one-shot reset
+    // (ci_runOneShotIfDue) removes these keys ONCE per Change Device instead.
     return NO;
 }
 %hook NSUserDefaults
@@ -2578,42 +2567,96 @@ static int hooked_fork(void) { errno = EPERM; return -1; }
 %end
 
 // ============================================================
+// ONE-SHOT device reset (v4.1.8)
+// ------------------------------------------------------------
+// Goal: register a NEW account on a genuinely brand-new device (owner's revenue),
+// while a KEPT / ADManager-.adbk-restored account comes up as a TRUSTED device
+// ("thiết bị quen"). The old code wiped + blocked on EVERY launch, so no account
+// ever kept a device id and restores never trusted. Now the wipe fires EXACTLY
+// ONCE per Change Device.
+//
+// Trigger = a random 128-bit nonce the host mints per Change Device:
+//   config  wipe_gen_<bid> = G     (lives in /var/jb → NOT captured by a .adbk)
+//   Documents/.ci_gen      = G     (host stamps the freshly-wiped container)
+//   Documents/.ci_gen_ack  = G     (tweak writes after it consumes the one-shot)
+// DUE  <=>  Gs == Gc  AND  Ga != Gc.
+// A real Change Device makes Gs==Gc (host writes both to the same fresh G, after
+// rm -rf'ing the container) → DUE once, then acked. A restored .adbk carries an
+// OLD .ci_gen that cannot equal the current config G (and if nothing changed
+// since the backup, Ga already == Gc) → NEVER spuriously due. The ack/stamp live
+// in the container (they travel in a .adbk) but the identity-MATCH rule makes
+// that harmless — magnitude compares would not, which is why a plain counter is
+// unsafe here.
+static int g_wipeConsumed = 0;   // process guard: the one-shot runs at most once per launch/process
+
+static NSString *ci_docPath(NSString *name) {
+    NSString *home = NSHomeDirectory();
+    if (!home.length) return nil;
+    return [[home stringByAppendingPathComponent:@"Documents"] stringByAppendingPathComponent:name];
+}
+static NSString *ci_readTrim(NSString *path) {
+    if (!path) return nil;
+    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+static void ci_runOneShotIfDue(void) {
+    if (g_wipeConsumed) return;
+    const char *pn = getprogname();
+    if (!pn || !(strstr(pn, "Zalo") || strstr(pn, "zalo") ||
+                 strstr(pn, "zingalo") || strstr(pn, "imess"))) return;
+    // Only meaningful while spoofing an identity.
+    if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return;
+
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"vn.com.vng.zingalo";
+    NSString *Gc = getConfigStr([@"wipe_gen_" stringByAppendingString:bid]);
+    if (!Gc.length) Gc = getConfigStr(@"wipe_gen");   // global fallback
+    if (!Gc.length) return;                           // no generation set → KEEP (never wipe)
+
+    NSString *Gs = ci_readTrim(ci_docPath(@".ci_gen"));       // gen that minted this container
+    NSString *Ga = ci_readTrim(ci_docPath(@".ci_gen_ack"));   // gen already consumed
+    BOOL due = (Gs.length && [Gs isEqualToString:Gc] &&
+                (!Ga.length || ![Ga isEqualToString:Gc]));
+    dbglog("oneShot %s bid=%s Gc=%s Gs=%s Ga=%s due=%d\n", g_procname, bid.UTF8String,
+           Gc.UTF8String, Gs.length ? Gs.UTF8String : "-", Ga.length ? Ga.UTF8String : "-", (int)due);
+    if (!due) return;
+
+    g_wipeConsumed = 1;
+    // Synchronous keychain wipe FIRST. This runs inside %ctor (or the ReloadPrefs
+    // callback) BEFORE Zalo's own code reads the keychain, so account A's ids are
+    // gone before Zalo can see them — no read/write block required. includeFirebase
+    // = YES for a fully fresh identity. ~11 SecItemDelete calls: fast, safe.
+    wipeZaloKeychainFingerprints(YES);
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    for (int i = 0; kZaloUDKeys[i]; i++) [ud removeObjectForKey:kZaloUDKeys[i]];
+    [ud synchronize];
+    // WKWebsiteDataStore must be touched on the main thread (async is fine — the
+    // container itself was already rm -rf'd by the host, this is belt-and-braces).
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
+            [store removeDataOfTypes:[WKWebsiteDataStore allWebsiteDataTypes]
+                       modifiedSince:[NSDate distantPast]
+                   completionHandler:^{ dbglog("oneShot.WK cleared %s\n", g_procname); }];
+            [[UIPasteboard generalPasteboard] setItems:@[]];
+        }
+    });
+    // Consume: from now on this container KEEPS its identity (later launches AND
+    // any .adbk made from it will not re-wipe). The tweak owns its own Documents.
+    NSString *ackPath = ci_docPath(@".ci_gen_ack");
+    if (ackPath) [Gc writeToFile:ackPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    dbglog("oneShot %s WIPED ack=%s\n", g_procname, Gc.UTF8String);
+}
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) {
     (void)t;
     reloadConfig();
-    // On identity change: wipe all Zalo persistent fingerprints so the next
-    // registration sees a completely clean device.
-    if (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber")) {
-        const char *pn = getprogname();
-        if (pn && (strstr(pn, "Zalo") || strstr(pn, "zalo") ||
-                   strstr(pn, "zingalo") || strstr(pn, "imess"))) {
-            // Real Change Device → fresh identity: full wipe INCLUDING Firebase
-            // FID. Keychain deletes are synchronous I/O → run off the main thread.
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                wipeZaloKeychainFingerprints(YES);
-            });
-            // Clear WKWebView persistent storage (cookies, localStorage, IndexedDB,
-            // service worker caches) — Zalo's embedded WebView stores session tokens
-            // and device fingerprints in localStorage that survive app reinstalls.
-            dispatch_async(dispatch_get_main_queue(), ^{
-                @autoreleasepool {
-                    WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
-                    NSSet *types = [WKWebsiteDataStore allWebsiteDataTypes];
-                    [store removeDataOfTypes:types
-                              modifiedSince:[NSDate distantPast]
-                          completionHandler:^{
-                        dbglog("WKDataStore.cleared %s\n", g_procname);
-                    }];
-                    // Clear general pasteboard — Zalo may write device token to
-                    // pasteboard for cross-app/reinstall persistence.
-                    [[UIPasteboard generalPasteboard] setItems:@[]];
-                    dbglog("Pasteboard.cleared %s\n", g_procname);
-                }
-            });
-        }
-    }
+    // ReloadPrefs after a Change Device may arrive while Zalo is (re)launching —
+    // consume the one-shot if this generation is due. No unconditional wipe here
+    // any more (that used to destroy restored/kept accounts on every reload).
+    ci_runOneShotIfDue();
 }
 
 %ctor {
@@ -2936,45 +2979,13 @@ static void notify_cb(int t) {
             if (f) { fputs([body UTF8String], f); fclose(f); }
         }
 
-        // Auto-clear Zalo persistent fingerprints on every launch when spoof is active.
-        // This runs without any user action — just kill Zalo and reopen.
-        // We dispatch after a 1.5s delay so Foundation/UIKit are fully initialized.
-        if (getConfigStr(@"UniqueDeviceID") || getConfigStr(@"SerialNumber")) {
-            const char *pn2 = getprogname();
-            if (pn2 && (strstr(pn2, "Zalo") || strstr(pn2, "zalo") ||
-                        strstr(pn2, "zingalo") || strstr(pn2, "imess"))) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)),
-                               dispatch_get_main_queue(), ^{
-                    @autoreleasepool {
-                        // WKWebsiteDataStore must be touched on the main thread; the
-                        // removal itself is async (completionHandler), so it does not
-                        // block here.
-                        WKWebsiteDataStore *store = [WKWebsiteDataStore defaultDataStore];
-                        NSSet *types = [WKWebsiteDataStore allWebsiteDataTypes];
-                        [store removeDataOfTypes:types
-                                  modifiedSince:[NSDate distantPast]
-                              completionHandler:^{
-                            dbglog("ctor.autoWipe WKDataStore cleared %s\n", g_procname);
-                        }];
-                    }
-                    // Keychain + NSUserDefaults wipe is synchronous I/O — run OFF the
-                    // main thread so it never adds a launch-time hitch. includeFirebase
-                    // = NO: keep the Firebase FID so Firebase does not re-register over
-                    // the network (that was the ~3s "create account" stall).
-                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                        @autoreleasepool {
-                            wipeZaloKeychainFingerprints(NO);
-                            NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-                            for (int i = 0; kZaloUDKeys[i]; i++)
-                                [ud removeObjectForKey:kZaloUDKeys[i]];
-                            [ud synchronize];
-                            dbglog("ctor.autoWipe KC+UD cleared %s\n", g_procname);
-                        }
-                    });
-                });
-                dbglog("ctor %s scheduled autoWipe in 1.5s\n", g_procname);
-            }
-        }
+        // v4.1.8: ONE-SHOT device reset (replaces the old per-launch autoWipe that
+        // wiped keychain + UserDefaults + WKWebView on EVERY Zalo launch). That
+        // per-launch wipe was why no account ever became a stable trusted device
+        // and why an ADManager .adbk restore always showed "thiết bị mới". The wipe
+        // now fires at most ONCE per Change Device; every other launch (and every
+        // .adbk restore) is a no-op so the account keeps its identity.
+        ci_runOneShotIfDue();
 
         dbglog("ctor %s done\n", g_procname);
     }

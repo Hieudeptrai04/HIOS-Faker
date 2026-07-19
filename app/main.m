@@ -7479,6 +7479,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
         NSUInteger wiped = 0;
         long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        // v4.1.8: fresh RANDOM one-shot generation nonce per Change Device. Drives
+        // the tweak's ONE-SHOT keychain/UD/WK reset (ci_runOneShotIfDue) so a newly
+        // registered account starts on a genuinely brand-new device but then KEEPS
+        // that identity (stable trusted device / restorable via ADManager .adbk).
+        // Random (CSPRNG, not time-derived) so two Change Devices never collide and
+        // the trigger is an identity-MATCH, never a magnitude compare (a plain
+        // counter would let a restored old container spuriously re-wipe).
+        unsigned char _gb[16]; arc4random_buf(_gb, sizeof(_gb));
+        NSMutableString *wipeGen = [NSMutableString stringWithCapacity:32];
+        for (int _i = 0; _i < 16; _i++) [wipeGen appendFormat:@"%02x", _gb[_i]];
         NSUInteger totalApps = fullTargets.count;
 
         void (^killApp)(CIAppInfo *) = ^(CIAppInfo *a) {
@@ -7565,6 +7575,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             int mrc = ci_run([markCmd UTF8String]);
             NSLog(@"[ChangeInfoIos] wipe marker for %@: rc=%d doc=%@ root=%@",
                   a.bundleID, mrc, docMarker, rootMarker);
+            // v4.1.8: stamp the freshly-wiped container with THIS Change Device's
+            // one-shot nonce. The tweak's first launch reads Documents/.ci_gen,
+            // sees it equals config wipe_gen_<bid> and has no ack yet → wipes once,
+            // then acks. Same reliable Documents/ shell-echo the .ci_last_wipe
+            // marker uses (a cross-container root write silently fails).
+            NSString *genMarker = [a.containerPath stringByAppendingPathComponent:@"Documents/.ci_gen"];
+            NSString *genCmd = [NSString stringWithFormat:
+                @"mkdir -p '%@/Documents' 2>/dev/null; "
+                @"echo '%@' > '%@' 2>/dev/null && chmod 0644 '%@' 2>/dev/null",
+                a.containerPath, wipeGen, genMarker, genMarker];
+            ci_run([genCmd UTF8String]);
             wiped++;
         }
         // DO NOT restart tccd here. EVERY kill signal (-9 AND plain SIGTERM)
@@ -7627,6 +7648,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [[CILicenseManager shared] writeTweakToken];
         for (NSString *bid in allBids) {
             [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
+            // v4.1.8: per-bundle one-shot generation the tweak matches against the
+            // container stamp written above. Lives in /var/jb config (NOT captured
+            // by a .adbk), so a restored backup can never carry it and re-trigger.
+            [cm setObject:wipeGen forKey:[@"wipe_gen_" stringByAppendingString:bid]];
         }
         [cm save];
         NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded (%lu target bundles)", (unsigned long)allBids.count);
