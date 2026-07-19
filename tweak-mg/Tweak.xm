@@ -1648,7 +1648,10 @@ static void ci_restoreKeychainIfFlagged(void) {
 - (void)startUpdatingLocation {
     NSString *latS = getConfigStr(@"latitude");
     NSString *lonS = getConfigStr(@"longitude");
-    if (!latS || !lonS) { %orig; return; }
+    if (!latS || !lonS) {
+        %orig;
+        return;
+    }
     CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
     double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
     CLLocation *fake = [[CLLocation alloc] initWithCoordinate:c
