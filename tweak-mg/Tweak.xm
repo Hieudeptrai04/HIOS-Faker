@@ -2644,6 +2644,29 @@ static void notify_cb(int t) {
             return;
         }
 
+        // 4.1.6 — UNLICENSED → stay COMPLETELY inert (install no C hooks).
+        // A tweak with no valid license spoofs nothing, so every C hook below
+        // would only pass through to the real function. But that passthrough,
+        // multiplied by the tens of thousands of MG / sysctl / dyld / keychain
+        // calls Firebase + UIKit make during Zalo's scene-create, piles up
+        // ~55-106s of CPU in <26s wall → FrontBoard scene-create watchdog SIGKILL.
+        // Proven on-device (192.168.1.175): a tweak-free process launches fine, a
+        // LICENSED launch launches fine (values answered from config, real fns
+        // barely called), only UNLICENSED-with-hooks dies — and the user's token
+        // had expired, which is exactly the "restore sang acc khác bị văng" path
+        // (restore relaunches Zalo cold; if the restored profile carries no live
+        // token it comes up unlicensed → crash). So when unlicensed we install
+        // NOTHING: identical to tweak-free, no watchdog. The Logos %hooks above
+        // stay registered but are each config-gated (→ %orig), so they're just as
+        // cheap. Hooks come online on the next launch after the host app writes a
+        // live token (it relaunches the target on license / identity change).
+        // reloadConfig() above already computed g_licOK from the on-disk token.
+        if (!g_licOK) {
+            dbglog("ctor %s UNLICENSED → inert (no C hooks, fail-open) keys=%lu\n",
+                   g_procname, (unsigned long)g_config.count);
+            return;
+        }
+
         // Resolve originals first so the hook can chain to them even
         // if fishhook fails to rebind a particular symbol (e.g. when
         // it's eagerly bound or pre-resolved via __DATA __got).
