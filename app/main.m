@@ -8441,6 +8441,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [[CIConfigManager shared] setObject:@(NO) forKey:@"keychainReset"];
         [[CIConfigManager shared] save];
 
+        // v4.1.7: RE-SIGN the license token for the RESTORED identity using the
+        // CURRENT (live) license. The backup's config.plist we just restored
+        // carried the _ci_lic_tok that was valid AT BACKUP TIME — after days/weeks
+        // that epoch has lapsed, so it restores as an EXPIRED token. Since 4.1.6
+        // an unlicensed tweak goes fully inert (no spoofing) → the restored account
+        // comes up on the REAL device → Zalo flags "thiết bị mới / không phải thiết
+        // bị quen". writeTweakToken keeps the restored fake hardware identity and
+        // ONLY rewrites _ci_lic_tok from the active license (the app re-validates on
+        // launch, so lastOK is fresh → epoch = MIN(expiry, lastOK+grace) is valid).
+        // Net: restored identity + fresh token → tweak spoofs the SAME device the
+        // account was set up on → it stays a trusted device after restore.
+        [[CILicenseManager shared] writeTweakToken];
+
         // Drop a per-bundle keychain-restore flag file. The tweak's
         // %ctor on next launch sees the flag, deletes the bundle's
         // current keychain entries, and re-applies the snapshot we
