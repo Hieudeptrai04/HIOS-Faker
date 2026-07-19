@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+    <key>com.apple.private.security.container-required</key>
+    <false/>
+    <!-- Pre-grant TCC entries so iOS skips the permission dialog AND
+         Photos / Camera frameworks get access despite the app having
+         no sandbox container (TCC normally tracks per-container, so a
+         containerless app can't be granted via the standard prompt).
+         Standard pattern for jailbreak tools that need media access. -->
+    <key>com.apple.private.tcc.allow</key>
+    <array>
+        <string>kTCCServicePhotos</string>
+        <string>kTCCServicePhotosAdd</string>
+        <string>kTCCServiceCamera</string>
+        <string>kTCCServiceMicrophone</string>
+        <string>kTCCServiceMediaLibrary</string>
+        <string>kTCCServiceAddressBook</string>
+    </array>
+    <!-- TCC MANAGER rights: let this app ask the running tccd to RESET another
+         bundle's TCC entries (Contacts/Camera/Photos/Mic) so they re-prompt like
+         a fresh install — tccd drops its RAM cache in place, no daemon restart. -->
+    <key>com.apple.private.tcc.manager</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.delete</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.modify</key>
+    <true/>
+    <key>com.apple.private.tcc.manager.access.read</key>
+    <true/>
+    <!-- locationd manager right: lets the app reset another bundle's LOCATION
+         authorization (to notDetermined) so it re-prompts like a fresh install.
+         SAFE now that the MG tweak only claims AuthorizedAlways when location is
+         REALLY granted (returns the real status while notDetermined) — so a
+         reset no longer creates the system-vs-app contradiction that locked the
+         fix9/10 accounts. -->
+    <key>com.apple.locationd.authorizeapplications</key>
+    <true/>
+</dict>
+</plist>
