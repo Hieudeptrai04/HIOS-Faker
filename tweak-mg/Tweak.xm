@@ -1440,6 +1440,39 @@ static void wipeZaloKeychainFingerprints(BOOL includeFirebase) {
     dbglog("wipeZaloKC %s deleted=%d fb=%d\n", g_procname, deleted, includeFirebase ? 1 : 0);
 }
 
+// v4.1.8: FULL keychain sweep — register (one-shot reset) path ONLY.
+// wipeZaloKeychainFingerprints above is surgical: 10 named accounts, generic-
+// password class, one access group. Once the per-launch read/write blocks are
+// removed (they used to mask this), a device id Zalo stored under ANY other class
+// (Key/Identity/Certificate/InternetPassword) or access group (e.g. zalosdk), or
+// under a renamed/new key, would SURVIVE a Change Device and link account A→B →
+// ban. On the register launch the container was just rm -rf'd, so there is no
+// session to preserve: nuke every keychain item the process can reach, across all
+// 5 classes, in the app's default group AND the shared Zalo group. Scoped by
+// Zalo's own entitlement, so it can never touch another app. Synchronous, once.
+static void ci_wipeZaloKeychainFull(void) {
+    NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
+                          (__bridge id)kSecClassInternetPassword,
+                          (__bridge id)kSecClassKey,
+                          (__bridge id)kSecClassCertificate,
+                          (__bridge id)kSecClassIdentity ];
+    NSArray *groups = @[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo" ];
+    int n = 0;
+    for (id cls in classes) {
+        // App's default access group (no group pin → all default-group matches).
+        if (SecItemDelete((__bridge CFDictionaryRef)@{ (__bridge id)kSecClass: cls }) == errSecSuccess) n++;
+        // Explicit shared access group(s).
+        for (NSString *g in groups) {
+            NSDictionary *q = @{ (__bridge id)kSecClass: cls,
+                                 (__bridge id)kSecAttrAccessGroup: g };
+            if (SecItemDelete((__bridge CFDictionaryRef)q) == errSecSuccess) n++;
+        }
+    }
+    // Belt-and-braces: named items (covers any group the bare delete missed) + FID.
+    wipeZaloKeychainFingerprints(YES);
+    dbglog("wipeFull %s classDeletes=%d\n", g_procname, n);
+}
+
 // LAYER 11 (cont): Block SecItemAdd/SecItemUpdate for device fingerprint keys.
 // SecItemCopyMatching already returns not-found, making Zalo generate a fresh
 // device UUID each launch. Without blocking Add/Update, that fresh UUID gets
@@ -2621,14 +2654,26 @@ static void ci_runOneShotIfDue(void) {
     if (!due) return;
 
     g_wipeConsumed = 1;
-    // Synchronous keychain wipe FIRST. This runs inside %ctor (or the ReloadPrefs
+    // Synchronous FULL keychain sweep FIRST. Runs inside %ctor (or the ReloadPrefs
     // callback) BEFORE Zalo's own code reads the keychain, so account A's ids are
-    // gone before Zalo can see them — no read/write block required. includeFirebase
-    // = YES for a fully fresh identity. ~11 SecItemDelete calls: fast, safe.
-    wipeZaloKeychainFingerprints(YES);
+    // gone before Zalo can see them — no read/write block required. Full sweep (all
+    // 5 classes, all Zalo access groups) because the read/write blocks that used to
+    // mask non-generic-password / other-group device ids are now gone; a surgical
+    // 10-name delete would let those survive and link A→B. Fast, safe (container was
+    // just rm -rf'd, nothing to preserve on the register path).
+    ci_wipeZaloKeychainFull();
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     for (int i = 0; kZaloUDKeys[i]; i++) [ud removeObjectForKey:kZaloUDKeys[i]];
     [ud synchronize];
+    // CONSUME IMMEDIATELY — write the ack SYNCHRONOUSLY, right after the keychain+UD
+    // wipe and BEFORE any async work. This makes the ".ci_gen==Gc && ack!=Gc" window
+    // (the only state in which a captured .adbk could later re-trigger a wipe)
+    // sub-millisecond. The tweak owns its own Documents, so this write is reliable.
+    // From now on this container KEEPS its identity: later launches, and any .adbk
+    // made from it, are not due → no re-wipe.
+    NSString *ackPath = ci_docPath(@".ci_gen_ack");
+    if (ackPath) [Gc writeToFile:ackPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    dbglog("oneShot %s WIPED ack=%s\n", g_procname, Gc.UTF8String);
     // WKWebsiteDataStore must be touched on the main thread (async is fine — the
     // container itself was already rm -rf'd by the host, this is belt-and-braces).
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -2640,11 +2685,6 @@ static void ci_runOneShotIfDue(void) {
             [[UIPasteboard generalPasteboard] setItems:@[]];
         }
     });
-    // Consume: from now on this container KEEPS its identity (later launches AND
-    // any .adbk made from it will not re-wipe). The tweak owns its own Documents.
-    NSString *ackPath = ci_docPath(@".ci_gen_ack");
-    if (ackPath) [Gc writeToFile:ackPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    dbglog("oneShot %s WIPED ack=%s\n", g_procname, Gc.UTF8String);
 }
 
 // ============================================================
