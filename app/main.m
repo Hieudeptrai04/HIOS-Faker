@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.1.3";
+static NSString *const kAppVersion = @"4.1.1";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3555,21 +3555,16 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
         long graceEpoch = lastOK + (long)(kLicenseOfflineGraceHours * 3600);
         long epoch = expEpoch < graceEpoch ? expEpoch : graceEpoch;
         NSString *es = [NSString stringWithFormat:@"%ld", epoch];
-        // Bind the signature to THIS device: the tweak reconstructs the same
-        // canonical from the real (un-spoofed) UDID, so a token copied to another
-        // device fails verification → no cross-device license sharing.
-        NSString *dev = [self deviceUDID];
-        NSString *canon = [NSString stringWithFormat:@"%@|%@", es, dev];
-        [cm setObject:[NSString stringWithFormat:@"%@|%@", es, [self hmac:canon]]
+        // Sign the epoch ONLY. Device-binding was REVERTED: the tweak-side check
+        // of a device-bound token called MGCopyAnswer during config load and
+        // deadlocked the target app's launch (Zalo treo→văng). Anti-sharing =
+        // server-side UDID bind + this grace cap.
+        [cm setObject:[NSString stringWithFormat:@"%@|%@", es, [self hmac:es]]
                forKey:@"_ci_lic_tok"];
-        // Reference device id for the tweak's fallback when MGCopyAnswer is
-        // restricted inside the target app (keeps spoofing working there). When
-        // the tweak CAN read MG it ignores this and binds to the real UDID.
-        [cm setObject:dev forKey:@"_ci_lic_dev"];
     } else {
         [cm setObject:nil forKey:@"_ci_lic_tok"];   // expired/none → clear
-        [cm setObject:nil forKey:@"_ci_lic_dev"];
     }
+    [cm setObject:nil forKey:@"_ci_lic_dev"];       // drop any legacy device-id field
     [cm save];
 }
 

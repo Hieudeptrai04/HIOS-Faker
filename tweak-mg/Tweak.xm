@@ -250,24 +250,21 @@ static void computeLicOK(void) {
     NSString *sig = [tok substringFromIndex:bar.location + 1];
     if (!es.length || !sig.length) return;
     if ([es longLongValue] <= (long long)time(NULL)) return;     // expired
-    // The token is signed over "<epoch>|<deviceId>". Validate against candidate
-    // device ids, accepting if ANY matches. The MobileGestalt hash is the strong
-    // (un-spoofable) id and is tried first; _ci_lic_dev (recorded by the host app)
-    // and the hwid file are non-breaking fallbacks for processes where MGCopyAnswer
-    // is restricted — so a legit user is NEVER silently locked out regardless of
-    // which side could read MG. A token issued for another device and copied
-    // WITHOUT its config matches none of these → stays locked. Primary anti-sharing
-    // enforcement is the server-side UDID binding + the grace-bounded token expiry.
-    NSString *mg = tw_deviceMGHash();
-    id devv = g_config[@"_ci_lic_dev"];
-    NSString *cfgDev = ([devv isKindOfClass:[NSString class]] && [(NSString *)devv length] >= 8)
-                        ? (NSString *)devv : nil;
-    NSString *hwid = [[NSString stringWithContentsOfFile:@"/var/jb/etc/changeinfoios/hwid"
-                            encoding:NSUTF8StringEncoding error:nil]
-                      stringByTrimmingCharactersInSet:
-                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (tw_sigOK(es, sig, mg) || tw_sigOK(es, sig, cfgDev) || tw_sigOK(es, sig, hwid))
-        g_licOK = 1;
+    // Token is signed over the epoch ONLY (HMAC(es)). Device-binding was REVERTED:
+    // computing the device id here called the MSHookFunction-patched MGCopyAnswer,
+    // which re-entered cfg()'s dispatch_once and DEADLOCKED the target app's launch
+    // (Zalo "treo → văng", 19s scene-create watchdog, via Firebase reading
+    // -[UIDevice systemVersion] → our hook → getConfigStr → cfg → computeLicOK →
+    // tw_deviceMGHash → MGCopyAnswer → hooked_MGCopyAnswer → cfg re-entry). Anti-
+    // sharing is enforced by the SERVER-side UDID bind + grace-bounded expiry (#4),
+    // neither of which touches MobileGestalt.
+    const char *k = [tw_licSecret() UTF8String];
+    const char *m = [es UTF8String];
+    unsigned char mac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, k, strlen(k), m, strlen(m), mac);
+    char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + i*2, 3, "%02x", mac[i]);
+    if (strcmp(hex, [sig UTF8String]) == 0) g_licOK = 1;
 }
 
 static void reloadConfig(void) {
@@ -2798,7 +2795,8 @@ static void notify_cb(int t) {
         // or replay. RRS restore falls back to Zalo's server re-sync (slower, but
         // it NEVER crashes). ci_dumpKeychain / ci_restoreKeychainIfFlagged remain
         // defined but are intentionally NOT wired here.
-        (void)&ci_dumpKeychain; (void)&ci_restoreKeychainIfFlagged;  // silence unused
+        (void)&ci_dumpKeychain; (void)&ci_restoreKeychainIfFlagged;   // silence unused
+        (void)&tw_deviceMGHash; (void)&tw_sigOK;                       // (device-bind reverted)
 
         // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
         // cached location. Safari / WebContent calls exit(0) so next launch reads
