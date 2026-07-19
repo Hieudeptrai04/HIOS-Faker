@@ -2789,16 +2789,16 @@ static void notify_cb(int t) {
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
-        // RRS keychain: (1) dump-on-request so a backup captures this app's
-        // session + local-DB key; (2) re-apply a flagged snapshot at launch so a
-        // restore brings data back INSTANTLY (no server re-sync). origs are set
-        // just above, so dump/restore can bypass our own SecItem hooks.
-        {
-            int tkc = 0;
-            notify_register_dispatch("com.changeinfoios/dump_keychain", &tkc,
-                dispatch_get_main_queue(), ^(int __unused x) { ci_dumpKeychain(); });
-        }
-        ci_restoreKeychainIfFlagged();
+        // RRS keychain dump/restore DISABLED (4.1.3). The in-tweak restore ran at
+        // launch and repeatedly watchdog-crashed the target app (Zalo "treo logo
+        // → văng"; FRONTBOARD / SIGTRAP with ChangeInfoIosMG in the stack), even
+        // after moving it to a background queue — and RRS restore keeps re-dropping
+        // stale restore_*.flag files from the tar, so it re-triggered every launch.
+        // Reverting to the proven-stable 4.0.x/4.1.0 behavior: NO keychain capture
+        // or replay. RRS restore falls back to Zalo's server re-sync (slower, but
+        // it NEVER crashes). ci_dumpKeychain / ci_restoreKeychainIfFlagged remain
+        // defined but are intentionally NOT wired here.
+        (void)&ci_dumpKeychain; (void)&ci_restoreKeychainIfFlagged;  // silence unused
 
         // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
         // cached location. Safari / WebContent calls exit(0) so next launch reads
