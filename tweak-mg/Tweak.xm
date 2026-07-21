@@ -2678,6 +2678,30 @@ static void ci_runOneShotIfDue(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     for (int i = 0; kZaloUDKeys[i]; i++) [ud removeObjectForKey:kZaloUDKeys[i]];
     [ud synchronize];
+    // v4.x: Viber keeps its device/install-id in SecureStorage.data inside its
+    // shared APP-GROUP container (group.viber.share.container), NOT the Data
+    // container. The host's Change Device rm -rf only clears the Data container and
+    // the keychain sweep above misses this file store, so the id survived and Viber
+    // kept recognising the device → re-registration was blocked. Deleting the app
+    // clears the app group (why delete+reinstall worked); running inside Viber we
+    // hold the app-group entitlement, so wipe it here. %ctor runs before Viber opens
+    // the store, so this is safe.
+    if (g_procname && strstr(g_procname, "Viber")) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSURL *grp = [fm containerURLForSecurityApplicationGroupIdentifier:
+                          @"group.viber.share.container"];
+        int agn = 0;
+        if (grp) {
+            NSArray *items = [fm contentsOfDirectoryAtURL:grp
+                              includingPropertiesForKeys:nil options:0 error:nil];
+            for (NSURL *it in items) {
+                if ([it.lastPathComponent hasPrefix:@".com.apple.mobile_container_manager"])
+                    continue;   // keep the container metadata plist
+                if ([fm removeItemAtURL:it error:nil]) agn++;
+            }
+        }
+        dbglog("oneShot Viber appgroup wiped=%d\n", agn);
+    }
     // CONSUME IMMEDIATELY — write the ack SYNCHRONOUSLY, right after the keychain+UD
     // wipe and BEFORE any async work. This makes the ".ci_gen==Gc && ack!=Gc" window
     // (the only state in which a captured .adbk could later re-trigger a wipe)
