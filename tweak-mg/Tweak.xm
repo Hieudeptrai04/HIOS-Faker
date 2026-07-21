@@ -1456,7 +1456,16 @@ static void ci_wipeZaloKeychainFull(void) {
                           (__bridge id)kSecClassKey,
                           (__bridge id)kSecClassCertificate,
                           (__bridge id)kSecClassIdentity ];
-    NSArray *groups = @[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo" ];
+    NSMutableArray *groups = [@[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo" ] mutableCopy];
+    // v4.x: Viber persists its device-id in a shared keychain group that survives a
+    // Change Device (it is not a Zalo group, so it was never wiped → the account
+    // stayed device-linked and re-registration got blocked). When running inside
+    // Viber, add its shared group so a Change Device makes Viber look freshly
+    // installed. Confirmed on-device: delete+reinstall Viber (which clears this
+    // group) let registration succeed — clearing it here reproduces that with no
+    // reinstall.
+    if (g_procname && strstr(g_procname, "Viber"))
+        [groups addObject:@"69V327AA4Z.group.viber.share.keychain"];
     int n = 0;
     for (id cls in classes) {
         // App's default access group (no group pin → all default-group matches).
@@ -2635,8 +2644,12 @@ static NSString *ci_readTrim(NSString *path) {
 static void ci_runOneShotIfDue(void) {
     if (g_wipeConsumed) return;
     const char *pn = getprogname();
+    // v4.x: allow Viber in addition to Zalo. Viber keeps a device-id across Change
+    // Device in its shared keychain group + container; the one-shot wipe (extended
+    // in ci_wipeZaloKeychainFull) now clears it so re-registration works.
     if (!pn || !(strstr(pn, "Zalo") || strstr(pn, "zalo") ||
-                 strstr(pn, "zingalo") || strstr(pn, "imess"))) return;
+                 strstr(pn, "zingalo") || strstr(pn, "imess") ||
+                 strstr(pn, "Viber"))) return;
     // Only meaningful while spoofing an identity.
     if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return;
 
