@@ -2796,7 +2796,7 @@ static void ci_showDiag(void) {
         if (old) { [old removeFromSuperview]; return; }   // 2nd tap = hide
         NSString *model = getConfigStr(@"hw_machine") ?: @"?";
         NSString *txt = [NSString stringWithFormat:
-            @"VIBERCHANGE DIAG 4.2.2\n"
+            @"VIBERCHANGE DIAG 4.2.3\n"
              "inject: OK    license: %@\n"
              "wipe fired: %@   kc-del: %@   app-group: %@\n"
              "DeviceCheck goi: %@\n"
@@ -2872,6 +2872,23 @@ static void ci_showDiag(void) {
                     [kw addGestureRecognizer:g];
                 });
             }
+            // v4.2.3: volume-button trigger (more reliable than the 3-finger tap,
+            // which failed on some devices). Press volume up/down quickly ~4x → the
+            // report toggles. Uses the system volume-change notification, which
+            // fires per hardware press except at the very top/bottom of the scale —
+            // alternating up AND down covers both ends.
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note) {
+                    static double t0 = 0; static int cnt = 0;
+                    double now = CFAbsoluteTimeGetCurrent();
+                    if (now - t0 > 3.0) cnt = 0;   // reset if presses too far apart
+                    if (cnt == 0) t0 = now;
+                    cnt++;
+                    if (cnt >= 3) { cnt = 0; ci_showDiag(); }
+                }];
         }
 
         // v4.0.4: lightweight mode for two Apple system apps. The Logos %hook
