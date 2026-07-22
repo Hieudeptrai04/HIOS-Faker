@@ -1467,13 +1467,22 @@ static void ci_wipeZaloKeychainFull(void) {
     if (g_procname && strstr(g_procname, "Viber"))
         [groups addObject:@"69V327AA4Z.group.viber.share.keychain"];
     int n = 0;
+    // kSecAttrSynchronizableAny matches BOTH local and iCloud-Keychain
+    // (synchronizable) items. Without it SecItemDelete only removes non-sync
+    // items, so a device-id stored as a synchronizable keychain entry survived
+    // the wipe AND re-synced from iCloud even after an app delete — that is why a
+    // device with iCloud Keychain ON (e.g. a heavily-reused iPhone) stayed
+    // "detected" while a device with it OFF worked.
     for (id cls in classes) {
         // App's default access group (no group pin → all default-group matches).
-        if (SecItemDelete((__bridge CFDictionaryRef)@{ (__bridge id)kSecClass: cls }) == errSecSuccess) n++;
+        if (SecItemDelete((__bridge CFDictionaryRef)@{
+                (__bridge id)kSecClass: cls,
+                (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny }) == errSecSuccess) n++;
         // Explicit shared access group(s).
         for (NSString *g in groups) {
             NSDictionary *q = @{ (__bridge id)kSecClass: cls,
-                                 (__bridge id)kSecAttrAccessGroup: g };
+                                 (__bridge id)kSecAttrAccessGroup: g,
+                                 (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny };
             if (SecItemDelete((__bridge CFDictionaryRef)q) == errSecSuccess) n++;
         }
     }
