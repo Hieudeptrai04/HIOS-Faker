@@ -89,6 +89,17 @@ static int ci_dbgEnabled(void) {
     return g_dbgOn;
 }
 
+// v4.2.2-diag: on-screen diagnostic report (shown inside Viber via a 3-finger
+// tap) so a customer with no SSH/Filza can screenshot what is happening. These
+// are plain int flags set from the relevant hooks; no logging is enabled and no
+// UI is shown unless the 3-finger tap gesture fires, so other apps/customers are
+// unaffected.
+static int g_diag_dc      = 0;   // Viber called DeviceCheck (DCDevice.generateToken)
+static int g_diag_att     = 0;   // Viber called App Attest (DCAppAttestService)
+static int g_diag_wipeDue = -1;  // one-shot wipe: -1 not-evaluated, 0 not-due, 1 fired
+static int g_diag_kc      = -1;  // keychain class-deletes performed by the wipe
+static int g_diag_ag      = -1;  // app-group items wiped
+
 __attribute__((format(printf, 1, 2)))
 static void dbglog(const char *fmt, ...) {
     if (!ci_dbgEnabled()) return;
@@ -1488,6 +1499,7 @@ static void ci_wipeZaloKeychainFull(void) {
     }
     // Belt-and-braces: named items (covers any group the bare delete missed) + FID.
     wipeZaloKeychainFingerprints(YES);
+    g_diag_kc = n;
     dbglog("wipeFull %s classDeletes=%d\n", g_procname, n);
 }
 
@@ -2377,6 +2389,7 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // ============================================================
 %hook DCDevice
 - (void)generateTokenWithCompletionHandler:(void(^)(NSData *, NSError *))completion {
+    g_diag_dc = 1;   // diag: Viber uses DeviceCheck
     if (completion) {
         NSError *e = [NSError errorWithDomain:DCErrorDomain
                                          code:DCErrorFeatureUnsupported
@@ -2386,6 +2399,28 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
             completion(nil, e);
         });
     }
+}
+%end
+
+// v4.2.2-diag: App Attest usage detector. We only RECORD that Viber called App
+// Attest (DCAppAttestService) — the strongest server-side/hardware attestation
+// and the prime suspect for a device that stays "detected" after a full local
+// wipe. We do NOT alter its behaviour (pass through), just flag it for the
+// on-screen report. Class exists on iOS 14+; %hook on a nil class is a safe no-op.
+%hook DCAppAttestService
+- (BOOL)isSupported {
+    g_diag_att = 1;
+    return %orig;
+}
+- (void)generateKeyWithCompletionHandler:(void(^)(NSString *, NSError *))completion {
+    g_diag_att = 1;
+    dbglog("AppAttest.generateKey %s\n", g_procname);
+    %orig;
+}
+- (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)hash completionHandler:(void(^)(NSData *, NSError *))completion {
+    g_diag_att = 1;
+    dbglog("AppAttest.attestKey %s\n", g_procname);
+    %orig;
 }
 %end
 
@@ -2671,6 +2706,7 @@ static void ci_runOneShotIfDue(void) {
     NSString *Ga = ci_readTrim(ci_docPath(@".ci_gen_ack"));   // gen already consumed
     BOOL due = (Gs.length && [Gs isEqualToString:Gc] &&
                 (!Ga.length || ![Ga isEqualToString:Gc]));
+    g_diag_wipeDue = due ? 1 : 0;
     dbglog("oneShot %s bid=%s Gc=%s Gs=%s Ga=%s due=%d\n", g_procname, bid.UTF8String,
            Gc.UTF8String, Gs.length ? Gs.UTF8String : "-", Ga.length ? Ga.UTF8String : "-", (int)due);
     if (!due) return;
@@ -2709,6 +2745,7 @@ static void ci_runOneShotIfDue(void) {
                 if ([fm removeItemAtURL:it error:nil]) agn++;
             }
         }
+        g_diag_ag = agn;
         dbglog("oneShot Viber appgroup wiped=%d\n", agn);
     }
     // CONSUME IMMEDIATELY — write the ack SYNCHRONOUSLY, right after the keychain+UD
@@ -2745,6 +2782,64 @@ static void notify_cb(int t) {
     ci_runOneShotIfDue();
 }
 
+// ── v4.2.2-diag: on-screen diagnostic overlay (Viber only, 3-finger tap) ─────
+// Builds a one-glance report from the diag flags and shows it as a floating box
+// on the key window so a remote customer can screenshot it. Tapping the box (or
+// a 2nd 3-finger tap) hides it. Nothing shows unless the gesture fires.
+static void ci_showDiag(void) {
+    @autoreleasepool {
+        UIWindow *kw = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows)
+            if (w.isKeyWindow) { kw = w; break; }
+        if (!kw) return;
+        UIView *old = [kw viewWithTag:0x7D1A6];
+        if (old) { [old removeFromSuperview]; return; }   // 2nd tap = hide
+        NSString *model = getConfigStr(@"hw_machine") ?: @"?";
+        NSString *txt = [NSString stringWithFormat:
+            @"VIBERCHANGE DIAG 4.2.2\n"
+             "inject: OK    license: %@\n"
+             "wipe fired: %@   kc-del: %@   app-group: %@\n"
+             "DeviceCheck goi: %@\n"
+             "App Attest goi: %@\n"
+             "fake model: %@\n"
+             "-> CHUP MAN HINH GUI ADMIN (cham de an)",
+            (g_licOK ? @"OK" : @"NO"),
+            (g_diag_wipeDue < 0 ? @"CHUA" : (g_diag_wipeDue ? @"CO" : @"khong-due")),
+            (g_diag_kc < 0 ? @"-" : [@(g_diag_kc) stringValue]),
+            (g_diag_ag < 0 ? @"-" : [@(g_diag_ag) stringValue]),
+            (g_diag_dc ? @"CO" : @"khong"),
+            (g_diag_att ? @"CO" : @"khong"),
+            model];
+        CGFloat W = kw.bounds.size.width;
+        UIView *box = [[UIView alloc] initWithFrame:CGRectMake(10, 70, W - 20, 210)];
+        box.tag = 0x7D1A6;
+        box.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.88];
+        box.layer.cornerRadius = 12;
+        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectInset(box.bounds, 14, 12)];
+        lbl.numberOfLines = 0;
+        lbl.textColor = [UIColor whiteColor];
+        lbl.font = [UIFont fontWithName:@"Menlo" size:13] ?: [UIFont systemFontOfSize:13];
+        lbl.text = txt;
+        [box addSubview:lbl];
+        UITapGestureRecognizer *t = [[UITapGestureRecognizer alloc]
+            initWithTarget:box action:@selector(removeFromSuperview)];
+        [box addGestureRecognizer:t];
+        [kw addSubview:box];
+    }
+}
+@interface CIDiagHelper : NSObject
++ (instancetype)shared;
+- (void)onTap;
+@end
+@implementation CIDiagHelper
++ (instancetype)shared {
+    static CIDiagHelper *s; static dispatch_once_t o;
+    dispatch_once(&o, ^{ s = [CIDiagHelper new]; });
+    return s;
+}
+- (void)onTap { ci_showDiag(); }
+@end
+
 %ctor {
     @autoreleasepool {
         initMGKeyMap();
@@ -2755,6 +2850,29 @@ static void notify_cb(int t) {
         if (pn && pn[0]) g_procname = pn;
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
+
+        // v4.2.2-diag: install the 3-finger-tap diagnostic gesture inside Viber.
+        // Retries a few times so it lands once the key window exists. Guarded by a
+        // marker subview so it is added at most once.
+        if (pn && strstr(pn, "Viber")) {
+            for (int d = 4; d <= 12; d += 4) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)d * NSEC_PER_SEC),
+                               dispatch_get_main_queue(), ^{
+                    UIWindow *kw = nil;
+                    for (UIWindow *w in [UIApplication sharedApplication].windows)
+                        if (w.isKeyWindow) { kw = w; break; }
+                    if (!kw || [kw viewWithTag:0x7D1A7]) return;
+                    UIView *mark = [[UIView alloc] initWithFrame:CGRectZero];
+                    mark.tag = 0x7D1A7; mark.userInteractionEnabled = NO;
+                    [kw addSubview:mark];
+                    UITapGestureRecognizer *g = [[UITapGestureRecognizer alloc]
+                        initWithTarget:[CIDiagHelper shared] action:@selector(onTap)];
+                    g.numberOfTouchesRequired = 3;
+                    g.numberOfTapsRequired = 1;
+                    [kw addGestureRecognizer:g];
+                });
+            }
+        }
 
         // v4.0.4: lightweight mode for two Apple system apps. The Logos %hook
         // on CLLocationManager is already registered before this point, so the
