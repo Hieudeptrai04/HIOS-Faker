@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.2.3";
+static NSString *const kAppVersion = @"4.2.4";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7412,6 +7412,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             @"com.apple.mobilesafari",
             @"com.apple.Maps",
             @"com.apple.weather",
+            @"com.viber",
         ];
         for (NSString *sb in kSystemAlwaysInclude) {
             if (![rrsBidsM containsObject:sb]) [rrsBidsM addObject:sb];
@@ -7453,6 +7454,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         @"com.apple.mobilesafari",
         @"com.apple.Maps",
         @"com.apple.weather",
+        @"com.viber",
     ];
     // First: try to find them via the installed-app scan (covers cases
     // where the user already has them visible somewhere in CIAppLister).

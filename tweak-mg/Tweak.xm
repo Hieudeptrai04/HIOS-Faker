@@ -2795,10 +2795,23 @@ static void ci_showDiag(void) {
         UIView *old = [kw viewWithTag:0x7D1A6];
         if (old) { [old removeFromSuperview]; return; }   // 2nd tap = hide
         NSString *model = getConfigStr(@"hw_machine") ?: @"?";
+        // reset-flow diagnostics: is Viber in the reset list, and do the generation
+        // stamps line up (shows WHY the one-shot wipe is / isn't due).
+        id tb = getConfig(@"targetBundles");
+        BOOL tbv = ([tb isKindOfClass:[NSArray class]] &&
+                    [(NSArray *)tb containsObject:@"com.viber"]);
+        NSString *bid2 = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.viber";
+        NSString *gc = getConfigStr([@"wipe_gen_" stringByAppendingString:bid2]);
+        if (!gc.length) gc = getConfigStr(@"wipe_gen");
+        NSString *gs = ci_readTrim(ci_docPath(@".ci_gen"));
+        NSString *ga = ci_readTrim(ci_docPath(@".ci_gen_ack"));
+        NSString *(^sh)(NSString *) = ^NSString *(NSString *s){
+            return s.length ? [s substringToIndex:MIN((NSUInteger)6, s.length)] : @"-"; };
         NSString *txt = [NSString stringWithFormat:
-            @"VIBERCHANGE DIAG 4.2.3\n"
+            @"VIBERCHANGE DIAG 4.2.4\n"
              "inject: OK    license: %@\n"
              "wipe fired: %@   kc-del: %@   app-group: %@\n"
+             "tb-viber:%@  gc:%@ gs:%@ ga:%@\n"
              "DeviceCheck goi: %@\n"
              "App Attest goi: %@\n"
              "fake model: %@\n"
@@ -2807,11 +2820,12 @@ static void ci_showDiag(void) {
             (g_diag_wipeDue < 0 ? @"CHUA" : (g_diag_wipeDue ? @"CO" : @"khong-due")),
             (g_diag_kc < 0 ? @"-" : [@(g_diag_kc) stringValue]),
             (g_diag_ag < 0 ? @"-" : [@(g_diag_ag) stringValue]),
+            (tbv ? @"Y" : @"N"), sh(gc), sh(gs), sh(ga),
             (g_diag_dc ? @"CO" : @"khong"),
             (g_diag_att ? @"CO" : @"khong"),
             model];
         CGFloat W = kw.bounds.size.width;
-        UIView *box = [[UIView alloc] initWithFrame:CGRectMake(10, 70, W - 20, 210)];
+        UIView *box = [[UIView alloc] initWithFrame:CGRectMake(10, 70, W - 20, 240)];
         box.tag = 0x7D1A6;
         box.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.88];
         box.layer.cornerRadius = 12;
