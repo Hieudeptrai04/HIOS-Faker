@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.2.5";
+static NSString *const kAppVersion = @"4.2.8";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3214,6 +3214,223 @@ static NSString *ci_kindLabel(CIAccountKind k) {
 }
 @end
 
+// ============================================================
+// PORTABLE RRS FILE (.rrs) — move a snapshot between devices
+// ============================================================
+// A .rrs is self-describing so the receiving device never needs the
+// sender's index.plist:
+//
+//   "HIOSRRS1"   8 bytes   magic
+//   metaLen      4 bytes   big-endian uint32
+//   meta         metaLen   JSON (UTF-8) — the CIRRSEntry fields
+//   payload      rest      the raw .tar built by ci_buildTarCommand
+//
+// Deliberately NOT "a tar with one extra member": appending needs `tar -r`,
+// which the stripped bsdtar on rootless jailbreaks doesn't have. Writing our
+// own 12-byte header is dependency-free and works on both ends.
+static NSString *const kCIRRSMagic = @"HIOSRRS1";
+
+// Shared drop folder. Both products are containerless jailbreak apps, so this
+// resolves to the same absolute path (/var/mobile/Documents/HIOS_RRS) on the
+// exporting and the importing device — the user moves files with Filza or
+// AirDrop in between.
+static NSString *CIRRSPortableDir(void) {
+    static NSString *p = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        p = [dirs.firstObject stringByAppendingPathComponent:@"HIOS_RRS"];
+    });
+    [[NSFileManager defaultManager] createDirectoryAtPath:p
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    return p;
+}
+
+// Locate the archive backing an entry (.tar preferred, legacy .tar.gz second).
+static NSString *ci_tarPathForEntry(CIRRSEntry *e) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *t = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar"]];
+    if ([fm fileExistsAtPath:t]) return t;
+    t = [kRRSDir stringByAppendingPathComponent:[e.uid stringByAppendingPathExtension:@"tar.gz"]];
+    if ([fm fileExistsAtPath:t]) return t;
+    return nil;
+}
+
+static NSDictionary *ci_metaFromEntry(CIRRSEntry *e) {
+    return @{
+        @"uid":        e.uid ?: @"",
+        @"idfa":       e.idfa ?: @"",
+        @"ip":         e.ipReset ?: @"",
+        @"names":      e.appNames ?: @[],
+        @"bids":       e.bundleIDs ?: @[],
+        @"date":       @(e.date ? [e.date timeIntervalSince1970] : [[NSDate date] timeIntervalSince1970]),
+        @"size":       @(e.totalSize),
+        @"note":       e.note ?: @"",
+        @"acctLabel":  e.accountLabel ?: @"",
+        @"acctKind":   @(e.accountKind),
+        @"acctStatus": @(e.accountStatus),
+        @"proxyTag":   e.proxyTag ?: @"",
+    };
+}
+
+static CIRRSEntry *ci_entryFromMeta(NSDictionary *m) {
+    CIRRSEntry *e = [[CIRRSEntry alloc] init];
+    e.uid           = m[@"uid"];
+    e.idfa          = m[@"idfa"];
+    e.ipReset       = m[@"ip"];
+    e.appNames      = [m[@"names"] isKindOfClass:[NSArray class]] ? m[@"names"] : @[];
+    e.bundleIDs     = [m[@"bids"] isKindOfClass:[NSArray class]] ? m[@"bids"] : @[];
+    e.date          = [NSDate dateWithTimeIntervalSince1970:[m[@"date"] doubleValue]];
+    e.totalSize     = [m[@"size"] unsignedLongLongValue];
+    e.note          = m[@"note"];
+    e.accountLabel  = m[@"acctLabel"];
+    e.accountKind   = (CIAccountKind)[m[@"acctKind"] integerValue];
+    e.accountStatus = (CIAccountStatus)[m[@"acctStatus"] integerValue];
+    e.proxyTag      = m[@"proxyTag"];
+    return e;
+}
+
+// Filename a human can recognise in Filza: label_app_date.rrs
+static NSString *ci_portableFileName(CIRRSEntry *e) {
+    NSMutableString *s = [NSMutableString string];
+    NSString *label = e.note.length ? e.note : (e.accountLabel.length ? e.accountLabel : @"");
+    if (label.length) [s appendFormat:@"%@_", label];
+    if (e.appNames.count) [s appendFormat:@"%@_", e.appNames.firstObject];
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.dateFormat = @"yyyyMMdd-HHmm";
+    [s appendString:[df stringFromDate:(e.date ?: [NSDate date])]];
+    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
+        @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_."] invertedSet];
+    NSString *clean = [[s componentsSeparatedByCharactersInSet:bad] componentsJoinedByString:@"-"];
+    while ([clean containsString:@"--"])
+        clean = [clean stringByReplacingOccurrencesOfString:@"--" withString:@"-"];
+    if (!clean.length) clean = e.uid.length ? e.uid : @"rrs";
+    return [clean stringByAppendingPathExtension:@"rrs"];
+}
+
+// Write <header><meta><tar> into destDir. Streamed in 4 MB chunks so a 60 MB
+// Zalo archive never sits in memory twice. Returns the written path or nil.
+static NSString *ci_exportRRSEntry(CIRRSEntry *e, NSString *destDir, NSString **errOut) {
+    NSString *tar = ci_tarPathForEntry(e);
+    if (!tar) { if (errOut) *errOut = @"Không tìm thấy file .tar của snapshot này."; return nil; }
+
+    NSData *meta = [NSJSONSerialization dataWithJSONObject:ci_metaFromEntry(e) options:0 error:nil];
+    if (!meta.length) { if (errOut) *errOut = @"Không tạo được metadata."; return nil; }
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:destDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSString *wanted = ci_portableFileName(e);
+    NSString *out = [destDir stringByAppendingPathComponent:wanted];
+    // Never clobber a previous export of a different snapshot.
+    for (NSUInteger n = 2; [fm fileExistsAtPath:out] && n < 1000; n++) {
+        NSString *base = [[wanted stringByDeletingPathExtension]
+                          stringByAppendingFormat:@"-%lu", (unsigned long)n];
+        out = [destDir stringByAppendingPathComponent:[base stringByAppendingPathExtension:@"rrs"]];
+    }
+
+    if (![fm createFileAtPath:out contents:nil attributes:nil]) {
+        if (errOut) *errOut = [NSString stringWithFormat:@"Không ghi được %@", out];
+        return nil;
+    }
+    NSFileHandle *w = [NSFileHandle fileHandleForWritingAtPath:out];
+    NSFileHandle *r = [NSFileHandle fileHandleForReadingAtPath:tar];
+    if (!w || !r) {
+        [w closeFile]; [r closeFile]; [fm removeItemAtPath:out error:nil];
+        if (errOut) *errOut = @"Không mở được file."; return nil;
+    }
+    @try {
+        [w writeData:[kCIRRSMagic dataUsingEncoding:NSUTF8StringEncoding]];
+        uint32_t be = CFSwapInt32HostToBig((uint32_t)meta.length);
+        [w writeData:[NSData dataWithBytes:&be length:4]];
+        [w writeData:meta];
+        while (1) {
+            @autoreleasepool {
+                NSData *chunk = [r readDataOfLength:4 * 1024 * 1024];
+                if (!chunk.length) break;
+                [w writeData:chunk];
+            }
+        }
+    } @catch (NSException *ex) {
+        [w closeFile]; [r closeFile]; [fm removeItemAtPath:out error:nil];
+        if (errOut) *errOut = ex.reason ?: @"Lỗi ghi file.";
+        return nil;
+    }
+    [w closeFile]; [r closeFile];
+    return out;
+}
+
+// Read a .rrs back into this device's RRS store. The tar payload is streamed
+// to <kRRSDir>/<uid>.tar so the existing restoreEntry: path handles it with
+// no changes at all.
+static CIRRSEntry *ci_importRRSFile(NSString *path, NSString **errOut) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSFileHandle *r = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!r) { if (errOut) *errOut = @"Không mở được file."; return nil; }
+
+    NSData *hdr = [r readDataOfLength:12];
+    NSString *magic = hdr.length >= 8
+        ? [[NSString alloc] initWithData:[hdr subdataWithRange:NSMakeRange(0, 8)]
+                                encoding:NSUTF8StringEncoding]
+        : nil;
+    if (hdr.length != 12 || ![magic isEqualToString:kCIRRSMagic]) {
+        [r closeFile];
+        if (errOut) *errOut = @"File không phải định dạng .rrs của HIOS.";
+        return nil;
+    }
+    uint32_t be = 0;
+    [hdr getBytes:&be range:NSMakeRange(8, 4)];
+    uint32_t metaLen = CFSwapInt32BigToHost(be);
+    if (metaLen == 0 || metaLen > 1024 * 1024) {
+        [r closeFile]; if (errOut) *errOut = @"Metadata hỏng."; return nil;
+    }
+    NSDictionary *meta = [NSJSONSerialization JSONObjectWithData:[r readDataOfLength:metaLen]
+                                                         options:0 error:nil];
+    if (![meta isKindOfClass:[NSDictionary class]]) {
+        [r closeFile]; if (errOut) *errOut = @"Metadata không đọc được."; return nil;
+    }
+
+    CIRRSEntry *e = ci_entryFromMeta(meta);
+    [fm createDirectoryAtPath:kRRSDir withIntermediateDirectories:YES attributes:nil error:nil];
+    // Fresh uid whenever the sender's uid already exists here, so snapshots
+    // coming from two devices never overwrite each other's tar.
+    NSString *uid = e.uid.length ? e.uid : [[NSUUID UUID] UUIDString];
+    NSString *dst = [kRRSDir stringByAppendingPathComponent:[uid stringByAppendingPathExtension:@"tar"]];
+    if ([fm fileExistsAtPath:dst]) {
+        uid = [[NSUUID UUID] UUIDString];
+        dst = [kRRSDir stringByAppendingPathComponent:[uid stringByAppendingPathExtension:@"tar"]];
+    }
+    e.uid = uid;
+
+    if (![fm createFileAtPath:dst contents:nil attributes:nil]) {
+        [r closeFile]; if (errOut) *errOut = @"Không ghi được vào thư mục RRS."; return nil;
+    }
+    NSFileHandle *w = [NSFileHandle fileHandleForWritingAtPath:dst];
+    @try {
+        while (1) {
+            @autoreleasepool {
+                NSData *chunk = [r readDataOfLength:4 * 1024 * 1024];
+                if (!chunk.length) break;
+                [w writeData:chunk];
+            }
+        }
+    } @catch (NSException *ex) {
+        [w closeFile]; [r closeFile]; [fm removeItemAtPath:dst error:nil];
+        if (errOut) *errOut = ex.reason ?: @"Lỗi ghi file."; return nil;
+    }
+    [w closeFile]; [r closeFile];
+
+    unsigned long long tarSize =
+        [[fm attributesOfItemAtPath:dst error:nil][NSFileSize] unsignedLongLongValue];
+    if (tarSize < 1024) {
+        [fm removeItemAtPath:dst error:nil];
+        if (errOut) *errOut = @"Payload rỗng — file .rrs hỏng."; return nil;
+    }
+    if (e.totalSize == 0) e.totalSize = tarSize;
+
+    [[CIRRSStore shared] addEntry:e];
+    return e;
+}
+
 // Build the `tar -cf …` command shared by createRRSForBundles and
 // rebackupEntry, with --exclude rules that strip cache/log paths.
 // Empirical: an unfiltered Zalo backup ran 77 MB; the same content
@@ -4929,6 +5146,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     UISearchBar *_search;
     NSArray<CIRRSEntry *> *_view;
     CGFloat _lastLayoutWidth;
+    // Export mode: rows stop restoring and start toggling a checkmark instead.
+    BOOL _selectMode;
+    NSMutableSet<NSString *> *_selected;   // uids, survives search-filter churn
 }
 
 - (void)viewDidLoad {
@@ -4953,11 +5173,37 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self.view addSubview:_table];
 
     _view = [[CIRRSStore shared] entries];
+    _selected = [NSMutableSet set];
     [self refreshTitle];
+    [self refreshBarButtons];
+}
 
+// Nav bar has three states: browsing (Nhập / Xuất), exporting (Xuất (n) /
+// Hủy), and the shared Cancel that leaves the screen. Rebuilt from scratch
+// each time so no stale button survives a mode switch.
+- (void)refreshBarButtons {
+    if (_selectMode) {
+        self.navigationItem.leftBarButtonItem =
+            [[UIBarButtonItem alloc] initWithTitle:@"Hủy" style:UIBarButtonItemStylePlain
+                                            target:self action:@selector(exitSelectMode)];
+        UIBarButtonItem *go =
+            [[UIBarButtonItem alloc] initWithTitle:[NSString stringWithFormat:@"Xuất (%lu)",
+                                                    (unsigned long)_selected.count]
+                                             style:UIBarButtonItemStyleDone
+                                            target:self action:@selector(exportSelected)];
+        go.enabled = (_selected.count > 0);
+        self.navigationItem.rightBarButtonItem = go;
+        return;
+    }
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
                                                       target:self action:@selector(closeBtn)];
+    self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithTitle:@"Xuất" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(enterSelectMode)],
+        [[UIBarButtonItem alloc] initWithTitle:@"Nhập" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(showImportList)],
+    ];
 }
 - (void)closeBtn {
     // CIRRSManager shows up two ways: presented modally (Home → "Quản lý RRS")
@@ -4973,6 +5219,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (void)refreshTitle {
+    if (_selectMode) {
+        self.title = @"Chọn RRS để xuất";
+        return;
+    }
     self.title = _view.count > 0
         ? [NSString stringWithFormat:@"%lu RRS — chạm để restore", (unsigned long)_view.count]
         : @"RRS (chưa có)";
@@ -5016,6 +5266,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     c.contentView.backgroundColor = [UIColor clearColor];
 
     CIRRSEntry *e = _view[ip.row];
+
+    // Checkmark accessory only while exporting — the browsing look is
+    // untouched, and the accessory reserves its own width so the card below
+    // just narrows instead of being overdrawn.
+    c.accessoryType = (_selectMode && [_selected containsObject:(e.uid ?: @"")])
+        ? UITableViewCellAccessoryCheckmark
+        : UITableViewCellAccessoryNone;
+    c.tintColor = [CITheme green];
 
     // v2.4.41: cell.contentView width is reliable even when tv.bounds is
     // 0 on the first cellForRow pass (was causing right-edge content
@@ -5233,6 +5491,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // Tap a row → confirm dialog → restore.
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (_selectMode) {
+        CIRRSEntry *sel = _view[ip.row];
+        NSString *uid = sel.uid ?: @"";
+        if ([_selected containsObject:uid]) [_selected removeObject:uid];
+        else                                [_selected addObject:uid];
+        [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+        [self refreshBarButtons];
+        return;
+    }
     CIRRSEntry *e = _view[ip.row];
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"dd/MM/yyyy HH:mm:ss";
@@ -5308,6 +5575,222 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [self presentViewController:a animated:YES completion:nil];
 }
 
+// ============================================================
+// EXPORT / IMPORT  (.rrs portable snapshots)
+// ============================================================
+
+- (void)enterSelectMode {
+    if (_view.count == 0) {
+        [self toast:@"Chưa có snapshot nào để xuất."];
+        return;
+    }
+    _selectMode = YES;
+    [_selected removeAllObjects];
+    [self refreshTitle];
+    [self refreshBarButtons];
+    [_table reloadData];
+}
+
+- (void)exitSelectMode {
+    _selectMode = NO;
+    [_selected removeAllObjects];
+    [self refreshTitle];
+    [self refreshBarButtons];
+    [_table reloadData];
+}
+
+- (void)exportSelected {
+    NSMutableArray<CIRRSEntry *> *list = [NSMutableArray array];
+    for (CIRRSEntry *e in [[CIRRSStore shared] entries])
+        if ([_selected containsObject:(e.uid ?: @"")]) [list addObject:e];
+    if (!list.count) return;
+    [self exportEntries:list];
+}
+
+// Shared by the multi-select bar button and the single-entry context menu.
+// Runs off the main thread — a 60 MB Zalo tar takes a few seconds to copy.
+- (void)exportEntries:(NSArray<CIRRSEntry *> *)list {
+    NSString *dir = CIRRSPortableDir();
+    UIView *hud = [self simpleHUD:[NSString stringWithFormat:@"Đang xuất 0/%lu...",
+                                   (unsigned long)list.count]];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableArray<NSString *> *okPaths = [NSMutableArray array];
+        NSMutableArray<NSString *> *fails = [NSMutableArray array];
+        NSUInteger i = 0;
+        for (CIRRSEntry *e in list) {
+            i++;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UILabel *l = (UILabel *)[hud viewWithTag:991];
+                l.text = [NSString stringWithFormat:@"Đang xuất %lu/%lu...",
+                          (unsigned long)i, (unsigned long)list.count];
+            });
+            NSString *err = nil;
+            NSString *out = ci_exportRRSEntry(e, dir, &err);
+            if (out) [okPaths addObject:out];
+            else     [fails addObject:[NSString stringWithFormat:@"• %@: %@",
+                                       e.note.length ? e.note : e.uid, err ?: @"lỗi"]];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud removeFromSuperview];
+            [self exitSelectMode];
+
+            NSMutableString *msg = [NSMutableString string];
+            if (okPaths.count) {
+                [msg appendFormat:@"Đã xuất %lu file vào:\n%@\n\n",
+                 (unsigned long)okPaths.count, dir];
+                for (NSString *p in okPaths)
+                    [msg appendFormat:@"• %@\n", p.lastPathComponent];
+                [msg appendString:@"\nDùng Filza hoặc AirDrop để chuyển sang máy khác, "
+                                  @"rồi mở HIOS Restore → Nhập."];
+            }
+            if (fails.count) {
+                if (msg.length) [msg appendString:@"\n\n"];
+                [msg appendFormat:@"Lỗi %lu file:\n%@", (unsigned long)fails.count,
+                 [fails componentsJoinedByString:@"\n"]];
+            }
+
+            UIAlertController *a = [UIAlertController
+                alertControllerWithTitle:(okPaths.count ? @"Xuất xong" : @"Xuất thất bại")
+                                 message:msg
+                          preferredStyle:UIAlertControllerStyleAlert];
+            if (okPaths.count) {
+                [a addAction:[UIAlertAction actionWithTitle:@"Chia sẻ / AirDrop"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction *_) {
+                    NSMutableArray *urls = [NSMutableArray array];
+                    for (NSString *p in okPaths) [urls addObject:[NSURL fileURLWithPath:p]];
+                    UIActivityViewController *av =
+                        [[UIActivityViewController alloc] initWithActivityItems:urls
+                                                          applicationActivities:nil];
+                    av.popoverPresentationController.sourceView = self.view;
+                    av.popoverPresentationController.sourceRect =
+                        CGRectMake(CGRectGetMidX(self.view.bounds),
+                                   CGRectGetMidY(self.view.bounds), 1, 1);
+                    [self presentViewController:av animated:YES completion:nil];
+                }]];
+            }
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:a animated:YES completion:nil];
+        });
+    });
+}
+
+// Lists every .rrs sitting in the shared drop folder so the user can pull one
+// into this device's store. Nothing is scanned automatically — importing is
+// always an explicit tap, otherwise a stray file would silently grow the list.
+- (void)showImportList {
+    NSString *dir = CIRRSPortableDir();
+    NSArray *all = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+    NSMutableArray<NSString *> *files = [NSMutableArray array];
+    for (NSString *f in all)
+        if ([f.pathExtension.lowercaseString isEqualToString:@"rrs"]) [files addObject:f];
+    [files sortUsingSelector:@selector(localizedStandardCompare:)];
+
+    if (!files.count) {
+        UIAlertController *a = [UIAlertController
+            alertControllerWithTitle:@"Không có file .rrs"
+                             message:[NSString stringWithFormat:
+                                      @"Chép file .rrs vào thư mục này rồi thử lại:\n\n%@", dir]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Nhập file .rrs"
+                         message:dir
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *f in files) {
+        NSString *full = [dir stringByAppendingPathComponent:f];
+        unsigned long long sz = [[fm attributesOfItemAtPath:full error:nil][NSFileSize] unsignedLongLongValue];
+        NSString *title = [NSString stringWithFormat:@"%@  (%@)", f, CIBytesString(sz)];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *_) {
+            [self importFileAtPath:full];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect =
+        CGRectMake(CGRectGetMaxX(self.view.bounds) - 40, 0, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)importFileAtPath:(NSString *)path {
+    UIView *hud = [self simpleHUD:@"Đang nhập..."];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *err = nil;
+        CIRRSEntry *e = ci_importRRSFile(path, &err);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud removeFromSuperview];
+            self->_view = [[CIRRSStore shared] entries];
+            [self->_table reloadData];
+            [self refreshTitle];
+
+            NSString *title = e ? @"Đã nhập" : @"Nhập thất bại";
+            NSString *msg = e
+                ? [NSString stringWithFormat:
+                   @"%@\n\nApps: %@\nIDFA: %@\nDung lượng: %@\n\n"
+                   @"Chạm vào dòng đó trong danh sách để restore.",
+                   path.lastPathComponent,
+                   e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-",
+                   e.idfa.length ? e.idfa : @"-",
+                   CIBytesString(e.totalSize)]
+                : (err ?: @"Lỗi không xác định.");
+            UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+                                                                       message:msg
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:a animated:YES completion:nil];
+        });
+    });
+}
+
+// Minimal blocking spinner. CIHomeViewController's 5-step HUD is overkill
+// here and lives on another class; export/import only need "busy".
+- (UIView *)simpleHUD:(NSString *)text {
+    UIView *dim = [[UIView alloc] initWithFrame:self.view.bounds];
+    dim.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 240, 110)];
+    box.center = CGPointMake(CGRectGetMidX(dim.bounds), CGRectGetMidY(dim.bounds));
+    box.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin |
+                           UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    box.backgroundColor = [CITheme card];
+    box.layer.cornerRadius = 14;
+    [dim addSubview:box];
+
+    UIActivityIndicatorView *sp = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+    sp.center = CGPointMake(120, 38);
+    sp.color = [CITheme orange];
+    [sp startAnimating];
+    [box addSubview:sp];
+
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(10, 66, 220, 34)];
+    l.tag = 991;
+    l.text = text;
+    l.numberOfLines = 2;
+    l.textAlignment = NSTextAlignmentCenter;
+    l.font = [UIFont systemFontOfSize:13];
+    l.textColor = [CITheme text];
+    [box addSubview:l];
+
+    [self.view addSubview:dim];
+    return dim;
+}
+
+- (void)toast:(NSString *)text {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:nil message:text
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 // Swipe-left → Xóa (single action — never clips). All other actions
 // (Cập nhật / Sửa / Ban) moved to the long-press context menu below.
 // Earlier attempts to cram a 2nd or 3rd action into the swipe area
@@ -5318,6 +5801,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // width with no clipping. Power-user actions hide behind the menu.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
         trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    if (_selectMode) return nil;   // exporting: taps mean "tick", not "act on row"
     UIContextualAction *del = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleDestructive
                             title:@"Xóa"
@@ -5339,6 +5823,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tv
        contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)ip
                                            point:(CGPoint)point {
+    if (_selectMode) return nil;
     CIRRSEntry *e = _view[ip.row];
     UIContextMenuConfiguration *cfg = [UIContextMenuConfiguration
         configurationWithIdentifier:nil
@@ -5394,7 +5879,16 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
             [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
         }];
 
-        // 4) Xóa — destructive, separate inline menu so iOS styles it red.
+        // 4) Xuất — write this one snapshot out as a portable .rrs file.
+        UIAction *export = [UIAction
+            actionWithTitle:@"Xuất file .rrs"
+                      image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+                 identifier:nil
+                    handler:^(UIAction *_) {
+            [self exportEntries:@[e]];
+        }];
+
+        // 5) Xóa — destructive, separate inline menu so iOS styles it red.
         UIAction *del = [UIAction
             actionWithTitle:@"Xóa snapshot"
                       image:[UIImage systemImageNamed:@"trash"]
@@ -5408,7 +5902,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         del.attributes = UIMenuElementAttributesDestructive;
 
         return [UIMenu menuWithTitle:@""
-                            children:@[update, edit, toggleBan, del]];
+                            children:@[update, edit, toggleBan, export, del]];
     }];
     return cfg;
 }
@@ -5419,6 +5913,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // on the other edge.
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
         leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    if (_selectMode) return nil;
     CIRRSEntry *e = _view[ip.row];
     UIContextualAction *edit = [UIContextualAction
         contextualActionWithStyle:UIContextualActionStyleNormal
