@@ -149,6 +149,10 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"hideJailbreak"]   == nil) { _cfg[@"hideJailbreak"]   = @(YES); seeded = YES; }
     if (_cfg[@"web_canvasNoise"] == nil) { _cfg[@"web_canvasNoise"] = @(YES); seeded = YES; }
     if (_cfg[@"keychainReset"]   == nil) { _cfg[@"keychainReset"]   = @(YES); seeded = YES; }
+    // Viber one-shot auto-reset stays ON by default (keep-login OFF) so fresh Viber
+    // registration still gets device isolation. Turn "Giu dang nhap Viber" ON to
+    // stop the tweak wiping Viber's keychain/app-group so an existing login persists.
+    if (_cfg[@"viberKeepLogin"]  == nil) { _cfg[@"viberKeepLogin"]  = @(NO);  seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
     // Hardware lock default OFF: keep the FAKE model (the tweak now spoofs the
     // SoC profile — cpufamily/cache — to match the faked model, so consistency
@@ -4594,6 +4598,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // 18. Keychain
     [_rows addObject:[C toggle:@"18. Reset keychain on launch" key:@"fake_keychain" indent:0]];
     [_rows addObject:[C toggle:@"    Clear keychain every time" key:@"keychainReset" indent:24]];
+    // Viber: tắt auto-reset để GIỮ đăng nhập qua mở app / backup / restore. Không ảnh hưởng Zalo.
+    [_rows addObject:[C toggle:@"    Giữ đăng nhập Viber (tắt auto-reset)" key:@"viberKeepLogin" indent:24]];
 
     // 19. JB Hide
     [_rows addObject:[C toggle:@"19. Hide Jailbreak" key:@"fake_jbhide" indent:0]];

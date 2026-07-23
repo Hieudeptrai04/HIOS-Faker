@@ -2659,6 +2659,16 @@ static void ci_runOneShotIfDue(void) {
     if (!pn || !(strstr(pn, "Zalo") || strstr(pn, "zalo") ||
                  strstr(pn, "zingalo") || strstr(pn, "imess") ||
                  strstr(pn, "Viber"))) return;
+    // v4.2.6: "Giu dang nhap Viber". When the host enables viberKeepLogin, DISABLE
+    // the Viber one-shot device-reset entirely: skip the keychain sweep + app-group
+    // wipe so Viber's device-id and login session in its shared keychain group and
+    // group.viber.share.container survive launches, Change Device, and 3rd-party
+    // backup/restore. Only early-returns for the Viber process — Zalo is untouched.
+    // Default OFF keeps the fresh-registration reset for everyone who doesn't opt in.
+    if (pn && strstr(pn, "Viber") && getConfigBool(@"viberKeepLogin")) {
+        dbglog("oneShot Viber SKIP viberKeepLogin\n");
+        return;
+    }
     // Only meaningful while spoofing an identity.
     if (!getConfigStr(@"UniqueDeviceID") && !getConfigStr(@"SerialNumber")) return;
 
