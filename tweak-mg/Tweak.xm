@@ -2681,6 +2681,25 @@ static void ci_runOneShotIfDue(void) {
     NSString *Ga = ci_readTrim(ci_docPath(@".ci_gen_ack"));   // gen already consumed
     BOOL due = (Gs.length && [Gs isEqualToString:Gc] &&
                 (!Ga.length || ![Ga isEqualToString:Gc]));
+    // v4.2.7: bound the one-shot to the time window the host stamps at Change
+    // Device. wipe_deadline lives in the /var/jb config, which a 3rd-party
+    // app-data backup (AppsManager) CANNOT capture. So a container restored
+    // later — even one that lost the hidden .ci_gen_ack and would therefore look
+    // "due" again — can never re-trigger the wipe and destroy a saved login.
+    // Inside the window a real Change Device still wipes exactly once, so the
+    // device is clean for a fresh registration. This is what lets "Change sach"
+    // and "backup giu dang nhap" both work.
+    if (due) {
+        long long dl = 0;
+        id dlv = getConfig(@"wipe_deadline");
+        if ([dlv isKindOfClass:[NSNumber class]])      dl = [(NSNumber *)dlv longLongValue];
+        else if ([dlv isKindOfClass:[NSString class]]) dl = [(NSString *)dlv longLongValue];
+        if (dl > 0 && (long long)time(NULL) > dl) {
+            dbglog("oneShot %s SKIP past wipe_deadline (dl=%lld now=%lld)\n",
+                   g_procname, dl, (long long)time(NULL));
+            due = NO;
+        }
+    }
     dbglog("oneShot %s bid=%s Gc=%s Gs=%s Ga=%s due=%d\n", g_procname, bid.UTF8String,
            Gc.UTF8String, Gs.length ? Gs.UTF8String : "-", Ga.length ? Ga.UTF8String : "-", (int)due);
     if (!due) return;

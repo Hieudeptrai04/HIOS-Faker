@@ -4595,11 +4595,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"17. Fake timing offset" key:@"fake_timing" indent:0]];
     [_rows addObject:[C text:@"Offset (seconds)" key:@"zalo_timingOffset" placeholder:@"0" indent:24]];
 
-    // 18. Keychain
-    [_rows addObject:[C toggle:@"18. Reset keychain on launch" key:@"fake_keychain" indent:0]];
-    [_rows addObject:[C toggle:@"    Clear keychain every time" key:@"keychainReset" indent:24]];
-    // Viber: tắt auto-reset để GIỮ đăng nhập qua mở app / backup / restore. Không ảnh hưởng Zalo.
-    [_rows addObject:[C toggle:@"    Giữ đăng nhập Viber (tắt auto-reset)" key:@"viberKeepLogin" indent:24]];
+    // 18. Viber. v4.2.7: REMOVED "Reset keychain on launch" (fake_keychain) and
+    // "Clear keychain every time" (keychainReset) — both keys were DEAD, the
+    // 4.2.x tweak never reads either, so they only misled. Wipe timing is now
+    // bounded by wipe_deadline instead. What remains is an escape hatch:
+    // ON = never auto-reset Viber (keeps login, but Change Device will NOT
+    // produce a clean device). Leave it OFF for normal use.
+    [_rows addObject:[C toggle:@"18. Không bao giờ reset Viber (giữ login, Change sẽ KHÔNG sạch)" key:@"viberKeepLogin" indent:0]];
 
     // 19. JB Hide
     [_rows addObject:[C toggle:@"19. Hide Jailbreak" key:@"fake_jbhide" indent:0]];
@@ -7730,6 +7732,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // by a .adbk), so a restored backup can never carry it and re-trigger.
             [cm setObject:wipeGen forKey:[@"wipe_gen_" stringByAppendingString:bid]];
         }
+        // v4.2.7: stamp a deadline for the one-shot wipe. It lives here in the
+        // /var/jb config, which a 3rd-party app-data backup (AppsManager) cannot
+        // capture — so a container restored AFTER this window can never look
+        // "due" again and wipe away a saved login, even if the restore lost the
+        // hidden .ci_gen_ack. Within the window a real Change Device still wipes
+        // once → clean device for registering a new account.
+        [cm setObject:[NSString stringWithFormat:@"%lld",
+                       (long long)([[NSDate date] timeIntervalSince1970] + 7200)]   // 2h window
+               forKey:@"wipe_deadline"];
         [cm save];
         NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded (%lu target bundles)", (unsigned long)allBids.count);
 
