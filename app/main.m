@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.2.8";
+static NSString *const kAppVersion = @"4.2.9";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2635,6 +2635,50 @@ static int ci_run(const char *cmd) {
     return WEXITSTATUS(status);
 }
 
+// Find the live Shared/AppGroup container whose metadata declares groupID
+// (e.g. "group.viber.share.container"). Same sandbox-safe shell-grep fallback
+// as ci_findDataContainerForBundle — the NSFileManager listing is MAC-blocked
+// from inside the host app's sandbox on some profiles.
+static NSString *ci_findAppGroupContainer(NSString *groupID) {
+    if (groupID.length == 0) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *base = @"/var/mobile/Containers/Shared/AppGroup";
+    NSData *needle = [groupID dataUsingEncoding:NSUTF8StringEncoding];
+    for (NSString *uuid in [fm contentsOfDirectoryAtPath:base error:nil]) {
+        NSString *full = [base stringByAppendingPathComponent:uuid];
+        NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+        NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
+        if (blob && [blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound)
+            return full;
+    }
+    NSString *outPath = [NSString stringWithFormat:@"/tmp/ci_findg_%@.txt",
+        [groupID stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
+    NSString *cmd = [NSString stringWithFormat:
+        @"grep -la '%@' /var/mobile/Containers/Shared/AppGroup/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null | head -1 > '%@'",
+        groupID, outPath];
+    ci_run([cmd UTF8String]);
+    NSString *result = [[NSString stringWithContentsOfFile:outPath encoding:NSUTF8StringEncoding error:nil]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    [fm removeItemAtPath:outPath error:nil];
+    if (result.length == 0) return nil;
+    return [result stringByDeletingLastPathComponent];   // strip metadata filename
+}
+
+// bundle → app-group ids that carry login/session state worth snapshotting.
+// Viber keeps its device-session token in
+//   group.viber.share.container/SecureStorage.data
+// which lives in the SHARED app-group, NOT the Data container — so a backup
+// that only captures the Data container cannot preserve the Viber login. This
+// table is what makes the .rrs actually portable for login. Extend per app.
+static NSArray<NSString *> *ci_appGroupIDsForBundle(NSString *bundleID) {
+    static NSDictionary *map; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{ @"com.viber": @[@"group.viber.share.container"] };
+    });
+    NSArray *v = map[bundleID];
+    return v ?: @[];
+}
+
 // Reset a bundle's TCC permissions for REAL by talking to the running tccd over
 // XPC (the same path tccutil/Settings use): tccd deletes the row AND drops its
 // RAM cache, so Settings shows the permission cleared and the app re-prompts —
@@ -3533,6 +3577,21 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
             @"Documents/VoipLogStats",
             @"Documents/cloud_audit/download_cache",
             @"Documents/GlobalSearch",
+            // ---- Viber slimming (2026-07-24) ----
+            // Viber's own media/UI cache (~4.5M on a fresh account) — pure
+            // cache, regenerates. Named "com.viber" so it can never match a
+            // Zalo cache dir; Zalo's login-critical Library/Caches/ChangeInfoIos
+            // is untouched.
+            @"Library/Caches/com.viber",
+            // Shared-app-group UI illustration assets (~3.3M) — bundled art,
+            // nothing to do with the account/session.
+            @"com.viber/IllustrationBundle",
+            @"com.viber/EmoticonsBundle",
+            // Config-dir dead weight that rode into every .rrs: the 832K fake
+            // camera video and the (4.2.x: unused) keychain dumps + logs. The
+            // device profile (config.plist) is kept — only the junk is cut.
+            @"changeinfoios/camera_spoof.mp4",
+            @"changeinfoios/restoreEntry.log",
         ];
     });
     NSMutableString *cmd = [NSMutableString stringWithFormat:@"tar -cf '%@'", tarPath];
@@ -3541,6 +3600,11 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
         // Use a pattern that catches the dir at any depth inside any container.
         [cmd appendFormat:@" --exclude='*/%@'", ex];
     }
+    // Glob-based excludes (can't go in the fixed list above): the Zalo keychain
+    // dumps and per-bundle restore flags are dead weight in 4.2.x and never
+    // needed to carry a login across devices.
+    [cmd appendString:@" --exclude='*/changeinfoios/dump_*.plist'"];
+    [cmd appendString:@" --exclude='*/changeinfoios/restore_kc_*.flag'"];
     [cmd appendString:@" /var/jb/etc/changeinfoios"];
     for (NSString *p in containerPaths) [cmd appendFormat:@" '%@'", p];
     if (errLog.length) [cmd appendFormat:@" 2>%@", errLog];
@@ -8455,6 +8519,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [paths addObject:dataPath];
         [seenBids addObject:bid];
     }
+
+    // Add each target's shared app-group container(s). For Viber this is where
+    // the login token lives (group.viber.share.container/SecureStorage.data);
+    // without it the restore comes up logged-out. The big UI-asset subdir
+    // (IllustrationBundle) is dropped by the exclude list in ci_buildTarCommand,
+    // so only the small session/db state rides along.
+    for (NSString *bid in b) {
+        for (NSString *gid in ci_appGroupIDsForBundle(bid)) {
+            NSString *gp = ci_findAppGroupContainer(gid);
+            if (gp.length && ![paths containsObject:gp]) {
+                [paths addObject:gp];
+                NSLog(@"[ChangeInfoIos] RRS: +app-group %@ → %@", gid, gp);
+            }
+        }
+    }
     e.appNames = n; e.bundleIDs = b; e.totalSize = total;
 
     // Use uncompressed .tar (no gzip): Dopamine 2's rootless prefix ships
@@ -8981,6 +9060,55 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             bytesCopied += appBytes;
             restoredApps++;
         }
+
+        // ---- Step 3.5: Restore shared app-group container(s) ----
+        // Viber's login/session token lives in
+        //   group.viber.share.container/SecureStorage.data
+        // which is in the SHARED app-group, not the Data container. A
+        // Data-container-only restore therefore comes up logged out. Archived
+        // app-group UUIDs differ from the live ones (just like Data
+        // containers), so match by the metadata group-id and copy over the
+        // live group. Overlay copy (no wipe) so anything the live group needs
+        // but the backup lacks is left intact — only the session state is
+        // overwritten.
+        NSString *agRoot = [tmp stringByAppendingPathComponent:@"private/var/mobile/Containers/Shared/AppGroup"];
+        NSArray *agUUIDs = [fm contentsOfDirectoryAtPath:agRoot error:nil];
+        if (agUUIDs.count == 0) {
+            NSString *alt = [tmp stringByAppendingPathComponent:@"var/mobile/Containers/Shared/AppGroup"];
+            NSArray *altU = [fm contentsOfDirectoryAtPath:alt error:nil];
+            if (altU.count > 0) { agRoot = alt; agUUIDs = altU; }
+        }
+        rlog([NSString stringWithFormat:@"[step3.5] agRoot=%@ uuids=%lu", agRoot, (unsigned long)agUUIDs.count]);
+        NSUInteger restoredGroups = 0;
+        for (NSString *uuid in agUUIDs) {
+            NSString *agDir  = [agRoot stringByAppendingPathComponent:uuid];
+            NSString *agMeta = [agDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+            NSData *blob = [NSData dataWithContentsOfFile:agMeta];
+            if (!blob) continue;
+            // The group-id (e.g. "group.viber.share.container") appears verbatim
+            // as an ASCII run inside the binary metadata plist. Latin-1 keeps
+            // every byte 1:1 so the regex scan can't throw on non-UTF8 bytes.
+            NSString *metaStr = [[NSString alloc] initWithData:blob encoding:NSISOLatin1StringEncoding];
+            NSRange gr = [metaStr rangeOfString:@"group\\.[A-Za-z0-9._-]+" options:NSRegularExpressionSearch];
+            NSString *groupID = (gr.location != NSNotFound) ? [metaStr substringWithRange:gr] : nil;
+            if (groupID.length == 0) continue;
+
+            NSString *liveGroup = ci_findAppGroupContainer(groupID);
+            if (liveGroup.length == 0) {
+                rlog([NSString stringWithFormat:@"[step3.5] groupID=%@ NO LIVE app-group — app chưa mở lần nào trên máy này?", groupID]);
+                continue;
+            }
+            NSString *errLog = [NSString stringWithFormat:@"/tmp/ci_ag_%@.err", uuid];
+            NSString *cmd = [NSString stringWithFormat:@"cp -a '%@'/* '%@'/ 2>%@", agDir, liveGroup, errLog];
+            int rc = ci_run([cmd UTF8String]);
+            NSString *errText = [NSString stringWithContentsOfFile:errLog encoding:NSUTF8StringEncoding error:nil];
+            [fm removeItemAtPath:errLog error:nil];
+            NSLog(@"[ChangeInfoIos] restore: app-group %@ → %@ rc=%d", groupID, liveGroup, rc);
+            rlog([NSString stringWithFormat:@"[step3.5] group=%@ live=%@ rc=%d err=%@",
+                  groupID, liveGroup, rc, errText.length ? errText : @"-"]);
+            restoredGroups++;
+        }
+        NSLog(@"[ChangeInfoIos] restore: %lu app-group(s) restored", (unsigned long)restoredGroups);
 
         // ---- Step 4: Restore tweak config + DC state ----
         [self updateHUD:hud step:4 total:5
