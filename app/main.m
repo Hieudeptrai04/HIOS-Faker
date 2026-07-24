@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.2.9";
+static NSString *const kAppVersion = @"4.3.0";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3333,22 +3333,43 @@ static CIRRSEntry *ci_entryFromMeta(NSDictionary *m) {
     return e;
 }
 
-// Filename a human can recognise in Filza: label_app_date.rrs
+// The snapshot's note IS the exported filename.
+//
+// Users label a snapshot with the account it holds ("Chị Hoa 0912...") and
+// expect to find a file by exactly that name — so the note is used verbatim.
+// The earlier version appended app+date and then stripped every non-ASCII
+// character, which turned Vietnamese labels into dash soup ("Nguyễn" →
+// "Nguy-n"). Only characters that genuinely cannot appear in a path component
+// are replaced now; letters, spaces and diacritics survive untouched.
+//
+// App name + timestamp are still used, but ONLY when there is no label at all.
 static NSString *ci_portableFileName(CIRRSEntry *e) {
-    NSMutableString *s = [NSMutableString string];
-    NSString *label = e.note.length ? e.note : (e.accountLabel.length ? e.accountLabel : @"");
-    if (label.length) [s appendFormat:@"%@_", label];
-    if (e.appNames.count) [s appendFormat:@"%@_", e.appNames.firstObject];
-    NSDateFormatter *df = [NSDateFormatter new];
-    df.dateFormat = @"yyyyMMdd-HHmm";
-    [s appendString:[df stringFromDate:(e.date ?: [NSDate date])]];
-    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
-        @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_."] invertedSet];
-    NSString *clean = [[s componentsSeparatedByCharactersInSet:bad] componentsJoinedByString:@"-"];
-    while ([clean containsString:@"--"])
-        clean = [clean stringByReplacingOccurrencesOfString:@"--" withString:@"-"];
-    if (!clean.length) clean = e.uid.length ? e.uid : @"rrs";
-    return [clean stringByAppendingPathExtension:@"rrs"];
+    NSString *name = e.note.length ? e.note
+                   : (e.accountLabel.length ? e.accountLabel : @"");
+
+    if (name.length == 0) {
+        NSMutableString *fallback = [NSMutableString string];
+        if (e.appNames.count) [fallback appendFormat:@"%@_", e.appNames.firstObject];
+        NSDateFormatter *df = [NSDateFormatter new];
+        df.dateFormat = @"yyyyMMdd-HHmm";
+        [fallback appendString:[df stringFromDate:(e.date ?: [NSDate date])]];
+        name = fallback;
+    }
+
+    // "/" would create a subdirectory and NUL/newline break the shell round
+    // trip; the rest are reserved on the filesystems these files get copied to
+    // (Windows/exFAT SD cards, cloud drives) and would make the file unopenable
+    // once it left the phone.
+    NSCharacterSet *illegal = [NSCharacterSet characterSetWithCharactersInString:
+        @"/\\:*?\"<>|\r\n\t\0"];
+    name = [[name componentsSeparatedByCharactersInSet:illegal] componentsJoinedByString:@"-"];
+    name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    while ([name hasPrefix:@"."]) name = [name substringFromIndex:1];   // never a hidden file
+    if (name.length == 0) name = e.uid.length ? e.uid : @"rrs";
+    // APFS caps a component at 255 bytes; Vietnamese is multi-byte so cut on a
+    // conservative character count rather than length in bytes.
+    if (name.length > 80) name = [name substringToIndex:80];
+    return [name stringByAppendingPathExtension:@"rrs"];
 }
 
 // Write <header><meta><tar> into destDir. Streamed in 4 MB chunks so a 60 MB
@@ -3577,16 +3598,41 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
             @"Documents/VoipLogStats",
             @"Documents/cloud_audit/download_cache",
             @"Documents/GlobalSearch",
-            // ---- Viber slimming (2026-07-24) ----
-            // Viber's own media/UI cache (~4.5M on a fresh account) — pure
-            // cache, regenerates. Named "com.viber" so it can never match a
-            // Zalo cache dir; Zalo's login-critical Library/Caches/ChangeInfoIos
-            // is untouched.
-            @"Library/Caches/com.viber",
-            // Shared-app-group UI illustration assets (~3.3M) — bundled art,
-            // nothing to do with the account/session.
-            @"com.viber/IllustrationBundle",
-            @"com.viber/EmoticonsBundle",
+            // ---- Viber slimming (re-measured on a REAL account 2026-07-24) ----
+            // The first pass was sized against a freshly-registered account and
+            // missed almost everything: once Viber has been used it downloads
+            // ~95 MB of static packs and image cache. Measured live: Data
+            // container 19 MB + app-group 83 MB. Sizes below are from that
+            // device — every entry is server-downloadable or analytics, none of
+            // it carries the account.
+            //
+            // FastImageCache avatar/thumbnail store. Biggest single item by far
+            // and the reason the "slim" 4.2.9 tar was still 37 MB — the old
+            // exclude only covered the DATA container's Library/Caches, not the
+            // app-group's.
+            @"Library/Caches/FICDefaultNamespace",     // 45M
+            // Viber's own media cache in the data container. Named "com.viber"
+            // so it can never match a Zalo cache dir — Zalo's login-critical
+            // Library/Caches/ChangeInfoIos stays.
+            @"Library/Caches/com.viber",               // 2.7M
+            // Emoji/sticker/artwork packs — re-fetched on demand.
+            @"com.viber/EmoticonsBundle",              // 13M
+            @"com.viber/IllustrationBundle",           // 11M
+            @"com.viber/listOfReactions",              // 7.2M  per-language JSON
+            @"com.viber/stickers",                     // 3.3M
+            @"tmp/EmoticonsBundle",                    // 1.5M  staged zips
+            @"tmp/UnpackedEmoticonsBundle",            // 644K
+            // Analytics blobs + bundled SVG animations + launch snapshots.
+            @"Documents/UserEngagement",               // 5.9M
+            @"Documents/Gems",                         // 1.1M
+            @"Library/SplashBoard",                    // 516K
+            //
+            // Deliberately KEPT even though they are sizeable, because they are
+            // the account or user-visible state: SecureStorage.data* (the login
+            // token), com.viber/settings, com.viber/database (Contacts),
+            // com.viber/cdrdb (call history), Documents/backgroundImages
+            // (user-chosen wallpapers), Library/{Preferences,Cookies,
+            // HTTPStorages,WebKit}.
             // Config-dir dead weight that rode into every .rrs: the 832K fake
             // camera video and the (4.2.x: unused) keychain dumps + logs. The
             // device profile (config.plist) is kept — only the junk is cut.
@@ -5202,7 +5248,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // ============================================================
 // RRS MANAGER VIEW CONTROLLER
 // ============================================================
-@interface CIRRSManagerViewController : UIViewController <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate>
+@interface CIRRSManagerViewController : UIViewController <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate, UIDocumentPickerDelegate>
 @end
 
 @implementation CIRRSManagerViewController {
@@ -5750,21 +5796,25 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         if ([f.pathExtension.lowercaseString isEqualToString:@"rrs"]) [files addObject:f];
     [files sortUsingSelector:@selector(localizedStandardCompare:)];
 
-    if (!files.count) {
-        UIAlertController *a = [UIAlertController
-            alertControllerWithTitle:@"Không có file .rrs"
-                             message:[NSString stringWithFormat:
-                                      @"Chép file .rrs vào thư mục này rồi thử lại:\n\n%@", dir]
-                      preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:a animated:YES completion:nil];
-        return;
-    }
-
+    // Two ways in: the shared drop folder (Filza / AirDrop land here), or the
+    // system file browser — which also reaches iCloud Drive, Google Drive,
+    // Dropbox and anything else with a Files provider. Offer the browser first
+    // and always, so an empty drop folder is never a dead end.
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:@"Nhập file .rrs"
-                         message:dir
+                         message:(files.count
+                                  ? dir
+                                  : [NSString stringWithFormat:
+                                     @"Thư mục dưới đây chưa có file .rrs nào — "
+                                     @"chọn từ ứng dụng Tệp, hoặc chép file vào:\n\n%@", dir])
                   preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Chọn từ ứng dụng Tệp…"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *_) {
+        [self pickFromFilesApp];
+    }]];
+
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *f in files) {
         NSString *full = [dir stringByAppendingPathComponent:f];
@@ -5781,6 +5831,79 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     sheet.popoverPresentationController.sourceRect =
         CGRectMake(CGRectGetMaxX(self.view.bounds) - 40, 0, 1, 1);
     [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// System file browser — reaches "Trên iPhone của tôi", iCloud Drive, Google
+// Drive, Dropbox, anywhere with a Files provider, so the .rrs no longer has to
+// be parked in our folder first.
+- (void)pickFromFilesApp {
+    // "public.item" = any file at all. A .rrs has no registered UTI, so a
+    // narrower filter would grey the files out and make them unselectable.
+    // Import mode makes iOS hand us a readable local copy — we never depend on
+    // the original staying reachable (iCloud eviction, provider logout, …).
+    UIDocumentPickerViewController *p =
+        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.item"]
+                                                               inMode:UIDocumentPickerModeImport];
+    p.delegate = self;
+    p.allowsMultipleSelection = YES;
+    p.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:p animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+        didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (urls.count) [self importURLs:urls];
+}
+
+- (void)importURLs:(NSArray<NSURL *> *)urls {
+    UIView *hud = [self simpleHUD:@"Đang nhập..."];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableArray<NSString *> *ok = [NSMutableArray array];
+        NSMutableArray<NSString *> *bad = [NSMutableArray array];
+        NSUInteger i = 0;
+        for (NSURL *u in urls) {
+            i++;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UILabel *l = (UILabel *)[hud viewWithTag:991];
+                l.text = [NSString stringWithFormat:@"Đang nhập %lu/%lu...",
+                          (unsigned long)i, (unsigned long)urls.count];
+            });
+            // Files hands back a security-scoped URL when the document belongs
+            // to another provider's container; without claiming the scope the
+            // read fails even though the path looks perfectly ordinary.
+            BOOL scoped = [u startAccessingSecurityScopedResource];
+            NSString *err = nil;
+            CIRRSEntry *e = ci_importRRSFile(u.path, &err);
+            if (scoped) [u stopAccessingSecurityScopedResource];
+            if (e) [ok addObject:u.lastPathComponent];
+            else   [bad addObject:[NSString stringWithFormat:@"• %@: %@",
+                                   u.lastPathComponent, err ?: @"lỗi"]];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud removeFromSuperview];
+            self->_view = [[CIRRSStore shared] entries];
+            [self->_table reloadData];
+            [self refreshTitle];
+
+            NSMutableString *msg = [NSMutableString string];
+            if (ok.count) {
+                [msg appendFormat:@"Đã nhập %lu file:\n", (unsigned long)ok.count];
+                for (NSString *n in ok) [msg appendFormat:@"• %@\n", n];
+                [msg appendString:@"\nChạm vào dòng trong danh sách để restore."];
+            }
+            if (bad.count) {
+                if (msg.length) [msg appendString:@"\n"];
+                [msg appendFormat:@"Lỗi %lu file:\n%@", (unsigned long)bad.count,
+                 [bad componentsJoinedByString:@"\n"]];
+            }
+            UIAlertController *a = [UIAlertController
+                alertControllerWithTitle:(ok.count ? @"Đã nhập" : @"Nhập thất bại")
+                                 message:msg
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:a animated:YES completion:nil];
+        });
+    });
 }
 
 - (void)importFileAtPath:(NSString *)path {
