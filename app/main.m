@@ -69,7 +69,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.0";
+static NSString *const kAppVersion = @"4.3.1";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -3126,13 +3126,15 @@ static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
 // UI. Don't reorder existing fields above (NSKeyedArchiver is key-based
 // so order doesn't matter, but the field names below must stay stable
 // or already-saved entries lose their data on next load).
+// Zalo and Viber only — those are the two apps this tool actually spoofs, so
+// a snapshot can't meaningfully be anything else. Values 2..5 used to be
+// Facebook / TikTok / Banking / Khác; the numbers stay burned so an index
+// written by an older build still decodes, but ci_normalizeKind() folds them
+// back to Unknown rather than showing a chip for an app we don't support.
 typedef NS_ENUM(NSInteger, CIAccountKind) {
     CIAccountKindUnknown  = 0,
     CIAccountKindZalo     = 1,
-    CIAccountKindFacebook = 2,
-    CIAccountKindTikTok   = 3,
-    CIAccountKindBanking  = 4,
-    CIAccountKindOther    = 5,
+    CIAccountKindViber    = 6,
 };
 typedef NS_ENUM(NSInteger, CIAccountStatus) {
     CIAccountStatusUnknown = 0,
@@ -3140,14 +3142,16 @@ typedef NS_ENUM(NSInteger, CIAccountStatus) {
     CIAccountStatusBanned  = 2,
 };
 
+static CIAccountKind ci_normalizeKind(NSInteger raw) {
+    return (raw == CIAccountKindZalo || raw == CIAccountKindViber)
+        ? (CIAccountKind)raw : CIAccountKindUnknown;
+}
+
 static NSString *ci_kindLabel(CIAccountKind k) {
     switch (k) {
-        case CIAccountKindZalo:     return @"Zalo";
-        case CIAccountKindFacebook: return @"Facebook";
-        case CIAccountKindTikTok:   return @"TikTok";
-        case CIAccountKindBanking:  return @"Banking";
-        case CIAccountKindOther:    return @"Khác";
-        default:                    return @"";
+        case CIAccountKindZalo:  return @"Zalo";
+        case CIAccountKindViber: return @"Viber";
+        default:                 return @"";
     }
 }
 
@@ -3184,7 +3188,7 @@ static NSString *ci_kindLabel(CIAccountKind k) {
         // Missing keys decode to nil/0 — older RRS entries silently get the
         // "unknown" defaults without forcing a schema migration.
         self.accountLabel  = [c decodeObjectForKey:@"acctLabel"];
-        self.accountKind   = (CIAccountKind)[c decodeIntegerForKey:@"acctKind"];
+        self.accountKind   = ci_normalizeKind([c decodeIntegerForKey:@"acctKind"]);
         self.accountStatus = (CIAccountStatus)[c decodeIntegerForKey:@"acctStatus"];
         self.proxyTag      = [c decodeObjectForKey:@"proxyTag"];
     }
@@ -3258,6 +3262,47 @@ static NSString *ci_kindLabel(CIAccountKind k) {
 }
 @end
 
+// ---- Which snapshot is in play, so the UI can colour it --------------------
+// Restore kills the target apps and ends in a respring, so by the time the
+// user is looking at the screen again the process that ran it is gone. The
+// "currently restoring" mark therefore only lives in memory (it is only ever
+// true while the HUD is up), while "last restored" is written to disk next to
+// the archives — that is the one that has to survive the respring and answer
+// "which file did I put back?".
+static NSString *g_ciRestoringUID = nil;
+static NSString *const kCIRestoreStateNote = @"ci.restore.state.changed";
+
+static NSString *ci_lastRestoredPath(void) {
+    return [kRRSDir stringByAppendingPathComponent:@"last_restored.plist"];
+}
+static void ci_markRestored(NSString *uid) {
+    if (uid.length == 0) return;
+    [@{ @"uid": uid,
+        @"at" : @([[NSDate date] timeIntervalSince1970]) }
+        writeToFile:ci_lastRestoredPath() atomically:YES];
+}
+static NSString *ci_lastRestoredUID(void) {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:ci_lastRestoredPath()];
+    id v = d[@"uid"];
+    return [v isKindOfClass:[NSString class]] ? v : nil;
+}
+static NSDate *ci_lastRestoredAt(void) {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:ci_lastRestoredPath()];
+    id t = d[@"at"];
+    return [t respondsToSelector:@selector(doubleValue)]
+        ? [NSDate dateWithTimeIntervalSince1970:[t doubleValue]] : nil;
+}
+
+// One human-facing name for a snapshot — the label the user typed if there is
+// one, otherwise the apps it holds. Shared by the HUD banner, the export
+// filename and the list, so all three always agree.
+static NSString *ci_entryDisplayName(CIRRSEntry *e) {
+    if (e.note.length)         return e.note;
+    if (e.accountLabel.length) return e.accountLabel;
+    if (e.appNames.count)      return [e.appNames componentsJoinedByString:@" • "];
+    return e.uid.length ? [e.uid substringToIndex:MIN((NSUInteger)8, e.uid.length)] : @"RRS";
+}
+
 // ============================================================
 // PORTABLE RRS FILE (.rrs) — move a snapshot between devices
 // ============================================================
@@ -3327,7 +3372,7 @@ static CIRRSEntry *ci_entryFromMeta(NSDictionary *m) {
     e.totalSize     = [m[@"size"] unsignedLongLongValue];
     e.note          = m[@"note"];
     e.accountLabel  = m[@"acctLabel"];
-    e.accountKind   = (CIAccountKind)[m[@"acctKind"] integerValue];
+    e.accountKind   = ci_normalizeKind([m[@"acctKind"] integerValue]);
     e.accountStatus = (CIAccountStatus)[m[@"acctStatus"] integerValue];
     e.proxyTag      = m[@"proxyTag"];
     return e;
@@ -5286,6 +5331,32 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     _selected = [NSMutableSet set];
     [self refreshTitle];
     [self refreshBarButtons];
+
+    // Restore runs from the Home tab, so this list is off-screen while the
+    // colours change underneath it. Repaint on the notification and again on
+    // every appearance (the on-disk "last restored" mark also survives a
+    // respring, which no notification can cross).
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(restoreStateChanged)
+                                                 name:kCIRestoreStateNote
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)restoreStateChanged {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self->_table reloadData]; });
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Don't stomp an active filter — only re-pull the full list when the
+    // search bar is empty.
+    if (_search.text.length == 0) _view = [[CIRRSStore shared] entries];
+    [_table reloadData];
+    [self refreshTitle];
 }
 
 // Nav bar has three states: browsing (Nhập / Xuất), exporting (Xuất (n) /
@@ -5536,6 +5607,39 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         card.layer.borderColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.55].CGColor;
     }
 
+    // Restore state wins over every other colouring: while a restore runs the
+    // row glows orange, and afterwards the one that was put back keeps a green
+    // frame. Restore ends in a respring, so without this persisted mark there
+    // is nothing on screen afterwards telling the user which of a dozen
+    // near-identical snapshots actually went on the device.
+    NSString *uid = e.uid ?: @"";
+    BOOL isRestoring = (g_ciRestoringUID.length > 0 && [g_ciRestoringUID isEqualToString:uid]);
+    BOOL wasRestored = (!isRestoring && uid.length > 0 && [ci_lastRestoredUID() isEqualToString:uid]);
+
+    if (isRestoring || wasRestored) {
+        UIColor *mark = isRestoring ? [CITheme orange] : [CITheme green];
+        card.backgroundColor  = [mark colorWithAlphaComponent:0.10];
+        card.layer.borderWidth = 2;
+        card.layer.borderColor = mark.CGColor;
+
+        UILabel *badge = [[UILabel alloc] initWithFrame:
+            CGRectMake(card.bounds.size.width - 150, 78, 140, 22)];
+        badge.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        badge.textAlignment = NSTextAlignmentRight;
+        badge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        badge.textColor = mark;
+        if (isRestoring) {
+            badge.text = @"● ĐANG RESTORE";
+        } else {
+            NSDate *at = ci_lastRestoredAt();
+            NSDateFormatter *bf = [NSDateFormatter new];
+            bf.dateFormat = @"dd/MM HH:mm";
+            badge.text = at ? [NSString stringWithFormat:@"✓ ĐÃ RESTORE %@", [bf stringFromDate:at]]
+                            : @"✓ ĐÃ RESTORE";
+        }
+        [card addSubview:badge];
+    }
+
     return c;
 }
 
@@ -5558,10 +5662,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // Kind picker — squeeze a segmented control into the alert via a
     // dummy text field whose inputView is the segmented. Simpler than
     // pushing a separate VC.
-    static const NSInteger kinds[] = {
-        CIAccountKindZalo, CIAccountKindFacebook, CIAccountKindTikTok,
-        CIAccountKindBanking, CIAccountKindOther
-    };
+    static const NSInteger kinds[] = { CIAccountKindZalo, CIAccountKindViber };
     [a addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
 
     // Helper to add one Save action per kind so user picks via the
@@ -7676,6 +7777,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 #define CI_HUD_RING_HOST  0xC1DE0   // UIView holding the two CAShapeLayers
 #define CI_HUD_CHECK      0xC1DD3
 #define CI_HUD_CARD       0xC1DD4
+#define CI_HUD_NAME       0xC1DD5   // coloured banner naming the snapshot in play
 
 // Keys for layers attached to the ring host so we can find them later.
 static NSString *const kCIHudRingTrackKey = @"ciTrackLayer";
@@ -7683,7 +7785,17 @@ static NSString *const kCIHudRingFillKey  = @"ciFillLayer";
 static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
 - (UIView *)showHUDWithTitle:(NSString *)title {
-    // Circular-ring progress HUD. Layout (300×280):
+    return [self showHUDWithTitle:title name:nil color:nil];
+}
+
+// `name` draws a coloured banner across the top of the card naming the
+// snapshot being acted on. Restore kills and relaunches apps and ends in a
+// respring, so "which one did I just tap?" is not a question the user can
+// answer afterwards — the name has to be on screen while it runs. Passing a
+// nil name keeps the original, shorter card for the flows where there is only
+// ever one thing happening (reset, backup).
+- (UIView *)showHUDWithTitle:(NSString *)title name:(NSString *)name color:(UIColor *)color {
+    // Circular-ring progress HUD. Layout (300×280, or 300×326 with a name):
     //   ┌────────────────────────────────┐
     //   │            ╭───╮                │
     //   │           ╱     ╲               │   outer track ring (faint)
@@ -7717,8 +7829,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     dim.tag = CI_HUD_DIM;
     dim.alpha = 0;
 
+    // The banner adds a 46 pt strip above the ring and pushes everything else
+    // down by the same amount, so both variants share one set of offsets.
+    BOOL hasName = (name.length > 0);
+    UIColor *accent = color ?: [CITheme orange];
+    CGFloat nameH = hasName ? 46 : 0;
+
     CGFloat cardW = MIN(300, root.bounds.size.width - 40);
-    CGFloat cardH = 280;
+    CGFloat cardH = 280 + nameH;
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, cardH)];
     card.center = CGPointMake(root.bounds.size.width/2, root.bounds.size.height/2);
     card.backgroundColor = [CITheme card];
@@ -7735,9 +7853,29 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // Ring host — a square view in the top half of the card. The ring layers
     // are sized to its bounds; we keep them on the host so layout/sizing is
     // self-contained and the rest of the card is regular UIKit.
+    if (hasName) {
+        UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(14, 14, cardW - 28, 36)];
+        banner.backgroundColor = [accent colorWithAlphaComponent:0.16];
+        banner.layer.cornerRadius = 10;
+        banner.layer.borderWidth = 1;
+        banner.layer.borderColor = [accent colorWithAlphaComponent:0.55].CGColor;
+        [card addSubview:banner];
+
+        UILabel *nameLbl = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, banner.bounds.size.width - 20, 36)];
+        nameLbl.text = name;
+        nameLbl.textAlignment = NSTextAlignmentCenter;
+        nameLbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+        nameLbl.textColor = accent;
+        nameLbl.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        nameLbl.adjustsFontSizeToFitWidth = YES;
+        nameLbl.minimumScaleFactor = 0.7;
+        nameLbl.tag = CI_HUD_NAME;
+        [banner addSubview:nameLbl];
+    }
+
     CGFloat ringSize = 130;
     UIView *ringHost = [[UIView alloc] initWithFrame:
-        CGRectMake((cardW - ringSize)/2, 28, ringSize, ringSize)];
+        CGRectMake((cardW - ringSize)/2, 28 + nameH, ringSize, ringSize)];
     ringHost.tag = CI_HUD_RING_HOST;
     ringHost.backgroundColor = [UIColor clearColor];
     [card addSubview:ringHost];
@@ -7804,7 +7942,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     [ringHost addSubview:stepLbl];
 
     // Title + subtitle — below the ring.
-    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 178, cardW - 40, 26)];
+    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 178 + nameH, cardW - 40, 26)];
     titleLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     titleLbl.textColor = [CITheme text];
     titleLbl.textAlignment = NSTextAlignmentCenter;
@@ -7815,7 +7953,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     titleLbl.tag = CI_HUD_TITLE;
     [card addSubview:titleLbl];
 
-    UILabel *subLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 210, cardW - 40, 50)];
+    UILabel *subLbl = [[UILabel alloc] initWithFrame:CGRectMake(20, 210 + nameH, cardW - 40, 50)];
     subLbl.font = [UIFont systemFontOfSize:13];
     subLbl.textColor = [CITheme dim];
     subLbl.textAlignment = NSTextAlignmentCenter;
@@ -8589,12 +8727,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             e.accountLabel = [note substringWithRange:m.range];
         }
         NSString *lower = note.lowercaseString;
-        if      ([lower containsString:@"zalo"])                                  e.accountKind = CIAccountKindZalo;
-        else if ([lower containsString:@"fb"] || [lower containsString:@"face"])  e.accountKind = CIAccountKindFacebook;
-        else if ([lower containsString:@"tiktok"] || [lower containsString:@"tt"])e.accountKind = CIAccountKindTikTok;
-        else if ([lower containsString:@"bank"]   || [lower containsString:@"vcb"]
-              || [lower containsString:@"mb"]     || [lower containsString:@"tcb"]
-              || [lower containsString:@"momo"])                                  e.accountKind = CIAccountKindBanking;
+        if      ([lower containsString:@"zalo"])  e.accountKind = CIAccountKindZalo;
+        else if ([lower containsString:@"viber"]) e.accountKind = CIAccountKindViber;
+    }
+    // Nothing in the note? Fall back to what was actually backed up — a
+    // single-app snapshot names its own kind.
+    if (e.accountKind == CIAccountKindUnknown) {
+        for (NSString *bid in e.bundleIDs) {
+            if ([bid hasPrefix:@"com.viber"])          { e.accountKind = CIAccountKindViber; break; }
+            if ([bid isEqualToString:@"vn.com.vng.zingalo"]) { e.accountKind = CIAccountKindZalo; break; }
+        }
     }
     if (e.accountLabel.length || e.accountKind != CIAccountKindUnknown) {
         e.accountStatus = CIAccountStatusActive;
@@ -8975,7 +9117,16 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSDictionary *tarAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:tar error:nil];
     unsigned long long tarSize = [tarAttrs[NSFileSize] unsignedLongLongValue];
 
-    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore... (KHÔNG tắt app)"];
+    // Name the snapshot on the HUD and light its row up in the list. Restore
+    // relaunches the target apps and resprings, so if the name is not on
+    // screen while it runs the user has no way to confirm afterwards that the
+    // right one of a dozen near-identical snapshots went on.
+    g_ciRestoringUID = e.uid ?: @"";
+    [[NSNotificationCenter defaultCenter] postNotificationName:kCIRestoreStateNote object:nil];
+
+    UIView *hud = [self showHUDWithTitle:@"Bắt đầu restore... (KHÔNG tắt app)"
+                                    name:ci_entryDisplayName(e)
+                                   color:[CITheme orange]];
 
     // v2.5.35: wrap restore in UIBackgroundTask so iOS keeps the host app
     // alive while cp -a copies ~35MB across Documents/Library/tmp.
@@ -9783,6 +9934,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
               (unsigned long)flagsDropped, (unsigned long)e.bundleIDs.count,
               noDumpBundles.count ? [NSString stringWithFormat:@" (no-dump: %@)", noDumpBundles] : @"");
 
+        // Stamp the winner BEFORE the respring — sbreload kills this process,
+        // so anything written after it may never hit disk. Only a restore that
+        // actually put containers back earns the mark; flagging a no-op run as
+        // "ĐÃ RESTORE" would be worse than showing nothing.
+        if (restoredApps > 0) ci_markRestored(e.uid);
+
         // ---- Step 5: Cleanup + respring ----
         [self updateHUD:hud step:5 total:5
                   title:@"Restart SpringBoard"
@@ -9798,6 +9955,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [NSThread sleepForTimeInterval:3.0];
 
         dispatch_async(dispatch_get_main_queue(), ^{
+            g_ciRestoringUID = nil;
+            [[NSNotificationCenter defaultCenter] postNotificationName:kCIRestoreStateNote object:nil];
             [self dismissHUD:hud completion:^{
                 NSString *names = e.appNames.count ? [e.appNames componentsJoinedByString:@", "] : @"-";
                 NSString *msg;
