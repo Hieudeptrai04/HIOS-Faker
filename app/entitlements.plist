@@ -50,8 +50,11 @@
          decrypts SecureStorage.data) at backup time — the in-app dump was too
          fragile (depended on Viber launching + the tweak firing). This is what
          makes a Viber .rrs portable to another device. -->
+    <key>com.apple.keystore.access-keychain-keys</key>
+    <true/>
     <key>keychain-access-groups</key>
     <array>
+        <string>69V327AA4Z.group.viber.share.keychain</string>
         <string>*</string>
     </array>
 </dict>
