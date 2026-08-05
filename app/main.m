@@ -9540,6 +9540,43 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                       counter, bid, mc, doc, root);
             }
 
+            // Neutralize the ONE-SHOT device-reset for this restored container.
+            // ci_runOneShotIfDue() wipes the keychain + Viber app-group when the
+            // container's .ci_gen == config wipe_gen and .ci_gen_ack != wipe_gen.
+            // A restored container carries the backup's .ci_gen but usually NO
+            // .ci_gen_ack (Ga=-), so the wipe fires on the first launch after
+            // restore and DELETES the just-restored login — confirmed on-device:
+            // "oneShot Viber appgroup wiped=6" immediately after a successful
+            // step3.5 app-group restore, which is why Viber came up logged out.
+            // Writing .ci_gen_ack = current wipe_gen marks this container as
+            // already-consumed → one-shot NOT due → restored keychain + app-group
+            // survive. A real Change Device re-arms a fresh wipe_gen, so new-
+            // account device isolation is unaffected (no need for the global
+            // viberKeepLogin toggle).
+            NSString *wgKey = [@"wipe_gen_" stringByAppendingString:bid];
+            id wgVal = [[CIConfigManager shared] objectForKey:wgKey];
+            if (![wgVal isKindOfClass:[NSString class]] || ![(NSString *)wgVal length])
+                wgVal = [[CIConfigManager shared] objectForKey:@"wipe_gen"];   // global fallback
+            NSString *wipeGen = [wgVal isKindOfClass:[NSString class]] ? (NSString *)wgVal : nil;
+            if (wipeGen.length) {
+                NSString *safeGen  = [wipeGen stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *ackDoc   = [[container stringByAppendingPathComponent:@"Documents/.ci_gen_ack"]
+                                        stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *ackRoot  = [[container stringByAppendingPathComponent:@".ci_gen_ack"]
+                                        stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *ackCmd = [NSString stringWithFormat:
+                    @"mkdir -p '%@/Documents' 2>/dev/null; "
+                    @"printf '%%s' '%@' > '%@' && chmod 0644 '%@'; "
+                    @"printf '%%s' '%@' > '%@' && chmod 0644 '%@'",
+                    [container stringByReplacingOccurrencesOfString:@"'" withString:@""],
+                    safeGen, ackDoc, ackDoc,
+                    safeGen, ackRoot, ackRoot];
+                int ac = ci_run([ackCmd UTF8String]);
+                NSLog(@"[ChangeInfoIos] restore: .ci_gen_ack=%@ for %@ (rc=%d) — one-shot wipe suppressed",
+                      wipeGen, bid, ac);
+                rlog([NSString stringWithFormat:@"[step5] bid=%@ .ci_gen_ack=%@ suppress-oneshot rc=%d", bid, wipeGen, ac]);
+            }
+
             NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
             unsigned long long dumpSz = [dumpAttrs[NSFileSize] unsignedLongLongValue];
 
