@@ -1557,31 +1557,57 @@ static void ci_dumpKeychain(void) {
                           (__bridge id)kSecClassIdentity ];
     NSMutableArray *out = [NSMutableArray array];
     for (id cls in classes) {
-        NSDictionary *q = @{ (__bridge id)kSecClass:            cls,
-                             (__bridge id)kSecMatchLimit:       (__bridge id)kSecMatchLimitAll,
-                             (__bridge id)kSecReturnAttributes: (__bridge id)kCFBooleanTrue,
-                             (__bridge id)kSecReturnData:       (__bridge id)kCFBooleanTrue };
+        // Step 1: ENUMERATE attributes only (NO bulk data), INCLUDING iCloud-
+        // synchronizable items. The old single "attributes+data+MatchLimitAll"
+        // query returned 0 for Viber for two reasons: (a) that combo fails
+        // wholesale (errSecItemNotFound / InteractionNotAllowed) when ANY item's
+        // data can't be bulk-returned, and (b) the default query (no
+        // kSecAttrSynchronizable) SKIPS synchronizable items — exactly where
+        // Viber keeps the key that decrypts SecureStorage.data. So a Viber dump
+        // came out empty and cross-device restore had no key → stayed logged out.
+        // Enumerate here; fetch each secret one-by-one below.
+        NSDictionary *enumQ = @{ (__bridge id)kSecClass:             cls,
+                                 (__bridge id)kSecMatchLimit:        (__bridge id)kSecMatchLimitAll,
+                                 (__bridge id)kSecReturnAttributes:  (__bridge id)kCFBooleanTrue,
+                                 (__bridge id)kSecAttrSynchronizable:(__bridge id)kSecAttrSynchronizableAny };
         CFTypeRef res = NULL;
         // orig_ bypasses our own blocking hook so ALL items are captured.
-        OSStatus st = orig_SecItemCopyMatching((__bridge CFDictionaryRef)q, &res);
-        if (st == errSecSuccess && res) {
-            NSArray *arr = (CFGetTypeID(res) == CFArrayGetTypeID())
-                           ? (__bridge NSArray *)res : @[ (__bridge id)res ];
-            for (id itd in arr) {
-                if (![itd isKindOfClass:[NSDictionary class]]) continue;
-                NSDictionary *it = (NSDictionary *)itd;
-                NSMutableDictionary *ser = [NSMutableDictionary dictionary];
-                ser[@"class"] = cls;   // SecItemCopyMatching doesn't return the class
-                for (NSString *k in it) {
-                    id v = it[k];
-                    if ([v isKindOfClass:[NSDate class]]) continue;   // cdat/mdat read-only
-                    id w = ci_kcWrap(v);
-                    if (w) ser[k] = w;
-                }
-                [out addObject:ser];
+        OSStatus st = orig_SecItemCopyMatching((__bridge CFDictionaryRef)enumQ, &res);
+        NSArray *arr = @[];
+        if (st == errSecSuccess && res)
+            arr = (CFGetTypeID(res) == CFArrayGetTypeID()) ? (__bridge NSArray *)res : @[ (__bridge id)res ];
+        int got = 0;
+        for (id itd in arr) {
+            if (![itd isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *it = (NSDictionary *)itd;
+            NSMutableDictionary *ser = [NSMutableDictionary dictionary];
+            ser[@"class"] = cls;   // SecItemCopyMatching doesn't return the class
+            for (NSString *k in it) {
+                id v = it[k];
+                if ([v isKindOfClass:[NSDate class]]) continue;   // cdat/mdat read-only
+                id w = ci_kcWrap(v);
+                if (w) ser[k] = w;
             }
+            // Step 2: pinpoint-fetch THIS item's secret data. Per-item read
+            // avoids the bulk-data failure; match the item's own sync flag so
+            // synchronizable secrets come back too.
+            NSMutableDictionary *dq = [NSMutableDictionary dictionary];
+            dq[(__bridge id)kSecClass] = cls;
+            for (NSString *idk in @[ @"acct", @"svce", @"agrp", @"srvr", @"labl", @"gena" ])
+                if (it[idk]) dq[idk] = it[idk];
+            dq[(__bridge id)kSecMatchLimit]         = (__bridge id)kSecMatchLimitOne;
+            dq[(__bridge id)kSecReturnData]         = (__bridge id)kCFBooleanTrue;
+            dq[(__bridge id)kSecAttrSynchronizable] = it[@"sync"] ?: (__bridge id)kSecAttrSynchronizableAny;
+            CFTypeRef dref = NULL;
+            OSStatus dst = orig_SecItemCopyMatching((__bridge CFDictionaryRef)dq, &dref);
+            if (dst == errSecSuccess && dref && CFGetTypeID(dref) == CFDataGetTypeID())
+                ser[@"v_Data"] = ci_kcWrap((__bridge NSData *)dref);
+            if (dref) CFRelease(dref);
+            [out addObject:ser];
+            got++;
         }
         if (res) CFRelease(res);
+        dbglog("Keychain.dump.cls %s st=%d items=%d\n", g_procname, (int)st, got);
     }
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
     NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
