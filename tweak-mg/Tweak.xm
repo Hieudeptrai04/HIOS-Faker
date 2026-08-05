@@ -1566,10 +1566,11 @@ static void ci_dumpKeychain(void) {
         // Viber keeps the key that decrypts SecureStorage.data. So a Viber dump
         // came out empty and cross-device restore had no key → stayed logged out.
         // Enumerate here; fetch each secret one-by-one below.
-        NSDictionary *enumQ = @{ (__bridge id)kSecClass:             cls,
-                                 (__bridge id)kSecMatchLimit:        (__bridge id)kSecMatchLimitAll,
-                                 (__bridge id)kSecReturnAttributes:  (__bridge id)kCFBooleanTrue,
-                                 (__bridge id)kSecAttrSynchronizable:(__bridge id)kSecAttrSynchronizableAny };
+        NSDictionary *enumQ = @{ (__bridge id)kSecClass:              cls,
+                                 (__bridge id)kSecMatchLimit:         (__bridge id)kSecMatchLimitAll,
+                                 (__bridge id)kSecReturnAttributes:   (__bridge id)kCFBooleanTrue,
+                                 (__bridge id)kSecReturnPersistentRef: (__bridge id)kCFBooleanTrue,
+                                 (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny };
         CFTypeRef res = NULL;
         // orig_ bypasses our own blocking hook so ALL items are captured.
         OSStatus st = orig_SecItemCopyMatching((__bridge CFDictionaryRef)enumQ, &res);
@@ -1583,26 +1584,29 @@ static void ci_dumpKeychain(void) {
             NSMutableDictionary *ser = [NSMutableDictionary dictionary];
             ser[@"class"] = cls;   // SecItemCopyMatching doesn't return the class
             for (NSString *k in it) {
+                // v_PersistentRef is only for re-fetching the data below; it is
+                // device-scoped and not a valid add attribute — never serialize it.
+                if ([k isEqualToString:@"v_PersistentRef"] || [k isEqualToString:@"persistref"]) continue;
                 id v = it[k];
                 if ([v isKindOfClass:[NSDate class]]) continue;   // cdat/mdat read-only
                 id w = ci_kcWrap(v);
                 if (w) ser[k] = w;
             }
-            // Step 2: pinpoint-fetch THIS item's secret data. Per-item read
-            // avoids the bulk-data failure; match the item's own sync flag so
-            // synchronizable secrets come back too.
-            NSMutableDictionary *dq = [NSMutableDictionary dictionary];
-            dq[(__bridge id)kSecClass] = cls;
-            for (NSString *idk in @[ @"acct", @"svce", @"agrp", @"srvr", @"labl", @"gena" ])
-                if (it[idk]) dq[idk] = it[idk];
-            dq[(__bridge id)kSecMatchLimit]         = (__bridge id)kSecMatchLimitOne;
-            dq[(__bridge id)kSecReturnData]         = (__bridge id)kCFBooleanTrue;
-            dq[(__bridge id)kSecAttrSynchronizable] = it[@"sync"] ?: (__bridge id)kSecAttrSynchronizableAny;
-            CFTypeRef dref = NULL;
-            OSStatus dst = orig_SecItemCopyMatching((__bridge CFDictionaryRef)dq, &dref);
-            if (dst == errSecSuccess && dref && CFGetTypeID(dref) == CFDataGetTypeID())
-                ser[@"v_Data"] = ci_kcWrap((__bridge NSData *)dref);
-            if (dref) CFRelease(dref);
+            // Step 2: fetch THIS item's secret DATA by its PERSISTENT REF. The ref
+            // targets the exact item even though Viber stores binary acct/svce
+            // (which made acct/svce matching unreliable), and per-item read avoids
+            // the bulk-ReturnData failure. None of Viber's items are biometric
+            // (all ck/cku/aku), so this never prompts / never hangs.
+            id pref = it[@"v_PersistentRef"] ?: it[@"persistref"];
+            if (pref) {
+                NSDictionary *dq = @{ (__bridge id)kSecValuePersistentRef: pref,
+                                      (__bridge id)kSecReturnData:          (__bridge id)kCFBooleanTrue };
+                CFTypeRef dref = NULL;
+                OSStatus dst = orig_SecItemCopyMatching((__bridge CFDictionaryRef)dq, &dref);
+                if (dst == errSecSuccess && dref && CFGetTypeID(dref) == CFDataGetTypeID())
+                    ser[@"v_Data"] = ci_kcWrap((__bridge NSData *)dref);
+                if (dref) CFRelease(dref);
+            }
             [out addObject:ser];
             got++;
         }
@@ -3101,32 +3105,26 @@ static void notify_cb(int t) {
             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int __unused x){
                 @autoreleasepool { ci_dumpKeychain(); }
             });
-        // Proactive keychain snapshot when the target goes to BACKGROUND. The
-        // backup-time dump_keychain notification is unreliable: while the user is
-        // in HIOS Faker pressing Backup, the target (Viber) is backgrounded and
-        // iOS SUSPENDS it, so its dispatch queues never service the notification
-        // and the tar gets NO keychain — confirmed on device (Viber not running at
-        // backup → no dump → cross-device restore had no decryption key). Dumping
-        // on didEnterBackground runs SYNCHRONOUSLY on the main thread the moment
-        // the user leaves Viber (to open HIOS Faker), so a fresh
-        // tmp/hios_keychain.plist is already on disk when the backup reads it.
-        {
-            const char *pnd = getprogname();
-            if (pnd && (strstr(pnd,"Zalo") || strstr(pnd,"zalo") || strstr(pnd,"zingalo") ||
-                        strstr(pnd,"imess") || strstr(pnd,"Viber"))) {
-                [[NSNotificationCenter defaultCenter]
-                    addObserverForName:UIApplicationDidEnterBackgroundNotification
-                    object:nil queue:nil usingBlock:^(NSNotification *n __unused){
-                        @autoreleasepool { ci_dumpKeychain(); }
-                    }];
-            }
-        }
+        // Target-app one-time wiring: (1) re-apply a flagged keychain restore, and
+        // (2) proactively snapshot the keychain 4s after launch on a BACKGROUND
+        // queue. This replaces the 4.3.6 didEnterBackground dump, which ran
+        // SYNCHRONOUSLY on the MAIN thread and risked a FrontBoard watchdog SIGKILL
+        // ("văng") — that regression is gone. Off the launch/main path it can't
+        // stall the app. Firing on every launch means: the user opens Viber
+        // (logged in) → 4s later a fresh tmp/hios_keychain.plist (its login items,
+        // incl. the SecureStorage decryption key) is on disk → the next backup
+        // captures it, whether or not Viber is suspended when Backup is pressed.
         {
             const char *pnk = getprogname();
             if (pnk && (strstr(pnk,"Zalo")   || strstr(pnk,"zalo") ||
                         strstr(pnk,"zingalo")|| strstr(pnk,"imess")||
-                        strstr(pnk,"Viber")))
+                        strstr(pnk,"Viber"))) {
                 ci_restoreKeychainIfFlagged();
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                               dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    @autoreleasepool { ci_dumpKeychain(); }
+                });
+            }
         }
         (void)&tw_deviceMGHash; (void)&tw_sigOK;                       // (device-bind reverted)
 
