@@ -3695,7 +3695,7 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
     // dumps and per-bundle restore flags are dead weight in 4.2.x and never
     // needed to carry a login across devices.
     [cmd appendString:@" --exclude='*/changeinfoios/dump_*.plist'"];
-    [cmd appendString:@" --exclude='*/changeinfoios/restore_kc_*.flag'"];
+    [cmd appendString:@" --exclude='*/changeinfoios/restore_*.flag'"];
     [cmd appendString:@" /var/jb/etc/changeinfoios"];
     for (NSString *p in containerPaths) [cmd appendFormat:@" '%@'", p];
     if (errLog.length) [cmd appendFormat:@" 2>%@", errLog];

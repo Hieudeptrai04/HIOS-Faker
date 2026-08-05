@@ -1622,8 +1622,11 @@ static void ci_restoreKeychainIfFlagged(void) {
     // CRITICAL: run the SecItem work on a BACKGROUND queue, NEVER inline in
     // %ctor — inline it blocked the app launch ~21s → FrontBoard watchdog
     // SIGKILL (Zalo "treo logo rồi văng"). Off the launch path it cannot
-    // watchdog the app.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    // watchdog the app. Extra guard: a 3s delay so the target finishes its own
+    // launch + keychain reads before we replay, avoiding any launch-time
+    // contention with its Security.framework calls.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     @autoreleasepool {
     NSData *data = [NSData dataWithContentsOfFile:dump];
     id items = data.length ? [NSPropertyListSerialization propertyListWithData:data
@@ -3054,16 +3057,31 @@ static void notify_cb(int t) {
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
-        // RRS keychain dump/restore DISABLED (4.1.3). The in-tweak restore ran at
-        // launch and repeatedly watchdog-crashed the target app (Zalo "treo logo
-        // → văng"; FRONTBOARD / SIGTRAP with ChangeInfoIosMG in the stack), even
-        // after moving it to a background queue — and RRS restore keeps re-dropping
-        // stale restore_*.flag files from the tar, so it re-triggered every launch.
-        // Reverting to the proven-stable 4.0.x/4.1.0 behavior: NO keychain capture
-        // or replay. RRS restore falls back to Zalo's server re-sync (slower, but
-        // it NEVER crashes). ci_dumpKeychain / ci_restoreKeychainIfFlagged remain
-        // defined but are intentionally NOT wired here.
-        (void)&ci_dumpKeychain; (void)&ci_restoreKeychainIfFlagged;   // silence unused
+        // RRS keychain DUMP + RESTORE — RE-ENABLED 4.3.2 (crash-safe rewrite).
+        // The 4.1.3 disable was because the replay ran too eagerly AND a stale
+        // restore_*.flag rode inside the backup tar → re-fired every launch and
+        // watchdog-crashed ("treo logo → văng"). Both root causes are now fixed:
+        //   - dump: READ-ONLY, background queue, writes tmp/hios_keychain.plist.
+        //   - restore: background queue + 3s delay (off the launch path) + a
+        //     run-once mtime guard in NSUserDefaults so it applies each dump AT
+        //     MOST once, and the host now --excludes restore_*.flag / dump_*.plist
+        //     from backups so a flag can never ride the tar and re-trigger.
+        // Required for Viber: its login credential lives in the keychain
+        // (69V327AA4Z.group.viber.share.keychain); restoring only the app-group
+        // container (SecureStorage.data) leaves it logged out — confirmed on-device
+        // (restoreEntry.log: app-group rc=0 but NO DUMP → Viber still asked login).
+        int tKcDump = 0;
+        notify_register_dispatch("com.changeinfoios/dump_keychain", &tKcDump,
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int __unused x){
+                @autoreleasepool { ci_dumpKeychain(); }
+            });
+        {
+            const char *pnk = getprogname();
+            if (pnk && (strstr(pnk,"Zalo")   || strstr(pnk,"zalo") ||
+                        strstr(pnk,"zingalo")|| strstr(pnk,"imess")||
+                        strstr(pnk,"Viber")))
+                ci_restoreKeychainIfFlagged();
+        }
         (void)&tw_deviceMGHash; (void)&tw_sigOK;                       // (device-bind reverted)
 
         // RestartTarget: app sends this after GPS sync-with-proxy to flush Safari's
