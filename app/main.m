@@ -8853,6 +8853,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [missingDumps removeAllObjects];
         [foundDumps removeAllObjects];
         for (NSString *bid in b) {
+            // App-group-login apps (Viber) keep their session in the shared
+            // app-group container, NOT the keychain — the host reads that file
+            // directly, so their keychain dump is empty/useless. Do NOT block the
+            // backup waiting for it, otherwise a Viber backup hangs the full 8s
+            // whenever Viber is swiped closed (nothing to dump). Confirmed on
+            // device: Viber login restores from SecureStorage.data alone.
+            if (ci_appGroupIDsForBundle(bid).count > 0) continue;
             NSString *container = ci_findDataContainerForBundle(bid);
             if (container.length == 0) {
                 [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
@@ -8868,7 +8875,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [missingDumps addObject:bid];
             }
         }
-        if (missingDumps.count == 0) break; // all dumps present + fresh
+        if (missingDumps.count == 0) break; // all required dumps present + fresh
     }
     NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %d×0.5s retries)",
           foundDumps, missingDumps, 16);
@@ -8932,6 +8939,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [foundDumps removeAllObjects];
             [missingDumps removeAllObjects];
             for (NSString *bid in bids) {
+                // App-group-login apps (Viber): keychain dump is empty/useless,
+                // don't block the re-backup on it (see createRRSForBundles note).
+                if (ci_appGroupIDsForBundle(bid).count > 0) continue;
                 NSString *container = ci_findDataContainerForBundle(bid);
                 if (container.length == 0) {
                     [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
