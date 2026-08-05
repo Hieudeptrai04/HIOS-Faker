@@ -17,6 +17,7 @@
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
 #import <CoreLocation/CoreLocation.h>    // CLLocationManager manager SPI — reset app location auth
+#import <Security/Security.h>            // SecItemCopyMatching — host-side keychain dump (wildcard entitlement)
 // xpc/xpc.h is stripped from the Theos iPhoneOS SDK, so declare the libxpc C
 // symbols we need (they live in libSystem, always linked). xpc objects are
 // opaque void* here, so ARC can't track them — managed manually via xpc_release.
@@ -2677,6 +2678,104 @@ static NSArray<NSString *> *ci_appGroupIDsForBundle(NSString *bundleID) {
     });
     NSArray *v = map[bundleID];
     return v ?: @[];
+}
+
+// bundle → shared keychain-access-groups holding login credentials. Viber keeps
+// the key that decrypts SecureStorage.data here — 7 items, all ck/cku/aku (no
+// biometric), so they're portable to another device once captured.
+static NSArray<NSString *> *ci_keychainGroupsForBundle(NSString *bundleID) {
+    static NSDictionary *map; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{ @"com.viber": @[@"69V327AA4Z.group.viber.share.keychain"] };
+    });
+    NSArray *v = map[bundleID];
+    return v ?: @[];
+}
+
+// Wrap NSData as {"__b": base64} so it survives XML-plist serialization — the exact
+// shape ci_restoreKeychainIfFlagged (tweak) expects to unwrap on restore.
+static id ci_hostKcWrap(id v) {
+    if ([v isKindOfClass:[NSData class]])
+        return @{ @"__b": [(NSData *)v base64EncodedStringWithOptions:0] };
+    return v;
+}
+
+// HOST-SIDE keychain dump. Because HIOS Faker is signed with keychain-access-groups
+// '*' (jailbreak wildcard, keychain_dumper technique), it can read ANY app's
+// keychain group WITHOUT that app running — this replaces the fragile in-app dump
+// that depended on Viber launching + the tweak firing. Serializes each item (attrs
+// keyed by short SecItem names + v_Data) to <container>/tmp/hios_keychain.plist in
+// the SAME format the tweak's restore path re-applies. Returns item count.
+static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container) {
+    NSArray<NSString *> *groups = ci_keychainGroupsForBundle(bundleID);
+    if (groups.count == 0 || container.length == 0) return 0;
+    NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
+                          (__bridge id)kSecClassInternetPassword,
+                          (__bridge id)kSecClassCertificate,
+                          (__bridge id)kSecClassKey,
+                          (__bridge id)kSecClassIdentity ];
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *grp in groups) {
+        for (id cls in classes) {
+            // Enumerate attributes + a persistent ref per item (incl. sync items),
+            // scoped to this access group so we only grab the target app's items.
+            NSDictionary *enumQ = @{ (__bridge id)kSecClass:              cls,
+                                     (__bridge id)kSecAttrAccessGroup:    grp,
+                                     (__bridge id)kSecMatchLimit:         (__bridge id)kSecMatchLimitAll,
+                                     (__bridge id)kSecReturnAttributes:   (__bridge id)kCFBooleanTrue,
+                                     (__bridge id)kSecReturnPersistentRef: (__bridge id)kCFBooleanTrue,
+                                     (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny };
+            CFTypeRef res = NULL;
+            OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)enumQ, &res);
+            NSArray *arr = @[];
+            if (st == errSecSuccess && res)
+                arr = (CFGetTypeID(res) == CFArrayGetTypeID()) ? (__bridge NSArray *)res : @[ (__bridge id)res ];
+            for (id itd in arr) {
+                if (![itd isKindOfClass:[NSDictionary class]]) continue;
+                NSDictionary *it = (NSDictionary *)itd;
+                NSMutableDictionary *ser = [NSMutableDictionary dictionary];
+                ser[@"class"] = cls;
+                for (NSString *k in it) {
+                    if ([k isEqualToString:@"v_PersistentRef"] || [k isEqualToString:@"persistref"]) continue;
+                    id v = it[k];
+                    if ([v isKindOfClass:[NSDate class]]) continue;   // cdat/mdat read-only
+                    id w = ci_hostKcWrap(v);
+                    if (w) ser[k] = w;
+                }
+                id pref = it[@"v_PersistentRef"] ?: it[@"persistref"];
+                if (pref) {
+                    NSDictionary *dq = @{ (__bridge id)kSecValuePersistentRef: pref,
+                                          (__bridge id)kSecReturnData:          (__bridge id)kCFBooleanTrue };
+                    CFTypeRef dref = NULL;
+                    OSStatus dst = SecItemCopyMatching((__bridge CFDictionaryRef)dq, &dref);
+                    if (dst == errSecSuccess && dref && CFGetTypeID(dref) == CFDataGetTypeID())
+                        ser[@"v_Data"] = ci_hostKcWrap((__bridge NSData *)dref);
+                    if (dref) CFRelease(dref);
+                }
+                [out addObject:ser];
+            }
+            if (res) CFRelease(res);
+            NSLog(@"[ChangeInfoIos] host kc dump grp=%@ cls st=%d running-total=%lu", grp, (int)st, (unsigned long)out.count);
+        }
+    }
+    if (out.count == 0) return 0;
+    NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *path = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
+    NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
+                        format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
+    if (plist.length) {
+        // Write via shell (posix_spawn) — NSFileManager into another app's tmp/ can
+        // hit the sandbox MAC even with no-sandbox; the shell child bypasses it.
+        NSString *tmpLocal = [NSString stringWithFormat:@"/tmp/ci_hostkc_%@.plist",
+                              [bundleID stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
+        [plist writeToFile:tmpLocal atomically:YES];
+        NSString *safeIn  = [tmpLocal stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        NSString *safeOut = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        ci_run([[NSString stringWithFormat:@"cp -f '%@' '%@' && chmod 0644 '%@'", safeIn, safeOut, safeOut] UTF8String]);
+    }
+    NSLog(@"[ChangeInfoIos] host kc dump %@ → %lu items @ %@", bundleID, (unsigned long)out.count, path);
+    return (int)out.count;
 }
 
 // Reset a bundle's TCC permissions for REAL by talking to the running tccd over
@@ -8845,6 +8944,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // (partial backup still saves Documents/Library), just warn user.
     notify_post("com.changeinfoios/dump_keychain");
     NSDate *dumpStart = [NSDate date];
+    // HOST-SIDE keychain dump (reliable — uses the wildcard keychain entitlement,
+    // does NOT need the target app running or the tweak to fire). For Viber this
+    // captures the 7 login items that decrypt SecureStorage.data straight into
+    // <container>/tmp/hios_keychain.plist so they ride into the tar. Written AFTER
+    // dumpStart so the poll below sees it as fresh and doesn't wait the full 8s.
+    for (NSString *bid in b) {
+        if (ci_keychainGroupsForBundle(bid).count == 0) continue;
+        NSString *hc = ci_findDataContainerForBundle(bid);
+        if (hc.length) {
+            int n = ci_hostDumpKeychainForBundle(bid, hc);
+            NSLog(@"[ChangeInfoIos] RRS host-dumped %d keychain items for %@", n, bid);
+        }
+    }
     NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];
     NSMutableArray<NSString *> *foundDumps   = [NSMutableArray array];
     NSFileManager *dfm = [NSFileManager defaultManager];
@@ -8929,6 +9041,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // which bundles missed.
         notify_post("com.changeinfoios/dump_keychain");
         NSDate *dumpStart = [NSDate date];
+        // Host-side keychain dump (see createRRSForBundles note) — reliable capture
+        // of Viber's login keychain without the app running.
+        for (NSString *bid in bids) {
+            if (ci_keychainGroupsForBundle(bid).count == 0) continue;
+            NSString *hc = ci_findDataContainerForBundle(bid);
+            if (hc.length) ci_hostDumpKeychainForBundle(bid, hc);
+        }
         NSFileManager *dfm = [NSFileManager defaultManager];
         NSMutableArray<NSString *> *foundDumps = [NSMutableArray array];
         NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];

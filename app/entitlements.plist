@@ -43,5 +43,16 @@
          fix9/10 accounts. -->
     <key>com.apple.locationd.authorizeapplications</key>
     <true/>
+    <!-- Wildcard keychain access (keychain_dumper technique). On an AMFI-patched
+         jailbreak this lets HIOS Faker read/write ANY app's keychain-access-group
+         directly, WITHOUT that app running. Needed to capture Viber's login
+         credential (7 items in 69V327AA4Z.group.viber.share.keychain, the key that
+         decrypts SecureStorage.data) at backup time — the in-app dump was too
+         fragile (depended on Viber launching + the tweak firing). This is what
+         makes a Viber .rrs portable to another device. -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>*</string>
+    </array>
 </dict>
 </plist>
