@@ -3101,6 +3101,26 @@ static void notify_cb(int t) {
             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int __unused x){
                 @autoreleasepool { ci_dumpKeychain(); }
             });
+        // Proactive keychain snapshot when the target goes to BACKGROUND. The
+        // backup-time dump_keychain notification is unreliable: while the user is
+        // in HIOS Faker pressing Backup, the target (Viber) is backgrounded and
+        // iOS SUSPENDS it, so its dispatch queues never service the notification
+        // and the tar gets NO keychain — confirmed on device (Viber not running at
+        // backup → no dump → cross-device restore had no decryption key). Dumping
+        // on didEnterBackground runs SYNCHRONOUSLY on the main thread the moment
+        // the user leaves Viber (to open HIOS Faker), so a fresh
+        // tmp/hios_keychain.plist is already on disk when the backup reads it.
+        {
+            const char *pnd = getprogname();
+            if (pnd && (strstr(pnd,"Zalo") || strstr(pnd,"zalo") || strstr(pnd,"zingalo") ||
+                        strstr(pnd,"imess") || strstr(pnd,"Viber"))) {
+                [[NSNotificationCenter defaultCenter]
+                    addObserverForName:UIApplicationDidEnterBackgroundNotification
+                    object:nil queue:nil usingBlock:^(NSNotification *n __unused){
+                        @autoreleasepool { ci_dumpKeychain(); }
+                    }];
+            }
+        }
         {
             const char *pnk = getprogname();
             if (pnk && (strstr(pnk,"Zalo")   || strstr(pnk,"zalo") ||
