@@ -1538,7 +1538,14 @@ static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attr
 static id ci_kcWrap(id v) {
     if ([v isKindOfClass:[NSData class]])
         return @{ @"__b": [(NSData *)v base64EncodedStringWithOptions:0] };
-    return v;   // NSString / NSNumber pass through; NSDate handled by caller
+    if ([v isKindOfClass:[NSString class]] || [v isKindOfClass:[NSNumber class]])
+        return v;
+    // Drop anything NOT plist-serializable (opaque CFTypeRef / SecAccessControlRef
+    // etc.). Returning it verbatim made NSPropertyListSerialization fail wholesale
+    // → a 0-byte hios_keychain.plist even when 7 items were read. The dropped attrs
+    // are never the login-critical ones (acct/svce/agrp are data/strings, v_Data is
+    // wrapped), so re-add still works.
+    return nil;
 }
 static id ci_kcUnwrap(id v) {
     if ([v isKindOfClass:[NSDictionary class]] && ((NSDictionary *)v)[@"__b"]) {
@@ -1614,11 +1621,13 @@ static void ci_dumpKeychain(void) {
         dbglog("Keychain.dump.cls %s st=%d items=%d\n", g_procname, (int)st, got);
     }
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
+    NSError *serr = nil;
     NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
-                        format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
-    if (plist.length) [plist writeToFile:path atomically:YES];
-    dbglog("Keychain.dump %s items=%lu -> %s\n", g_procname,
-           (unsigned long)out.count, [path UTF8String]);
+                        format:NSPropertyListXMLFormat_v1_0 options:0 error:&serr];
+    BOOL wrote = (plist.length > 0) && [plist writeToFile:path atomically:YES];
+    dbglog("Keychain.dump %s items=%lu serialized=%lu wrote=%d err=%s -> %s\n", g_procname,
+           (unsigned long)out.count, (unsigned long)plist.length, (int)wrote,
+           serr ? [[serr localizedDescription] UTF8String] : "-", [path UTF8String]);
 }
 
 static void ci_restoreKeychainIfFlagged(void) {
