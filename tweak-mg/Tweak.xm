@@ -1630,6 +1630,14 @@ static void ci_dumpKeychain(void) {
            serr ? [[serr localizedDescription] UTF8String] : "-", [path UTF8String]);
 }
 
+// Defined below with the one-shot device-reset. The restore needs them to write the
+// wipe's ack into the TARGET's OWN Documents (cross-device: that ack was previously
+// written to the HIOS app's container, so the target's copy was missing and the
+// one-shot wiped the login we just restored → the user had to import twice).
+static NSString *ci_docPath(NSString *name);
+static NSString *ci_readTrim(NSString *path);
+static int g_wipeConsumed = 0;   // one-shot process guard; a flagged restore also sets it to keep the restored login
+
 static void ci_restoreKeychainIfFlagged(void) {
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (!bid.length) return;
@@ -1656,6 +1664,24 @@ static void ci_restoreKeychainIfFlagged(void) {
     if (mtime > 0 && [ud doubleForKey:@"_ci_kc_done"] == mtime) {
         [fm removeItemAtPath:lFlag error:nil];
         return;   // already applied this dump
+    }
+
+    // Suppress the one-shot device-reset (ci_runOneShotIfDue, later in this same
+    // %ctor) for this just-restored container. On a CROSS-DEVICE target that wipe was
+    // DUE — it neutralises itself via .ci_gen_ack in THIS process's own Documents, but
+    // the restore only ever wrote that ack into the HIOS app's container, so Viber's
+    // copy was missing → the wipe erased the keychain + app-group we just restored,
+    // and the login only "stuck" on the SECOND import (that first wipe wrote the ack).
+    // A restore flag means the user wants THIS login kept: ack the current generation
+    // HERE, in the target's own Documents, BEFORE the wipe reads it, and guard this
+    // launch. A later real Change Device rewrites .ci_gen, so the ack stops matching
+    // and the wipe correctly fires again then.
+    g_wipeConsumed = 1;
+    @autoreleasepool {
+        NSString *gen  = ci_readTrim(ci_docPath(@".ci_gen"));
+        NSString *ackP = ci_docPath(@".ci_gen_ack");
+        if (gen.length && ackP)
+            [gen writeToFile:ackP atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 
     // Apply SYNCHRONOUSLY here in %ctor — BEFORE the app's own code (main /
@@ -2680,7 +2706,8 @@ static int hooked_fork(void) { errno = EPERM; return -1; }
 // in the container (they travel in a .adbk) but the identity-MATCH rule makes
 // that harmless — magnitude compares would not, which is why a plain counter is
 // unsafe here.
-static int g_wipeConsumed = 0;   // process guard: the one-shot runs at most once per launch/process
+// g_wipeConsumed is defined up near ci_restoreKeychainIfFlagged (that restore sets it
+// too, to keep a just-restored login from being wiped by the one-shot below).
 
 static NSString *ci_docPath(NSString *name) {
     NSString *home = NSHomeDirectory();
