@@ -9591,6 +9591,25 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // account was set up on → it stays a trusted device after restore.
         [[CILicenseManager shared] writeTweakToken];
 
+        // DEVICE/LICENSE DIAGNOSTICS — the cross-device "1st restore = login screen,
+        // 2nd = ok" bug is device-intrinsic (only on a phone OTHER than the one the
+        // backup was made on). Capture what the tweak WILL spoof + whether the license
+        // is valid, so a captured log tells us if the spoof/token is actually live on
+        // the FIRST post-restore Viber launch on a new device.
+        {
+            CIConfigManager *dcm = [CIConfigManager shared];
+            NSString *lictok = [dcm stringForKey:@"_ci_lic_tok"] ?: @"-";
+            rlog([NSString stringWithFormat:
+                  @"[diag] spoofUDID=%@ spoofSerial=%@ productType=%@ licValidCached=%d realUDID=%@ lictok=%@ keychainReset=%d",
+                  [dcm stringForKey:@"UniqueDeviceID"] ?: @"-",
+                  [dcm stringForKey:@"SerialNumber"] ?: @"-",
+                  [dcm stringForKey:@"ProductType"] ?: @"-",
+                  [[CILicenseManager shared] isLicenseValidCached],
+                  [[CILicenseManager shared] deviceUDID] ?: @"-",
+                  lictok.length > 24 ? [lictok substringToIndex:24] : lictok,
+                  [dcm boolForKey:@"keychainReset"]]);
+        }
+
         // Drop a per-bundle keychain-restore flag file. The tweak's
         // %ctor on next launch sees the flag, deletes the bundle's
         // current keychain entries, and re-applies the snapshot we
@@ -9702,6 +9721,18 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 NSLog(@"[ChangeInfoIos] restore: .ci_gen_ack=%@ for %@ (rc=%d) — one-shot wipe suppressed",
                       wipeGen, bid, ac);
                 rlog([NSString stringWithFormat:@"[step5] bid=%@ .ci_gen_ack=%@ suppress-oneshot rc=%d", bid, wipeGen, ac]);
+            }
+
+            // diag: read back the container's ACTUAL .ci_gen and compare with the
+            // wipe_gen we acked — a MISMATCH means the one-shot could still fire.
+            {
+                NSString *genFile = [[container stringByAppendingPathComponent:@"Documents/.ci_gen"]
+                                        stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                NSString *actualGen = [[NSString stringWithContentsOfFile:genFile encoding:NSUTF8StringEncoding error:nil]
+                                        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                rlog([NSString stringWithFormat:@"[diag] bid=%@ container.ci_gen=%@ acked=%@ %@",
+                      bid, actualGen.length ? actualGen : @"-", wipeGen ?: @"-",
+                      (actualGen.length && [actualGen isEqualToString:(wipeGen ?: @"")]) ? @"MATCH" : @"MISMATCH"]);
             }
 
             NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dumpPath error:nil];
@@ -10200,6 +10231,86 @@ static UIViewController *ci_topVC(UIViewController *root) {
     return root;
 }
 
+// ============================================================
+// LOG VIEWER — a 3-finger tap anywhere opens this so a customer with no
+// SSH/Filza can read (and Copy/Share) the restore diagnostics on-screen.
+// ============================================================
+@interface CILogViewerController : UIViewController
+@end
+@implementation CILogViewerController {
+    UITextView *_tv;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [CITheme bg];
+
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectZero];
+    tv.translatesAutoresizingMaskIntoConstraints = NO;
+    tv.editable = NO;
+    tv.backgroundColor = [CITheme bg];
+    tv.textColor = [CITheme text];
+    tv.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:11];
+    _tv = tv;
+    [self.view addSubview:tv];
+
+    UIButton *(^mk)(NSString *, SEL) = ^UIButton *(NSString *t, SEL s) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        [b setTitle:t forState:UIControlStateNormal];
+        [b addTarget:self action:s forControlEvents:UIControlEventTouchUpInside];
+        b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        b.translatesAutoresizingMaskIntoConstraints = NO;
+        return b;
+    };
+    UIStackView *bar = [[UIStackView alloc] initWithArrangedSubviews:@[
+        mk(@"Đóng", @selector(closeTap)), mk(@"Tải lại", @selector(refresh)),
+        mk(@"Copy", @selector(copyTap)),  mk(@"Chia sẻ", @selector(shareTap)) ]];
+    bar.axis = UILayoutConstraintAxisHorizontal;
+    bar.distribution = UIStackViewDistributionFillEqually;
+    bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:bar];
+
+    UILayoutGuide *g = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [bar.topAnchor constraintEqualToAnchor:g.topAnchor constant:8],
+        [bar.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
+        [bar.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
+        [bar.heightAnchor constraintEqualToConstant:36],
+        [tv.topAnchor constraintEqualToAnchor:bar.bottomAnchor constant:6],
+        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:6],
+        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-6],
+        [tv.bottomAnchor constraintEqualToAnchor:g.bottomAnchor],
+    ]];
+    [self refresh];
+}
+- (NSString *)collect {
+    NSMutableString *s = [NSMutableString string];
+    NSString *p = @"/var/jb/etc/changeinfoios/restoreEntry.log";
+    NSString *c = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
+    if (c.length) {
+        NSArray *lines = [c componentsSeparatedByString:@"\n"];
+        NSUInteger n = lines.count, keep = MIN(n, (NSUInteger)800);
+        NSArray *tail = [lines subarrayWithRange:NSMakeRange(n - keep, keep)];
+        [s appendFormat:@"==== restoreEntry.log (%lu dòng cuối) ====\n", (unsigned long)keep];
+        [s appendString:[tail componentsJoinedByString:@"\n"]];
+    } else {
+        [s appendString:@"(chưa có log — hãy Restore 1 lần rồi chạm 3 ngón mở lại)"];
+    }
+    return s;
+}
+- (void)refresh {
+    _tv.text = [self collect];
+    if (_tv.text.length) [_tv scrollRangeToVisible:NSMakeRange(_tv.text.length - 1, 1)];
+}
+- (void)closeTap  { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)copyTap   { [UIPasteboard generalPasteboard].string = _tv.text ?: @""; }
+- (void)shareTap  {
+    UIActivityViewController *av = [[UIActivityViewController alloc]
+        initWithActivityItems:@[_tv.text ?: @""] applicationActivities:nil];
+    av.popoverPresentationController.sourceView = self.view;
+    [self presentViewController:av animated:YES completion:nil];
+}
+@end
+
 @implementation CIAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     [[CIConfigManager shared] config]; // warm
@@ -10219,6 +10330,13 @@ static UIViewController *ci_topVC(UIViewController *root) {
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.window.backgroundColor = [CITheme bg];
+
+    // 3-finger tap ANYWHERE opens the on-screen log viewer — lets a customer with
+    // no SSH/Filza read + share the restore diagnostics for cross-device debugging.
+    UITapGestureRecognizer *ci_logTap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(ci_showLogViewer)];
+    ci_logTap.numberOfTouchesRequired = 3;
+    [self.window addGestureRecognizer:ci_logTap];
 
     // ---- LICENSE GATE ----
     // rootViewController MUST be set SYNCHRONOUSLY before makeKeyAndVisible —
@@ -10288,6 +10406,15 @@ static UIViewController *ci_topVC(UIViewController *root) {
         });
     });
     return YES;
+}
+
+// Present the on-screen log viewer (3-finger tap handler).
+- (void)ci_showLogViewer {
+    UIViewController *top = ci_topVC(self.window.rootViewController);
+    if (top.presentedViewController) return;   // already showing / busy
+    CILogViewerController *lv = [[CILogViewerController alloc] init];
+    lv.modalPresentationStyle = UIModalPresentationFullScreen;
+    [top presentViewController:lv animated:YES completion:nil];
 }
 
 // Build the Login screen wrapped in a (chromeless) nav controller.
