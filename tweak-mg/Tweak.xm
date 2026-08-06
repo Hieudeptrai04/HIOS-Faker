@@ -1658,14 +1658,18 @@ static void ci_restoreKeychainIfFlagged(void) {
         return;   // already applied this dump
     }
 
-    // CRITICAL: run the SecItem work on a BACKGROUND queue, NEVER inline in
-    // %ctor — inline it blocked the app launch ~21s → FrontBoard watchdog
-    // SIGKILL (Zalo "treo logo rồi văng"). Off the launch path it cannot
-    // watchdog the app. Extra guard: a 3s delay so the target finishes its own
-    // launch + keychain reads before we replay, avoiding any launch-time
-    // contention with its Security.framework calls.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    // Apply SYNCHRONOUSLY here in %ctor — BEFORE the app's own code (main /
+    // didFinishLaunching) reads its session. CROSS-DEVICE is the reason: the target
+    // phone has NO residual keychain, so a delayed/background apply let the app read
+    // SecureStorage.data with no matching key on its FIRST launch → it decided
+    // "logged out" (and rewrote that state), so the user had to import the .rrs a
+    // SECOND time to get it right. Viber's items are few (7) and non-biometric, so
+    // this runs in well under a second — far below the ~20s FrontBoard launch
+    // watchdog (the old "inline crashed" was a much bigger/blocking replay).
+    // Mark the dump done FIRST so a crash mid-apply can never crash-loop the app
+    // (it simply won't retry; a fresh import re-drops the flag with a new mtime).
+    if (mtime > 0) { [ud setDouble:mtime forKey:@"_ci_kc_done"]; [ud synchronize]; }
+    [fm removeItemAtPath:lFlag error:nil];
     @autoreleasepool {
     NSData *data = [NSData dataWithContentsOfFile:dump];
     id items = data.length ? [NSPropertyListSerialization propertyListWithData:data
@@ -1703,12 +1707,8 @@ static void ci_restoreKeychainIfFlagged(void) {
             }
         }
     }
-    // Mark this dump processed (persists across tmp purge) + clear legacy flag.
-    if (mtime > 0) { [ud setDouble:mtime forKey:@"_ci_kc_done"]; }
-    [fm removeItemAtPath:lFlag error:nil];
-    dbglog("Keychain.restore(bg) %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
+    dbglog("Keychain.restore(sync) %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
     } // @autoreleasepool
-    }); // dispatch_async
 }
 
 // ============================================================
