@@ -10182,6 +10182,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 - (void)showLogin;
 @end
 
+// Walk down tab → nav → presented to find the VC that can actually present an
+// alert right now (used when a .rrs is handed to us via "Open in").
+static UIViewController *ci_topVC(UIViewController *root) {
+    while (root) {
+        if ([root isKindOfClass:[UITabBarController class]]) {
+            UIViewController *sel = ((UITabBarController *)root).selectedViewController;
+            if (sel && sel != root) { root = sel; continue; }
+        }
+        if ([root isKindOfClass:[UINavigationController class]]) {
+            UIViewController *vis = ((UINavigationController *)root).visibleViewController;
+            if (vis && vis != root) { root = vis; continue; }
+        }
+        if (root.presentedViewController) { root = root.presentedViewController; continue; }
+        break;
+    }
+    return root;
+}
+
 @implementation CIAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
     [[CIConfigManager shared] config]; // warm
@@ -10227,6 +10245,48 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (ok) { [self showMain]; [[CILicenseManager shared] writeTweakToken]; }
         }];
     }
+    return YES;
+}
+
+// ---- "Open in HIOS Faker" for .rrs files (Telegram / Files / any share sheet) ----
+// Classic (non-scene) lifecycle → iOS calls this when another app hands us a file
+// of the com.changeinfoios.rrs type we export in Info.plist. Import it straight
+// into the RRS store so it shows up under Backups.
+- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url
+            options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
+    return [self ci_handleIncomingRRS:url];
+}
+
+- (BOOL)ci_handleIncomingRRS:(NSURL *)url {
+    if (![url isKindOfClass:[NSURL class]] || !url.isFileURL) return NO;
+    NSURL *u = url;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Files/other providers hand back a security-scoped URL; claim it or the
+        // read fails even though the path looks ordinary. (Harmless for our Inbox.)
+        BOOL scoped = [u startAccessingSecurityScopedResource];
+        NSString *err = nil;
+        CIRRSEntry *e = ci_importRRSFile(u.path, &err);
+        if (scoped) [u stopAccessingSecurityScopedResource];
+        // "Open in" drops a copy into Documents/Inbox — the snapshot now lives in
+        // the RRS store, so delete the Inbox copy to stop it piling up.
+        if ([u.path rangeOfString:@"/Inbox/"].location != NSNotFound)
+            [[NSFileManager defaultManager] removeItemAtURL:u error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Jump to Backups (its viewWillAppear reloads the list) so the freshly
+            // imported snapshot is visible immediately.
+            if (e && [self.window.rootViewController isKindOfClass:[UITabBarController class]])
+                ((UITabBarController *)self.window.rootViewController).selectedIndex = 1;
+            NSString *title = e ? @"Đã nhập file .rrs" : @"Nhập thất bại";
+            NSString *msg = e
+                ? [NSString stringWithFormat:@"%@\n\nChạm vào dòng đó trong tab Backups để restore.",
+                   url.lastPathComponent]
+                : (err ?: @"File .rrs không hợp lệ.");
+            UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg
+                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [ci_topVC(self.window.rootViewController) presentViewController:a animated:YES completion:nil];
+        });
+    });
     return YES;
 }
 
