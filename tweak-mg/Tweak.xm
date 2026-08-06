@@ -2832,6 +2832,71 @@ static void ci_runOneShotIfDue(void) {
 }
 
 // ============================================================
+// VIBER IDENTITY SNAPSHOT (cross-device "1st restore = login" debug)
+// Runs ONCE at ctor (NOT in the MG hot path → no watchdog risk). For every
+// device-identity key, logs what the tweak PRESENTS (spoof, from config) vs the
+// REAL hardware value (orig_MGCopyAnswer) — so we can see which identifier (if
+// any) still leaks the REAL device to Viber on a restored-to-another-phone login.
+// Written to Viber's OWN Documents (sandbox blocks /var/jb writes); the app's
+// 3-finger log viewer shell-reads it.
+// ============================================================
+static int g_isViber = -1;
+static char g_vlogPath[512] = "";
+static char g_vlogResolved = 0;
+static int ci_isViberProc(void) {
+    if (g_isViber < 0) { const char *pn = getprogname(); g_isViber = (pn && strstr(pn, "Viber")) ? 1 : 0; }
+    return g_isViber;
+}
+static void ci_viberlog(const char *line) {
+    if (!ci_isViberProc()) return;
+    if (!g_vlogResolved) {
+        g_vlogResolved = 1;
+        @autoreleasepool {
+            NSString *home = NSHomeDirectory();
+            if (home.length) {
+                NSString *p = [[home stringByAppendingPathComponent:@"Documents"]
+                               stringByAppendingPathComponent:@"viber_idquery.log"];
+                strncpy(g_vlogPath, [p UTF8String], sizeof(g_vlogPath) - 1);
+            }
+        }
+    }
+    if (!g_vlogPath[0]) return;
+    FILE *f = fopen(g_vlogPath, "a");
+    if (!f) return;
+    fputs(line, f);
+    fclose(f);
+}
+static void ci_dumpViberIdentity(void) {
+    if (!ci_isViberProc() || !orig_MGCopyAnswer) return;
+    @autoreleasepool {
+        NSDateFormatter *df = [NSDateFormatter new]; df.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+        ci_viberlog([[NSString stringWithFormat:@"===== VIBER ID SNAPSHOT %@ =====\n",
+                      [df stringFromDate:[NSDate date]]] UTF8String]);
+        NSArray *keys = @[ @"UniqueDeviceID", @"SerialNumber", @"UniqueChipID", @"MLBSerialNumber",
+            @"IntegratedCircuitCardIdentity", @"IntegratedCircuitCardIdentity2",
+            @"MobileEquipmentIdentifier", @"InternationalMobileEquipmentIdentity",
+            @"InternationalMobileEquipmentIdentity2", @"BluetoothAddress", @"WifiAddress",
+            @"EthernetAddress", @"DeviceColor", @"DeviceEnclosureColor", @"ProductType",
+            @"HardwareModel", @"ModelNumber", @"BoardId", @"RegionInfo", @"HWModelStr",
+            @"BasebandSerialNumber", @"DiskUsage", @"UserAssignedDeviceName", @"DeviceName" ];
+        for (NSString *k in keys) {
+            NSString *cfgKey = g_mgKeyMap[k];
+            NSString *spoof = cfgKey ? getConfigStr(cfgKey) : nil;
+            CFTypeRef rv = orig_MGCopyAnswer((__bridge CFStringRef)k);
+            NSString *real = rv ? [(__bridge id)rv description] : @"(nil)";
+            const char *leak = (spoof.length && ![spoof isEqualToString:real]) ? "" :
+                               (spoof.length ? " <-- spoof==real" : " <-- NOT SPOOFED (real leaks)");
+            ci_viberlog([[NSString stringWithFormat:@"ID %@ spoof=%@ real=%@%s\n",
+                          k, spoof ?: @"(none)", real, leak] UTF8String]);
+            if (rv) CFRelease(rv);
+        }
+        NSString *idfv = getConfigStr(@"identifierForVendor");
+        ci_viberlog([[NSString stringWithFormat:@"ID identifierForVendor spoof=%@%s\n",
+                      idfv ?: @"(none)", idfv.length ? "" : " <-- NOT SPOOFED (real IDFV leaks)"] UTF8String]);
+    }
+}
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) {
@@ -3158,7 +3223,7 @@ static void notify_cb(int t) {
                 ci_restoreKeychainIfFlagged();
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
                                dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                    @autoreleasepool { ci_dumpKeychain(); }
+                    @autoreleasepool { ci_dumpKeychain(); ci_dumpViberIdentity(); }
                 });
             }
         }

@@ -10284,16 +10284,31 @@ static UIViewController *ci_topVC(UIViewController *root) {
 }
 - (NSString *)collect {
     NSMutableString *s = [NSMutableString string];
+
+    // Pull Viber's id-query snapshot out of its sandbox to a readable spot.
+    ci_run("VLOG=$(find /var/mobile/Containers/Data/Application -maxdepth 4 "
+           "-path '*Documents/viber_idquery.log' 2>/dev/null | head -1); "
+           "[ -n \"$VLOG\" ] && cp -f \"$VLOG\" /var/jb/etc/changeinfoios/viber_idquery.log 2>/dev/null; "
+           "chmod 0644 /var/jb/etc/changeinfoios/viber_idquery.log 2>/dev/null");
+
+    NSString *vid = [NSString stringWithContentsOfFile:@"/var/jb/etc/changeinfoios/viber_idquery.log"
+                                              encoding:NSUTF8StringEncoding error:nil];
+    if (vid.length) {
+        [s appendString:@"==== VIBER ID SNAPSHOT (mở Viber rồi chờ ~5s để cập nhật) ====\n"];
+        [s appendString:vid];
+        [s appendString:@"\n"];
+    } else {
+        [s appendString:@"(chưa có viber_idquery.log — mở Viber 1 lần, chờ ~5s, rồi mở lại đây)\n\n"];
+    }
+
     NSString *p = @"/var/jb/etc/changeinfoios/restoreEntry.log";
     NSString *c = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
     if (c.length) {
         NSArray *lines = [c componentsSeparatedByString:@"\n"];
-        NSUInteger n = lines.count, keep = MIN(n, (NSUInteger)800);
+        NSUInteger n = lines.count, keep = MIN(n, (NSUInteger)400);
         NSArray *tail = [lines subarrayWithRange:NSMakeRange(n - keep, keep)];
         [s appendFormat:@"==== restoreEntry.log (%lu dòng cuối) ====\n", (unsigned long)keep];
         [s appendString:[tail componentsJoinedByString:@"\n"]];
-    } else {
-        [s appendString:@"(chưa có log — hãy Restore 1 lần rồi chạm 3 ngón mở lại)"];
     }
     return s;
 }
