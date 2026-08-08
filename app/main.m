@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.1";
+static NSString *const kAppVersion = @"4.3.16";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -1311,12 +1311,54 @@ static NSString *ci_regulatoryModelForProductType(NSString *pt) {
 // the old fixed pool wrongly mixed Canada (VC/A) codes. Exact letters aren't
 // DB-validatable, so generate a plausible VN/A code; model-matching is carried
 // by the regulatory A-number above + RegionInfo.
-static NSString *ci_randPartNumberVN(void) {
+// Apple sells each model with a region-specific part-number suffix (the letters
+// before "/A"). ModelNumber MUST match the device's RegionCode; otherwise a
+// foreign-proxy account shows carrier/locale/GPS = e.g. US but a VN part number.
+// Map every country we actually spoof (see ci_countryMap / ci_geoProfiles) to its
+// real Apple suffix; default to "ZA" (generic APAC) for anything unmapped.
+static NSString *ci_appleRegionSuffix(NSString *regionCode) {
+    static NSDictionary<NSString *, NSString *> *m = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        m = @{
+            @"VN": @"VN", @"US": @"LL", @"GB": @"B",  @"FR": @"F",  @"DE": @"D",
+            @"IT": @"T",  @"ES": @"Y",  @"JP": @"J",  @"KR": @"KH", @"SG": @"ZA",
+            @"AU": @"X",  @"CA": @"VC", @"NL": @"FD", @"SE": @"KS", @"BR": @"BR",
+            @"IN": @"HN", @"TH": @"TH", @"PH": @"PP", @"ID": @"ID", @"MX": @"MX",
+            @"HK": @"ZP", @"TW": @"TA", @"CN": @"CH",
+        };
+    });
+    NSString *cc = [regionCode uppercaseString];
+    return (cc.length && m[cc]) ? m[cc] : @"ZA";
+}
+
+// ModelNumber = "M" + 4 alnum + <regionSuffix> + "/A" (real Apple format).
+static NSString *ci_randPartNumberForRegion(NSString *regionCode) {
     static const char *A = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     NSMutableString *s = [NSMutableString stringWithString:@"M"];
     for (int i = 0; i < 4; i++) [s appendFormat:@"%c", A[arc4random_uniform(33)]];
-    [s appendString:@"VN/A"];
+    [s appendFormat:@"%@/A", ci_appleRegionSuffix(regionCode)];
     return s;
+}
+
+// iBoot (FirmwareVersion) generation tracks the CLAIMED iOS major — real iBoot
+// majors advance with the OS, so a random iBoot-70xx on a claimed iOS 18 device
+// is a known mismatch. Bases are the real iBoot generation per iOS major.
+static NSString *ci_randiBootForIOS(NSInteger iosMajor) {
+    int base;
+    switch (iosMajor) {
+        case 13: base = 5540;  break;
+        case 14: base = 6723;  break;
+        case 15: base = 7459;  break;
+        case 16: base = 8422;  break;   // real iOS 16.7.x observed on-device (iBoot-8422.x)
+        case 17: base = 10151; break;
+        case 18: base = 11881; break;
+        default: base = (iosMajor >= 19) ? 13822 : 7459; break;
+    }
+    // Modern iBoot carries a 5-component version (real sample: iBoot-8422.142.2.700.1).
+    return [NSString stringWithFormat:@"iBoot-%d.%u.%u.%u.%u",
+            base, arc4random_uniform(300), arc4random_uniform(5),
+            arc4random_uniform(800), arc4random_uniform(5)];
 }
 
 static NSUInteger ci_randomizeIdentities(void) {
@@ -1366,7 +1408,39 @@ static NSUInteger ci_randomizeIdentities(void) {
         }
     }
 
-    NSArray *preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
+    // === SCREEN MATCH (default ON) ===
+    // A faked model whose screen differs from the physical panel leaks through
+    // MG `screen-dimensions` / `main-screen-pitch` / DeviceArtwork (dicts we
+    // cannot safely emit) AND the real render surface — and Zalo derives the
+    // model from the screen, which is exactly why it kept showing the real
+    // device ("iPhone X"). Constrain the pick to models whose NATIVE screen
+    // matches this device so the (unavoidably leaked) screen is consistent with
+    // the claim. Falls back to the full [dLo,dHi] window when no same-screen
+    // model is in range. Host app is NOT hooked, so UIScreen here is REAL.
+    NSArray *preset = nil;
+    id smObj = [cm objectForKey:@"_ci_screen_match"];
+    BOOL screenMatch = smObj ? [smObj boolValue] : YES;
+    if (screenMatch) {
+        double rw = 0, rh = 0;
+        @try {
+            CGRect nb = [[UIScreen mainScreen] nativeBounds];   // native px
+            rw = MIN(nb.size.width, nb.size.height);
+            rh = MAX(nb.size.width, nb.size.height);
+        } @catch (__unused NSException *e) {}
+        if (rw > 0 && rh > 0) {
+            NSMutableArray *same = [NSMutableArray array];
+            for (NSInteger i = dLo; i <= dHi; i++) {
+                NSArray *p = presets[(NSUInteger)i];
+                // preset[6]=nativeScreenWidth px, preset[7]=nativeScreenHeight px
+                if (p.count > 7 &&
+                    [p[6] doubleValue] == rw && [p[7] doubleValue] == rh) {
+                    [same addObject:p];
+                }
+            }
+            if (same.count) preset = same[arc4random_uniform((uint32_t)same.count)];
+        }
+    }
+    if (!preset) preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
 
     // === HARDWARE LOCK (chống lệch phần cứng) ===
     // On a physical device, claiming a model whose chip differs from the real one
@@ -1576,9 +1650,12 @@ static NSUInteger ci_randomizeIdentities(void) {
     // calling [NSUUID UUID initWithUUIDString:] on a 40-char hex blob
     // get nil back and may then crash when dereferencing.
     [cm setObject:[[NSUUID UUID] UUIDString] forKey:@"IOPlatformUUID"];
-    [cm setObject:[NSString stringWithFormat:@"iBoot-%d.%d.%d", arc4random_uniform(100)+7000, arc4random_uniform(99)+1, arc4random_uniform(9)+1] forKey:@"FirmwareVersion"];
-    [cm setObject:[NSString stringWithFormat:@"%d.%d.%d", arc4random_uniform(9)+1, arc4random_uniform(99)+10, arc4random_uniform(9)] forKey:@"BasebandVersion"];
-    [cm setObject:ci_randPartNumberVN() forKey:@"ModelNumber"];
+    // iBoot tied to the CLAIMED iOS major; baseband uses a realistic 2-digit
+    // minor/patch shape (e.g. "5.60.05"). ModelNumber is generated LATER — after
+    // the geo step settles RegionCode — so its region suffix matches the account.
+    NSInteger fwMajor = [[[iosPreset[1] componentsSeparatedByString:@"."] firstObject] integerValue];
+    [cm setObject:ci_randiBootForIOS(fwMajor) forKey:@"FirmwareVersion"];
+    [cm setObject:[NSString stringWithFormat:@"%u.%02u.%02u", arc4random_uniform(9)+1, arc4random_uniform(90)+1, arc4random_uniform(20)] forKey:@"BasebandVersion"];
     NSString *regModel = ci_regulatoryModelForProductType(productTyp);
     if (regModel) [cm setObject:regModel forKey:@"RegulatoryModelNumber"];
     [cm setObject:@"VN" forKey:@"RegionCode"];
@@ -1772,6 +1849,14 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"WiFiAddress":                           ci_randMAC(),
         @"BluetoothAddress":                      ci_randMAC(),
         @"EthernetAddress":                       ci_randMAC(),
+        // DeviceVariantGUID is device-unique — it was mapped by the tweak but never
+        // written, so it passed through to the REAL value = a stable cross-account
+        // tracker. Rotate it per Change Device (UUID matches the real format).
+        @"DeviceVariantGUID":                     ci_randUUID(),
+        // kern.bootsessionuuid — a per-boot UUID Zalo reads; unspoofed it is the
+        // same across accounts registered in one boot session (cross-account
+        // correlation). Rotate it per Change Device (real form is an upper UUID).
+        @"bootSessionUUID":                       [[NSUUID UUID] UUIDString],
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
         // 32-byte APNS device-token hex. Tweak's UIApplicationDelegate
@@ -1992,6 +2077,14 @@ static NSUInteger ci_randomizeIdentities(void) {
     if ([_tzMCC isEqualToString:@"452"] || [_tzCC isEqualToString:@"VN"]) {
         [cm setObject:@"Asia/Ho_Chi_Minh" forKey:@"timezoneName"];
     }
+
+    // ModelNumber region suffix MUST match the FINAL RegionCode (set by the geo
+    // step above — proxy country, or "VN" for the VN fallback). Generating it here
+    // rather than at model-pick time fixes the foreign-proxy mismatch where
+    // carrier/GPS/locale were e.g. US but the part number stayed VN/A.
+    // RegulatoryModelNumber stays model-derived (that is region-independent).
+    NSString *finalRegion = [cm stringForKey:@"RegionCode"] ?: @"VN";
+    [cm setObject:ci_randPartNumberForRegion(finalRegion) forKey:@"ModelNumber"];
 
     [cm save];
     return ids.count + 12;

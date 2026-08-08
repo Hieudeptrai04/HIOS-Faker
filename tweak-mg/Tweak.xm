@@ -23,6 +23,7 @@
 #import <string.h>
 #import <strings.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>
 #import <sys/stat.h>
 #import <errno.h>
 #import <ifaddrs.h>
@@ -389,6 +390,15 @@ static void initMGKeyMap(void) {
             @"ProductHash":@"ProductType",
             @"DeviceClassNumber":@"ChipID",
             @"DeviceClass":@"DeviceClass",
+            // --- Base64/hashed MG key forms (anti-spoof bypass) ---
+            // libMobileGestalt identifies keys globally by these base64 hashes;
+            // apps (Zalo) query the hash form directly to dodge a plaintext-only
+            // map. Hashes verified against this device's MG cache (hash -> value).
+            @"0+nc/Udy4WNG8S+Q7a/s1A":@"ProductType",
+            @"Z/dqyWS6OZTRy10UcmUAhw":@"MarketingName",
+            @"h63QSdBCiT/z0WU6rdQv6Q":@"RegionCode",
+            @"zHeENZu+wbg7PUprwNwBWg":@"RegionInfo",
+            @"LeSRsiLoJCMhjn6nd6GWbQ":@"FirmwareVersion",
         };
     });
 }
@@ -916,10 +926,12 @@ typedef int (*sysctlbyname_t)(const char *, void *, size_t *, void *, size_t);
 typedef int (*sysctl_raw_t)(int *, u_int, void *, size_t *, void *, size_t);
 typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
+typedef int (*uname_t)(struct utsname *);
 static sysctlbyname_t orig_sysctlbyname = NULL;
 static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
+static uname_t        orig_uname        = NULL;
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
@@ -954,6 +966,7 @@ static void initSysctlMap(void) {
             @"kern.osproductversion": @"systemVersion",
             @"kern.boottime":         @"kern_boottime",
             @"kern.uuid":             @"IOPlatformUUID",
+            @"kern.bootsessionuuid":  @"bootSessionUUID",
             // Hardware serial / UUID — strongest persistent identifiers.
             // Previously unmapped, so sysctlbyname("hw.serialnumber") leaked
             // the REAL device serial despite all MobileGestalt spoofing.
@@ -1237,6 +1250,27 @@ static int hooked_gethostname(char *buf, size_t len) {
     g_inHostname = 0;
     dbglog("gethostname %s -> %s\n", g_procname, buf);
     return 0;
+}
+
+// uname() → struct utsname. .machine leaks the REAL model ("iPhone10,3") at the
+// BSD layer, bypassing every MobileGestalt/UIDevice spoof — Zalo references
+// uname 5× (proven on-device). Rewrite .machine (and .nodename to match the
+// gethostname spoof) from config; leave sysname/release/version untouched (the
+// Darwin kernel string is identical for the real running iOS, and remapping it
+// to a claimed iOS is error-prone). g_inUname guards Foundation re-entry.
+__thread int g_inUname = 0;
+static int hooked_uname(struct utsname *u) {
+    if (!orig_uname) return -1;              // never call uname() by name → recursion
+    int rc = orig_uname(u);
+    if (rc != 0 || !u || g_inUname) return rc;
+    g_inUname = 1;
+    NSString *m = getConfigStr(@"hw_machine");
+    if (m.length) strlcpy(u->machine, [m UTF8String], sizeof(u->machine));
+    NSString *nn = getConfigStr(@"deviceName");
+    if (nn.length) strlcpy(u->nodename, [nn UTF8String], sizeof(u->nodename));
+    dbglog("uname %s -> machine=%s node=%s\n", g_procname, u->machine, u->nodename);
+    g_inUname = 0;
+    return rc;
 }
 
 // Parse "aa:bb:cc:dd:ee:ff" → 6 raw bytes. Returns YES on success.
@@ -2967,6 +3001,7 @@ static void notify_cb(int t) {
         orig_sysctlbyname = (sysctlbyname_t)dlsym(RTLD_DEFAULT, "sysctlbyname");
         orig_getifaddrs   = (getifaddrs_t)  dlsym(RTLD_DEFAULT, "getifaddrs");
         orig_gethostname  = (gethostname_t) dlsym(RTLD_DEFAULT, "gethostname");
+        orig_uname        = (uname_t)       dlsym(RTLD_DEFAULT, "uname");
         dbglog("ctor %s libMG=%p MG=%p sysctl=%p getif=%p ghn=%p\n",
                g_procname, h, (void *)orig_MGCopyAnswer, (void *)orig_sysctlbyname,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
@@ -2990,6 +3025,8 @@ static void notify_cb(int t) {
               (void **)&orig_getifaddrs },
             { "gethostname",  (void *)hooked_gethostname,
               (void **)&orig_gethostname },
+            { "uname",        (void *)hooked_uname,
+              (void **)&orig_uname },
         };
         int fh = rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
         dbglog("ctor %s fishhook MG+libc rc=%d orig: sysctl=%p getif=%p ghn=%p\n",
@@ -3024,6 +3061,10 @@ static void notify_cb(int t) {
         if (orig_gethostname) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
+        }
+        if (orig_uname) {
+            MSHookFunction((void *)orig_uname, (void *)hooked_uname,
+                           (void **)&orig_uname);
         }
         // MSHookFunction on MGCopyAnswer — now safe because hooked_MGCopyAnswer
         // uses dladdr(__builtin_return_address(0)) to detect the caller image.
