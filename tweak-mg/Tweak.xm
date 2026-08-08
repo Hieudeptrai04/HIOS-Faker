@@ -395,7 +395,9 @@ static void initMGKeyMap(void) {
             // apps (Zalo) query the hash form directly to dodge a plaintext-only
             // map. Hashes verified against this device's MG cache (hash -> value).
             @"0+nc/Udy4WNG8S+Q7a/s1A":@"ProductType",
+            @"h9jDsbgj7xIVeIQ8S3/X3Q":@"ProductType",     // duplicate ProductType hash
             @"Z/dqyWS6OZTRy10UcmUAhw":@"MarketingName",
+            @"bbtR9jQx50Fv5Af/affNtA":@"MarketingName",    // duplicate MarketingName hash
             @"h63QSdBCiT/z0WU6rdQv6Q":@"RegionCode",
             @"zHeENZu+wbg7PUprwNwBWg":@"RegionInfo",
             @"LeSRsiLoJCMhjn6nd6GWbQ":@"FirmwareVersion",
