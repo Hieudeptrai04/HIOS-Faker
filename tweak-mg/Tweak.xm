@@ -964,7 +964,14 @@ static void initSysctlMap(void) {
             @"hw.physicalcpu_max": @"hw_physicalcpu",
             @"kern.hostname":         @"deviceName",
             @"kern.osversion":        @"BuildVersion",
-            @"kern.osrelease":        @"systemVersion",
+            // ZCH-07 FIX: kern.osrelease is the DARWIN kernel release
+            // ("23.5.0"), NOT the iOS marketing version. Mapping it to
+            // systemVersion emitted a malformed "17.5" AND contradicted
+            // uname().release (left real at hooked_uname) — two different
+            // answers for the same kernel version. Leave osrelease unmapped
+            // so it passes through the real Darwin string, consistent with
+            // uname. (kern.osproductversion below is the correct iOS-version
+            // key and stays mapped to systemVersion.)
             @"kern.osproductversion": @"systemVersion",
             @"kern.boottime":         @"kern_boottime",
             @"kern.uuid":             @"IOPlatformUUID",
@@ -2171,15 +2178,24 @@ static NSString *buildWKJSSpoof(void) {
     if (!v) return v;
     NSString *ua = getConfigStr(@"zalo_fakeWebViewUA");
     if (ua) [v setCustomUserAgent:ua];
-    NSString *js = buildWKJSSpoof();
-    if (js) {
-        WKUserScript *script = [[WKUserScript alloc]
-            initWithSource:js
-            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-            forMainFrameOnly:NO];
-        [v.configuration.userContentController addUserScript:script];
-        dbglog("WKWebView.init %s ua+js injected sw=%d\n", g_procname,
-               (int)[UIScreen mainScreen].bounds.size.width);
+    // ZJB-05 FIX: buildWKJSSpoof() ALWAYS returns a script (it falls back to
+    // vi/VN + default dims), so the old `if(js)` injected a navigator/screen/
+    // canvas/WebGL override into EVERY WKWebView even when there is no licensed
+    // profile — a pure-downside active-tampering signal (overrides whose
+    // Function.toString() leaks JS source, plus per-call canvas LSB noise) with
+    // nothing to spoof. Only inject when a real profile is present (ProductType
+    // is nil when the license gate is closed → cfg() is empty).
+    if (getConfigStr(@"ProductType")) {
+        NSString *js = buildWKJSSpoof();
+        if (js) {
+            WKUserScript *script = [[WKUserScript alloc]
+                initWithSource:js
+                injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                forMainFrameOnly:NO];
+            [v.configuration.userContentController addUserScript:script];
+            dbglog("WKWebView.init %s ua+js injected sw=%d\n", g_procname,
+                   (int)[UIScreen mainScreen].bounds.size.width);
+        }
     }
     return v;
 }

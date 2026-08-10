@@ -13,6 +13,7 @@
 #import <notify.h>
 #import <time.h>
 #import <os/lock.h>
+#import <CommonCrypto/CommonCrypto.h>
 
 static NSString *const kConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kReloadNote = @"com.changeinfoios.v3/ReloadConfig";
@@ -20,6 +21,7 @@ static NSString *const kLegacyNote = @"com.changeinfoios/ReloadConfig";
 static NSString *const kAppNote    = @"com.changeinfoios/ReloadPrefs";
 
 static NSDictionary *g_config = nil;
+static int g_licOK = 0;
 static dispatch_once_t g_loadOnce;
 // g_config is reassigned from the main-queue reload notifications while CT
 // getters read it on arbitrary host-app threads. Under ARC the reassignment
@@ -28,17 +30,64 @@ static dispatch_once_t g_loadOnce;
 // with a lock and hand readers a +1-retained snapshot taken under the lock.
 static os_unfair_lock g_cfgLock = OS_UNFAIR_LOCK_INIT;
 
+// ZCH-10 FIX: CT was reading raw config with NO license gate, while tweak-mg
+// gates every spoof on a valid signed token. When a license expired, MG fell
+// back to the REAL identity but CT kept returning a FAKE carrier — a self-
+// contradiction (real device id + spoofed carrier) that reads as tampering.
+// Mirror tweak-mg's computeLicOK exactly (HMAC(epoch) over the shared secret;
+// device-binding was reverted there to avoid a MobileGestalt re-entry deadlock)
+// so both dylibs fail-closed together.
+static NSString *ct_licSecret(void) {
+    static NSString *s = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        static const unsigned char kS[] = {
+            0x5f, 0x71, 0x0e, 0x5c, 0x66, 0x05, 0x5a, 0x6d, 0x00, 0x41, 0x6f, 0x06,
+            0x47, 0x65, 0x03, 0x59, 0x7b, 0x0f, 0x40, 0x75, 0x01, 0x54, 0x63, 0x04,
+            0x4e, 0x73, 0x02, 0x44, 0x70, 0x07, 0x56, 0x7d, 0x52, 0x62, 0x05, 0x5e,
+            0x78, 0x0e, 0x45, 0x7c, 0x03, 0x5b, 0x7a, 0x00, 0x59, 0x67, 0x06, 0x46,
+            0x61, 0x0f, 0x4f, 0x6d, 0x04, 0x55, 0x79, 0x01,
+        };
+        char buf[sizeof(kS) + 1];
+        for (size_t i = 0; i < sizeof(kS); i++) buf[i] = kS[i] ^ 0x37;
+        buf[sizeof(kS)] = 0;
+        s = [NSString stringWithUTF8String:buf];
+    });
+    return s;
+}
+static int ct_computeLicOK(NSDictionary *d) {
+    id tv = d[@"_ci_lic_tok"];
+    if (![tv isKindOfClass:[NSString class]]) return 0;
+    NSString *tok = (NSString *)tv;
+    NSRange bar = [tok rangeOfString:@"|"];
+    if (bar.location == NSNotFound) return 0;
+    NSString *es  = [tok substringToIndex:bar.location];
+    NSString *sig = [tok substringFromIndex:bar.location + 1];
+    if (!es.length || !sig.length) return 0;
+    if ([es longLongValue] <= (long long)time(NULL)) return 0;     // expired
+    const char *k = [ct_licSecret() UTF8String];
+    const char *m = [es UTF8String];
+    unsigned char mac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, k, strlen(k), m, strlen(m), mac);
+    char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + i*2, 3, "%02x", mac[i]);
+    return (strcmp(hex, [sig UTF8String]) == 0) ? 1 : 0;
+}
+
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    int ok = ct_computeLicOK(d);
     os_unfair_lock_lock(&g_cfgLock);
     g_config = d;
+    g_licOK = ok;
     os_unfair_lock_unlock(&g_cfgLock);
 }
 
 static inline NSDictionary *cfg(void) {
     dispatch_once(&g_loadOnce, ^{ reloadConfig(); });
     os_unfair_lock_lock(&g_cfgLock);
-    NSDictionary *snapshot = g_config;   // ARC retains while we hold the lock
+    // Fail-closed: unlicensed → empty config → every carrier getter returns
+    // %orig (real), matching tweak-mg.
+    NSDictionary *snapshot = g_licOK ? g_config : @{};   // ARC retains while we hold the lock
     os_unfair_lock_unlock(&g_cfgLock);
     return snapshot;                      // caller owns its own strong ref
 }

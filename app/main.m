@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.18";
+static NSString *const kAppVersion = @"4.3.19";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -324,8 +324,29 @@ static NSString *CIRRSDir(void) {
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:nil];
+        // ZJB-02 FIX: this mirror lives at /var/jb/etc/changeinfoios/config.plist,
+        // which — by design, so the tweaks can read it — is READABLE from inside
+        // every target app's sandbox (Zalo). Do NOT hand Zalo the app-only secrets:
+        // the tweaks (MG + CT) consume only device-identity / carrier / spoof-layer
+        // keys and never read proxy credentials or provider API endpoints (verified:
+        // 0 references in tweak-mg / tweak-ct). Strip that app-only set from the
+        // mirror so a probe that opens config.plist can't lift proxy host/port/user/
+        // password or the rotating-proxy/geo API URLs. (_ci_lic_tok stays — the
+        // tweak license gate needs it, and it is HMAC-signed, not a usable secret.)
+        NSMutableDictionary *mirror = [_cfg mutableCopy];
+        static NSArray *kMirrorExclude = nil;
+        static dispatch_once_t exOnce;
+        dispatch_once(&exOnce, ^{
+            kMirrorExclude = @[
+                @"proxyString", @"proxyHost", @"proxyPort", @"proxyType",
+                @"proxyUser", @"proxyPassword", @"proxyEnabled",
+                @"proxyApiUrl", @"proxyApiEnabled", @"ip_api_url",
+                @"loginUser", @"loginPass", @"licenseKey",
+            ];
+        });
+        for (NSString *k in kMirrorExclude) [mirror removeObjectForKey:k];
         NSData *data = [NSPropertyListSerialization
-            dataWithPropertyList:_cfg
+            dataWithPropertyList:mirror
                           format:NSPropertyListBinaryFormat_v1_0
                          options:0 error:nil];
         if (data) {
@@ -1689,18 +1710,27 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:colorPick forKey:@"DeviceEnclosureColor"];
     [cm setObject:@"kCTSIMSupportSIMStatusReady" forKey:@"SIMTrayStatus"];
     [cm setObject:@(NO) forKey:@"AirplaneMode"];
-    [cm setObject:@(arc4random_uniform(80)+20) forKey:@"BatteryCurrentCapacity"];
-    [cm setObject:@(NO) forKey:@"BatteryIsCharging"];
+
+    // ZCH-08 FIX: battery values must be COHERENT across the MG keys
+    // (BatteryCurrentCapacity 0–100, BatteryIsCharging bool) and the UIDevice
+    // keys (batteryLevel 0.0–1.0, batteryState 1=Unplugged/2=Charging/3=Full).
+    // The old code rolled BatteryIsCharging=NO but batteryState ∈ {1,2,3} (so it
+    // could claim Charging/Full while "not charging"), and rolled capacity and
+    // level from two independent RNG draws (different charge on the same device
+    // at the same instant). Derive all four from ONE charge % + ONE charging bit.
+    unsigned int battPct   = arc4random_uniform(80) + 20;   // 20 – 99
+    BOOL         battChrg  = (arc4random_uniform(2) == 1);   // plugged in or not
+    // batteryState: charging & <100 → Charging(2); charging & 100 → Full(3);
+    // otherwise Unplugged(1). Capacity capped at 99 above, so charging → 2.
+    unsigned int battState = battChrg ? (battPct >= 100 ? 3 : 2) : 1;
+    [cm setObject:@(battPct)  forKey:@"BatteryCurrentCapacity"];
+    [cm setObject:@(battChrg) forKey:@"BatteryIsCharging"];
     [cm setObject:ci_randAlnum(12) forKey:@"BatterySerialNumber"];
     [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(16)] forKey:@"BootNonce"];
-
-    // Battery level (0.0–1.0) + state (0=Unknown, 1=Unplugged, 2=Charging,
-    // 3=Full). Randomize so two consecutive registrations don't show
-    // identical battery telemetry — anti-fraud servers fingerprint this.
-    [cm setObject:[NSString stringWithFormat:@"%.2f", 0.30 + (arc4random_uniform(70) / 100.0)]
-            forKey:@"batteryLevel"];                                 // 0.30 – 0.99
-    [cm setObject:[NSString stringWithFormat:@"%u", arc4random_uniform(3) + 1]
-            forKey:@"batteryState"];                                  // 1 / 2 / 3
+    [cm setObject:[NSString stringWithFormat:@"%.2f", (double)battPct / 100.0]
+            forKey:@"batteryLevel"];                                 // matches BatteryCurrentCapacity
+    [cm setObject:[NSString stringWithFormat:@"%u", battState]
+            forKey:@"batteryState"];                                  // matches BatteryIsCharging
 
     // Zalo timing offset — adds jitter to mach_absolute_time / CFAbsoluteTime
     // so two devices with identical hardware fingerprint show different
@@ -1721,7 +1751,11 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"59", @"99",                                                  // Gmobile
     ];
     NSString *vnPrefix = kVNPrefixes[arc4random_uniform((uint32_t)kVNPrefixes.count)];
-    [cm setObject:[NSString stringWithFormat:@"+849%@%@", vnPrefix, ci_randDigits(7)]
+    // ZCH-08 FIX: VN mobile international form is +84 <2-digit prefix> <7 digits>
+    // = 9 national digits after +84 (e.g. 032xxxxxxx → +8432xxxxxxx). The old
+    // "+849" prefix injected a spurious 9, yielding a 10-digit-after-+84 number
+    // that is one digit too long (an invalid, fingerprintable SĐT).
+    [cm setObject:[NSString stringWithFormat:@"+84%@%@", vnPrefix, ci_randDigits(7)]
             forKey:@"PhoneNumber"];
 
     // Local IP — keeps the wifiSSID story coherent. Pick from a private
@@ -1742,16 +1776,19 @@ static NSUInteger ci_randomizeIdentities(void) {
     // Cellular radio tech — pick from realistic mix. iPhone XS+/iOS 14+
     // typically reports LTE indoors, NRNSA outdoors-on-5G-network. Random
     // pick avoids per-account fingerprint stability on this field.
-    static NSArray *kRadioTech = nil;
-    if (!kRadioTech) kRadioTech = @[
+    // ZCH-08 FIX: only offer NRNSA (5G NSA) on a model that actually has 5G
+    // (has5G, derived from productType above). A pre-5G model (≤ iPhone 11)
+    // reporting NRNSA is an impossible radio state and an instant mismatch
+    // against MG's Has5G / model.
+    NSMutableArray *radioTech = [@[
         @"CTRadioAccessTechnologyLTE",
         @"CTRadioAccessTechnologyLTE",
         @"CTRadioAccessTechnologyLTE",       // weighted toward LTE (most common)
-        @"CTRadioAccessTechnologyNRNSA",     // 5G NSA
         @"CTRadioAccessTechnologyHSDPA",
         @"CTRadioAccessTechnologyWCDMA",
-    ];
-    [cm setObject:kRadioTech[arc4random_uniform((uint32_t)kRadioTech.count)]
+    ] mutableCopy];
+    if (has5G) [radioTech addObject:@"CTRadioAccessTechnologyNRNSA"];   // 5G NSA
+    [cm setObject:radioTech[arc4random_uniform((uint32_t)radioTech.count)]
             forKey:@"carrierRadioAccess"];
 
     // ALWAYS re-arm keychain reset on Reset Data. After an RRS restore the
@@ -1844,8 +1881,10 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"InternationalMobileEquipmentIdentity":  ci_randIMEI(),
         @"InternationalMobileEquipmentIdentity2": ci_randIMEI(),
         @"MobileEquipmentIdentifier":             ci_randHex(14),
-        @"IntegratedCircuitCardIdentity":         [@"8901" stringByAppendingString:ci_randDigits(16)],
-        @"IntegratedCircuitCardIdentity2":        [@"8901" stringByAppendingString:ci_randDigits(16)],
+        // ZCH-08 FIX: ICCID IIN "89" + country. VN = 84 → "8984". The old "8901"
+        // encodes country 01 (North America), incoherent with a VN carrier bundle.
+        @"IntegratedCircuitCardIdentity":         [@"8984" stringByAppendingString:ci_randDigits(15)],
+        @"IntegratedCircuitCardIdentity2":        [@"8984" stringByAppendingString:ci_randDigits(15)],
         @"WiFiAddress":                           ci_randMAC(),
         @"BluetoothAddress":                      ci_randMAC(),
         @"EthernetAddress":                       ci_randMAC(),
@@ -1859,16 +1898,32 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"bootSessionUUID":                       [[NSUUID UUID] UUIDString],
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
-        // 32-byte APNS device-token hex. Tweak's UIApplicationDelegate
-        // swizzle reads this and passes it instead of the real APNS token,
-        // breaking server-side correlation across Reset cycles. Same Apple
-        // ID + same hardware would otherwise give Zalo's server identical
-        // tokens for every account → "abnormal behavior" lock.
+        // 32-byte token hex, consumed by the tweak's PKPushRegistry
+        // pushTokenForType hook (VoIP push token, XOR-scrambled) so the VoIP
+        // identifier changes every Change Device.
+        // ZCH-05 NOTE: this does NOT cover the STANDARD APNS device token.
+        // There is no -application:didRegisterForRemoteNotificationsWithDeviceToken:
+        // delegate swizzle anywhere in the tweaks (verified: 0 references), so the
+        // real APNS token still passes through unchanged. Treat APNS as a KNOWN
+        // GAP, not a solved layer — do not claim it is spoofed in the UI.
         @"apnsTokenSpoof":                        ci_randHexLower(64),
     };
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
         [cm setObject:v forKey:k];
     }];
+
+    // ZCH-08 FIX: only dual-SIM-capable models expose a 2nd IMEI/ICCID. Physical+
+    // eSIM dual-SIM began with iPhone XS/XR (iPhone11,*); every pre-XS model
+    // (iPhone 8/X = iPhone10,*, 7 = iPhone9,*, 6s = iPhone8,*) is single-SIM and
+    // returns no IMEI2/ICCID2 on a real device. Emitting a second set for those
+    // is an impossible SIM topology → clear it so single-SIM presets stay coherent.
+    BOOL dualSIM = !([productTyp hasPrefix:@"iPhone8,"] ||
+                     [productTyp hasPrefix:@"iPhone9,"] ||
+                     [productTyp hasPrefix:@"iPhone10,"]);
+    if (!dualSIM) {
+        [cm setObject:nil forKey:@"InternationalMobileEquipmentIdentity2"];
+        [cm setObject:nil forKey:@"IntegratedCircuitCardIdentity2"];
+    }
 
     // Rotating-proxy API: if the user pasted a provider API link, call it now
     // (direct, BEFORE the geo fetch) so each Change Device rotates/pulls a fresh
@@ -3007,10 +3062,17 @@ static void ci_wipeAppExtensions(NSString *bundleID) {
 static void ci_wipeAppGroups(NSString *bundleID) {
     if (!bundleID.length) return;
     NSString *bid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    // ZCH-03 FIX: `rm -rf "$d"/*` skips DOTFILES (the shell * glob excludes
+    // names starting with '.'), so a hidden root file (e.g. a stashed
+    // .device_id / .install_id) in the App Group survived a Change Device and
+    // linked the "fresh" install back to the old one. Also sweep dotfiles —
+    // but keep the container's own .com.apple.mobile_container_manager.metadata.plist
+    // so the group stays registered (matches the "fresh, empty container" intent).
     NSString *cmd = [NSString stringWithFormat:
         @"for m in $(grep -la '%@' /var/mobile/Containers/Shared/AppGroup/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null); do "
         @"  d=$(dirname \"$m\"); "
         @"  rm -rf \"$d\"/* 2>/dev/null; "
+        @"  find \"$d\" -maxdepth 1 -name '.*' ! -name '.com.apple.mobile_container_manager.metadata.plist' -exec rm -rf {} + 2>/dev/null; "
         @"done", bid];
     ci_run([cmd UTF8String]);
 }
@@ -8553,42 +8615,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSLog(@"[ChangeInfoIos] Step 0 (backup) done BEFORE wipe");
         }
 
-        // Step 1: Generate new fake identities and persist to plist
-        NSInteger stepIdx = backup ? 2 : 1;
-        [self updateHUD:hud step:stepIdx total:totalSteps
-                  title:@"Tạo thông tin giả mới"
-               subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC mới…"];
-        [NSThread sleepForTimeInterval:1.5];
-        ci_randomizeIdentities();
-        NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
-        NSUInteger seededContacts = ci_seedRandomContacts();
-        NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
-
-        // Step 2: Kill + wipe target app sandboxes.
-        // Kill FIRST so file handles release and the app can't re-create files
-        // mid-wipe. Do it via 3 mechanisms per app for maximum coverage:
-        //   1) killall -9 '<ExecName>' — the canonical path
-        //   2) pkill -9 -f '<bundleID>' — matches cmdline (catches ext processes)
-        //   3) pkill -9 -f '<bundle-path>' — in case exec name was spoofed
-        // Deep wipe: clear the WHOLE Library (not just a few subdirs) +
-        // Documents + tmp + StoreKit + SystemData — i.e. everything a real
-        // uninstall removes, so the target app cold-starts genuinely fresh
-        // (no stale session / cache / saved-state surviving a Reset).
-        NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
-        NSUInteger wiped = 0;
-        long long counter = (long long)[[NSDate date] timeIntervalSince1970];
-        // v4.1.8: fresh RANDOM one-shot generation nonce per Change Device. Drives
-        // the tweak's ONE-SHOT keychain/UD/WK reset (ci_runOneShotIfDue) so a newly
-        // registered account starts on a genuinely brand-new device but then KEEPS
-        // that identity (stable trusted device / restorable via ADManager .adbk).
-        // Random (CSPRNG, not time-derived) so two Change Devices never collide and
-        // the trigger is an identity-MATCH, never a magnitude compare (a plain
-        // counter would let a restored old container spuriously re-wipe).
-        unsigned char _gb[16]; arc4random_buf(_gb, sizeof(_gb));
-        NSMutableString *wipeGen = [NSMutableString stringWithCapacity:32];
-        for (int _i = 0; _i < 16; _i++) [wipeGen appendFormat:@"%02x", _gb[_i]];
-        NSUInteger totalApps = fullTargets.count;
-
+        // killApp: terminate a target app via killall(exec) + pkill(bundle-path).
+        // Defined here (moved up from Step 2) so the PRE-KILL below can run BEFORE
+        // any identity/contacts mutation.
         void (^killApp)(CIAppInfo *) = ^(CIAppInfo *a) {
             NSString *exec = nil;
             if (a.bundlePath.length) {
@@ -8626,6 +8655,55 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (pathSafe.length) [kcmd appendFormat:@"pkill -9 -f '%@' 2>/dev/null; ", pathSafe];
             if (kcmd.length) ci_run([kcmd UTF8String]);
         };
+
+        // ZCH-01 FIX: PRE-KILL every target BEFORE we publish the new identity or
+        // seed Contacts. ci_randomizeIdentities() saves config → posts the Darwin
+        // ReloadPrefs notify, which the tweak's notify_cb reloads LIVE inside any
+        // running target (Zalo). If Zalo were still alive here it would (a) see the
+        // NEW identity inside its OLD/logged-in session, and (b) via kept Contacts
+        // permission, sync the freshly-seeded contacts into the OLD account. Killing
+        // first closes that window so the new profile only ever appears on a clean
+        // cold-start. (Backup at Step 0 already ran; container files persist across
+        // the kill, so the snapshot is unaffected.)
+        for (CIAppInfo *a in fullTargets) { killApp(a); }
+        [NSThread sleepForTimeInterval:0.4];
+
+        // Step 1: Generate new fake identities and persist to plist
+        NSInteger stepIdx = backup ? 2 : 1;
+        [self updateHUD:hud step:stepIdx total:totalSteps
+                  title:@"Tạo thông tin giả mới"
+               subtitle:@"Sinh Serial, UDID, IMEI, IDFA, MAC mới…"];
+        [NSThread sleepForTimeInterval:1.5];
+        ci_randomizeIdentities();
+        NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
+        NSUInteger seededContacts = ci_seedRandomContacts();
+        NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
+
+        // Step 2: Kill + wipe target app sandboxes.
+        // Kill FIRST so file handles release and the app can't re-create files
+        // mid-wipe. Do it via 3 mechanisms per app for maximum coverage:
+        //   1) killall -9 '<ExecName>' — the canonical path
+        //   2) pkill -9 -f '<bundleID>' — matches cmdline (catches ext processes)
+        //   3) pkill -9 -f '<bundle-path>' — in case exec name was spoofed
+        // Deep wipe: clear the WHOLE Library (not just a few subdirs) +
+        // Documents + tmp + StoreKit + SystemData — i.e. everything a real
+        // uninstall removes, so the target app cold-starts genuinely fresh
+        // (no stale session / cache / saved-state surviving a Reset).
+        NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
+        NSUInteger wiped = 0;
+        long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        // v4.1.8: fresh RANDOM one-shot generation nonce per Change Device. Drives
+        // the tweak's ONE-SHOT keychain/UD/WK reset (ci_runOneShotIfDue) so a newly
+        // registered account starts on a genuinely brand-new device but then KEEPS
+        // that identity (stable trusted device / restorable via ADManager .adbk).
+        // Random (CSPRNG, not time-derived) so two Change Devices never collide and
+        // the trigger is an identity-MATCH, never a magnitude compare (a plain
+        // counter would let a restored old container spuriously re-wipe).
+        unsigned char _gb[16]; arc4random_buf(_gb, sizeof(_gb));
+        NSMutableString *wipeGen = [NSMutableString stringWithCapacity:32];
+        for (int _i = 0; _i < 16; _i++) [wipeGen appendFormat:@"%02x", _gb[_i]];
+        NSUInteger totalApps = fullTargets.count;
+        // (killApp block defined above Step 1 for the ZCH-01 pre-kill; reused here.)
 
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
@@ -8879,12 +8957,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (prefsOK) {
                 [body appendFormat:@"✅ Shared prefs OK (%llu bytes)\n", sharedSize];
             }
-            if (notInjected.count == 0 && fullTargets.count > 0) {
-                [body appendFormat:@"✅ Tweak inject OK vào %lu app\n", (unsigned long)fullTargets.count];
+            // ZCH-11 FIX: do NOT print "✅ Tweak inject OK" — `notInjected` is a
+            // hardcoded-empty array (the real injection check was removed), so that
+            // green check was fabricated, not verified. State honestly that we CAN'T
+            // confirm injection from the host sandbox and tell the user how to check.
+            if (fullTargets.count > 0) {
+                [body appendFormat:@"ℹ️ Không thể xác minh inject từ đây. Mở app target và kiểm tra thông tin (AIDA64/Lirum) để chắc tweak đã ăn.\n"];
             }
             if (respringOK && !skipRespring) {
                 [body appendString:@"✅ Đã restart SpringBoard.\n"];
             }
+            // ZCH-02 FIX: the keychain / device-id reset is NOT done yet at this
+            // point — it runs inside the target app's %ctor on its NEXT cold launch,
+            // and only within a ~2h window. Say so instead of implying "Change
+            // thành công" already reset the keychain.
+            [body appendString:@"\n⏳ Reset keychain/thiết bị áp dụng khi MỞ LẠI app target (trong vòng ~2 giờ). Hãy mở lại app target sớm để hoàn tất."];
             [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
             [self alert:t msg:body];
         }];
