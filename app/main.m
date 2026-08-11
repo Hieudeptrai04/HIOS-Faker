@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.20";
+static NSString *const kAppVersion = @"4.3.21";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -5041,10 +5041,18 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 }
 
 - (void)toggleAllFakes {
+    // R3-03 FIX: these fake_* keys have NO tweak consumer (verified: tweak-mg
+    // getConfigBool reads only viberKeepLogin). Exclude them from toggle-all so
+    // it does not pretend to control device layers no hook implements.
+    static NSSet *deadFakeKeys = nil;
+    if (!deadFakeKeys) deadFakeKeys = [NSSet setWithObjects:
+        @"fake_sensor", @"fake_metal", @"fake_webrtc",
+        @"fake_timing", @"fake_uptime", @"fake_jbhide", nil];
     // Count current fake_* that are on
     NSMutableArray *fakeKeys = [NSMutableArray array];
     for (CIRow *r in _rows) {
-        if (r.kind == CIRowToggle && [r.key hasPrefix:@"fake_"]) [fakeKeys addObject:r.key];
+        if (r.kind == CIRowToggle && [r.key hasPrefix:@"fake_"] &&
+            ![deadFakeKeys containsObject:r.key]) [fakeKeys addObject:r.key];
     }
     NSInteger onCount = 0;
     for (NSString *k in fakeKeys) if ([[CIConfigManager shared] boolForKey:k]) onCount++;

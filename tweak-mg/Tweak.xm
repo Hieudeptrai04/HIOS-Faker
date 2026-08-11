@@ -2139,20 +2139,24 @@ static NSString *buildWKJSSpoof(void) {
          "d(screen,'availWidth',sw);d(screen,'availHeight',sh-44);"
          "d(screen,'colorDepth',24);d(screen,'pixelDepth',24);"
          "d(window,'devicePixelRatio',dpr);"
-         // Canvas LSB noise — anti-fingerprint. ZJB-05 R2 FIX: use a STABLE
-         // per-page offset (computed once) instead of +1 every call. The old
-         // increment made two consecutive toDataURL() hashes DIFFER, which no
-         // real device does — an instability that is itself a tampering tell.
-         // A fixed offset still differs from the true canvas but stays constant
-         // across repeated reads, matching genuine behaviour.
+         // Canvas LSB noise — anti-fingerprint. ZJB-05/R3-01 FIX: the R2 version
+         // XOR-mutated the SOURCE canvas each call; XOR is self-inverse so two
+         // consecutive toDataURL() alternated noisy/original (A/B/A/B) — proven by
+         // scratchpad/canvas_test.js (distinct=2). Now: perturb → serialize →
+         // RESTORE the original pixel. Output is STABLE across repeated reads
+         // (distinct=1) and the source canvas is unchanged after the call, while
+         // still differing from the true canvas (anti-fingerprint preserved).
          "var _cn=(sw*131+sh*17+hc*7)&255;"
          "var _ot=HTMLCanvasElement.prototype.toDataURL;"
          "HTMLCanvasElement.prototype.toDataURL=function(){"
          "var c=this.getContext&&this.getContext('2d');"
          "if(c&&this.width>0&&this.height>0){"
          "try{var id=c.getImageData(0,0,1,1);"
-         "id.data[0]=(id.data[0]^_cn)&255;"
-         "c.putImageData(id,0,0);}catch(e){}}"
+         "var _o0=id.data[0];"
+         "id.data[0]=(_o0^_cn)&255;c.putImageData(id,0,0);"
+         "var _r=_ot.apply(this,arguments);"
+         "id.data[0]=_o0;c.putImageData(id,0,0);"
+         "return _r;}catch(e){}}"
          "return _ot.apply(this,arguments);};"
          // WebGL renderer → Apple GPU (consistent with all real iPhones)
          "function pg(G){"
@@ -3286,14 +3290,25 @@ static void notify_cb(int t) {
         // captures it, whether or not Viber is suspended when Backup is pressed.
         {
             const char *pnk = getprogname();
-            if (pnk && (strstr(pnk,"Zalo")   || strstr(pnk,"zalo") ||
-                        strstr(pnk,"zingalo")|| strstr(pnk,"imess")||
-                        strstr(pnk,"Viber"))) {
+            BOOL isViber = pnk && strstr(pnk,"Viber");
+            BOOL isZalo  = pnk && (strstr(pnk,"Zalo") || strstr(pnk,"zalo") ||
+                                   strstr(pnk,"zingalo") || strstr(pnk,"imess"));
+            if (isViber || isZalo) {
                 ci_restoreKeychainIfFlagged();
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
-                               dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                    @autoreleasepool { ci_dumpKeychain(); ci_dumpViberIdentity(); }
-                });
+                // ZJB-01/R3 FIX: the 4s auto-dump writes tmp/hios_keychain.plist on
+                // EVERY launch — a tool-identifying artifact inside the app sandbox.
+                // A normal Zalo Change Device (goal: clean device) must leave NO
+                // dump, so gate the Zalo auto-dump behind an explicit opt-in
+                // (config zaloKeepLogin, default OFF). The on-demand host dump
+                // (com.changeinfoios/dump_keychain, registered above) still serves
+                // an explicit backup. Viber path UNCHANGED (its login lives in the
+                // keychain and needs the pre-staged snapshot).
+                if (isViber || getConfigBool(@"zaloKeepLogin")) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+                                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @autoreleasepool { ci_dumpKeychain(); ci_dumpViberIdentity(); }
+                    });
+                }
             }
         }
         (void)&tw_deviceMGHash; (void)&tw_sigOK;                       // (device-bind reverted)
