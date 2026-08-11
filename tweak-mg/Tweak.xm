@@ -2241,13 +2241,113 @@ static BOOL isTweakDataPath(const char *path) {
     return NO;
 }
 
+// ZJB-03/R3-13 STATIC-PARTIAL: textual path canonicalization (collapse '.'/'..'/
+// duplicate-slash). Relative paths ARE resolved against the real cwd via getcwd()
+// so a relative JB path is caught regardless of the caller's cwd — therefore this
+// is NOT syscall-free on the relative branch. Returns a TYPED status; the caller
+// applies exemptions ONLY on CI_CANON_OK. This closes the lexical-alias + relative
+// vectors ONLY. It does NOT hook open/openat/fstatat/getattrlist/readlink/opendir/
+// realpath, does NOT resolve symlinks, and getcwd-failure / chdir-race remain
+// LIMITATIONS. So filesystem/dyld Hide-JB is STATIC-PARTIAL, not fixed.
+//
+// P1 contract fix: overflow/cwd-failure RETURN IMMEDIATELY during parse (out[0]=0)
+// so a partial output can never be built or trusted. The old single BOOL + the
+// `if(!complete) break` in the copy loop made a >512-segment path emit only the
+// first segment ("/var"), which then slipped past the hide table — that is fixed
+// here by separating PARSE status (early-return) from OUTPUT truncation.
+// INVARIANT: sizeof(canon) (1024) is far larger than the longest kHide entry
+// (~27B) + 1 boundary byte, so an OUT_TRUNCATED prefix still fully contains any
+// hide prefix — the hide table stays reliable on a truncated prefix.
+#define CI_CANON_MAXSEG 512
+typedef enum {
+    CI_CANON_OK = 0,          // fully canonicalized; `out` is complete
+    CI_CANON_INVALID,         // NULL/empty input or bad args; `out` empty
+    CI_CANON_CWD_FAILED,      // relative input but getcwd failed/non-absolute; `out` empty
+    CI_CANON_SEG_OVERFLOW,    // > CI_CANON_MAXSEG segments; parse aborted; `out` empty
+    CI_CANON_OUT_TRUNCATED,   // parse OK but output buffer too small; `out` = valid canonical PREFIX
+} ci_canon_status;
+static ci_canon_status ci_canonPath(const char *in, char *out, size_t outsz) {
+    if (out && outsz) out[0] = 0;
+    if (!out || outsz == 0 || !in || in[0] == '\0') return CI_CANON_INVALID;  // NULL/empty ⇒ INVALID (never cwd)
+    int saved_errno = errno;                                                  // preserve caller errno around getcwd
+    const char *segs[CI_CANON_MAXSEG]; size_t seglen[CI_CANON_MAXSEG]; int nseg = 0;
+    char cwd[1024];
+    if (in[0] != '/') {                                                       // relative → seed from REAL cwd
+        if (getcwd(cwd, sizeof(cwd)) == NULL || cwd[0] != '/') {
+            errno = saved_errno; out[0] = 0; return CI_CANON_CWD_FAILED;      // do NOT rootify the input
+        }
+        for (const char *p = cwd; *p; ) {
+            while (*p == '/') p++;
+            if (!*p) break;
+            const char *s = p; while (*p && *p != '/') p++;
+            size_t len = (size_t)(p - s);
+            if (len == 1 && s[0] == '.') continue;
+            if (len == 2 && s[0] == '.' && s[1] == '.') { if (nseg > 0) nseg--; continue; }
+            if (nseg >= CI_CANON_MAXSEG) { errno = saved_errno; out[0] = 0; return CI_CANON_SEG_OVERFLOW; }
+            segs[nseg] = s; seglen[nseg] = len; nseg++;
+        }
+    }
+    for (const char *p = in; *p; ) {                                          // apply the input segments
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *s = p; while (*p && *p != '/') p++;
+        size_t len = (size_t)(p - s);
+        if (len == 1 && s[0] == '.') continue;                               // "."
+        if (len == 2 && s[0] == '.' && s[1] == '.') { if (nseg > 0) nseg--; continue; }  // ".."
+        if (nseg >= CI_CANON_MAXSEG) { errno = saved_errno; out[0] = 0; return CI_CANON_SEG_OVERFLOW; }
+        segs[nseg] = s; seglen[nseg] = len; nseg++;
+    }
+    errno = saved_errno;
+    if (nseg == 0) {                                                          // canonical root "/"
+        if (outsz >= 2) { out[0] = '/'; out[1] = 0; return CI_CANON_OK; }
+        out[0] = 0; return CI_CANON_OUT_TRUNCATED;
+    }
+    size_t o = 0;                                                            // build output; parse already OK
+    for (int i = 0; i < nseg; i++) {
+        if (o + 1 >= outsz) { out[o] = 0; return CI_CANON_OUT_TRUNCATED; }
+        out[o++] = '/';
+        for (size_t j = 0; j < seglen[i]; j++) {
+            if (o + 1 >= outsz) { out[o] = 0; return CI_CANON_OUT_TRUNCATED; }
+            out[o++] = segs[i][j];
+        }
+    }
+    out[o] = 0;
+    return CI_CANON_OK;
+}
+
 static BOOL isJBPath(const char *path) {
     if (!path) return NO;
-    // Never hide our own config directory — reloadConfig must still work
-    static const char kCfgDir[] = "/var/jb/etc/changeinfoios/";
-    if (strncmp(path, kCfgDir, sizeof(kCfgDir)-1) == 0) return NO;
-    // Never hide camera/media tweak data (VCam video + marker files).
-    if (isTweakDataPath(path)) return NO;
+    // ZJB-03/R3-13: canonicalize FIRST (collapse '.'/'..'/dup-slash, NO disk I/O),
+    // then run BOTH exemptions and hide-checks on the RESOLVED path. Running
+    // exemptions on the RAW path let alias forms escape hiding, e.g.
+    //   /var/jb/etc/changeinfoios/../../Applications/Sileo.app   (cfg-dir prefix escape)
+    //   /var/mobile/vcam/../../../Applications/Cydia.app         (vcam exemption escape)
+    // Canonicalizing before the exemption closes that. This still covers ONLY the
+    // lexical-alias vector — open/openat/fstatat/readlink/realpath remain UNHOOKED
+    // (see report C4), so filesystem hide is PARTIAL, not fixed.
+    char canon[1024];
+    ci_canon_status st = ci_canonPath(path, canon, sizeof(canon));
+    // ITEM 1 — ERROR PARITY: for ANY non-OK status (INVALID / CWD_FAILED /
+    // SEG_OVERFLOW / OUT_TRUNCATED) return NO so the hook PASSES THROUGH to the
+    // ORIGINAL syscall and the OS returns the real result + errno. We must NOT
+    // fabricate ENOENT for an over-long / unresolvable / >512-segment path — that
+    // would mask ENAMETOOLONG (or a genuine ENOENT vs EACCES) and is itself a
+    // detectable tell, and such paths are not realistic anti-fraud JB probes. ONLY
+    // a fully-OK canonicalization is trusted to hide. (getcwd-failure / >512-seg /
+    // symlink stay LIMITATIONS — see report.)
+    if (st != CI_CANON_OK) return NO;
+    const char *cp = canon;
+    {
+        // Never hide our own config dir — reloadConfig must still work. Boundary-aware
+        // so BOTH the exact dir and its children are exempted (exempting only the
+        // child file while hiding the dir would itself be a detectable inconsistency:
+        // stat(dir)=ENOENT but open(dir/config.plist)=OK).
+        static const char kCfgDir[] = "/var/jb/etc/changeinfoios";
+        size_t cl = sizeof(kCfgDir) - 1;
+        if (strncmp(cp, kCfgDir, cl) == 0 && (cp[cl] == '\0' || cp[cl] == '/')) return NO;
+        // Never hide camera/media tweak data (VCam video + marker files).
+        if (isTweakDataPath(cp)) return NO;
+    }
     static const char * const kHide[] = {
         "/var/jb", "/private/var/jb",
         "/var/lib/apt", "/private/var/lib/apt",
@@ -2269,8 +2369,14 @@ static BOOL isJBPath(const char *path) {
         "/Applications/Filza.app",
         NULL
     };
+    // Boundary-aware prefix match on the canonical path: a hide entry matches only
+    // when the next char is '/' or end-of-string, so "/var/jb" hides "/var/jb" and
+    // "/var/jb/..." but NOT a real path like "/var/jbx" (old strncmp prefix hid it —
+    // a false positive that itself signalled tampering on legit look-alike paths).
     for (int i = 0; kHide[i]; i++) {
-        if (strncmp(path, kHide[i], strlen(kHide[i])) == 0) return YES;
+        size_t hl = strlen(kHide[i]);
+        if (strncmp(cp, kHide[i], hl) == 0 && (cp[hl] == '\0' || cp[hl] == '/'))
+            return YES;
     }
     return NO;
 }

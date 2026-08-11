@@ -102,7 +102,7 @@ static NSString *CIRRSDir(void) {
 - (BOOL)boolForKey:(NSString *)key;
 - (NSInteger)integerForKey:(NSString *)key;
 - (void)setObject:(id)value forKey:(NSString *)key;
-- (void)save;
+- (BOOL)save;   // ITEM 4: returns whether the tweak-readable /var/jb mirror was written
 - (void)notifyReload;
 - (void)syncProfileWithPublicIPCompletion:(void(^)(BOOL success, NSString *city,
                                                      NSString *country, NSString *err))completion;
@@ -214,11 +214,12 @@ static NSString *CIRRSDir(void) {
     else _cfg[key] = value;
 }
 
-- (void)save {
+- (BOOL)save {
+    BOOL mirrorOK = NO;   // ITEM 4: set only when the /var/jb tweak-readable mirror write succeeds
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0 error:nil];
-    if (!data) { NSLog(@"[ChangeInfoIos] save: plist serialization failed!"); return; }
+    if (!data) { NSLog(@"[ChangeInfoIos] save: plist serialization failed!"); return NO; }
 
     // Always write to app sandbox first (never fails)
     BOOL localOK = [data writeToFile:CILocalConfigPath() atomically:YES];
@@ -354,6 +355,7 @@ static NSString *CIRRSDir(void) {
         if (data) {
             BOOL ok = [data writeToFile:kSharedConfigPath options:NSDataWritingAtomic error:nil];
             if (ok) chmod([kSharedConfigPath fileSystemRepresentation], 0644);
+            mirrorOK = ok;   // ITEM 4: the /var/jb mirror is the file the tweaks read
             NSLog(@"[ChangeInfoIos] save sandbox mirror: ok=%d path=%@", ok, kSharedConfigPath);
         }
     } @catch (NSException *e) {
@@ -361,6 +363,7 @@ static NSString *CIRRSDir(void) {
     }
 
     [self notifyReload];
+    return mirrorOK;   // ITEM 4: caller can verify the tweak-readable mirror was written
 }
 
 - (void)notifyReload {
@@ -3152,104 +3155,205 @@ static BOOL ci_isNoInjectBundle(NSString *bid) {
     return bid.length && [s containsObject:bid];
 }
 
-static void ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps) {
-    // v2.6.3: REMOVED com.apple.springboard from sidecar filter — the v2.6.2
-    // sidecar with MGCopyAnswer hook crashed SpringBoard into SafeMode
-    // because SpringBoard reads dozens of MG keys during boot (lock screen
-    // wallpaper sizing, status bar, control center) and our cold-load
-    // handler still hadn't loaded gCfg in time for SpringBoard's earliest
-    // calls → re-entrance or type mismatch crashed the BBoard daemon chain.
-    // Settings (com.apple.Preferences) is fine — only loaded when user
-    // opens Settings.app, gCfg already populated by then.
-    // v2.6.7: REMOVED com.apple.Preferences. User explicitly does NOT want
-    // Settings to be spoofed — they verify spoof inside their actual target
-    // apps (Lirum / AIDA64 / Zalo). Settings also kept crashing in v2.6.4-6
-    // because Apple Pay's PKPaymentRegistrationUtilities probes ~30 MG keys
-    // and any single type-mismatch trips ___forwarding___ → SIGABRT. Easier
-    // to just not inject there at all.
-    NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
-    NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
-    for (CIAppInfo *app in apps) {
-        if (ci_isNoInjectBundle(app.bundleID)) continue;   // v4.0.5: never inject Weather/Maps
-        if (app.bundleID.length) [bundles addObject:app.bundleID];
-        if (!app.bundlePath.length) continue;
-        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
-        NSString *exec = [[bundle executablePath] lastPathComponent];
-        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
-        if (exec.length) [executables addObject:exec];
+// ITEM 3 — STATIC, READ-ONLY verification of a SHIPPED tweak filter file. The app
+// no longer WRITES these filters at runtime from the (sandboxed) mobile host; the
+// final MG/CT filter ships baked in the package (Zalo listed), and the app only
+// READS it back to confirm it will actually inject BEFORE doing anything
+// destructive. Checks, in order:
+//   (1) the path is a REAL regular file — lstat (NOT stat) so a symlink that could
+//       redirect the read to attacker-controlled content is REJECTED, not followed;
+//   (2) the plist parses to a dictionary with a "Filter" dictionary;
+//   (3) Filter.Mode == "Any";
+//   (4) Bundles is a NON-EMPTY array of NON-EMPTY NSStrings (Executables is OPTIONAL
+//       in a MobileSubstrate filter — the shipped MG sidecar carries Bundles only; if
+//       present it must be a well-formed array of non-empty strings);
+//   (5) every REQUIRED (injectable) bundle — Zalo — is present in Bundles.
+// Returns NO on ANY failure. Proves the filter is PRESENT + well-formed + covers
+// the required target; does NOT prove ellekit LOADED it or that hooks are live in
+// Zalo (runtime-only — stays UNVERIFIED). Independent of any set we could have
+// built at runtime, so there is no tautology: a filter that simply lacks Zalo FAILS.
+static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredBids) {
+    if (!path.length) return NO;
+    struct stat st;
+    if (lstat([path fileSystemRepresentation], &st) != 0) {
+        NSLog(@"[ChangeInfoIos] static filter verify: lstat FAILED → %@", path);
+        return NO;
     }
-    if ([bundles containsObject:@"com.apple.mobilesafari"]) {
-        [bundles addObject:@"com.apple.WebKit.WebContent"];
-        [executables addObject:@"com.apple.WebKit.WebContent"];
+    if (!S_ISREG(st.st_mode)) {   // reject symlink / dir / device — must be a real file
+        NSLog(@"[ChangeInfoIos] static filter verify: NOT a regular file (mode=0%o) → %@",
+              (unsigned)st.st_mode, path);
+        return NO;
     }
-    NSDictionary *filter = @{
-        @"Filter": @{
-            @"Bundles": bundles.array,
-            @"Executables": executables.array,
-            @"Mode": @"Any",
+    NSDictionary *rb = [NSDictionary dictionaryWithContentsOfFile:path];
+    NSDictionary *f  = [rb isKindOfClass:[NSDictionary class]] ? rb[@"Filter"] : nil;
+    if (![f isKindOfClass:[NSDictionary class]]) return NO;
+    id mode = f[@"Mode"];
+    if (![mode isKindOfClass:[NSString class]] || ![mode isEqualToString:@"Any"]) return NO;
+    id bundles = f[@"Bundles"];
+    if (![bundles isKindOfClass:[NSArray class]] || [bundles count] == 0) return NO;
+    for (id b in (NSArray *)bundles) if (![b isKindOfClass:[NSString class]] || ![(NSString *)b length]) return NO;
+    // Executables is OPTIONAL (the shipped MG sidecar has Bundles only). If present it
+    // must be a well-formed array of non-empty strings; absent/nil is acceptable.
+    id execs = f[@"Executables"];
+    if (execs != nil) {
+        if (![execs isKindOfClass:[NSArray class]]) return NO;
+        for (id e in (NSArray *)execs) if (![e isKindOfClass:[NSString class]] || ![(NSString *)e length]) return NO;
+    }
+    NSSet *bs = [NSSet setWithArray:(NSArray *)bundles];
+    for (NSString *bid in requiredBids) {
+        if (!bid.length || ci_isNoInjectBundle(bid)) continue;
+        if (![bs containsObject:bid]) {
+            NSLog(@"[ChangeInfoIos] static filter verify: REQUIRED bundle MISSING → %@ (%@)", bid, path);
+            return NO;
         }
-    };
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:filter
-                                                              format:NSPropertyListXMLFormat_v1_0
-                                                             options:0
-                                                               error:nil];
-    if (!data) {
-        NSLog(@"[ChangeInfoIos] sidecar filter sync: plist serialization failed");
-        return;
     }
-    NSString *path = CITweakFilterPath();
-    BOOL ok = [data writeToFile:path atomically:YES];
-    if (ok) chmod([path fileSystemRepresentation], 0644);
-    NSLog(@"[ChangeInfoIos] sidecar filter sync: %@ (%lu bundles, %lu execs)",
-          ok ? @"OK" : @"FAIL",
-          (unsigned long)bundles.count,
-          (unsigned long)executables.count);
+    return YES;
 }
 
-static void ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps) {
-    NSMutableOrderedSet<NSString *> *bundles = [NSMutableOrderedSet orderedSet];
-    NSMutableOrderedSet<NSString *> *executables = [NSMutableOrderedSet orderedSet];
-    for (CIAppInfo *app in apps) {
-        if (ci_isNoInjectBundle(app.bundleID)) continue;   // v4.0.5: never inject Weather/Maps
-        if (app.bundleID.length) [bundles addObject:app.bundleID];
-        if (!app.bundlePath.length) continue;
-        NSBundle *bundle = [NSBundle bundleWithPath:app.bundlePath];
-        NSString *exec = [[bundle executablePath] lastPathComponent];
-        if (!exec.length) exec = [bundle objectForInfoDictionaryKey:@"CFBundleExecutable"];
-        if (exec.length) [executables addObject:exec];
+// ITEM 4 — EXACT read-back of the tweak-readable /var/jb mirror. After the identity
+// is staged + saved, re-open the ACTUAL file the tweaks consume
+// (/var/jb/etc/changeinfoios/config.plist = kSharedConfigPath) and confirm the
+// device-identity keys on disk EXACTLY equal the live config. Proves the mirror the
+// tweak reads is the one we just wrote — a failed/stale mirror is caught BEFORE the
+// destructive wipe rather than after (so we never destroy data for a change the
+// tweak can't even see). Does NOT prove the tweak LOADED or that hooks are live.
+static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
+    NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
+    if (![disk isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[ChangeInfoIos] config mirror readback: file missing/unparseable → %@", kSharedConfigPath);
+        return NO;
     }
-    [executables addObject:@"CommCenter"];
-    [executables addObject:@"commcenter"];
-    [executables addObject:@"CoreTelephonyHelper"];
-
-    NSDictionary *filter = @{
-        @"Filter": @{
-            @"Bundles": bundles.array,
-            @"Executables": executables.array,
-            @"Mode": @"Any",
+    static NSArray<NSString *> *kIdentityKeys = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kIdentityKeys = @[
+            @"SerialNumber", @"UniqueDeviceID",
+            @"InternationalMobileEquipmentIdentity", @"advertisingIdentifier",
+            @"WiFiAddress", @"BluetoothAddress", @"ModelNumber",   // WiFiAddress: capital F = canonical config key (ci_randomizeIdentities @1915)
+        ];
+    });
+    NSUInteger checked = 0;
+    for (NSString *k in kIdentityKeys) {
+        id live = [cm objectForKey:k];
+        if (![live isKindOfClass:[NSString class]] || ![(NSString *)live length]) continue;  // not in this profile
+        id got = disk[k];
+        if (![got isKindOfClass:[NSString class]] || ![(NSString *)got isEqualToString:(NSString *)live]) {
+            NSLog(@"[ChangeInfoIos] config mirror readback MISMATCH key=%@ (mirror≠live) → abort before wipe", k);
+            return NO;
         }
-    };
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:filter
-                                                              format:NSPropertyListXMLFormat_v1_0
-                                                             options:0
-                                                               error:nil];
-    if (!data) {
-        NSLog(@"[ChangeInfoIos] CT filter sync: plist serialization failed");
-        return;
+        checked++;
     }
-    NSString *path = CICTTweakFilterPath();
-    BOOL ok = [data writeToFile:path atomically:YES];
-    if (ok) chmod([path fileSystemRepresentation], 0644);
-    NSLog(@"[ChangeInfoIos] CT filter sync: %@ (%lu bundles, %lu execs)",
-          ok ? @"OK" : @"FAIL",
-          (unsigned long)bundles.count,
-          (unsigned long)executables.count);
+    if (checked == 0) {   // nothing to compare = we cannot prove the mirror landed → fail closed
+        NSLog(@"[ChangeInfoIos] config mirror readback: NO identity key present to verify → fail-closed");
+        return NO;
+    }
+    return YES;
 }
 
-static void ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps) {
-    ci_syncSidecarFilterForApps(apps);
-    ci_syncCarrierFilterForApps(apps);
-    return;
+// CODEX P0-2 — EXACT read-back of the CRITICAL tweak-CONSUMED keys (NOT "the entire
+// config" — only the keys the tweak actually reads to spoof + drive the one-shot),
+// BEFORE the destructive wipe. After staging + save, re-open the /var/jb mirror and
+// confirm on disk, EXACTLY vs the live config we just staged:
+//   (a) identity keys (ci_configMirrorMatches);
+//   (b) _ci_lic_tok — the signed spoof token — is a non-empty string EQUAL to live
+//       (without it the tweak's fail-closed gate won't spoof at all → wiping is a loss);
+//   (c) targetBundles == the exact set we staged;
+//   (d) wipe_gen_<bid> == the one-shot nonce we will stamp into each container;
+//   (e) wipe_counter_<bid> == the exact counter (a stale counter re-fires the wipe);
+//   (f) wipe_deadline == the exact staged deadline AND still in the FUTURE.
+// Only then is it safe to wipe — otherwise the tweak's one-shot keychain/UD reset runs
+// against a stale/incomplete config and we would have destroyed data for nothing.
+static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *allBids,
+                                      NSString *wipeGen, long long counter, long long wipeDeadline) {
+    if (!ci_configMirrorMatches(cm)) return NO;   // identity keys first
+    NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
+    if (![disk isKindOfClass:[NSDictionary class]]) return NO;
+    // (b) signed spoof token must be present on disk AND equal to the live token.
+    id liveTok = [cm objectForKey:@"_ci_lic_tok"];
+    id diskTok = disk[@"_ci_lic_tok"];
+    if (![liveTok isKindOfClass:[NSString class]] || ![(NSString *)liveTok length]) {
+        NSLog(@"[ChangeInfoIos] critical readback: live _ci_lic_tok missing/empty (license?) → abort");
+        return NO;
+    }
+    if (![diskTok isKindOfClass:[NSString class]] || ![(NSString *)diskTok isEqualToString:(NSString *)liveTok]) {
+        NSLog(@"[ChangeInfoIos] critical readback: _ci_lic_tok on disk missing/≠ live → abort");
+        return NO;
+    }
+    // (c) targetBundles: the mirror must list EXACTLY the bundles we staged (as a set).
+    id tb = disk[@"targetBundles"];
+    if (![tb isKindOfClass:[NSArray class]]) return NO;
+    NSSet *diskSet = [NSSet setWithArray:(NSArray *)tb];
+    NSSet *wantSet = [NSSet setWithArray:allBids ?: @[]];
+    if (![diskSet isEqualToSet:wantSet]) {
+        NSLog(@"[ChangeInfoIos] critical readback: targetBundles mismatch (disk=%lu want=%lu)",
+              (unsigned long)diskSet.count, (unsigned long)wantSet.count);
+        return NO;
+    }
+    // (d)+(e) per-bundle one-shot generation + counter must match exactly.
+    if (!wipeGen.length) return NO;
+    for (NSString *bid in allBids) {
+        if (![bid isKindOfClass:[NSString class]] || !bid.length) return NO;
+        id g = disk[[@"wipe_gen_" stringByAppendingString:bid]];
+        if (![g isKindOfClass:[NSString class]] || ![(NSString *)g isEqualToString:wipeGen]) {
+            NSLog(@"[ChangeInfoIos] critical readback: wipe_gen_%@ mismatch/missing on disk", bid);
+            return NO;
+        }
+        id c = disk[[@"wipe_counter_" stringByAppendingString:bid]];
+        if (![c isKindOfClass:[NSNumber class]] || [(NSNumber *)c longLongValue] != counter) {
+            NSLog(@"[ChangeInfoIos] critical readback: wipe_counter_%@ ≠ %lld on disk", bid, counter);
+            return NO;
+        }
+    }
+    // (f) one-shot deadline must equal the exact staged value AND still be in the future.
+    id dl = disk[@"wipe_deadline"];
+    NSString *wantDl = [NSString stringWithFormat:@"%lld", wipeDeadline];
+    if (![dl isKindOfClass:[NSString class]] || ![(NSString *)dl isEqualToString:wantDl]) {
+        NSLog(@"[ChangeInfoIos] critical readback: wipe_deadline ≠ staged value on disk");
+        return NO;
+    }
+    if (wipeDeadline <= (long long)[[NSDate date] timeIntervalSince1970]) {
+        NSLog(@"[ChangeInfoIos] critical readback: wipe_deadline not in the future");
+        return NO;
+    }
+    return YES;
+}
+
+// ITEM 3 — READ-ONLY now. This function used to BUILD a filter from the runtime
+// `apps` and writeToFile() it into the root-owned DynamicLibraries dir from the
+// sandboxed mobile host. That runtime write is REMOVED: the MG sidecar filter
+// (ChangeInfoIosMG.plist) ships baked in the package with Zalo listed. The app
+// only READS it back and verifies structure + required coverage. `apps` is no
+// longer consulted (the shipped filter is authoritative) — kept in the signature
+// so the single call site is unchanged. WRITE path GONE → no root-dir write, no
+// symlink-follow, no chmod from mobile. LOADER/INJECTION still UNVERIFIED.
+static BOOL ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
+    (void)apps;   // no runtime enumeration → no runtime write
+    BOOL verified = ci_staticFilterVerify(CITweakFilterPath(), requiredBids);
+    NSLog(@"[ChangeInfoIos] sidecar filter (shipped, READ-ONLY): STATIC_VERIFIED=%@ "
+          @"[no runtime write] [.appex+Zalo-helper=NOT_ENUMERATED] [LOADER/INJECTION=UNVERIFIED] → %@",
+          verified ? @"YES" : @"NO", CITweakFilterPath());
+    return verified;
+}
+
+// ITEM 3 — READ-ONLY now (same rationale as the sidecar). The CT carrier filter
+// (ChangeInfoIosCT.plist) ships baked in the package; no runtime write from mobile.
+static BOOL ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
+    (void)apps;
+    BOOL verified = ci_staticFilterVerify(CICTTweakFilterPath(), requiredBids);
+    NSLog(@"[ChangeInfoIos] CT filter (shipped, READ-ONLY): STATIC_VERIFIED=%@ "
+          @"[no runtime write] [LOADER/INJECTION=UNVERIFIED] → %@",
+          verified ? @"YES" : @"NO", CICTTweakFilterPath());
+    return verified;
+}
+
+// ITEM 3 — returns YES only when BOTH SHIPPED filter files STATIC-verify read-only
+// (real regular file, Mode="Any", non-empty Bundles/Executables, every REQUIRED
+// bundle present), verified independently from `requiredBids`. No runtime write.
+// LOADER/INJECTION remain UNVERIFIED — see ci_staticFilterVerify.
+static BOOL ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
+    BOOL sidecarVerified = ci_syncSidecarFilterForApps(apps, requiredBids);
+    BOOL carrierVerified = ci_syncCarrierFilterForApps(apps, requiredBids);
+    return sidecarVerified && carrierVerified;
 
 #if 0
     // v2.6.1: main tweak loads ONLY into SpringBoard + Preferences for system
@@ -8517,9 +8621,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 
 - (void)performRRSBackupLicensed:(BOOL)backup {
-    NSArray<NSString *> *resetBids = [[CIConfigManager shared] targetBundles];
+    NSArray<NSString *> *rawResetBids = [[CIConfigManager shared] targetBundles];
+    // CODEX — NORMALIZE the persisted target set: keep only non-empty NSString bids so a
+    // corrupted config (non-string / empty entry) can never slip into a shell command or
+    // the filter set. NOTE: this is NORMALIZATION of the stored list, NOT a guarantee the
+    // remaining set is the user's complete/intended selection — dropped entries are logged
+    // and the run proceeds with the valid ones (a dropped bid simply isn't targeted).
+    NSMutableArray<NSString *> *resetBidsM = [NSMutableArray array];
+    for (id b in (rawResetBids ?: @[])) {
+        if ([b isKindOfClass:[NSString class]] && [(NSString *)b length]) [resetBidsM addObject:b];
+        else NSLog(@"[ChangeInfoIos] preflight: dropped invalid targetBundles entry (normalization): %@", b);
+    }
+    NSArray<NSString *> *resetBids = [resetBidsM copy];
     if (resetBids.count == 0) {
-        [self alert:@"Chưa chọn app" msg:@"Vào mục 1 để chọn app cần reset dữ liệu."]; return;
+        [self alert:@"Chưa chọn app"
+                msg:@"Danh sách app hợp lệ đang rỗng (chưa chọn, hoặc config hỏng). Vào mục 1 để chọn app cần reset dữ liệu."];
+        return;
     }
     // v2.7.1 — RRS backup: user-ticked rrsBundles + ALWAYS Safari + Maps +
     // Weather (matches the same kSystemAlwaysInclude as Change Device so
@@ -8552,6 +8669,103 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [targets addObject:a];
             [names addObject:a.name ?: a.bundleID];
         }
+    }
+
+    // P3 PREFLIGHT — resolve the ORIGINAL requested selection against LIVE installed
+    // apps BEFORE any destructive/HUD/background/kill/save/filter/wipe/respring op.
+    // If Zalo is requested it MUST resolve to a live app with bundlePath + main
+    // executable + containerPath and not be excluded by the no-inject policy;
+    // otherwise ABORT with "Chưa thay đổi dữ liệu". (The old allSelectedCovered proved
+    // Zalo present only against the set it itself built from `all` = a tautology; if
+    // Zalo dropped from the scan/cache the filter also lacked Zalo and still passed.)
+    NSString *const kZaloBID = @"vn.com.vng.zingalo";
+    // ITEM 3 + CODEX/self-review — STATIC, READ-ONLY verification of the SHIPPED tweak
+    // filters up front, BEFORE any kill/randomize/wipe. The app no longer writes the
+    // filters at runtime; it only confirms the baked package filters exist, are
+    // well-formed (Mode="Any", non-empty Bundles, real regular file not a symlink) and
+    // cover the INJECTABLE target we gate on.
+    // IMPORTANT: require ONLY the injectable target (Zalo) — NOT every user-selected /
+    // persisted bundle. Selecting a non-baked app (e.g. WhatsApp) or a persisted
+    // always-include (Safari/Maps, which the CT filter intentionally omits) must NOT
+    // block the whole Zalo change: those apps are wipe-only and simply won't get the
+    // MG/CT spoof. Passing the full resetBids here was a false-abort regression.
+    NSArray<NSString *> *gateBids = [resetBids containsObject:kZaloBID] ? @[kZaloBID] : @[];
+    BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), gateBids) &&
+                          ci_staticFilterVerify(CICTTweakFilterPath(), gateBids);
+    if ([resetBids containsObject:kZaloBID]) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSMutableArray<NSString *> *missing = [NSMutableArray array];
+        NSString *zBundlePath = nil, *zContainerPath = nil;
+        // ITEM 2 + CODEX BLOCKER — FRESH-resolve Zalo via LSApplicationProxy (NOT the
+        // dispatch_once CIAppLister cache, which can be stale). Resolve the class
+        // DYNAMICALLY through NSClassFromString + performSelector (the exact idiom
+        // CIAppLister already uses for LSApplicationWorkspace) so we do NOT emit an
+        // undefined _OBJC_CLASS_$_LSApplicationProxy link symbol — MobileCoreServices is
+        // not in HIOSFakerV3_FRAMEWORKS, so a direct [LSApplicationProxy ...] class ref
+        // would fail to load (dyld) and the app would not launch. Validate: resolved
+        // bundleIdentifier equals Zalo, and bundlePath / main executable / data
+        // container actually EXIST on disk (not just non-empty strings).
+        Class LSAppProxyCls = NSClassFromString(@"LSApplicationProxy");
+        id px = nil;
+        if (LSAppProxyCls && [LSAppProxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)])
+            px = [LSAppProxyCls performSelector:@selector(applicationProxyForIdentifier:) withObject:kZaloBID];
+        if (!px) {
+            [missing addObject:@"LSApplicationProxy nil (Zalo chưa cài / class không nạp / không resolve)"];
+        } else {
+            NSString *rid = [px respondsToSelector:@selector(bundleIdentifier)]
+                ? [px performSelector:@selector(bundleIdentifier)] : nil;
+            if (![rid isKindOfClass:[NSString class]] || ![rid isEqualToString:kZaloBID])
+                [missing addObject:@"bundleIdentifier không khớp vn.com.vng.zingalo"];
+            id burl = [px respondsToSelector:@selector(bundleURL)]
+                ? [px performSelector:@selector(bundleURL)] : nil;
+            zBundlePath = [burl respondsToSelector:@selector(path)] ? [burl performSelector:@selector(path)] : nil;
+            if (![zBundlePath isKindOfClass:[NSString class]] || !zBundlePath.length || ![fm fileExistsAtPath:zBundlePath]) {
+                zBundlePath = nil;
+                [missing addObject:@"bundlePath không tồn tại"];
+            } else {
+                NSString *execPath = [[NSBundle bundleWithPath:zBundlePath] executablePath];
+                if (!execPath.length || ![fm fileExistsAtPath:execPath])
+                    [missing addObject:@"main executable không tồn tại"];
+            }
+            id curl = [px respondsToSelector:@selector(dataContainerURL)]
+                ? [px performSelector:@selector(dataContainerURL)] : nil;
+            zContainerPath = [curl respondsToSelector:@selector(path)] ? [curl performSelector:@selector(path)] : nil;
+            if (![zContainerPath isKindOfClass:[NSString class]] || !zContainerPath.length || ![fm fileExistsAtPath:zContainerPath]) {
+                zContainerPath = nil;
+                [missing addObject:@"data container không tồn tại (cần cho wipe)"];
+            }
+        }
+        if (ci_isNoInjectBundle(kZaloBID)) [missing addObject:@"bị policy no-inject loại"];
+        // ITEM 3 — if the SHIPPED filter does not statically verify + cover Zalo, the
+        // tweak will NOT inject into Zalo; ABORT before destroying data for nothing.
+        if (!filterVerified)
+            [missing addObject:@"shipped filter chưa verify (thiếu Zalo BID / Mode≠Any / symlink / rỗng)"];
+        if (missing.count) {
+            [self alert:@"Chưa thay đổi dữ liệu"
+                    msg:[NSString stringWithFormat:
+                         @"Zalo (%@) chưa resolve đủ để Change an toàn.\nThiếu: %@\n\n"
+                         @"KHÔNG có dữ liệu/identity nào bị đổi. Mở Zalo 1 lần rồi thử lại.",
+                         kZaloBID, [missing componentsJoinedByString:@", "]]];
+            return;   // abort BEFORE HUD/background/kill/save/filter/wipe/respring
+        }
+        // CODEX BLOCKER — ALWAYS drive Zalo's wipe/kill from the FRESH-resolved paths,
+        // not the cached CIAppInfo: a cached entry can carry a STALE bundlePath /
+        // containerPath (app updated, container re-created), which would make the wipe
+        // rm the wrong/old directory. Overwrite the existing target's paths if present,
+        // else add a synthetic — either way Zalo uses the fresh, on-disk-verified paths.
+        CIAppInfo *zTarget = nil;
+        for (CIAppInfo *a in targets) if ([a.bundleID isEqualToString:kZaloBID]) { zTarget = a; break; }
+        if (!zTarget) {
+            zTarget = [CIAppInfo new];
+            zTarget.bundleID = kZaloBID; zTarget.name = @"Zalo";
+            [targets addObject:zTarget];
+            [names addObject:@"Zalo"];
+            NSLog(@"[ChangeInfoIos] preflight: Zalo not in CIAppLister cache — added target from fresh resolve");
+        } else {
+            NSLog(@"[ChangeInfoIos] preflight: replacing cached Zalo paths with fresh-resolved (avoid stale container)");
+        }
+        zTarget.bundlePath = zBundlePath;         // fresh, existence-verified above
+        zTarget.containerPath = zContainerPath;   // fresh, existence-verified above
     }
 
     NSString *note = _noteField.text ?: @"";
@@ -8711,6 +8925,72 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSUInteger seededContacts = ci_seedRandomContacts();
         NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
 
+        // CODEX P0-1/P0-2 — STAGE + SAVE + EXACT READ-BACK the CRITICAL tweak-consumed
+        // config BEFORE the destructive wipe, AND re-gate the shipped filter. Previously
+        // only the identity was saved here; the one-shot config (targetBundles +
+        // wipe_gen/counter_<bid> + wipe_deadline + signed _ci_lic_tok) was staged AFTER
+        // the wipe, so a save/mirror failure went undetected until data was destroyed.
+        // Now the critical config is committed + read back from the tweak-readable
+        // /var/jb mirror first, AND the filter is re-verified; only if ALL of
+        // {mirror save, critical readback, filter} pass do we proceed. (Pre-kill already
+        // ran; NO container data wiped yet → aborting here is non-destructive.) counter +
+        // one-shot nonce + deadline are generated HERE so the config values and the
+        // container stamps written during the wipe are identical.
+        CIConfigManager *cm = [CIConfigManager shared];
+        NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
+        long long counter = (long long)[[NSDate date] timeIntervalSince1970];
+        long long wipeDeadline = (long long)([[NSDate date] timeIntervalSince1970] + 7200);   // 2h one-shot window
+        unsigned char _gb[16]; arc4random_buf(_gb, sizeof(_gb));
+        NSMutableString *wipeGen = [NSMutableString stringWithCapacity:32];
+        for (int _i = 0; _i < 16; _i++) [wipeGen appendFormat:@"%02x", _gb[_i]];
+
+        [cm setTargetBundles:allBids];
+        for (NSString *bid in allBids) {
+            [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
+            // v4.1.8: per-bundle one-shot generation the tweak matches against the
+            // container stamp written during the wipe. Lives in /var/jb config (NOT
+            // captured by a .adbk), so a restored backup can never carry it and re-trigger.
+            [cm setObject:wipeGen forKey:[@"wipe_gen_" stringByAppendingString:bid]];
+        }
+        // v4.2.7: 2h one-shot deadline — a container restored AFTER this window can never
+        // look "due" again and wipe a saved login even if it lost the .ci_gen_ack. Stored
+        // from the wipeDeadline VARIABLE (not inline) so the read-back can compare exactly.
+        [cm setObject:[NSString stringWithFormat:@"%lld", wipeDeadline] forKey:@"wipe_deadline"];
+        // Sign the fresh config so the tweak will spoof it (fail-closed gate). AFTER all
+        // config keys are set so the token covers the FINAL config.
+        [[CILicenseManager shared] writeTweakToken];
+
+        BOOL mirrorSaved = [cm save];
+        BOOL cfgReadback = ci_criticalConfigReadback(cm, allBids, wipeGen, counter, wipeDeadline);
+        // CODEX P0-1 — RE-VERIFY the shipped filter here and GATE the wipe on it: if the
+        // filter was swapped/deleted between preflight and now, we must NOT wipe (the
+        // tweak would not inject → data loss for nothing). gateBids = injectable target only.
+        BOOL filterOK = ci_syncTweakFilterForApps(fullTargets, gateBids);
+        if (!mirrorSaved || !cfgReadback || !filterOK) {
+            NSLog(@"[ChangeInfoIos] PRE-WIPE ABORT: mirrorSaved=%d cfgReadback=%d filterOK=%d", mirrorSaved, cfgReadback, filterOK);
+            NSMutableArray<NSString *> *why = [NSMutableArray array];
+            if (!mirrorSaved) [why addObject:@"ghi mirror config thất bại"];
+            if (!cfgReadback) [why addObject:@"đọc-lại config (identity/token/target/one-shot) KHÔNG khớp"];
+            if (!filterOK)    [why addObject:@"shipped filter đổi/xoá/hỏng cấu trúc — tweak sẽ KHÔNG inject app target"];
+            NSString *whyMsg = [why componentsJoinedByString:@"; "];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self dismissHUD:hud completion:^{
+                    [self alert:@"Chưa xoá dữ liệu"
+                            msg:[NSString stringWithFormat:
+                                 @"KHÔNG xoá dữ liệu app (tránh mất dữ liệu cho một thay đổi tweak chưa dùng được).\n"
+                                 @"Lý do: %@.\nKiểm tra /var/jb/etc/changeinfoios/ + filter DynamicLibraries rồi thử lại.", whyMsg]];
+                }];
+            });
+            if (bgTask != UIBackgroundTaskInvalid) {
+                UIBackgroundTaskIdentifier t2 = bgTask; bgTask = UIBackgroundTaskInvalid;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[UIApplication sharedApplication] endBackgroundTask:t2];
+                });
+            }
+            return;   // hard stop BEFORE any container wipe
+        }
+        NSLog(@"[ChangeInfoIos] pre-wipe gate OK (config+filter, %lu bundles) — proceeding to wipe", (unsigned long)allBids.count);
+
         // Step 2: Kill + wipe target app sandboxes.
         // Kill FIRST so file handles release and the app can't re-create files
         // mid-wipe. Do it via 3 mechanisms per app for maximum coverage:
@@ -8722,37 +9002,50 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // uninstall removes, so the target app cold-starts genuinely fresh
         // (no stale session / cache / saved-state surviving a Reset).
         NSArray *subs = @[@"Documents", @"Library", @"tmp", @"StoreKit", @"SystemData"];
-        NSUInteger wiped = 0;
-        long long counter = (long long)[[NSDate date] timeIntervalSince1970];
-        // v4.1.8: fresh RANDOM one-shot generation nonce per Change Device. Drives
-        // the tweak's ONE-SHOT keychain/UD/WK reset (ci_runOneShotIfDue) so a newly
-        // registered account starts on a genuinely brand-new device but then KEEPS
-        // that identity (stable trusted device / restorable via ADManager .adbk).
-        // Random (CSPRNG, not time-derived) so two Change Devices never collide and
-        // the trigger is an identity-MATCH, never a magnitude compare (a plain
-        // counter would let a restored old container spuriously re-wipe).
-        unsigned char _gb[16]; arc4random_buf(_gb, sizeof(_gb));
-        NSMutableString *wipeGen = [NSMutableString stringWithCapacity:32];
-        for (int _i = 0; _i < 16; _i++) [wipeGen appendFormat:@"%02x", _gb[_i]];
+        NSUInteger wiped = 0;         // ITEM 5: incremented ONLY on a VERIFIED wipe
+        NSUInteger attempted = 0;     // ITEM 5: display index (advances every iteration)
+        NSMutableArray<NSString *> *wipeFailed = [NSMutableArray array];   // CODEX P0-4: "Name (reason)" list
+        NSMutableArray<NSString *> *wipedNames = [NSMutableArray array];   // CODEX P0-4: only VERIFIED-wiped apps
+        // counter + wipeGen (one-shot nonce) were generated + persisted in the pre-wipe
+        // staging block above and read back from the mirror, so the container stamps the
+        // wipe writes below MATCH the config the tweak will read. (Reused here.)
         NSUInteger totalApps = fullTargets.count;
         // (killApp block defined above Step 1 for the ZCH-01 pre-kill; reused here.)
 
         for (CIAppInfo *a in fullTargets) {
             if (!a.containerPath.length) continue;
+            attempted++;
             NSString *sub = [NSString stringWithFormat:@"%lu/%lu — %@",
-                (unsigned long)wiped + 1, (unsigned long)totalApps, a.name ?: a.bundleID];
+                (unsigned long)attempted, (unsigned long)totalApps, a.name ?: a.bundleID];
             [self updateHUD:hud step:(backup ? 3 : 2) total:totalSteps
                       title:@"Xoá dữ liệu app target"
                    subtitle:sub];
             [NSThread sleepForTimeInterval:0.8];
             killApp(a);
             [NSThread sleepForTimeInterval:0.5];
+            // ITEM 5 + CODEX P0-3 — verify EACH of the 5 MAIN-container sub-dirs was
+            // actually emptied, without false greens. For every sub: rm in its OWN
+            // ci_run (rc not masked by mkdir), mkdir in its own ci_run (rc captured),
+            // then a strict emptiness probe that FAILS if the dir is missing OR ls
+            // errors (not just "empty output"): `[ -d dir ] || exit3; ls -A || exit4;
+            // [ -z out ] || exit5`. subsOK requires rm ok AND mkdir ok AND dir exists +
+            // enumerated + genuinely empty. (Scope: the 5 listed subs only — extension /
+            // app-group containers are wiped best-effort below but NOT counted here.)
+            BOOL subsOK = YES;
             for (NSString *sub in subs) {
                 NSString *full = [a.containerPath stringByAppendingPathComponent:sub];
-                NSString *cmd = [NSString stringWithFormat:
-                    @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null; mkdir -p '%@' 2>/dev/null",
-                    full, full, full];
-                ci_run([cmd UTF8String]);
+                int rmRc = ci_run([[NSString stringWithFormat:
+                    @"rm -rf '%@'/* '%@'/.[!.]* 2>/dev/null", full, full] UTF8String]);
+                int mkdirRc = ci_run([[NSString stringWithFormat:@"mkdir -p '%@'", full] UTF8String]);
+                // dir must EXIST (exit3), ls must SUCCEED not swallowed (exit4), be EMPTY (exit5).
+                int emptyRc = ci_run([[NSString stringWithFormat:
+                    @"d='%@'; [ -d \"$d\" ] || exit 3; out=$(ls -A \"$d\") || exit 4; [ -z \"$out\" ] || exit 5",
+                    full] UTF8String]);
+                if (rmRc != 0 || mkdirRc != 0 || emptyRc != 0) {
+                    subsOK = NO;
+                    NSLog(@"[ChangeInfoIos] wipe sub NOT clean: %@ (rmRc=%d mkdirRc=%d emptyRc=%d)",
+                          full, rmRc, mkdirRc, emptyRc);
+                }
             }
             // Fresh-device permissions: app is already killed above, so DELETE
             // its TCC rows (contacts/photos/camera/mic/tracking) → re-prompts on
@@ -8760,17 +9053,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // tccd re-read. Location (root, not in TCC) reset best-effort.
             ci_resetAppTCC(a.bundleID);
             ci_resetAppLocation(a.bundleID);
-            // Wipe the app's extension containers too so no old cache survives.
+            // Wipe the app's extension containers too so no old cache survives. (Best-
+            // effort; NOT part of subsOK — see scope note above / result UI.)
             ci_wipeAppExtensions(a.bundleID);
             ci_wipeAppGroups(a.bundleID);   // shared App Group data (fresh-install clean)
-            // v2.5.39: write marker inside Documents/ so iOS sandbox lets
-            // the file land (host's writeToFile: to another app's container
-            // ROOT silently fails — observed live on Zalo 2026-05-23:
-            // marker missing → wipe re-fired every launch → keychain wipe
-            // every launch → session lost + lag). Use shell echo > to
-            // bypass any cross-container NSFileManager sandbox check.
-            // Also keep writing the root path as a backward-compat fallback
-            // so older tweak builds still see a marker.
+            // v2.5.39: write marker inside Documents/ so iOS sandbox lets the file land
+            // (host's writeToFile: to another container ROOT silently fails). Shell echo
+            // via the privileged ci_run bypasses the cross-container NSFileManager check.
             NSString *docMarker  = [a.containerPath stringByAppendingPathComponent:@"Documents/.ci_last_wipe"];
             NSString *rootMarker = [a.containerPath stringByAppendingPathComponent:@".ci_last_wipe"];
             NSString *markCmd = [NSString stringWithFormat:
@@ -8781,20 +9070,44 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 counter, docMarker, docMarker,
                 counter, rootMarker, rootMarker];
             int mrc = ci_run([markCmd UTF8String]);
-            NSLog(@"[ChangeInfoIos] wipe marker for %@: rc=%d doc=%@ root=%@",
-                  a.bundleID, mrc, docMarker, rootMarker);
-            // v4.1.8: stamp the freshly-wiped container with THIS Change Device's
-            // one-shot nonce. The tweak's first launch reads Documents/.ci_gen,
-            // sees it equals config wipe_gen_<bid> and has no ack yet → wipes once,
-            // then acks. Same reliable Documents/ shell-echo the .ci_last_wipe
-            // marker uses (a cross-container root write silently fails).
+            // CODEX P0-3 — read the .ci_last_wipe marker back and require it to equal the
+            // EXACT counter (not just `test -s`). `$(cat ...)` strips the echo newline so
+            // the compare is exact. If the tweak's stored wipe_counter != this marker the
+            // one-shot logic breaks, so a mismatch must count as a FAILED wipe.
+            int lastRc = ci_run([[NSString stringWithFormat:
+                @"[ \"$(cat '%@' 2>/dev/null)\" = '%lld' ]", docMarker, counter] UTF8String]);
+            BOOL lastWipeMarkerExact = (lastRc == 0);
+            NSLog(@"[ChangeInfoIos] .ci_last_wipe for %@: writeRc=%d exactRc=%d", a.bundleID, mrc, lastRc);
+            // v4.1.8: stamp the container with THIS Change Device's one-shot nonce. CODEX
+            // P0-3 — capture the write rc AND read .ci_gen back == wipeGen exactly; if the
+            // gen marker is wrong/missing the tweak's one-shot keychain reset will NOT run,
+            // so it must count as a FAILED wipe (added to wipeFailed below).
             NSString *genMarker = [a.containerPath stringByAppendingPathComponent:@"Documents/.ci_gen"];
             NSString *genCmd = [NSString stringWithFormat:
                 @"mkdir -p '%@/Documents' 2>/dev/null; "
                 @"echo '%@' > '%@' 2>/dev/null && chmod 0644 '%@' 2>/dev/null",
                 a.containerPath, wipeGen, genMarker, genMarker];
-            ci_run([genCmd UTF8String]);
-            wiped++;
+            int genRc = ci_run([genCmd UTF8String]);
+            int genChk = ci_run([[NSString stringWithFormat:
+                @"[ \"$(cat '%@' 2>/dev/null)\" = '%@' ]", genMarker, wipeGen] UTF8String]);
+            BOOL genMarkerExact = (genRc == 0) && (genChk == 0);
+            NSLog(@"[ChangeInfoIos] .ci_gen for %@: writeRc=%d exactRc=%d", a.bundleID, genRc, genChk);
+            // CODEX P0-3 — count ONLY a fully-VERIFIED wipe: the 5 subs cleaned AND both
+            // markers read back EXACT. Record the SPECIFIC reason so the UI PARTIAL text
+            // is truthful (not defaulted to "marker fail").
+            NSMutableArray<NSString *> *rsn = [NSMutableArray array];
+            if (!subsOK)              [rsn addObject:@"thư mục chưa sạch (rm/mkdir/enumerate)"];
+            if (!lastWipeMarkerExact) [rsn addObject:@".ci_last_wipe sai counter / không ghi được"];
+            if (!genMarkerExact)      [rsn addObject:@".ci_gen sai (one-shot keychain sẽ KHÔNG chạy)"];
+            if (subsOK && lastWipeMarkerExact && genMarkerExact) {
+                wiped++;
+                [wipedNames addObject:(a.name ?: a.bundleID)];
+            } else {
+                [wipeFailed addObject:[NSString stringWithFormat:@"%@ (%@)",
+                    a.name ?: a.bundleID, [rsn componentsJoinedByString:@"; "]]];
+                NSLog(@"[ChangeInfoIos] wipe PARTIAL for %@: subsOK=%d lastWipeMarkerExact=%d genMarkerExact=%d — NOT counted",
+                      a.bundleID, subsOK, lastWipeMarkerExact, genMarkerExact);
+            }
         }
         // DO NOT restart tccd here. EVERY kill signal (-9 AND plain SIGTERM)
         // crashes Zalo ("văng") on the avatar screen: other live processes
@@ -8802,7 +9115,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // cache reload is instead nudged inside ci_resetAppTCC via a passive
         // notify_post (no daemon down-window). fix7: removed the SIGTERM that
         // fix6 added — confirmed văng by user.
-        NSLog(@"[ChangeInfoIos] Step 2 done: killed + wiped %lu apps", (unsigned long)wiped);
+        NSLog(@"[ChangeInfoIos] Step 2 done: VERIFIED-wiped %lu/%lu apps (PARTIAL/failed=%lu: %@)",
+              (unsigned long)wiped, (unsigned long)attempted, (unsigned long)wipeFailed.count,
+              wipeFailed.count ? [wipeFailed componentsJoinedByString:@", "] : @"none");
 
         // Step 3: Clean detection caches + Safari/WebKit deep wipe + save counters
         [self updateHUD:hud step:(backup ? 4 : 3) total:totalSteps
@@ -8848,30 +9163,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             ci_run([cmd UTF8String]);
         }
         // (Backup snapshot was taken at Step 0 above, BEFORE the wipe.)
-        CIConfigManager *cm = [CIConfigManager shared];
-        NSArray *allBids = [fullTargets valueForKey:@"bundleID"];
-        [cm setTargetBundles:allBids];
-        ci_syncTweakFilterForApps(fullTargets);
-        // Sign the fresh config so the tweak will spoof it (fail-closed gate).
-        [[CILicenseManager shared] writeTweakToken];
-        for (NSString *bid in allBids) {
-            [cm setObject:@(counter) forKey:[@"wipe_counter_" stringByAppendingString:bid]];
-            // v4.1.8: per-bundle one-shot generation the tweak matches against the
-            // container stamp written above. Lives in /var/jb config (NOT captured
-            // by a .adbk), so a restored backup can never carry it and re-trigger.
-            [cm setObject:wipeGen forKey:[@"wipe_gen_" stringByAppendingString:bid]];
-        }
-        // v4.2.7: stamp a deadline for the one-shot wipe. It lives here in the
-        // /var/jb config, which a 3rd-party app-data backup (AppsManager) cannot
-        // capture — so a container restored AFTER this window can never look
-        // "due" again and wipe away a saved login, even if the restore lost the
-        // hidden .ci_gen_ack. Within the window a real Change Device still wipes
-        // once → clean device for registering a new account.
-        [cm setObject:[NSString stringWithFormat:@"%lld",
-                       (long long)([[NSDate date] timeIntervalSince1970] + 7200)]   // 2h window
-               forKey:@"wipe_deadline"];
-        [cm save];
-        NSLog(@"[ChangeInfoIos] Step 3 done: counters saved, config reloaded (%lu target bundles)", (unsigned long)allBids.count);
+        // CODEX BLOCKER — the FULL final config (targetBundles + wipe_counter/gen_<bid> +
+        // wipe_deadline + signed tweak token) was STAGED, SAVED and EXACT-READBACK in the
+        // pre-wipe block ABOVE. It is intentionally NOT re-staged here: staging after the
+        // wipe was what let a config/mirror failure go undetected until data was already
+        // destroyed. `cm`, `allBids`, `filterOK` are the ones bound before the wipe.
+        NSLog(@"[ChangeInfoIos] Step 3 done: detection caches wiped; config committed pre-wipe (%lu target bundles)",
+              (unsigned long)allBids.count);
 
         // Step 4: Respring to reload tweak with new fake config.
         // As mobile user we can't killall SpringBoard (root-owned). Try
@@ -8963,47 +9261,66 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // cdhashes + dpkg -l com.changeinfoios already prove the tweak
         // is installed; spoofed values in AIDA64 prove the hooks are
         // live. Keep the alert focused on what the user CAN act on.
-        NSMutableArray<NSString *> *notInjected = [NSMutableArray array];  // intentionally empty
+        // (The old hardcoded-empty `notInjected` array + its fabricated "inject OK"
+        // line were removed — injection is honestly reported as UNVERIFIED below.)
 
         [self dismissHUD:hud completion:^{
-            NSString *listMsg = names.count ? [names componentsJoinedByString:@", "] : @"(đã chọn)";
-            NSString *t = backup ? @"Đã lưu RRS + Change thành công" : @"Change thành công";
+            // By the time we reach here the pre-wipe gate PASSED (mirrorSaved &&
+            // cfgReadback && filterOK) — otherwise we returned before any wipe. So config
+            // + filter are the AUTHORITATIVE verified signals; the only failure that
+            // reaches this UI is a PARTIAL destructive wipe.
+            BOOL zaloGated = [resetBids containsObject:kZaloBID];
+            // CODEX P0-4 — never claim "Change thành công". Title: PARTIAL wipe is the
+            // only failure that can appear here; otherwise "applied; runtime/keychain
+            // UNVERIFIED" (target-agnostic wording — do NOT name Zalo for a non-Zalo run).
+            NSString *t = (wipeFailed.count > 0)
+                ? @"⚠️ PARTIAL: một số app XOÁ DỮ LIỆU chưa xác minh"
+                : (backup ? @"⏳ Đã lưu RRS + áp dụng — runtime/keychain CHƯA xác minh"
+                          : @"⏳ Đã áp dụng — runtime/keychain CHƯA xác minh");
 
             NSMutableString *body = [NSMutableString string];
-            if (!prefsOK) {
-                [body appendString:@"🚨 Shared prefs KHÔNG ghi được — tweak sẽ đọc config cũ.\nXem BUILD_NOTES §10.\n\n"];
-            }
-            if (notInjected.count > 0) {
-                [body appendFormat:@"🚨 Tweak CHƯA inject vào: %@\n(Mở app đó 1 lần rồi thử lại.)\n\n",
-                    [notInjected componentsJoinedByString:@", "]];
+            // CODEX P0-4 — config is the AUTHORITATIVE signal: it was staged + saved +
+            // EXACT read-back from the tweak-readable /var/jb mirror BEFORE the wipe.
+            [body appendString:@"✅ Config (identity + target + one-shot gen/counter/deadline + token) đã ghi "
+                               @"+ ĐỌC-LẠI khớp ở /var/jb/etc/changeinfoios/config.plist.\n"];
+            if (zaloGated)
+                [body appendString:@"✅ Shipped filter (MG+CT) STATIC-verified read-only — Zalo có mặt, Mode=Any, regular-file.\n"];
+            else
+                [body appendString:@"ℹ️ Shipped filter STATIC-verified ở mức CẤU TRÚC (Mode=Any, regular-file). "
+                                   @"Không chọn Zalo nên target inject của bạn KHÔNG được gate-verify riêng trong lần này.\n"];
+            [body appendString:@"⚠️ CHƯA xác minh (cần bằng chứng runtime trong app): LOADER (ellekit đã nạp?), "
+                               @"INJECTION (hook sống trong app target?), keychain reset.\n\n"];
+            // ITEM 5 + P0-4 — destructive PARTIAL with the REAL per-app reasons.
+            if (wipeFailed.count > 0) {
+                [body appendFormat:@"🚨 XOÁ DỮ LIỆU CHƯA TRỌN VẸN: %lu/%lu app KHÔNG xác minh sạch:\n%@\n"
+                                   @"→ Các app này có thể CÒN dữ liệu/phiên cũ (hoặc one-shot keychain sẽ không chạy). "
+                                   @"Thử lại hoặc kiểm tra thủ công.\n\n",
+                    (unsigned long)wipeFailed.count, (unsigned long)attempted,
+                    [wipeFailed componentsJoinedByString:@"\n"]];
             }
             if (skipRespring) {
                 [body appendString:@"⏭ Bỏ qua respring (tuỳ chọn 21).\n→ Mở lại target app để thấy thông tin fake mới.\n\n"];
             } else if (!respringOK) {
                 [body appendFormat:@"⚠️ Respring fail (rc=%d).\n→ Hãy **force-quit** target app (vuốt lên) rồi mở lại.\n\n", respringRC];
             }
-            [body appendFormat:@"Đã xoá dữ liệu %lu app:\n%@\n\n", (unsigned long)wiped, listMsg];
+            // CODEX P0-4 — list ONLY the VERIFIED-wiped apps (wipedNames, NOT the full
+            // selection that still contained the failed ones), and state the EXACT scope.
+            NSString *wipedMsg = wipedNames.count ? [wipedNames componentsJoinedByString:@", "] : @"(không có)";
+            [body appendFormat:@"Đã XÁC MINH xoá %lu/%lu app: %@\n", (unsigned long)wiped, (unsigned long)attempted, wipedMsg];
+            [body appendString:@"(phạm vi xác minh = 5 thư mục main-container: Documents/Library/tmp/StoreKit/SystemData "
+                               @"+ 2 marker; .appex & App-Group wipe là best-effort, CHƯA xác minh)\n\n"];
             [body appendFormat:@"Danh ba goi y: %lu contact moi\n\n", (unsigned long)seededContacts];
             [body appendFormat:@"Model: %@\niOS: %@\nSerial: %@\nIDFA: %@\nUDID: %@\nIMEI: %@\n\n",
                 model, ios, shortSerial, idfa, shortUDID, imei];
-            if (prefsOK) {
-                [body appendFormat:@"✅ Shared prefs OK (%llu bytes)\n", sharedSize];
-            }
-            // ZCH-11 FIX: do NOT print "✅ Tweak inject OK" — `notInjected` is a
-            // hardcoded-empty array (the real injection check was removed), so that
-            // green check was fabricated, not verified. State honestly that we CAN'T
-            // confirm injection from the host sandbox and tell the user how to check.
-            if (fullTargets.count > 0) {
-                [body appendFormat:@"ℹ️ Không thể xác minh inject từ đây. Mở app target và kiểm tra thông tin (AIDA64/Lirum) để chắc tweak đã ăn.\n"];
-            }
-            if (respringOK && !skipRespring) {
+            // Shared prefs at /var/mobile is a SECONDARY DIAGNOSTIC only — the tweak reads
+            // the /var/jb mirror above, NOT this file, so it is never the config signal.
+            [body appendFormat:@"ℹ️ (chẩn đoán phụ) shared prefs /var/mobile: %@ (%llu bytes) — không phải file tweak đọc.\n",
+                prefsOK ? @"có" : @"thiếu", sharedSize];
+            if (fullTargets.count > 0)
+                [body appendString:@"ℹ️ Không thể xác minh inject từ đây. Mở app target + kiểm tra (AIDA64/Lirum) để chắc tweak đã ăn.\n"];
+            if (respringOK && !skipRespring)
                 [body appendString:@"✅ Đã restart SpringBoard.\n"];
-            }
-            // ZCH-02 FIX: the keychain / device-id reset is NOT done yet at this
-            // point — it runs inside the target app's %ctor on its NEXT cold launch,
-            // and only within a ~2h window. Say so instead of implying "Change
-            // thành công" already reset the keychain.
-            [body appendString:@"\n⏳ Reset keychain/thiết bị áp dụng khi MỞ LẠI app target (trong vòng ~2 giờ). Hãy mở lại app target sớm để hoàn tất."];
+            [body appendString:@"\n⏳ Reset keychain/thiết bị áp dụng khi MỞ LẠI app target (trong ~2 giờ). Mở lại sớm để hoàn tất."];
             [body appendString:@"\n👉 Mở lại app target để thấy thông tin fake mới."];
             [self alert:t msg:body];
         }];
