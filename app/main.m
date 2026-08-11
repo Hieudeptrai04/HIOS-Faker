@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.19";
+static NSString *const kAppVersion = @"4.3.20";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -134,14 +134,16 @@ static NSString *CIRRSDir(void) {
 // Default-ON for all fake layers. User can still turn individual layers off
 // in settings — seedDefaults only fills values that are absent from config.
 - (void)seedDefaultsIfNeeded {
+    // ZCH-09 R2 FIX: dropped fake_sensor/fake_metal/fake_webrtc/fake_timing/
+    // fake_uptime/fake_jbhide — verified 0 consumers in tweak-mg/tweak-ct, so
+    // defaulting them ON advertised device layers that no hook implements.
     NSArray *allFakeLayers = @[
         @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",
         @"fake_processinfo", @"fake_location", @"fake_datetime", @"fake_locale",
-        @"fake_locale2", @"fake_network", @"fake_hardware", @"fake_sensor",
+        @"fake_locale2", @"fake_network", @"fake_hardware",
         @"fake_ads", @"fake_wifi", @"fake_tracking_pasteboard", @"fake_trackingdefaults",
         @"fake_uiddevice2", @"fake_sysctl", @"fake_battery", @"fake_browser",
-        @"fake_metal", @"fake_webrtc", @"fake_timing", @"fake_keychain",
-        @"fake_jbhide", @"fake_uptime",
+        @"fake_keychain",
     ];
     BOOL seeded = NO;
     for (NSString *k in allFakeLayers) {
@@ -561,6 +563,24 @@ static NSString *ci_randIMEIForModel(NSString *productType) {
 static NSString *ci_randIMEI(void) {
     NSString *pt = [[CIConfigManager shared] stringForKey:@"ProductType"];
     return ci_randIMEIForModel(pt);
+}
+// ZCH-08 R2 FIX: ICCID with a VALID Luhn check digit. IIN "8984" = MII 89
+// (telecom) + country 84 (Vietnam). 19 digits = 18-digit payload + 1 Luhn
+// check. The old "8984"+15-random had NO checksum, so a Luhn validator (Zalo/
+// carrier SDKs commonly run one) rejected ~90% of the generated ICCIDs.
+static NSString *ci_randICCID(void) {
+    int d[19] = {8, 9, 8, 4};                 // IIN 8984 (VN telecom)
+    for (int i = 4; i < 18; i++) d[i] = arc4random_uniform(10);
+    int sum = 0, dbl = 1;                     // double from rightmost payload digit
+    for (int i = 17; i >= 0; i--) {
+        int v = d[i];
+        if (dbl) { v *= 2; if (v > 9) v -= 9; }
+        sum += v; dbl = !dbl;
+    }
+    d[18] = (10 - (sum % 10)) % 10;           // Luhn check digit
+    NSMutableString *s = [NSMutableString stringWithCapacity:19];
+    for (int i = 0; i < 19; i++) [s appendFormat:@"%d", d[i]];
+    return s;
 }
 static NSString *ci_randMAC(void) {
     // Locally administered, unicast (second nibble = 2/6/A/E)
@@ -1540,7 +1560,10 @@ static NSUInteger ci_randomizeIdentities(void) {
     // returns something meaningful instead of generic "iPhone"
     [cm setObject:modelName  forKey:@"deviceModel"];
     [cm setObject:modelName  forKey:@"localizedModel"];
-    [cm setObject:@"iPhone"  forKey:@"systemName"];
+    // ZCH-06 R2 FIX: real -[UIDevice systemName] returns "iOS", never "iPhone".
+    // The MG hook returns config["systemName"] verbatim (tweak-mg:1808), so the
+    // old "iPhone" leaked a value no genuine device ever reports.
+    [cm setObject:@"iOS"     forKey:@"systemName"];
     [cm setObject:productTyp forKey:@"ProductType"];
     [cm setObject:hwMachine  forKey:@"hw_machine"];
     [cm setObject:hwMachine  forKey:@"HardwareModel"];
@@ -1843,15 +1866,16 @@ static NSUInteger ci_randomizeIdentities(void) {
         uaIOSVer, wkVer, safariVer, mobileBuild];
     [cm setObject:fakeUA forKey:@"zalo_fakeWebViewUA"];
 
-    // Ensure all fake layers on
+    // Ensure all fake layers on. ZCH-09 R2 FIX: removed the 6 keys with no tweak
+    // consumer (fake_sensor/metal/webrtc/timing/uptime/jbhide) so a Change Device
+    // no longer force-enables device layers that no hook actually implements.
     NSArray *allFakeLayers = @[
         @"fake_sysosversion", @"fake_uiddevice", @"fake_screen", @"fake_realscreen",
         @"fake_processinfo", @"fake_location", @"fake_datetime", @"fake_locale",
-        @"fake_locale2", @"fake_network", @"fake_hardware", @"fake_sensor",
+        @"fake_locale2", @"fake_network", @"fake_hardware",
         @"fake_ads", @"fake_wifi", @"fake_tracking_pasteboard", @"fake_trackingdefaults",
         @"fake_uiddevice2", @"fake_sysctl", @"fake_battery", @"fake_browser",
-        @"fake_metal", @"fake_webrtc", @"fake_timing", @"fake_keychain",
-        @"fake_jbhide", @"fake_uptime",
+        @"fake_keychain",
     ];
     for (NSString *k in allFakeLayers) {
         [cm setObject:@(YES) forKey:k];
@@ -1883,8 +1907,8 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"MobileEquipmentIdentifier":             ci_randHex(14),
         // ZCH-08 FIX: ICCID IIN "89" + country. VN = 84 → "8984". The old "8901"
         // encodes country 01 (North America), incoherent with a VN carrier bundle.
-        @"IntegratedCircuitCardIdentity":         [@"8984" stringByAppendingString:ci_randDigits(15)],
-        @"IntegratedCircuitCardIdentity2":        [@"8984" stringByAppendingString:ci_randDigits(15)],
+        @"IntegratedCircuitCardIdentity":         ci_randICCID(),
+        @"IntegratedCircuitCardIdentity2":        ci_randICCID(),
         @"WiFiAddress":                           ci_randMAC(),
         @"BluetoothAddress":                      ci_randMAC(),
         @"EthernetAddress":                       ci_randMAC(),
@@ -5071,7 +5095,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [cm setObject:p[2] forKey:@"hw_machine"];
     [cm setObject:p[2] forKey:@"HardwareModel"];   // MGCopyAnswer HWModelStr reads this key
     [cm setObject:p[2] forKey:@"uname_machine"];
-    [cm setObject:@"iPhone" forKey:@"systemName"];  // UIDevice.systemName hook
+    [cm setObject:@"iOS" forKey:@"systemName"];  // UIDevice.systemName hook (real = "iOS", ZCH-06 R2)
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"deviceName"];
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceName"];
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"DeviceNameMG"];
@@ -5177,7 +5201,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C text:@"Serial (16 ký tự)" key:@"serialNumber" placeholder:@"F2LX...." indent:24]];
 
     // 7. Sensors
-    [_rows addObject:[C toggle:@"7. Fake sensors (rung, gia tốc)" key:@"fake_sensor" indent:0]];
+    [_rows addObject:[C toggle:@"7. Fake sensors (rung, gia tốc) (không có tác dụng)" key:@"fake_sensor" indent:0]];
 
     // 8. Advertising
     [_rows addObject:[C toggle:@"8. Fake IDFA" key:@"fake_ads" indent:0]];
@@ -5215,17 +5239,17 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"14. Fake WebKit fingerprint" key:@"fake_browser" indent:0]];
     [_rows addObject:[C text:@"WebGL Vendor" key:@"web_glVendor" placeholder:@"Apple Inc." indent:24]];
     [_rows addObject:[C text:@"WebGL Renderer" key:@"web_glRenderer" placeholder:@"Apple GPU" indent:24]];
-    [_rows addObject:[C toggle:@"    Canvas noise" key:@"web_canvasNoise" indent:24]];
+    [_rows addObject:[C toggle:@"    Canvas noise (không có tác dụng - luôn bật khi có WebView spoof)" key:@"web_canvasNoise" indent:24]];
 
     // 15. Metal
-    [_rows addObject:[C toggle:@"15. Fake Metal GPU" key:@"fake_metal" indent:0]];
+    [_rows addObject:[C toggle:@"15. Fake Metal GPU (không có tác dụng - GPU để thật)" key:@"fake_metal" indent:0]];
     [_rows addObject:[C text:@"GPU name" key:@"zalo_metalGPU" placeholder:@"Apple A17 Pro GPU" indent:24]];
 
     // 16. WebRTC
-    [_rows addObject:[C toggle:@"16. Fake WebRTC (block local IP leak)" key:@"fake_webrtc" indent:0]];
+    [_rows addObject:[C toggle:@"16. Fake WebRTC (không có tác dụng - đã gỡ)" key:@"fake_webrtc" indent:0]];
 
     // 17. Timing
-    [_rows addObject:[C toggle:@"17. Fake timing offset" key:@"fake_timing" indent:0]];
+    [_rows addObject:[C toggle:@"17. Fake timing offset (không có tác dụng)" key:@"fake_timing" indent:0]];
     [_rows addObject:[C text:@"Offset (seconds)" key:@"zalo_timingOffset" placeholder:@"0" indent:24]];
 
     // 18. Viber. v4.2.7: REMOVED "Reset keychain on launch" (fake_keychain) and
@@ -5237,11 +5261,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"18. Không bao giờ reset Viber (giữ login, Change sẽ KHÔNG sạch)" key:@"viberKeepLogin" indent:0]];
 
     // 19. JB Hide
-    [_rows addObject:[C toggle:@"19. Hide Jailbreak" key:@"fake_jbhide" indent:0]];
-    [_rows addObject:[C toggle:@"    hideJailbreak runtime" key:@"hideJailbreak" indent:24]];
+    [_rows addObject:[C toggle:@"19. Hide Jailbreak (toggle không có tác dụng - hook JB luôn bật, chưa đầy đủ)" key:@"fake_jbhide" indent:0]];
+    [_rows addObject:[C toggle:@"    hideJailbreak runtime (không có tác dụng)" key:@"hideJailbreak" indent:24]];
 
     // 20. Uptime
-    [_rows addObject:[C toggle:@"20. Fake system uptime" key:@"fake_uptime" indent:0]];
+    [_rows addObject:[C toggle:@"20. Fake system uptime (toggle không có tác dụng - chỉ kern.boottime được spoof)" key:@"fake_uptime" indent:0]];
     [_rows addObject:[C text:@"systemUptime (seconds)" key:@"systemUptime" placeholder:@"3600" indent:24]];
 
     // 21. Reset Data behavior — let user opt out of the SpringBoard
@@ -7061,7 +7085,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     ]]];
 
     [all addObject:[C section:@"Push Tokens (anti-correlation)" icon:@"🔔" rows:@[
-        [C row:@"APNS Token Spoof"  key:@"apnsTokenSpoof"],
+        [C row:@"VoIP Push Token"   key:@"apnsTokenSpoof"],  // ZCH-05: chỉ VoIP (PKPushRegistry); standard APNS KHÔNG spoof
         [C rowWithLabel:@"VoIP Token Spoof" value:[C voipTokenPreview]],
     ]]];
 

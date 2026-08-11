@@ -2017,7 +2017,11 @@ static void ci_restoreKeychainIfFlagged(void) {
     return iso ? iso.lowercaseString : %orig;
 }
 - (BOOL)allowsVOIP {
-    return YES;
+    // ZCH-10 R2 FIX: was unconditional YES — leaked a spoofed capability even
+    // when the license gate is closed (cfg() empty) or no carrier is configured,
+    // contradicting the fail-closed carrierName/MCC/MNC getters above. Gate it on
+    // the same signal so licensed→spoof, unlicensed/no-carrier→real (%orig).
+    return getConfigStr(@"carrierName") ? YES : %orig;
 }
 %end
 
@@ -2135,13 +2139,19 @@ static NSString *buildWKJSSpoof(void) {
          "d(screen,'availWidth',sw);d(screen,'availHeight',sh-44);"
          "d(screen,'colorDepth',24);d(screen,'pixelDepth',24);"
          "d(window,'devicePixelRatio',dpr);"
-         // Canvas 1-pixel LSB noise so hash differs each page load
+         // Canvas LSB noise — anti-fingerprint. ZJB-05 R2 FIX: use a STABLE
+         // per-page offset (computed once) instead of +1 every call. The old
+         // increment made two consecutive toDataURL() hashes DIFFER, which no
+         // real device does — an instability that is itself a tampering tell.
+         // A fixed offset still differs from the true canvas but stays constant
+         // across repeated reads, matching genuine behaviour.
+         "var _cn=(sw*131+sh*17+hc*7)&255;"
          "var _ot=HTMLCanvasElement.prototype.toDataURL;"
          "HTMLCanvasElement.prototype.toDataURL=function(){"
          "var c=this.getContext&&this.getContext('2d');"
          "if(c&&this.width>0&&this.height>0){"
          "try{var id=c.getImageData(0,0,1,1);"
-         "id.data[0]=(id.data[0]+1)&255;"
+         "id.data[0]=(id.data[0]^_cn)&255;"
          "c.putImageData(id,0,0);}catch(e){}}"
          "return _ot.apply(this,arguments);};"
          // WebGL renderer → Apple GPU (consistent with all real iPhones)
