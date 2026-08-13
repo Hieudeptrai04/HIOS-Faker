@@ -25,7 +25,6 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
-#import <fcntl.h>        // O_CREAT / AT_FDCWD for the open/openat/fstatat JB hooks
 #import <errno.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -2447,50 +2446,17 @@ static char *hook_getenv_fn(const char *name) {
     return orig_getenv_fn(name);
 }
 
-// open() / openat() — the single most common JB existence check that the
-// stat/lstat/access/fopen hooks MISS ("open(/Applications/Cydia.app, O_RDONLY)").
-// Re-added 4.3.23 with the CORRECT arm64 variadic pattern: the hook is itself
-// variadic, mode is read via va_arg ONLY when O_CREAT is set, and the original is
-// called with the matching arity so the variadic stack layout stays valid. (The
-// 4.x removal was an older ABI-wrong hook feeding garbage into strncmp; isJBPath
-// is now pure + read-only, safe on the multi-threaded open() path.) No dbglog here
-// — open() is a hot syscall; keep it as lean as the stat hooks.
-typedef int (*open_fn_t)(const char *, int, ...);
-typedef int (*openat_fn_t)(int, const char *, int, ...);
-static open_fn_t   orig_open_fn   = NULL;
-static openat_fn_t orig_openat_fn = NULL;
-
-static int hook_open_fn(const char *path, int oflag, ...) {
-    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
-    if (oflag & O_CREAT) {
-        va_list ap; va_start(ap, oflag); int mode = va_arg(ap, int); va_end(ap);
-        return orig_open_fn(path, oflag, mode);
-    }
-    return orig_open_fn(path, oflag);
-}
-
-static int hook_openat_fn(int fd, const char *path, int oflag, ...) {
-    // Only hide when the path resolves the way isJBPath assumes (absolute, or
-    // relative-to-cwd). A relative path against a real dirfd would canonicalize
-    // against the wrong base, so pass those through untouched.
-    if (path && (path[0] == '/' || fd == AT_FDCWD) &&
-        isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
-    if (oflag & O_CREAT) {
-        va_list ap; va_start(ap, oflag); int mode = va_arg(ap, int); va_end(ap);
-        return orig_openat_fn(fd, path, oflag, mode);
-    }
-    return orig_openat_fn(fd, path, oflag);
-}
-
-// fstatat() — the stat variant that bypasses our stat/lstat hooks entirely.
-// Same fd caveat as openat: only hide absolute / AT_FDCWD paths.
-typedef int (*fstatat_fn_t)(int, const char *, struct stat *, int);
-static fstatat_fn_t orig_fstatat_fn = NULL;
-static int hook_fstatat_fn(int fd, const char *path, struct stat *buf, int flag) {
-    if (path && (path[0] == '/' || fd == AT_FDCWD) &&
-        isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
-    return orig_fstatat_fn(fd, path, buf, flag);
-}
+// NOTE (4.3.24): open()/openat()/fstatat() hooks REVERTED. They were re-added in
+// 4.3.23 to close the biggest file-check gap, but on-device they reproduced the
+// exact FrontBoard scene-create watchdog that the 4.x removal note warned about:
+// Zalo hung on the launch icon then bounced to the home screen ("treo logo →
+// văng"). open() fires enormously during dlopen/scene-create (Zalo loads hundreds
+// of images), and hooking a VARIADIC syscall on this hot path — even with a
+// correct-looking va_arg pattern — trips the watchdog. Isolation test confirmed:
+// with the camera spoof DISABLED, Zalo still died, so the file hooks (not the
+// camera) were the cause. Reverted to the stable stat/lstat/access/fopen set.
+// The open() JB-hide gap stays OPEN; closing it needs a non-hot-path technique
+// (kernel-level or a dedicated JB-hide tweak), not an inline libc hook here.
 
 // NOTE (4.0.6): the realpath() JB-hide hook was REMOVED. It was added in 4.0.4
 // and, together with the screen-dims change, is part of the 4.0.4 regression
@@ -2719,14 +2685,11 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return (real == UINT32_MAX) ? NULL : orig_dyld_get_image_name_fn(real);
 }
 
-// HISTORY: open()/openat() hooks were REMOVED in 4.x after an ABI-wrong hook fed
-// garbage into strncmp (invalid kHide[i] pointer 0x209 → EXC_BAD_ACCESS) under
-// multi-threaded open() from Foundation's _NSOpenFileDescriptor_Protected. They
-// are RE-ADDED in 4.3.23 (see hook_open_fn / hook_openat_fn above) with the
-// variadic-correct pattern and against the now-pure, read-only isJBPath — so the
-// old crash cause is gone. This is the highest-value JB-hide gap to validate
-// first on-device; if any target regresses, disabling is a one-liner (skip the
-// three MSHookFunction installs in %ctor).
+// open()/openat() hooks are NOT installed. Tried twice (4.x and again 4.3.23) —
+// both times hooking these hot, variadic syscalls tripped the FrontBoard
+// scene-create watchdog on Zalo ("treo logo → văng"). stat/lstat/access/fopen
+// cover the same JB-path checks without touching the launch hot path. Leaving
+// this gap open is the correct trade — a working app beats a fuller hide.
 
 // ============================================================
 // LAYER 12: DeviceCheck — block token generation.
@@ -3169,10 +3132,11 @@ static void ci_camSwizzleDelegateClass(Class c) {
 
 %hook AVCaptureVideoDataOutput
 - (void)setSampleBufferDelegate:(id)delegate queue:(dispatch_queue_t)queue {
-    // Swizzle whenever licensed; the per-frame ci_camSpoofActive() gate decides
-    // whether a frame is actually replaced, so this is inert until the user
-    // applies a clip. Unlicensed → g_licOK==0 → never swizzle (zero overhead).
-    if (delegate && g_licOK) ci_camSwizzleDelegateClass([delegate class]);
+    // Only swizzle when the camera feature is actually ON (licensed + enabled +
+    // a clip applied). When OFF, this hook does nothing at all — the camera path
+    // is fully inert, so it can never be a factor in a launch/scene-create issue.
+    // If the user enables it later, re-opening the camera re-fires this and swizzles.
+    if (delegate && ci_camSpoofActive()) ci_camSwizzleDelegateClass([delegate class]);
     %orig;
 }
 %end
@@ -3613,30 +3577,20 @@ static void notify_cb(int t) {
             MSHookFunction((void*)orig_lstat_fn,  (void*)hook_lstat_fn,  (void**)&orig_lstat_fn);
         if (orig_access_fn)
             MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
-        // fopen — covers the most common JB-file check.
+        // fopen — covers the most common JB-file check (open() stays unhooked;
+        // hooking it tripped the scene-create watchdog — see 4.3.24 note above).
         orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
         if (orig_fopen_fn)
             MSHookFunction((void*)orig_fopen_fn, (void*)hook_fopen_fn, (void**)&orig_fopen_fn);
-        // open / openat / fstatat (4.3.23) — close the biggest file-check gaps that
-        // stat/lstat/access/fopen missed. Variadic-correct hooks (see defs above).
-        orig_open_fn    = (open_fn_t)   dlsym(RTLD_DEFAULT, "open");
-        orig_openat_fn  = (openat_fn_t) dlsym(RTLD_DEFAULT, "openat");
-        orig_fstatat_fn = (fstatat_fn_t)dlsym(RTLD_DEFAULT, "fstatat");
-        if (orig_open_fn)
-            MSHookFunction((void*)orig_open_fn,    (void*)hook_open_fn,    (void**)&orig_open_fn);
-        if (orig_openat_fn)
-            MSHookFunction((void*)orig_openat_fn,  (void*)hook_openat_fn,  (void**)&orig_openat_fn);
-        if (orig_fstatat_fn)
-            MSHookFunction((void*)orig_fstatat_fn, (void*)hook_fstatat_fn, (void**)&orig_fstatat_fn);
         // getenv — hide DYLD_INSERT_LIBRARIES / substrate env probes.
         orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
         if (orig_getenv_fn)
             MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
-        // (4.0.6: realpath hook removed — see note above; reverted 4.0.4 regression)
-        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p open=%p openat=%p fstatat=%p getenv=%p\n",
+        // (4.0.6: realpath hook removed; 4.3.24: open/openat/fstatat reverted — both
+        //  caused Zalo launch regressions. stat/lstat/access/fopen is the stable set.)
+        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
                g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
-               (void*)orig_fopen_fn, (void*)orig_open_fn, (void*)orig_openat_fn,
-               (void*)orig_fstatat_fn, (void*)orig_getenv_fn);
+               (void*)orig_fopen_fn, (void*)orig_getenv_fn);
 
         // LAYER 10: dyld image list hiding
         orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
@@ -3656,7 +3610,7 @@ static void notify_cb(int t) {
             MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
         dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
 
-        // open()/openat()/fstatat() are installed up in the LAYER 9 block above.
+        // open()/openat()/fstatat() intentionally NOT installed — see note above.
 
         // LAYER 11: Keychain device-fingerprint isolation
         // MSHookFunction patches the Security.framework prologue so ALL callers

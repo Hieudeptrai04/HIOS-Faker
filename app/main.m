@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.23";
+static NSString *const kAppVersion = @"4.3.24";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7196,19 +7196,30 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     NSFileManager *fm = [NSFileManager defaultManager];
 
     if (_pendingVideoURL) {
-        [self showBusy:@"Đang xử lý video…"];
-        [self exportVideo:_pendingVideoURL to:CICameraVideoPath() done:^(BOOL ok, NSString *err) {
-            [self hideBusy];
-            if (!ok) { [self alert:@"Lỗi" msg:err ?: @"Không xử lý được video."]; return; }
-            [fm removeItemAtPath:CICameraImagePath() error:nil];
-            [cm setObject:@YES forKey:@"cameraSpoofIsVideo"];
-            [cm setObject:CICameraVideoPath() forKey:@"cameraSpoofPath"];
-            [cm setObject:@(self->_enableSw.isOn) forKey:@"cameraSpoofEnabled"];
-            [cm save];
-            self->_pendingVideoURL = nil; self->_pendingLbl.text = @"";
-            [self refreshStatus];
-            [self alert:@"Xong" msg:@"Đã áp dụng video. Mở lại camera trong app để thấy hiệu lực."];
-        }];
+        // COPY the picked clip (no re-encode). The 4.3.23 AVAssetExportSession path
+        // was the failure: it wrote nothing to /var/jb and left no feedback. The
+        // picker already handed us a playable mp4/mov, so an in-process copy (same
+        // mechanism that writes config.plist to /var/jb) is fast + reliable.
+        [fm removeItemAtPath:CICameraVideoPath() error:nil];
+        NSError *cpErr = nil;
+        BOOL ok = [fm copyItemAtURL:_pendingVideoURL
+                              toURL:[NSURL fileURLWithPath:CICameraVideoPath()] error:&cpErr];
+        if (!ok) {
+            [self alert:@"Lỗi" msg:[NSString stringWithFormat:@"Không copy được video: %@",
+                                    cpErr.localizedDescription ?: @"?"]];
+            return;
+        }
+        chmod([CICameraVideoPath() fileSystemRepresentation], 0644);
+        [fm removeItemAtPath:CICameraImagePath() error:nil];
+        [cm setObject:nil  forKey:@"cameraSpoofVideoPath"];   // drop any legacy key
+        [cm setObject:@YES forKey:@"cameraSpoofIsVideo"];
+        [cm setObject:CICameraVideoPath() forKey:@"cameraSpoofPath"];
+        [cm setObject:@YES forKey:@"cameraSpoofEnabled"];     // applying media auto-enables
+        [cm save];
+        _enableSw.on = YES;
+        _pendingVideoURL = nil; _pendingLbl.text = @"";
+        [self refreshStatus];
+        [self alert:@"Xong" msg:@"Đã áp dụng video. Vào app rồi MỞ LẠI camera (gọi video) để thấy hiệu lực."];
         return;
     }
 
@@ -7219,13 +7230,15 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
         }
         chmod([CICameraImagePath() fileSystemRepresentation], 0644);
         [fm removeItemAtPath:CICameraVideoPath() error:nil];
-        [cm setObject:@NO forKey:@"cameraSpoofIsVideo"];
+        [cm setObject:nil  forKey:@"cameraSpoofVideoPath"];
+        [cm setObject:@NO  forKey:@"cameraSpoofIsVideo"];
         [cm setObject:CICameraImagePath() forKey:@"cameraSpoofPath"];
-        [cm setObject:@(_enableSw.isOn) forKey:@"cameraSpoofEnabled"];
+        [cm setObject:@YES forKey:@"cameraSpoofEnabled"];
         [cm save];
+        _enableSw.on = YES;
         _pendingImage = nil; _pendingLbl.text = @"";
         [self refreshStatus];
-        [self alert:@"Xong" msg:@"Đã áp dụng ảnh. Mở lại camera trong app để thấy hiệu lực."];
+        [self alert:@"Xong" msg:@"Đã áp dụng ảnh. Vào app rồi MỞ LẠI camera để thấy hiệu lực."];
         return;
     }
 
@@ -7250,29 +7263,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     _pendingVideoURL = nil; _pendingImage = nil;
     _preview.image = nil; _pendingLbl.text = @"";
     [self refreshStatus];
-}
-
-- (void)exportVideo:(NSURL *)src to:(NSString *)destPath done:(void(^)(BOOL, NSString *))done {
-    [[NSFileManager defaultManager] removeItemAtPath:destPath error:nil];
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:src options:nil];
-    // Re-encode to H.264 MP4 so AVAssetReader in the target app reads it reliably
-    // (strips odd codecs / HDR that could fail decode). Medium = size/speed balance.
-    AVAssetExportSession *ex = [[AVAssetExportSession alloc] initWithAsset:asset
-                                    presetName:AVAssetExportPresetMediumQuality];
-    if (!ex) { done(NO, @"Không tạo được export session"); return; }
-    ex.outputURL = [NSURL fileURLWithPath:destPath];
-    ex.outputFileType = AVFileTypeMPEG4;
-    ex.shouldOptimizeForNetworkUse = YES;
-    [ex exportAsynchronouslyWithCompletionHandler:^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (ex.status == AVAssetExportSessionStatusCompleted) {
-                chmod([destPath fileSystemRepresentation], 0644);
-                done(YES, nil);
-            } else {
-                done(NO, ex.error.localizedDescription ?: @"Export thất bại");
-            }
-        });
-    }];
 }
 
 // Bake EXIF orientation into pixels so the tweak's still-image path is upright.
