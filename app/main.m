@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.27";
+static NSString *const kAppVersion = @"4.3.28";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2963,8 +2963,16 @@ static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container)
 static NSArray<NSString *> *ci_keychainWipeGroupsForBundle(NSString *bundleID) {
     static NSDictionary *map; static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // Must be EXHAUSTIVE per app: the '*' wildcard is stripped by ldid, so the
+        // generic agrp-enumeration in ci_hostWipeKeychainForBundle can't see other
+        // apps' groups — only the groups listed BOTH here AND in entitlements.plist
+        // are actually accessible/deletable. Every group here must also be in the
+        // app's keychain-access-groups entitlement or the delete is a silent no-op.
         map = @{
-            @"vn.com.vng.zingalo": @[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo" ],
+            @"vn.com.vng.zingalo": @[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo",
+                                      @"CVB6BX97VM.vn.com.vng.zingalo",
+                                      @"CVB6BX97VM.vn.com.vng.zingalo.notificationserviceextension",
+                                      @"CVB6BX97VM.vn.com.vng.zingalo.shareext" ],
             @"com.viber":          @[ @"69V327AA4Z.group.viber.share.keychain" ],
         };
     });

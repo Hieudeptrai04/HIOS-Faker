@@ -52,9 +52,22 @@
          makes a Viber .rrs portable to another device. -->
     <key>com.apple.keystore.access-keychain-keys</key>
     <true/>
+    <!-- Keychain access groups. The '*' wildcard (keychain_dumper technique) is
+         SILENTLY STRIPPED by ldid on this platform — verified via `ldid -e` on the
+         installed binary: only the explicit foreign group survived, '*' was gone.
+         So a host-side keychain wipe of a target app needs that app's groups listed
+         EXPLICITLY here (foreign-team groups ARE honored on an AMFI-patched JB — the
+         Viber group already works). Add each target app's groups; without them
+         SecItemDelete is a no-op that returns a spurious errSecSuccess. -->
     <key>keychain-access-groups</key>
     <array>
         <string>69V327AA4Z.group.viber.share.keychain</string>
+        <!-- Zalo (vn.com.vng.zingalo): shared + default + extension groups -->
+        <string>CVB6BX97VM.group.keychain.vn.com.vng.zalo</string>
+        <string>CVB6BX97VM.vn.com.vng.zingalo</string>
+        <string>CVB6BX97VM.vn.com.vng.zingalo.notificationserviceextension</string>
+        <string>CVB6BX97VM.vn.com.vng.zingalo.shareext</string>
+        <!-- kept last; stripped by ldid but harmless, and honored if a future JB does -->
         <string>*</string>
     </array>
 </dict>
