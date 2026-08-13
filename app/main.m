@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.24";
+static NSString *const kAppVersion = @"4.3.25";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7033,8 +7033,8 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
     UILabel     *_pendingLbl;
     UILabel     *_statusLbl;
     UISwitch    *_enableSw;
-    NSURL       *_pendingVideoURL;   // picked, not yet applied
-    UIImage     *_pendingImage;      // picked, not yet applied
+    BOOL         _stagedVideoReady;  // a picked video was already copied to camera_spoof.mp4
+    UIImage     *_pendingImage;      // picked image, not yet applied
     UIAlertController *_busy;
 }
 
@@ -7136,7 +7136,7 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
                            isVid ? @"VIDEO" : @"ẢNH", CIBytesString(sz),
                            en ? @"ĐANG BẬT" : @"đang tắt"];
         // preview from the applied file (only when nothing new is pending)
-        if (!_pendingVideoURL && !_pendingImage) {
+        if (!_stagedVideoReady && !_pendingImage) {
             if (isVid) [self setVideoThumbnail:[NSURL fileURLWithPath:path]];
             else       _preview.image = [UIImage imageWithContentsOfFile:path];
         }
@@ -7160,21 +7160,69 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
 didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
     NSString *mt = info[UIImagePickerControllerMediaType];
     if ([mt isEqualToString:@"public.movie"]) {
-        _pendingVideoURL = info[UIImagePickerControllerMediaURL];
-        _pendingImage = nil;
-        _pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
-        [self setVideoThumbnail:_pendingVideoURL];
+        // Read+write the clip to camera_spoof.mp4 NOW — BEFORE dismissing — while
+        // the picker's temp URL is guaranteed valid and unread-cleaned. Deferring
+        // to Apply (or even to the dismiss completion) failed: the containerless
+        // app could not read the temp URL once the picker tore down
+        // ("Không copy được video"). Update the UI in the dismiss completion.
+        NSURL *src = info[UIImagePickerControllerMediaURL];
+        NSString *err = [self stageVideoSync:src];
+        [picker dismissViewControllerAnimated:YES completion:^{
+            if (err) {
+                self->_stagedVideoReady = NO;
+                [self alert:@"Lỗi đọc video"
+                        msg:[NSString stringWithFormat:@"Không đọc được video đã chọn:\n%@", err]];
+            } else {
+                self->_stagedVideoReady = YES; self->_pendingImage = nil;
+                self->_pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
+                [self setVideoThumbnail:[NSURL fileURLWithPath:CICameraVideoPath()]];
+            }
+        }];
     } else {
         _pendingImage = info[UIImagePickerControllerOriginalImage];
-        _pendingVideoURL = nil;
+        _stagedVideoReady = NO;
         _pendingLbl.text = @"Đã chọn: ẢNH — bấm Apply để dùng";
         _preview.image = _pendingImage;
+        [picker dismissViewControllerAnimated:YES completion:nil];
     }
-    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
     [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+// Copy the picked video's bytes to camera_spoof.mp4. Returns nil on success or a
+// short reason string on failure. Robust for a containerless app: security-scope
+// the source, prefer a plain NSData read+write (dumber + more reliable than
+// copyItemAtURL, whose file-coordination failed here), fall back to copyItemAtURL,
+// and log the outcome to camera_apply.log so a failure is diagnosable over SSH.
+// MUST be called while the picker's source URL is still alive (i.e. before dismiss).
+- (NSString *)stageVideoSync:(NSURL *)src {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dst = CICameraVideoPath();
+    [fm removeItemAtPath:dst error:nil];
+
+    BOOL sec = [src startAccessingSecurityScopedResource];
+    NSError *err = nil; BOOL ok = NO; NSString *why = nil;
+    NSData *d = [NSData dataWithContentsOfURL:src options:NSDataReadingMappedIfSafe error:&err];
+    unsigned long len = (unsigned long)d.length;
+    if (d.length) {
+        ok = [d writeToFile:dst atomically:YES];
+        if (!ok) why = @"ghi file đích thất bại";
+    } else {
+        why = err.localizedDescription ?: @"đọc video nguồn rỗng";
+        NSError *cpErr = nil;
+        if ([fm copyItemAtURL:src toURL:[NSURL fileURLWithPath:dst] error:&cpErr]) ok = YES;
+        else why = [NSString stringWithFormat:@"%@; copy=%@", why, cpErr.localizedDescription ?: @"?"];
+    }
+    if (sec) [src stopAccessingSecurityScopedResource];
+
+    NSString *lg = [NSString stringWithFormat:@"[stage] src=%@ len=%lu ok=%d why=%@\n",
+                    src.path ?: @"?", len, ok, why ?: @"-"];
+    [lg writeToFile:@"/var/jb/etc/changeinfoios/camera_apply.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    if (ok) { chmod([dst fileSystemRepresentation], 0644); return nil; }
+    return why ?: @"?";
 }
 
 - (void)setVideoThumbnail:(NSURL *)url {
@@ -7195,21 +7243,13 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     CIConfigManager *cm = [CIConfigManager shared];
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    if (_pendingVideoURL) {
-        // COPY the picked clip (no re-encode). The 4.3.23 AVAssetExportSession path
-        // was the failure: it wrote nothing to /var/jb and left no feedback. The
-        // picker already handed us a playable mp4/mov, so an in-process copy (same
-        // mechanism that writes config.plist to /var/jb) is fast + reliable.
-        [fm removeItemAtPath:CICameraVideoPath() error:nil];
-        NSError *cpErr = nil;
-        BOOL ok = [fm copyItemAtURL:_pendingVideoURL
-                              toURL:[NSURL fileURLWithPath:CICameraVideoPath()] error:&cpErr];
-        if (!ok) {
-            [self alert:@"Lỗi" msg:[NSString stringWithFormat:@"Không copy được video: %@",
-                                    cpErr.localizedDescription ?: @"?"]];
-            return;
+    if (_stagedVideoReady) {
+        // Video was already copied to camera_spoof.mp4 at pick time. Apply just
+        // commits the config (one-shot, no file work here → cannot fail on I/O).
+        if (![fm fileExistsAtPath:CICameraVideoPath()]) {
+            [self alert:@"Lỗi" msg:@"File video không còn. Hãy chọn lại video."];
+            _stagedVideoReady = NO; return;
         }
-        chmod([CICameraVideoPath() fileSystemRepresentation], 0644);
         [fm removeItemAtPath:CICameraImagePath() error:nil];
         [cm setObject:nil  forKey:@"cameraSpoofVideoPath"];   // drop any legacy key
         [cm setObject:@YES forKey:@"cameraSpoofIsVideo"];
@@ -7217,7 +7257,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
         [cm setObject:@YES forKey:@"cameraSpoofEnabled"];     // applying media auto-enables
         [cm save];
         _enableSw.on = YES;
-        _pendingVideoURL = nil; _pendingLbl.text = @"";
+        _stagedVideoReady = NO; _pendingLbl.text = @"";
         [self refreshStatus];
         [self alert:@"Xong" msg:@"Đã áp dụng video. Vào app rồi MỞ LẠI camera (gọi video) để thấy hiệu lực."];
         return;
@@ -7260,7 +7300,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     [cm save];
     [fm removeItemAtPath:CICameraVideoPath() error:nil];
     [fm removeItemAtPath:CICameraImagePath() error:nil];
-    _pendingVideoURL = nil; _pendingImage = nil;
+    [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb/etc/changeinfoios/camera_apply.log" error:nil];
+    _stagedVideoReady = NO; _pendingImage = nil;
     _preview.image = nil; _pendingLbl.text = @"";
     [self refreshStatus];
 }
