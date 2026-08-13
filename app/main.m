@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.25";
+static NSString *const kAppVersion = @"4.3.26";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -7160,23 +7160,16 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
 didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
     NSString *mt = info[UIImagePickerControllerMediaType];
     if ([mt isEqualToString:@"public.movie"]) {
-        // Read+write the clip to camera_spoof.mp4 NOW — BEFORE dismissing — while
-        // the picker's temp URL is guaranteed valid and unread-cleaned. Deferring
-        // to Apply (or even to the dismiss completion) failed: the containerless
-        // app could not read the temp URL once the picker tore down
-        // ("Không copy được video"). Update the UI in the dismiss completion.
-        NSURL *src = info[UIImagePickerControllerMediaURL];
-        NSString *err = [self stageVideoSync:src];
+        // A no-container app CANNOT read the picker's temp clip: it lands in the
+        // picker's PluginKit extension container ("permission to view it" — proven
+        // via camera_apply.log). So don't touch that temp URL. Instead grab the
+        // PHAsset and stream the ORIGINAL bytes from the Photos library in-process
+        // (see stageVideoAsset). The MediaURL is only a last-resort fallback.
+        PHAsset *asset = info[UIImagePickerControllerPHAsset];
+        NSURL *furl = info[UIImagePickerControllerMediaURL];
+        _pendingLbl.text = @"Đang nạp video…";
         [picker dismissViewControllerAnimated:YES completion:^{
-            if (err) {
-                self->_stagedVideoReady = NO;
-                [self alert:@"Lỗi đọc video"
-                        msg:[NSString stringWithFormat:@"Không đọc được video đã chọn:\n%@", err]];
-            } else {
-                self->_stagedVideoReady = YES; self->_pendingImage = nil;
-                self->_pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
-                [self setVideoThumbnail:[NSURL fileURLWithPath:CICameraVideoPath()]];
-            }
+            [self stageVideoAsset:asset fallbackURL:furl];
         }];
     } else {
         _pendingImage = info[UIImagePickerControllerOriginalImage];
@@ -7191,12 +7184,67 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
-// Copy the picked video's bytes to camera_spoof.mp4. Returns nil on success or a
-// short reason string on failure. Robust for a containerless app: security-scope
-// the source, prefer a plain NSData read+write (dumber + more reliable than
-// copyItemAtURL, whose file-coordination failed here), fall back to copyItemAtURL,
-// and log the outcome to camera_apply.log so a failure is diagnosable over SSH.
-// MUST be called while the picker's source URL is still alive (i.e. before dismiss).
+// PRIMARY video stager. Streams the ORIGINAL video's bytes straight from the
+// Photos library into camera_spoof.mp4 using PHAssetResourceManager, with the
+// WRITE done by us (NSFileHandle) inside this process. This sidesteps the two
+// no-container failures we hit: (1) reading the picker's PluginKit temp clip
+// (permission denied), and (2) any daemon writing to /var/jb. Async — updates the
+// UI + logs via camStageDone on the main queue.
+- (void)stageVideoAsset:(PHAsset *)asset fallbackURL:(NSURL *)furl {
+    NSString *dst = CICameraVideoPath();
+    [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+
+    PHAssetResource *vres = nil;
+    if (asset) {
+        NSArray<PHAssetResource *> *rs = [PHAssetResource assetResourcesForAsset:asset];
+        for (PHAssetResource *r in rs) if (r.type == PHAssetResourceTypeVideo) vres = r;                 // original
+        if (!vres) for (PHAssetResource *r in rs) if (r.type == PHAssetResourceTypeFullSizeVideo) vres = r; // edited
+    }
+
+    if (vres) {
+        [[NSFileManager defaultManager] createFileAtPath:dst contents:nil attributes:nil];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:dst];
+        if (!fh) { [self camStageDone:NO why:@"không mở được file đích" log:@"phres open-dst fail"]; return; }
+        PHAssetResourceRequestOptions *o = [[PHAssetResourceRequestOptions alloc] init];
+        o.networkAccessAllowed = YES;   // download from iCloud if needed
+        __block unsigned long long total = 0;
+        [[PHAssetResourceManager defaultManager] requestDataForAssetResource:vres options:o
+            dataReceivedHandler:^(NSData *chunk){ @try { [fh writeData:chunk]; total += chunk.length; } @catch (NSException *e) {} }
+            completionHandler:^(NSError *err){
+                @try { [fh closeFile]; } @catch (NSException *e) {}
+                BOOL ok = (!err && total > 0);
+                if (ok) chmod([dst fileSystemRepresentation], 0644);
+                NSString *lg = [NSString stringWithFormat:@"phres type=%ld bytes=%llu ok=%d err=%@",
+                                (long)vres.type, total, ok, err.localizedDescription ?: @"-"];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self camStageDone:ok why:(err.localizedDescription ?: @"ghi 0 byte") log:lg];
+                });
+            }];
+        return;
+    }
+
+    // Fallback: no PHAsset vended → try the temp URL (usually fails on no-container).
+    NSString *why = [self stageVideoSync:furl];
+    [self camStageDone:(why == nil) why:(why ?: @"?") log:[NSString stringWithFormat:@"urlfallback why=%@", why ?: @"ok"]];
+}
+
+- (void)camStageDone:(BOOL)ok why:(NSString *)why log:(NSString *)log {
+    NSString *lg = [NSString stringWithFormat:@"[stage] %@\n", log];
+    [lg writeToFile:@"/var/jb/etc/changeinfoios/camera_apply.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (ok) {
+        _stagedVideoReady = YES; _pendingImage = nil;
+        _pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
+        [self setVideoThumbnail:[NSURL fileURLWithPath:CICameraVideoPath()]];
+    } else {
+        _stagedVideoReady = NO; _pendingLbl.text = @"";
+        [self alert:@"Lỗi đọc video" msg:[NSString stringWithFormat:@"Không nạp được video:\n%@", why]];
+    }
+}
+
+// FALLBACK video stager (no PHAsset): read the picker temp URL with a security
+// scope. Returns nil on success or a reason string. Kept because a picked video
+// may not always vend a PHAsset; on a no-container app this usually fails, which
+// is exactly why stageVideoAsset (PhotoKit) is the primary path.
 - (NSString *)stageVideoSync:(NSURL *)src {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *dst = CICameraVideoPath();
