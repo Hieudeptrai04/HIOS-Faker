@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.26";
+static NSString *const kAppVersion = @"4.3.27";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2951,6 +2951,101 @@ static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container)
     }
     NSLog(@"[ChangeInfoIos] host kc dump %@ → %lu items @ %@", bundleID, (unsigned long)out.count, path);
     return (int)out.count;
+}
+
+// bundle → shared keychain-access-groups to WIPE that are NOT derivable from the
+// bundleID string. The generic enumeration in ci_hostWipeKeychainForBundle already
+// catches the app's default group + all its extension groups (they contain the
+// bundleID); this map adds the odd shared groups that do NOT — e.g. Zalo stores its
+// device fingerprint under ...group.keychain.vn.com.vng.zalo (note "zalo", not the
+// "zingalo" bundle id). Kept separate from ci_keychainGroupsForBundle (dump/restore)
+// so wiping can never change what a backup captures.
+static NSArray<NSString *> *ci_keychainWipeGroupsForBundle(NSString *bundleID) {
+    static NSDictionary *map; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            @"vn.com.vng.zingalo": @[ @"CVB6BX97VM.group.keychain.vn.com.vng.zalo" ],
+            @"com.viber":          @[ @"69V327AA4Z.group.viber.share.keychain" ],
+        };
+    });
+    return map[bundleID] ?: @[];
+}
+
+// Never wipe the keychain for an app the user chose to keep logged in (mirrors the
+// tweak's one-shot keep-login skips: viberKeepLogin / zaloKeepLogin).
+static BOOL ci_bundleKeepsLogin(NSString *bundleID) {
+    CIConfigManager *cm = [CIConfigManager shared];
+    if ([bundleID containsString:@"viber"]   && [cm boolForKey:@"viberKeepLogin"]) return YES;
+    if ([bundleID containsString:@"zingalo"] && [cm boolForKey:@"zaloKeepLogin"])  return YES;
+    return NO;
+}
+
+// HOST-SIDE keychain wipe (4.3.27). ROOT CAUSE this fixes, proven on-device via
+// keychain-2.db: the tweak's in-app one-shot keychain reset LEFT ITEMS BEHIND — a
+// Change Device left 12 items in Zalo's shared group + 2 in its extension groups,
+// all with cdat PREDATING the wipe (survived, not recreated). Those carry the old
+// account's device fingerprint → the new account gets linked → ban ("dính dữ liệu
+// cũ"). HIOS is signed keychain-access-groups '*' (wildcard / keychain_dumper), so
+// from OUTSIDE the app it can enumerate + delete EVERY access group's items reliably
+// and synchronously while the target is KILLED — the device is keychain-clean before
+// the app relaunches, not dependent on the tweak firing. Logs to
+// /var/jb/etc/changeinfoios/kc_wipe.log (device has no readable syslog) for verify.
+static int ci_hostWipeKeychainForBundle(NSString *bundleID) {
+    if (!bundleID.length) return 0;
+    if (ci_bundleKeepsLogin(bundleID)) {
+        NSLog(@"[ChangeInfoIos] host kc wipe SKIP (keep-login): %@", bundleID);
+        return -1;
+    }
+    NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
+                          (__bridge id)kSecClassInternetPassword,
+                          (__bridge id)kSecClassCertificate,
+                          (__bridge id)kSecClassKey,
+                          (__bridge id)kSecClassIdentity ];
+
+    // 1) Collect target access groups: curated shared groups + every group whose
+    //    agrp contains the bundleID (default + extensions), found via a wildcard
+    //    enumeration across all classes (attributes returned use the short names).
+    NSMutableSet<NSString *> *groups = [NSMutableSet setWithArray:ci_keychainWipeGroupsForBundle(bundleID)];
+    for (id cls in classes) {
+        NSDictionary *q = @{ (__bridge id)kSecClass:              cls,
+                             (__bridge id)kSecMatchLimit:         (__bridge id)kSecMatchLimitAll,
+                             (__bridge id)kSecReturnAttributes:   (__bridge id)kCFBooleanTrue,
+                             (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny };
+        CFTypeRef res = NULL;
+        if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &res) == errSecSuccess && res) {
+            NSArray *arr = (CFGetTypeID(res) == CFArrayGetTypeID()) ? (__bridge NSArray *)res : @[ (__bridge id)res ];
+            for (id itd in arr) {
+                if (![itd isKindOfClass:[NSDictionary class]]) continue;
+                NSString *ag = ((NSDictionary *)itd)[@"agrp"];
+                if ([ag isKindOfClass:[NSString class]] && [ag containsString:bundleID]) [groups addObject:ag];
+            }
+        }
+        if (res) CFRelease(res);
+    }
+
+    // 2) Delete every item in each group, all 5 classes, sync + non-sync (iCloud
+    //    Keychain items too, else a synced device-id re-appears after the wipe).
+    int classDeletes = 0;
+    for (NSString *g in groups) {
+        for (id cls in classes) {
+            OSStatus st = SecItemDelete((__bridge CFDictionaryRef)@{
+                (__bridge id)kSecClass:              cls,
+                (__bridge id)kSecAttrAccessGroup:    g,
+                (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny });
+            if (st == errSecSuccess) classDeletes++;
+        }
+    }
+
+    // 3) Diagnostic log to a file (no syslog on device) — SSH-readable to verify.
+    NSString *line = [NSString stringWithFormat:@"[kcwipe] bid=%@ groups=%lu classDeletes=%d :: %@\n",
+                      bundleID, (unsigned long)groups.count, classDeletes,
+                      [[groups allObjects] componentsJoinedByString:@" "]];
+    NSString *p = @"/var/jb/etc/changeinfoios/kc_wipe.log";
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+    if (!fh) { [[NSData data] writeToFile:p atomically:YES]; fh = [NSFileHandle fileHandleForWritingAtPath:p]; }
+    if (fh) { @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; } @finally { [fh closeFile]; } }
+    NSLog(@"[ChangeInfoIos] %@", line);
+    return classDeletes;
 }
 
 // Reset a bundle's TCC permissions for REAL by talking to the running tccd over
@@ -9440,6 +9535,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // effort; NOT part of subsOK — see scope note above / result UI.)
             ci_wipeAppExtensions(a.bundleID);
             ci_wipeAppGroups(a.bundleID);   // shared App Group data (fresh-install clean)
+            // 4.3.27: HOST-side keychain wipe (wildcard access) — the reliable clean.
+            // The tweak's in-app one-shot was proven to LEAVE the old device-id items
+            // behind (12 shared + 2 extension-group items survived, verified in
+            // keychain-2.db). Do it here, synchronously, while the app is killed, so
+            // the device is keychain-clean before it relaunches. Skips keep-login apps.
+            ci_hostWipeKeychainForBundle(a.bundleID);
             // v2.5.39: write marker inside Documents/ so iOS sandbox lets the file land
             // (host's writeToFile: to another container ROOT silently fails). Shell echo
             // via the privileged ci_run bypasses the cross-container NSFileManager check.
