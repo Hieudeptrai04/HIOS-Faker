@@ -25,6 +25,7 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
+#import <fcntl.h>        // O_CREAT / AT_FDCWD for the open/openat/fstatat JB hooks
 #import <errno.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -43,6 +44,14 @@
 #import <Security/Security.h>
 #import <DeviceCheck/DeviceCheck.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
+// LAYER 21 (virtual camera): AVFoundation gives AVCaptureVideoDataOutput +
+// AVAssetReader; CoreMedia/CoreVideo the CMSampleBuffer/CVPixelBuffer types;
+// CoreImage the scale+format-convert render; os/lock the feeder mutex.
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
+#import <CoreImage/CoreImage.h>
+#import <os/lock.h>
 #import "fishhook.h"
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
@@ -2438,6 +2447,51 @@ static char *hook_getenv_fn(const char *name) {
     return orig_getenv_fn(name);
 }
 
+// open() / openat() — the single most common JB existence check that the
+// stat/lstat/access/fopen hooks MISS ("open(/Applications/Cydia.app, O_RDONLY)").
+// Re-added 4.3.23 with the CORRECT arm64 variadic pattern: the hook is itself
+// variadic, mode is read via va_arg ONLY when O_CREAT is set, and the original is
+// called with the matching arity so the variadic stack layout stays valid. (The
+// 4.x removal was an older ABI-wrong hook feeding garbage into strncmp; isJBPath
+// is now pure + read-only, safe on the multi-threaded open() path.) No dbglog here
+// — open() is a hot syscall; keep it as lean as the stat hooks.
+typedef int (*open_fn_t)(const char *, int, ...);
+typedef int (*openat_fn_t)(int, const char *, int, ...);
+static open_fn_t   orig_open_fn   = NULL;
+static openat_fn_t orig_openat_fn = NULL;
+
+static int hook_open_fn(const char *path, int oflag, ...) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    if (oflag & O_CREAT) {
+        va_list ap; va_start(ap, oflag); int mode = va_arg(ap, int); va_end(ap);
+        return orig_open_fn(path, oflag, mode);
+    }
+    return orig_open_fn(path, oflag);
+}
+
+static int hook_openat_fn(int fd, const char *path, int oflag, ...) {
+    // Only hide when the path resolves the way isJBPath assumes (absolute, or
+    // relative-to-cwd). A relative path against a real dirfd would canonicalize
+    // against the wrong base, so pass those through untouched.
+    if (path && (path[0] == '/' || fd == AT_FDCWD) &&
+        isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    if (oflag & O_CREAT) {
+        va_list ap; va_start(ap, oflag); int mode = va_arg(ap, int); va_end(ap);
+        return orig_openat_fn(fd, path, oflag, mode);
+    }
+    return orig_openat_fn(fd, path, oflag);
+}
+
+// fstatat() — the stat variant that bypasses our stat/lstat hooks entirely.
+// Same fd caveat as openat: only hide absolute / AT_FDCWD paths.
+typedef int (*fstatat_fn_t)(int, const char *, struct stat *, int);
+static fstatat_fn_t orig_fstatat_fn = NULL;
+static int hook_fstatat_fn(int fd, const char *path, struct stat *buf, int flag) {
+    if (path && (path[0] == '/' || fd == AT_FDCWD) &&
+        isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    return orig_fstatat_fn(fd, path, buf, flag);
+}
+
 // NOTE (4.0.6): the realpath() JB-hide hook was REMOVED. It was added in 4.0.4
 // and, together with the screen-dims change, is part of the 4.0.4 regression
 // that crashed Zalo. The stat/lstat/access/fopen hooks already cover JB-path
@@ -2485,10 +2539,75 @@ static char *hook_getenv_fn(const char *name) {
     NSString *s = url.scheme.lowercaseString;
     if ([s isEqualToString:@"cydia"]     || [s isEqualToString:@"sileo"] ||
         [s isEqualToString:@"zbra"]      || [s isEqualToString:@"filza"] ||
-        [s isEqualToString:@"santander"] || [s isEqualToString:@"undecimus"]) {
+        [s isEqualToString:@"santander"] || [s isEqualToString:@"undecimus"] ||
+        [s isEqualToString:@"zebra"]     || [s isEqualToString:@"activator"] ||
+        [s isEqualToString:@"apt-repo"]  || [s isEqualToString:@"cydia-repo"] ||
+        [s isEqualToString:@"installer"] || [s isEqualToString:@"postbox"]) {
         return NO;
     }
     return %orig;
+}
+%end
+
+// Known jailbreak store / tool app bundle IDs. An app that enumerates installed
+// apps via LSApplicationWorkspace (applicationIsInstalled: / allInstalledApplications)
+// instead of calling canOpenURL: can otherwise spot these. Not gated on license —
+// same as the NSFileManager / canOpenURL JB-hide hooks (hiding JB is not identity
+// spoofing) and it is cheap (never a hot path).
+static BOOL ci_isJBBundleID(NSString *bid) {
+    if (![bid isKindOfClass:[NSString class]] || !bid.length) return NO;
+    static NSSet *jb = nil; static dispatch_once_t o;
+    dispatch_once(&o, ^{
+        jb = [NSSet setWithObjects:
+            @"com.saurik.Cydia", @"org.coolstar.SileoStore", @"org.coolstar.sileo",
+            @"xyz.willy.Zebra", @"com.tigisoftware.Filza", @"com.tigisoftware.ADManager",
+            @"science.xnu.undecimus", @"com.electra1112.electra", @"org.coolstar.electra",
+            @"com.opa334.Dopamine", @"com.opa334.TrollStore", @"com.opa334.trollstorehelper",
+            @"com.roothide.manager", @"com.serena.zebra", @"com.hackyouiphone.chariz",
+            @"me.qwq.sileo", @"org.coolstar.SileoNightly", nil];
+    });
+    if ([jb containsObject:bid]) return YES;
+    NSString *l = bid.lowercaseString;   // safety net for obvious forks / renames
+    return ([l containsString:@"cydia"] || [l containsString:@"sileo"] ||
+            [l containsString:@".filza"] || [l containsString:@"trollstore"] ||
+            [l containsString:@"dopamine"] || [l containsString:@"checkra1n"]);
+}
+
+@interface LSApplicationWorkspace : NSObject
++ (instancetype)defaultWorkspace;
+- (BOOL)applicationIsInstalled:(NSString *)bundleID;
+- (NSArray *)allInstalledApplications;
+@end
+
+%hook LSApplicationWorkspace
+- (BOOL)applicationIsInstalled:(NSString *)bundleID {
+    if (ci_isJBBundleID(bundleID)) {
+        dbglog("LSApp.isInstalled.block %s bid=%s\n", g_procname,
+               bundleID ? [bundleID UTF8String] : "?");
+        return NO;
+    }
+    return %orig;
+}
+- (NSArray *)allInstalledApplications {
+    NSArray *orig = %orig;
+    if (![orig isKindOfClass:[NSArray class]] || orig.count == 0) return orig;
+    // Cheap pre-scan: only rebuild the array if it actually contains a JB app.
+    BOOL any = NO;
+    for (id p in orig) {
+        @try {
+            if (ci_isJBBundleID([p valueForKey:@"bundleIdentifier"])) { any = YES; break; }
+        } @catch (__unused NSException *e) {}
+    }
+    if (!any) return orig;
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:orig.count];
+    for (id p in orig) {
+        @try {
+            if (!ci_isJBBundleID([p valueForKey:@"bundleIdentifier"])) [out addObject:p];
+        } @catch (__unused NSException *e) { [out addObject:p]; }   // unknown → keep
+    }
+    dbglog("LSApp.allInstalled.filter %s %lu->%lu\n", g_procname,
+           (unsigned long)orig.count, (unsigned long)out.count);
+    return out;
 }
 %end
 
@@ -2600,11 +2719,14 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
     return (real == UINT32_MAX) ? NULL : orig_dyld_get_image_name_fn(real);
 }
 
-// open()/openat() hooks removed: variadic signature + Foundation's
-// _NSOpenFileDescriptor_Protected calling open() from multiple threads
-// simultaneously caused strncmp to receive an invalid kHide[i] pointer
-// (0x209) → EXC_BAD_ACCESS. stat/lstat/access hooks cover the same
-// JB-path detection paths without the multi-thread re-entry risk.
+// HISTORY: open()/openat() hooks were REMOVED in 4.x after an ABI-wrong hook fed
+// garbage into strncmp (invalid kHide[i] pointer 0x209 → EXC_BAD_ACCESS) under
+// multi-threaded open() from Foundation's _NSOpenFileDescriptor_Protected. They
+// are RE-ADDED in 4.3.23 (see hook_open_fn / hook_openat_fn above) with the
+// variadic-correct pattern and against the now-pure, read-only isJBPath — so the
+// old crash cause is gone. This is the highest-value JB-hide gap to validate
+// first on-device; if any target regresses, disabling is a one-liner (skip the
+// three MSHookFunction installs in %ctor).
 
 // ============================================================
 // LAYER 12: DeviceCheck — block token generation.
@@ -2858,6 +2980,204 @@ static int hooked_fork(void) { errno = EPERM; return -1; }
 %end
 
 // ============================================================
+// LAYER 21: Virtual camera (VCam) — feed a user-chosen video/photo into the
+// camera pipeline so a video call / camera preview shows the fake media.
+//
+// TECHNIQUE. The app owns an AVCaptureVideoDataOutput whose delegate receives
+//   -captureOutput:didOutputSampleBuffer:fromConnection:
+// on the app's own capture queue. That selector can't be %hook'd by name (the
+// delegate is an app-defined class), so when the app calls
+//   -[AVCaptureVideoDataOutput setSampleBufferDelegate:queue:]
+// we runtime-swizzle THAT delegate class's didOutputSampleBuffer:. In the
+// swizzle we render our current fake frame INTO the camera's CVPixelBuffer
+// (Core Image handles scale + YUV/RGB conversion) and then call the app's own
+// original implementation with the now-fake buffer — so the encoder, WebRTC,
+// recording, and any preview the app builds FROM the data-output frames all see
+// the fake video.
+//
+// SCOPE / LIMITATIONS (honest — do not oversell):
+//   - Covers AVCaptureVideoDataOutput ONLY. AVCapturePhotoOutput (still capture)
+//     and AVCaptureMovieFileOutput (direct-to-file record) are NOT covered yet.
+//   - A local preview drawn by AVCaptureVideoPreviewLayer renders straight from
+//     the capture connection, NOT from the data-output buffer, so the user's OWN
+//     on-screen preview MAY still show the real camera even while the frames the
+//     app SENDS / processes are fake. What the server / other party sees is faked.
+//   - No liveness defeat: a looped clip will not satisfy active liveness
+//     (blink / turn-head / depth) challenges.
+//   - Orientation: video preferredTransform is applied; front-camera mirroring is
+//     left to the app. May need a per-app tweak after on-device testing.
+// FAIL-SAFE: any nil / unsupported-format / decode error falls through to the
+// REAL frame. The hook never throws out of the app's delegate call.
+// ============================================================
+static os_unfair_lock g_camLock = OS_UNFAIR_LOCK_INIT;    // guards reader + still image
+static BOOL        g_camEnabled  = NO;
+static BOOL        g_camIsVideo   = NO;
+static NSString   *g_camPath      = nil;
+static NSURL      *g_camURL       = nil;
+static CIContext  *g_camCtx       = nil;    // cached GPU context
+static CIImage    *g_camStill     = nil;    // photo mode
+static AVAssetReader          *g_camReader = nil;   // video mode
+static AVAssetReaderTrackOutput *g_camOut  = nil;
+static CGAffineTransform       g_camXform;          // video track preferredTransform
+
+// Active = licensed (cfg() already gates on g_licOK) + enabled + a media path set.
+static inline BOOL ci_camSpoofActive(void) {
+    if (!getConfigBool(@"cameraSpoofEnabled")) return NO;
+    return getConfigStr(@"cameraSpoofPath").length > 0;
+}
+
+// Re-read camera config on ctor / ReloadConfig. Drops the open reader so a newly
+// applied clip is picked up on the next frame.
+static void ci_camReloadFromConfig(void) {
+    NSString *p = getConfigStr(@"cameraSpoofPath");
+    os_unfair_lock_lock(&g_camLock);
+    g_camEnabled = getConfigBool(@"cameraSpoofEnabled");
+    g_camIsVideo = getConfigBool(@"cameraSpoofIsVideo");
+    if (p != g_camPath && ![p isEqualToString:g_camPath]) {
+        g_camPath = [p copy];
+        g_camURL  = p.length ? [NSURL fileURLWithPath:p] : nil;
+        g_camReader = nil; g_camOut = nil;   // force reopen
+        g_camStill  = nil;
+    }
+    os_unfair_lock_unlock(&g_camLock);
+}
+
+static CIContext *ci_camContext(void) {
+    if (!g_camCtx) g_camCtx = [CIContext contextWithOptions:nil];  // GPU-backed default
+    return g_camCtx;
+}
+
+// Open (or reopen, for looping) the video reader. Caller holds g_camLock.
+static BOOL ci_camOpenReaderLocked(void) {
+    if (!g_camURL) return NO;
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:g_camURL options:nil];
+    AVAssetTrack *vt = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+    if (!vt) return NO;
+    NSError *err = nil;
+    AVAssetReader *r = [AVAssetReader assetReaderWithAsset:asset error:&err];
+    if (!r) return NO;
+    NSDictionary *st = @{ (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA) };
+    AVAssetReaderTrackOutput *o = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:vt outputSettings:st];
+    o.alwaysCopiesSampleData = NO;
+    if (![r canAddOutput:o]) return NO;
+    [r addOutput:o];
+    if (![r startReading]) return NO;
+    g_camReader = r; g_camOut = o; g_camXform = vt.preferredTransform;
+    return YES;
+}
+
+// Next decoded video frame as a CIImage (loops at EOF). Caller holds g_camLock.
+static CIImage *ci_camNextVideoImageLocked(void) {
+    if (!g_camReader && !ci_camOpenReaderLocked()) return nil;
+    CMSampleBufferRef sb = [g_camOut copyNextSampleBuffer];
+    if (!sb) {                                   // EOF / read error → reopen once (loop)
+        g_camReader = nil; g_camOut = nil;
+        if (!ci_camOpenReaderLocked()) return nil;
+        sb = [g_camOut copyNextSampleBuffer];
+        if (!sb) return nil;
+    }
+    CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+    CIImage *img = pb ? [CIImage imageWithCVPixelBuffer:pb] : nil;   // retains pb
+    if (img && !CGAffineTransformIsIdentity(g_camXform))
+        img = [img imageByApplyingTransform:g_camXform];
+    CFRelease(sb);                               // CIImage keeps its own pb retain
+    return img;
+}
+
+// Render the current fake frame into the camera's destination buffer. Returns NO
+// (→ caller keeps the real frame) on any problem. Never throws.
+static BOOL ci_camFillBuffer(CVPixelBufferRef dst) {
+    if (!dst) return NO;
+    os_unfair_lock_lock(&g_camLock);
+    if (!g_camEnabled || !g_camURL) { os_unfair_lock_unlock(&g_camLock); return NO; }
+
+    CIImage *src = nil;
+    if (g_camIsVideo) {
+        src = ci_camNextVideoImageLocked();
+    } else {
+        if (!g_camStill) g_camStill = [CIImage imageWithContentsOfURL:g_camURL];
+        src = g_camStill;
+    }
+    if (!src) { os_unfair_lock_unlock(&g_camLock); return NO; }
+
+    CGRect ext = src.extent;
+    size_t dw = CVPixelBufferGetWidth(dst), dh = CVPixelBufferGetHeight(dst);
+    if (ext.size.width < 1 || ext.size.height < 1 || dw < 1 || dh < 1) {
+        os_unfair_lock_unlock(&g_camLock); return NO;
+    }
+    // Aspect-fill: scale so the source covers the whole destination, center-crop.
+    CGFloat s = MAX((CGFloat)dw / ext.size.width, (CGFloat)dh / ext.size.height);
+    CIImage *img = [src imageByApplyingTransform:CGAffineTransformMakeScale(s, s)];
+    CGRect se = img.extent;
+    CGFloat tx = ((CGFloat)dw - se.size.width) * 0.5 - se.origin.x;
+    CGFloat ty = ((CGFloat)dh - se.size.height) * 0.5 - se.origin.y;
+    img = [img imageByApplyingTransform:CGAffineTransformMakeTranslation(tx, ty)];
+    img = [img imageByCroppingToRect:CGRectMake(0, 0, dw, dh)];
+
+    BOOL ok = YES;
+    @try {
+        [ci_camContext() render:img toCVPixelBuffer:dst];
+    } @catch (__unused NSException *e) {
+        ok = NO;
+    }
+    os_unfair_lock_unlock(&g_camLock);
+    return ok;
+}
+
+// --- delegate swizzle ---------------------------------------------------------
+// Original IMPs keyed by the Method object (stable per class; inherited methods
+// resolve to the same Method across subclasses, so keying by Method dedupes).
+static SEL g_camSel = NULL;
+static os_unfair_lock g_camSwzLock = OS_UNFAIR_LOCK_INIT;
+static CFMutableDictionaryRef g_camIMPs = NULL;   // Method* -> original IMP
+
+static void ci_camHookedDidOutput(id self, SEL _cmd, AVCaptureOutput *output,
+                                  CMSampleBufferRef sbuf, AVCaptureConnection *conn) {
+    // Overwrite the frame first (best-effort), then run the app's real code.
+    if (sbuf && ci_camSpoofActive()) {
+        CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sbuf);
+        if (pb && CFGetTypeID(pb) == CVPixelBufferGetTypeID())
+            ci_camFillBuffer((CVPixelBufferRef)pb);
+    }
+    IMP orig = NULL;
+    Method m = class_getInstanceMethod([self class], _cmd);
+    if (m) {
+        os_unfair_lock_lock(&g_camSwzLock);
+        if (g_camIMPs) orig = (IMP)CFDictionaryGetValue(g_camIMPs, m);
+        os_unfair_lock_unlock(&g_camSwzLock);
+    }
+    if (orig)
+        ((void(*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))orig)
+            (self, _cmd, output, sbuf, conn);
+    // else: no saved original (shouldn't happen) → drop the frame rather than crash.
+}
+
+static void ci_camSwizzleDelegateClass(Class c) {
+    if (!c || !g_camSel) return;
+    Method m = class_getInstanceMethod(c, g_camSel);
+    if (!m) return;                              // delegate doesn't implement it
+    os_unfair_lock_lock(&g_camSwzLock);
+    if (!g_camIMPs) g_camIMPs = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    IMP cur = method_getImplementation(m);
+    if (cur != (IMP)ci_camHookedDidOutput) {     // guard: skip already-swizzled (incl. via superclass)
+        IMP old = method_setImplementation(m, (IMP)ci_camHookedDidOutput);
+        CFDictionarySetValue(g_camIMPs, (const void *)m, (const void *)old);
+        dbglog("cam.swizzle %s cls=%s\n", g_procname, class_getName(c));
+    }
+    os_unfair_lock_unlock(&g_camSwzLock);
+}
+
+%hook AVCaptureVideoDataOutput
+- (void)setSampleBufferDelegate:(id)delegate queue:(dispatch_queue_t)queue {
+    // Swizzle whenever licensed; the per-frame ci_camSpoofActive() gate decides
+    // whether a frame is actually replaced, so this is inert until the user
+    // applies a clip. Unlicensed → g_licOK==0 → never swizzle (zero overhead).
+    if (delegate && g_licOK) ci_camSwizzleDelegateClass([delegate class]);
+    %orig;
+}
+%end
+
+// ============================================================
 // ONE-SHOT device reset (v4.1.8)
 // ------------------------------------------------------------
 // Goal: register a NEW account on a genuinely brand-new device (owner's revenue),
@@ -3074,6 +3394,7 @@ static void ci_dumpViberIdentity(void) {
 static void notify_cb(int t) {
     (void)t;
     reloadConfig();
+    ci_camReloadFromConfig();   // LAYER 21: pick up a just-applied/cleared camera clip
     // ReloadPrefs after a Change Device may arrive while Zalo is (re)launching —
     // consume the one-shot if this generation is due. No unconditional wipe here
     // any more (that used to destroy restored/kept accounts on every reload).
@@ -3292,18 +3613,30 @@ static void notify_cb(int t) {
             MSHookFunction((void*)orig_lstat_fn,  (void*)hook_lstat_fn,  (void**)&orig_lstat_fn);
         if (orig_access_fn)
             MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
-        // fopen — covers the most common JB-file check (open() stays unhooked).
+        // fopen — covers the most common JB-file check.
         orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
         if (orig_fopen_fn)
             MSHookFunction((void*)orig_fopen_fn, (void*)hook_fopen_fn, (void**)&orig_fopen_fn);
+        // open / openat / fstatat (4.3.23) — close the biggest file-check gaps that
+        // stat/lstat/access/fopen missed. Variadic-correct hooks (see defs above).
+        orig_open_fn    = (open_fn_t)   dlsym(RTLD_DEFAULT, "open");
+        orig_openat_fn  = (openat_fn_t) dlsym(RTLD_DEFAULT, "openat");
+        orig_fstatat_fn = (fstatat_fn_t)dlsym(RTLD_DEFAULT, "fstatat");
+        if (orig_open_fn)
+            MSHookFunction((void*)orig_open_fn,    (void*)hook_open_fn,    (void**)&orig_open_fn);
+        if (orig_openat_fn)
+            MSHookFunction((void*)orig_openat_fn,  (void*)hook_openat_fn,  (void**)&orig_openat_fn);
+        if (orig_fstatat_fn)
+            MSHookFunction((void*)orig_fstatat_fn, (void*)hook_fstatat_fn, (void**)&orig_fstatat_fn);
         // getenv — hide DYLD_INSERT_LIBRARIES / substrate env probes.
         orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
         if (orig_getenv_fn)
             MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
         // (4.0.6: realpath hook removed — see note above; reverted 4.0.4 regression)
-        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
+        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p open=%p openat=%p fstatat=%p getenv=%p\n",
                g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
-               (void*)orig_fopen_fn, (void*)orig_getenv_fn);
+               (void*)orig_fopen_fn, (void*)orig_open_fn, (void*)orig_openat_fn,
+               (void*)orig_fstatat_fn, (void*)orig_getenv_fn);
 
         // LAYER 10: dyld image list hiding
         orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
@@ -3323,7 +3656,7 @@ static void notify_cb(int t) {
             MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
         dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
 
-        // open()/openat() hooks intentionally not installed — see comment above.
+        // open()/openat()/fstatat() are installed up in the LAYER 9 block above.
 
         // LAYER 11: Keychain device-fingerprint isolation
         // MSHookFunction patches the Security.framework prologue so ALL callers
@@ -3454,6 +3787,13 @@ static void notify_cb(int t) {
         // now fires at most ONCE per Change Device; every other launch (and every
         // .adbk restore) is a no-op so the account keeps its identity.
         ci_runOneShotIfDue();
+
+        // LAYER 21: virtual camera. Cache the delegate selector + load the current
+        // camera config so the AVCaptureVideoDataOutput swizzle can fire the moment
+        // a target app configures its capture session. Inert until the user applies
+        // a clip (ci_camSpoofActive() gate).
+        g_camSel = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
+        ci_camReloadFromConfig();
 
         dbglog("ctor %s done\n", g_procname);
     }

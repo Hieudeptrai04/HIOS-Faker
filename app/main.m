@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.21";
+static NSString *const kAppVersion = @"4.3.23";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -6636,6 +6636,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // entitlements.plist now ships com.apple.private.tcc.allow with
 // kTCCServicePhotos which pre-grants access — no permission dialog,
 // no TCC.db round-trip needed.
+@interface CICameraViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@end
+
+// Virtual-camera (VCam) media lives in the shared config dir, which — like
+// config.plist — is readable from inside every target app's sandbox, so
+// tweak-mg LAYER 21 (AVAssetReader) can open it. Host writes; tweak reads.
+static NSString *CICameraVideoPath(void) { return @"/var/jb/etc/changeinfoios/camera_spoof.mp4"; }
+static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/camera_spoof.jpg"; }
+
 // ============================================================
 // SIDE MENU (hamburger)
 // ============================================================
@@ -6649,7 +6658,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // Trimmed to only working entries — placeholders ("Chức năng đang phát
     // triển") were cluttering the menu. Add new items here as they get real
     // handlers in didSelectRowAtIndexPath.
-    _items = @[];
+    _items = @[@"📷 Camera ảo (VCam)"];
     self.view.backgroundColor = [CITheme bg];
     self.tableView.rowHeight = 52;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 110)];
@@ -6679,6 +6688,12 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     NSString *cmd = _items[ip.row];
+
+    if ([cmd containsString:@"Camera"]) {
+        CICameraViewController *vc = [[CICameraViewController alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
 
     UIAlertController *a = [UIAlertController alertControllerWithTitle:cmd message:@"Chức năng đang phát triển." preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
@@ -6999,6 +7014,295 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
 - (void)textFieldDidEndEditing:(UITextField *)tf { [self refreshStatus:nil error:NO]; }
+
+@end
+
+// ============================================================
+// CAMERA (VCam) VIEW CONTROLLER
+// ------------------------------------------------------------
+// Pick a video or photo from the library → Apply. The host materializes it into
+// /var/jb/etc/changeinfoios/camera_spoof.{mp4,jpg} (readable from target app
+// sandboxes) and sets cameraSpoof* config keys. tweak-mg LAYER 21 renders that
+// media into the camera's sample buffers, so a video call / camera preview shows
+// the chosen media. See the LAYER 21 header in tweak-mg/Tweak.xm for what this
+// does and does NOT cover (data-output only; no liveness; local preview-layer may
+// still show the real camera).
+// ============================================================
+@implementation CICameraViewController {
+    UIImageView *_preview;
+    UILabel     *_pendingLbl;
+    UILabel     *_statusLbl;
+    UISwitch    *_enableSw;
+    NSURL       *_pendingVideoURL;   // picked, not yet applied
+    UIImage     *_pendingImage;      // picked, not yet applied
+    UIAlertController *_busy;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Camera ảo";
+    self.view.backgroundColor = [CITheme bg];
+
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    sv.alwaysBounceVertical = YES;
+    [self.view addSubview:sv];
+
+    CGFloat W = self.view.bounds.size.width, P = 16, cardW = W - 2*P, y = 16;
+
+    // Intro / how-it-works + limitations note.
+    UILabel *note = [[UILabel alloc] initWithFrame:CGRectMake(P, y, cardW, 0)];
+    note.numberOfLines = 0;
+    note.font = [UIFont systemFontOfSize:13];
+    note.textColor = [CITheme dim];
+    note.text = @"Chọn video hoặc ảnh trong thư viện, bấm Apply. Khi app mở camera "
+                 "(gọi video / khung xem camera), nó sẽ thấy media này thay cho camera thật.\n\n"
+                 "Lưu ý: chỉ thay luồng camera app xử lý/gửi đi — khung tự-xem tại chỗ của một số "
+                 "app có thể vẫn là camera thật. KHÔNG qua được xác minh liveness (nháy mắt/quay đầu). "
+                 "Cần key còn hạn và phải mở lại camera trong app sau khi Apply.";
+    [note sizeToFit];
+    note.frame = CGRectMake(P, y, cardW, note.frame.size.height);
+    [sv addSubview:note];
+    y += note.frame.size.height + 14;
+
+    // Preview (thumbnail of picked / applied media).
+    _preview = [[UIImageView alloc] initWithFrame:CGRectMake(P, y, cardW, 220)];
+    _preview.backgroundColor = [CITheme card];
+    _preview.contentMode = UIViewContentModeScaleAspectFit;
+    _preview.layer.cornerRadius = 12; _preview.layer.masksToBounds = YES;
+    _preview.layer.borderWidth = 0.5; _preview.layer.borderColor = [CITheme border].CGColor;
+    [sv addSubview:_preview];
+    y += 232;
+
+    _pendingLbl = [[UILabel alloc] initWithFrame:CGRectMake(P, y, cardW, 20)];
+    _pendingLbl.font = [UIFont systemFontOfSize:13];
+    _pendingLbl.textColor = [CITheme blue];
+    _pendingLbl.textAlignment = NSTextAlignmentCenter;
+    [sv addSubview:_pendingLbl];
+    y += 28;
+
+    UIButton *pick = CIBoxButton(@"Chọn video / ảnh", [CITheme orange], [CITheme orange]);
+    pick.frame = CGRectMake(P, y, cardW, 50);
+    [pick addTarget:self action:@selector(pickMedia) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:pick];
+    y += 62;
+
+    // Enable switch row.
+    UIView *swRow = [[UIView alloc] initWithFrame:CGRectMake(P, y, cardW, 50)];
+    swRow.backgroundColor = [CITheme card]; swRow.layer.cornerRadius = 12;
+    [sv addSubview:swRow];
+    UILabel *swl = [[UILabel alloc] initWithFrame:CGRectMake(14, 0, cardW-90, 50)];
+    swl.text = @"Bật camera ảo"; swl.font = [UIFont boldSystemFontOfSize:15]; swl.textColor = [CITheme text];
+    [swRow addSubview:swl];
+    _enableSw = [[UISwitch alloc] init];
+    _enableSw.frame = CGRectMake(cardW-66, 9, 50, 32);
+    _enableSw.onTintColor = [CITheme green];
+    [swRow addSubview:_enableSw];
+    y += 62;
+
+    UIButton *apply = CIBoxButton(@"Apply", [UIColor whiteColor], [CITheme green]);
+    apply.backgroundColor = [CITheme green];
+    apply.frame = CGRectMake(P, y, cardW, 52);
+    [apply addTarget:self action:@selector(applyTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:apply];
+    y += 64;
+
+    UIButton *clear = CIBoxButton(@"Tắt & Xoá media", [CITheme red], [CITheme red]);
+    clear.frame = CGRectMake(P, y, cardW, 48);
+    [clear addTarget:self action:@selector(clearTapped) forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:clear];
+    y += 60;
+
+    _statusLbl = [[UILabel alloc] initWithFrame:CGRectMake(P, y, cardW, 0)];
+    _statusLbl.numberOfLines = 0;
+    _statusLbl.font = [UIFont systemFontOfSize:13];
+    _statusLbl.textColor = [CITheme dim];
+    [sv addSubview:_statusLbl];
+    y += 60;
+
+    sv.contentSize = CGSizeMake(W, y + 20);
+    [self refreshStatus];
+}
+
+- (void)refreshStatus {
+    CIConfigManager *cm = [CIConfigManager shared];
+    BOOL en = [cm boolForKey:@"cameraSpoofEnabled"];
+    BOOL isVid = [cm boolForKey:@"cameraSpoofIsVideo"];
+    NSString *path = [cm stringForKey:@"cameraSpoofPath"];
+    _enableSw.on = en;
+    if (path.length && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        unsigned long long sz = [CIAppLister sizeOfPath:path];
+        _statusLbl.text = [NSString stringWithFormat:@"Đang dùng: %@ • %@ • %@",
+                           isVid ? @"VIDEO" : @"ẢNH", CIBytesString(sz),
+                           en ? @"ĐANG BẬT" : @"đang tắt"];
+        // preview from the applied file (only when nothing new is pending)
+        if (!_pendingVideoURL && !_pendingImage) {
+            if (isVid) [self setVideoThumbnail:[NSURL fileURLWithPath:path]];
+            else       _preview.image = [UIImage imageWithContentsOfFile:path];
+        }
+    } else {
+        _statusLbl.text = @"Chưa áp dụng media nào.";
+    }
+}
+
+#pragma mark - pick
+
+- (void)pickMedia {
+    UIImagePickerController *p = [[UIImagePickerController alloc] init];
+    p.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+    p.mediaTypes = @[@"public.movie", @"public.image"];
+    p.videoExportPreset = AVAssetExportPresetPassthrough;   // keep original in the picker
+    p.delegate = self;
+    [self presentViewController:p animated:YES completion:nil];
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker
+didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
+    NSString *mt = info[UIImagePickerControllerMediaType];
+    if ([mt isEqualToString:@"public.movie"]) {
+        _pendingVideoURL = info[UIImagePickerControllerMediaURL];
+        _pendingImage = nil;
+        _pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
+        [self setVideoThumbnail:_pendingVideoURL];
+    } else {
+        _pendingImage = info[UIImagePickerControllerOriginalImage];
+        _pendingVideoURL = nil;
+        _pendingLbl.text = @"Đã chọn: ẢNH — bấm Apply để dùng";
+        _preview.image = _pendingImage;
+    }
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)setVideoThumbnail:(NSURL *)url {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVAssetImageGenerator *g = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
+    g.appliesPreferredTrackTransform = YES;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        CGImageRef cg = [g copyCGImageAtTime:CMTimeMake(0, 1) actualTime:NULL error:NULL];
+        UIImage *img = cg ? [UIImage imageWithCGImage:cg] : nil;
+        if (cg) CGImageRelease(cg);
+        dispatch_async(dispatch_get_main_queue(), ^{ if (img) self->_preview.image = img; });
+    });
+}
+
+#pragma mark - apply / clear
+
+- (void)applyTapped {
+    CIConfigManager *cm = [CIConfigManager shared];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    if (_pendingVideoURL) {
+        [self showBusy:@"Đang xử lý video…"];
+        [self exportVideo:_pendingVideoURL to:CICameraVideoPath() done:^(BOOL ok, NSString *err) {
+            [self hideBusy];
+            if (!ok) { [self alert:@"Lỗi" msg:err ?: @"Không xử lý được video."]; return; }
+            [fm removeItemAtPath:CICameraImagePath() error:nil];
+            [cm setObject:@YES forKey:@"cameraSpoofIsVideo"];
+            [cm setObject:CICameraVideoPath() forKey:@"cameraSpoofPath"];
+            [cm setObject:@(self->_enableSw.isOn) forKey:@"cameraSpoofEnabled"];
+            [cm save];
+            self->_pendingVideoURL = nil; self->_pendingLbl.text = @"";
+            [self refreshStatus];
+            [self alert:@"Xong" msg:@"Đã áp dụng video. Mở lại camera trong app để thấy hiệu lực."];
+        }];
+        return;
+    }
+
+    if (_pendingImage) {
+        NSData *jpg = UIImageJPEGRepresentation([self normalizedUpright:_pendingImage], 0.92);
+        if (!jpg || ![jpg writeToFile:CICameraImagePath() atomically:YES]) {
+            [self alert:@"Lỗi" msg:@"Không lưu được ảnh."]; return;
+        }
+        chmod([CICameraImagePath() fileSystemRepresentation], 0644);
+        [fm removeItemAtPath:CICameraVideoPath() error:nil];
+        [cm setObject:@NO forKey:@"cameraSpoofIsVideo"];
+        [cm setObject:CICameraImagePath() forKey:@"cameraSpoofPath"];
+        [cm setObject:@(_enableSw.isOn) forKey:@"cameraSpoofEnabled"];
+        [cm save];
+        _pendingImage = nil; _pendingLbl.text = @"";
+        [self refreshStatus];
+        [self alert:@"Xong" msg:@"Đã áp dụng ảnh. Mở lại camera trong app để thấy hiệu lực."];
+        return;
+    }
+
+    // No new media picked → just flip the enabled flag on the existing media.
+    NSString *existing = [cm stringForKey:@"cameraSpoofPath"];
+    if (!existing.length) { [self alert:@"Chưa có media" msg:@"Hãy chọn video hoặc ảnh trước."]; return; }
+    [cm setObject:@(_enableSw.isOn) forKey:@"cameraSpoofEnabled"];
+    [cm save];
+    [self refreshStatus];
+    [self alert:@"Xong" msg:_enableSw.isOn ? @"Đã bật camera ảo." : @"Đã tắt camera ảo."];
+}
+
+- (void)clearTapped {
+    CIConfigManager *cm = [CIConfigManager shared];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [cm setObject:@NO forKey:@"cameraSpoofEnabled"];
+    [cm setObject:nil forKey:@"cameraSpoofPath"];
+    [cm setObject:nil forKey:@"cameraSpoofIsVideo"];
+    [cm save];
+    [fm removeItemAtPath:CICameraVideoPath() error:nil];
+    [fm removeItemAtPath:CICameraImagePath() error:nil];
+    _pendingVideoURL = nil; _pendingImage = nil;
+    _preview.image = nil; _pendingLbl.text = @"";
+    [self refreshStatus];
+}
+
+- (void)exportVideo:(NSURL *)src to:(NSString *)destPath done:(void(^)(BOOL, NSString *))done {
+    [[NSFileManager defaultManager] removeItemAtPath:destPath error:nil];
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:src options:nil];
+    // Re-encode to H.264 MP4 so AVAssetReader in the target app reads it reliably
+    // (strips odd codecs / HDR that could fail decode). Medium = size/speed balance.
+    AVAssetExportSession *ex = [[AVAssetExportSession alloc] initWithAsset:asset
+                                    presetName:AVAssetExportPresetMediumQuality];
+    if (!ex) { done(NO, @"Không tạo được export session"); return; }
+    ex.outputURL = [NSURL fileURLWithPath:destPath];
+    ex.outputFileType = AVFileTypeMPEG4;
+    ex.shouldOptimizeForNetworkUse = YES;
+    [ex exportAsynchronouslyWithCompletionHandler:^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (ex.status == AVAssetExportSessionStatusCompleted) {
+                chmod([destPath fileSystemRepresentation], 0644);
+                done(YES, nil);
+            } else {
+                done(NO, ex.error.localizedDescription ?: @"Export thất bại");
+            }
+        });
+    }];
+}
+
+// Bake EXIF orientation into pixels so the tweak's still-image path is upright.
+- (UIImage *)normalizedUpright:(UIImage *)img {
+    if (!img || img.imageOrientation == UIImageOrientationUp) return img;
+    UIGraphicsBeginImageContextWithOptions(img.size, NO, img.scale);
+    [img drawInRect:CGRectMake(0, 0, img.size.width, img.size.height)];
+    UIImage *out = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return out ?: img;
+}
+
+#pragma mark - helpers
+
+- (void)showBusy:(NSString *)msg {
+    _busy = [UIAlertController alertControllerWithTitle:nil
+                message:[NSString stringWithFormat:@"%@\n\n", msg]
+         preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:_busy animated:YES completion:nil];
+}
+- (void)hideBusy {
+    [_busy dismissViewControllerAnimated:YES completion:nil];
+    _busy = nil;
+}
+- (void)alert:(NSString *)t msg:(NSString *)m {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:t message:m
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
 
 @end
 
