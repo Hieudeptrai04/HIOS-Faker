@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.28";
+static NSString *const kAppVersion = @"4.3.29";
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -4135,6 +4135,25 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
             @"Documents/VoipLogStats",
             @"Documents/cloud_audit/download_cache",
             @"Documents/GlobalSearch",
+            // ---- Zalo LOGIN-ONLY slimming (measured live 2026-08-13: 72M container) ----
+            // The weight is media / download-temp / sticker cache — NONE of it is the
+            // login layer. Login-critical data is small and ALL KEPT: profile.sqlite,
+            // social.sqlite, KVChat, kvs, KVCore, Library/{Preferences,Cookies,
+            // HTTPStorages,WebKit,Application Support} + the keychain dump + config.
+            // Cutting these regenerable big dirs drops a Zalo .rrs from ~72M to ~7M;
+            // Zalo re-downloads media/stickers from the server after restore.
+            // NOTE: the old "keep DownTemp/UpTemp (may hold tokens)" caution is
+            // superseded — these are file-transfer STAGING buffers, not token stores
+            // (tokens live in keychain / Cookies / HTTPStorages, all kept). MUST be
+            // restore-verified once on-device before relying on it.
+            @"Documents/Data",              // 24M  downloaded/sent media
+            @"Documents/DownTemp",          // 23M  download temp staging
+            @"Documents/UpTemp",            //      upload temp staging
+            @"Documents/UpResult",          //      upload result staging
+            @"Documents/StickerSuggestion", // 8.3M sticker suggestion cache
+            @"Documents/Sticker",           // 1.9M sticker cache
+            @"Documents/ZaloAnalytics",     // 2.1M analytics blobs
+            @"Documents/RemoteConfig",      // 960K server config, re-fetched
             // ---- Viber slimming (re-measured on a REAL account 2026-07-24) ----
             // The first pass was sized against a freshly-registered account and
             // missed almost everything: once Viber has been used it downloads
@@ -9071,7 +9090,27 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 
 - (void)saveAndReset {
-    [self performRRSBackup:YES];
+    // Ask for the RRS name FIRST. The name flows into `note` (→ _noteField.text,
+    // read in performRRSBackupLicensed) which is stored on the entry AND used as
+    // the exported .rrs filename + carried in its meta (ci_metaFromEntry/ci_portableFileName).
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Tên bản lưu (RRS)"
+        message:@"Đặt tên để dễ tìm khi xuất/nhập (vd: tên khách + SĐT). Để trống = tự đặt."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"vd: Chị Hoa 0912...";
+        tf.text = self->_noteField.text ?: @"";
+        tf.autocapitalizationType = UITextAutocapitalizationTypeSentences;
+        tf.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Backup" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) {
+            NSString *name = [a.textFields.firstObject.text
+                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            self->_noteField.text = name ?: @"";
+            [self performRRSBackup:YES];
+        }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 - (void)resetData {
     [self performRRSBackup:NO];
