@@ -1434,17 +1434,31 @@ typedef OSStatus (*SecItemCopyMatching_t)(CFDictionaryRef, CFTypeRef *);
 typedef OSStatus (*SecItemDelete_t)(CFDictionaryRef);
 static SecItemCopyMatching_t orig_SecItemCopyMatching = NULL;
 
+// 4.3.30: set to 1 by ci_runOneShotIfDue ONLY when it actually wipes for a fresh
+// register (a real Change Device this session) — NOT by the restore path. Gates the
+// keychain device-id block below so restores/normal launches are untouched.
+static int g_freshRegisterWipe = 0;
+
+// RE-ENABLED 4.3.30, but GATED to the fresh-register window. WHY re-enabled:
+// live keychain-2.db proved the one-shot SecItemDelete does NOT actually remove
+// Zalo's device-id items (12 shared + 2 ext group SURVIVE — cdat unchanged, from
+// both the in-app tweak AND the host). So on a fresh register the OLD device id
+// (kZAIDForDevice etc.) is still readable → every account on this phone shares it
+// → VNG correlates → ban. Since we cannot DELETE the item, we make Zalo NOT SEE it
+// during fresh register: return errSecItemNotFound for the device-id accounts so
+// Zalo generates + registers with a brand-new id (uncorrelated). This runs ONLY
+// while g_freshRegisterWipe==1 (a real Change Device this launch); on RRS restore
+// and every normal launch it is 0 → pass through, so a kept/restored account reads
+// its stable device id and stays a trusted device (the reason the old always-on
+// block was disabled). Restore path never sets g_freshRegisterWipe.
 static BOOL isZaloFingerprintQuery(CFDictionaryRef query) {
-    (void)query;
-    // v4.1.8 — DISABLED (always pass through). The keychain READ + WRITE blocks
-    // used to run on every launch, which meant Zalo could NEVER read or persist a
-    // device id: every account looked like a brand-new device forever, and an
-    // ADManager .adbk restore never came back as a "trusted device" (thiết bị
-    // quen). Device separation between registrations is now handled by a ONE-SHOT
-    // synchronous keychain wipe that fires exactly once per Change Device (see
-    // ci_runOneShotIfDue) — BEFORE Zalo's own code runs — so stale ids are gone
-    // without ever blocking the fresh/restored id that must persist. Blocking is
-    // therefore both unnecessary and actively harmful, so it is removed.
+    if (!g_freshRegisterWipe || !query) return NO;
+    CFStringRef acc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrAccount);
+    if (!acc || CFGetTypeID(acc) != CFStringGetTypeID()) return NO;
+    char ab[80]; ab[0] = 0;
+    if (!CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8) || !ab[0]) return NO;
+    for (int i = 0; kZaloFpAccounts[i]; i++)
+        if (strcmp(ab, kZaloFpAccounts[i]) == 0) return YES;
     return NO;
 }
 
@@ -2500,6 +2514,77 @@ static char *hook_getenv_fn(const char *name) {
 }
 %end
 
+// ============================================================
+// LAYER 22: APNS device-token spoof (reg-die fix, 4.3.30).
+//
+// The STANDARD APNS push token (delivered to the app delegate's
+// -application:didRegisterForRemoteNotificationsWithDeviceToken:) is device+install
+// stable — it does NOT change across a Change Device (rm -rf of the container does
+// not reissue it). Zalo sends it to VNG, so every account registered from one phone
+// carries the SAME token → VNG correlates → ban. (Only the VoIP token was spoofed
+// before — LAYER 20 — via PKPushRegistry; the standard APNS token was a KNOWN GAP.)
+// We runtime-swizzle the app delegate's didRegister... to hand it the per-Change-
+// Device fake token (config apnsTokenSpoof, the same 32-byte value LAYER 20 uses),
+// so the token Zalo forwards to VNG rotates per identity and can't correlate.
+// Independent of the camera swizzle (different selector, own state).
+// ============================================================
+static SEL g_apnsSel = NULL;
+static os_unfair_lock g_apnsLock = OS_UNFAIR_LOCK_INIT;
+static CFMutableDictionaryRef g_apnsIMPs = NULL;   // Method* -> original IMP
+
+static NSData *ci_fakeAPNSToken(void) {
+    NSString *hex = getConfigStr(@"apnsTokenSpoof");
+    if (hex.length < 64) return nil;                 // need >=32 bytes
+    NSMutableData *d = [NSMutableData dataWithCapacity:hex.length / 2];
+    for (NSUInteger i = 0; i + 1 < hex.length; i += 2) {
+        unsigned int b = 0;
+        NSScanner *sc = [NSScanner scannerWithString:[hex substringWithRange:NSMakeRange(i, 2)]];
+        if (![sc scanHexInt:&b]) return nil;
+        uint8_t byte = (uint8_t)(b & 0xff);
+        [d appendBytes:&byte length:1];
+    }
+    return d.length >= 32 ? [d copy] : nil;
+}
+
+static void ci_hookedDidRegisterAPNS(id self, SEL _cmd, id app, NSData *deviceToken) {
+    NSData *fake = ci_fakeAPNSToken();
+    NSData *tok = (fake.length ? fake : deviceToken);   // fall back to real if no config
+    dbglog("APNS.spoof %s realLen=%lu fake=%c\n", g_procname,
+           (unsigned long)deviceToken.length, fake ? 'Y' : 'N');
+    IMP orig = NULL;
+    Method m = class_getInstanceMethod([self class], _cmd);
+    if (m) {
+        os_unfair_lock_lock(&g_apnsLock);
+        if (g_apnsIMPs) orig = (IMP)CFDictionaryGetValue(g_apnsIMPs, m);
+        os_unfair_lock_unlock(&g_apnsLock);
+    }
+    if (orig)
+        ((void(*)(id, SEL, id, NSData *))orig)(self, _cmd, app, tok);
+    // else: delegate had no original impl (we added it) → nothing downstream to call.
+}
+
+static void ci_apnsSwizzleDelegate(Class c) {
+    if (!c || !g_apnsSel) return;
+    os_unfair_lock_lock(&g_apnsLock);
+    if (!g_apnsIMPs) g_apnsIMPs = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    Method m = class_getInstanceMethod(c, g_apnsSel);
+    if (m) {
+        IMP cur = method_getImplementation(m);
+        if (cur != (IMP)ci_hookedDidRegisterAPNS) {
+            IMP old = method_setImplementation(m, (IMP)ci_hookedDidRegisterAPNS);
+            CFDictionarySetValue(g_apnsIMPs, (const void *)m, (const void *)old);
+            dbglog("APNS.swizzle %s cls=%s\n", g_procname, class_getName(c));
+        }
+    } else {
+        // Delegate doesn't implement it — add it so the spoof still applies. No
+        // original to chain to; the app just won't get the (now-faked) callback,
+        // which is fine (it wasn't handling it anyway).
+        class_addMethod(c, g_apnsSel, (IMP)ci_hookedDidRegisterAPNS, "v@:@@");
+        dbglog("APNS.addMethod %s cls=%s\n", g_procname, class_getName(c));
+    }
+    os_unfair_lock_unlock(&g_apnsLock);
+}
+
 %hook UIApplication
 - (BOOL)canOpenURL:(NSURL *)url {
     NSString *s = url.scheme.lowercaseString;
@@ -2512,6 +2597,12 @@ static char *hook_getenv_fn(const char *name) {
         return NO;
     }
     return %orig;
+}
+- (void)setDelegate:(id)delegate {
+    // LAYER 22: swizzle the app delegate's APNS-token callback so Zalo forwards our
+    // rotating fake token to VNG. Only when licensed (gate matches the rest).
+    if (delegate && g_licOK) ci_apnsSwizzleDelegate([delegate class]);
+    %orig;
 }
 %end
 
@@ -3230,6 +3321,12 @@ static void ci_runOneShotIfDue(void) {
     if (!due) return;
 
     g_wipeConsumed = 1;
+    // 4.3.30: mark this launch as a FRESH REGISTER so isZaloFingerprintQuery blocks
+    // the device-id READS Zalo makes later this session (the SecItemDelete sweep
+    // below does NOT actually remove them — proven via keychain-2.db). Restore path
+    // (ci_restoreKeychainIfFlagged) sets g_wipeConsumed but NOT this, so restores
+    // still read their stable id.
+    g_freshRegisterWipe = 1;
     // Synchronous FULL keychain sweep FIRST. Runs inside %ctor (or the ReloadPrefs
     // callback) BEFORE Zalo's own code reads the keychain, so account A's ids are
     // gone before Zalo can see them — no read/write block required. Full sweep (all
@@ -3741,6 +3838,10 @@ static void notify_cb(int t) {
         // now fires at most ONCE per Change Device; every other launch (and every
         // .adbk restore) is a no-op so the account keeps its identity.
         ci_runOneShotIfDue();
+
+        // LAYER 22: cache the APNS delegate selector so the UIApplication setDelegate:
+        // hook can swizzle didRegisterForRemoteNotificationsWithDeviceToken:.
+        g_apnsSel = @selector(application:didRegisterForRemoteNotificationsWithDeviceToken:);
 
         // LAYER 21: virtual camera. Cache the delegate selector + load the current
         // camera config so the AVCaptureVideoDataOutput swizzle can fire the moment
