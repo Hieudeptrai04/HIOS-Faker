@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.32";
+static NSString *const kAppVersion = @"4.3.33";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -2793,6 +2793,40 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
                 return livePath;
         }
     }
+    // Authoritative fallback (4.3.33): applicationProxyForIdentifier can
+    // momentarily return nil (LaunchServices not warmed) yet the app IS
+    // installed. Enumerate every installed app and EXACT-match the bundle
+    // identifier — this still yields the LIVE binding even when a stale UUID also
+    // exists on disk, so we never fall through to the ambiguous filesystem scan
+    // for an app LaunchServices can account for.
+    {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+        SEL dwSel = @selector(defaultWorkspace);
+        if (wsClass && [wsClass respondsToSelector:dwSel]) {
+            id ws = [wsClass performSelector:dwSel];
+            SEL allSel = @selector(allInstalledApplications);
+            id apps = [ws respondsToSelector:allSel] ? [ws performSelector:allSel] : nil;
+            if ([apps isKindOfClass:[NSArray class]]) {
+                for (id app in (NSArray *)apps) {
+                    id bid = [app respondsToSelector:@selector(bundleIdentifier)]
+                        ? [app performSelector:@selector(bundleIdentifier)] : nil;
+                    if (![bid isKindOfClass:[NSString class]] ||
+                        ![(NSString *)bid isEqualToString:bundleID]) continue;
+                    id url = [app respondsToSelector:@selector(dataContainerURL)]
+                        ? [app performSelector:@selector(dataContainerURL)] : nil;
+                    NSString *p = [url respondsToSelector:@selector(path)] ? [url path] : nil;
+                    if (p.length) {
+                        NSString *safe2 = [p stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                        if (ci_run([[NSString stringWithFormat:@"test -d '%@'", safe2] UTF8String]) == 0)
+                            return p;
+                    }
+                }
+            }
+        }
+#pragma clang diagnostic pop
+    }
     // First try NSFileManager (works for some host-app sandbox profiles).
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *root = @"/var/mobile/Containers/Data/Application";
@@ -3003,39 +3037,74 @@ static BOOL ci_rrsConfigHasPortableIdentity(id object) {
 // this exact behaviour. Stage the file through our shell child before parsing
 // it so a valid Viber dump is not rejected merely because NSData cannot open a
 // foreign container directly.
-static NSData *ci_readForeignFileViaShell(NSString *path) {
-    if (![path isKindOfClass:[NSString class]] || path.length == 0) return nil;
-    NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_rrs_read_%@.bin",
-                     [[NSUUID UUID] UUIDString]];
-    NSString *safeIn = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
-    NSString *safeTmp = [tmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
-    int rc = ci_run([[NSString stringWithFormat:
-        @"cp -f '%@' '%@' && chmod 0644 '%@'", safeIn, safeTmp, safeTmp] UTF8String]);
-    NSData *data = rc == 0 ? [NSData dataWithContentsOfFile:tmp] : nil;
-    [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
-    if (rc != 0 || data.length == 0) {
-        NSLog(@"[ChangeInfoIos] RRS foreign read FAILED rc=%d path=%@", rc, path);
+// Persistent RRS-keychain diagnostic (4.3.33 item 10). Records ONLY container
+// paths, sizes/mtimes, item counts, account names, semantic reasons, OSStatus
+// codes and shell return codes — NEVER secret material (v_Data / token bytes).
+static void ci_rrsKcDiag(NSString *line) {
+    if (line.length == 0) return;
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *dir = @"/var/jb/etc/changeinfoios";
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+            withIntermediateDirectories:YES attributes:nil error:nil];
+        path = [dir stringByAppendingPathComponent:@"rrs_keychain_diag.log"];
+    });
+    NSString *stamped = [NSString stringWithFormat:@"[%ld] %@\n",
+                         (long)[[NSDate date] timeIntervalSince1970], line];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) {
+        [stamped writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        return;
     }
-    return data;
+    @try {
+        [fh seekToEndOfFile];
+        [fh writeData:[stamped dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (__unused NSException *ex) {
+    } @finally {
+        [fh closeFile];
+    }
 }
 
-static BOOL ci_viberAppGroupHasSession(NSString *groupPath) {
-    if (groupPath.length == 0) return NO;
-    NSString *session = [groupPath stringByAppendingPathComponent:@"SecureStorage.data"];
-    NSString *safe = [session stringByReplacingOccurrencesOfString:@"'" withString:@""];
-    return ci_run([[NSString stringWithFormat:@"test -f '%@' && test -s '%@'", safe, safe]
-                   UTF8String]) == 0;
+// Unwrap a keychain item value that may be raw NSData, {"__b": base64}, NSString
+// or NSNumber. Returns nil only for the base64-dictionary shape when it is
+// malformed (callers treat a non-data value separately).
+static NSData *ci_kcUnwrapData(id value) {
+    if ([value isKindOfClass:[NSData class]]) return (NSData *)value;
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        id b64 = ((NSDictionary *)value)[@"__b"];
+        if ([b64 isKindOfClass:[NSString class]])
+            return [[NSData alloc] initWithBase64EncodedString:b64 options:0];
+    }
+    return nil;
 }
 
-static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID) {
-    NSData *data = ci_readForeignFileViaShell(path);
-    id parsed = data.length ? [NSPropertyListSerialization propertyListWithData:data
-        options:0 format:NULL error:NULL] : nil;
-    if (![parsed isKindOfClass:[NSArray class]] || [(NSArray *)parsed count] == 0) return NO;
-    BOOL hasNonemptySecret = NO;
+// LAYER — RRS keychain validator (4.3.33 item 1), CORE / NSData layer.
+//
+// Operates on an NSData plist ALREADY in HIOS's own address space (no foreign
+// read here). Returns YES only when the dump carries a portable login secret for
+// `bundleID`. On failure *reason is one of: read_failed / copy_failed (set by the
+// file wrapper below), plist_parse_failed, invalid_item, empty_secret,
+// missing_viberUID, missing_viberDeviceKey (plus missing_session_uid /
+// missing_crypt_key for zingalo). *metadata carries ONLY non-secret facts: item
+// count, account names, serialized length — never v_Data.
+static BOOL ci_validateRRSKeychainData(NSData *data, NSString *bundleID,
+                                       NSString **reason, NSDictionary **metadata) {
+    if (reason) *reason = nil;
+    if (metadata) *metadata = nil;
+    if (data.length == 0) { if (reason) *reason = @"read_failed"; return NO; }
+    id parsed = [NSPropertyListSerialization propertyListWithData:data
+                    options:0 format:NULL error:NULL];
+    if (![parsed isKindOfClass:[NSArray class]] || [(NSArray *)parsed count] == 0) {
+        if (reason) *reason = @"plist_parse_failed";
+        return NO;
+    }
     NSMutableDictionary<NSString *, NSData *> *secretsByAccount = [NSMutableDictionary dictionary];
+    NSMutableArray<NSString *> *accountNames = [NSMutableArray array];
+    BOOL hasNonemptySecret = NO;
+    NSUInteger itemCount = 0;
     for (id raw in (NSArray *)parsed) {
-        if (![raw isKindOfClass:[NSDictionary class]]) return NO;
+        if (![raw isKindOfClass:[NSDictionary class]]) { if (reason) *reason = @"invalid_item"; return NO; }
         NSDictionary *item = (NSDictionary *)raw;
         id cls = item[@"class"];
         BOOL knownClass = [cls isEqual:(__bridge id)kSecClassGenericPassword] ||
@@ -3043,36 +3112,31 @@ static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID)
                           [cls isEqual:(__bridge id)kSecClassCertificate] ||
                           [cls isEqual:(__bridge id)kSecClassKey] ||
                           [cls isEqual:(__bridge id)kSecClassIdentity];
-        if (!knownClass) return NO;
-        // Mirror the tweak's pass-1 validator so an archive can never overwrite
-        // live containers and then be rejected only at first app launch.
+        if (!knownClass) { if (reason) *reason = @"invalid_item"; return NO; }
+        // Structural check: every value must survive the tweak's restore unwrap.
         for (id rawKey in item) {
-            if (![rawKey isKindOfClass:[NSString class]]) return NO;
+            if (![rawKey isKindOfClass:[NSString class]]) { if (reason) *reason = @"invalid_item"; return NO; }
             NSString *key = (NSString *)rawKey;
             if ([key isEqualToString:@"cdat"] || [key isEqualToString:@"mdat"]) continue;
             id value = item[key];
             if ([value isKindOfClass:[NSDictionary class]]) {
                 id b64 = ((NSDictionary *)value)[@"__b"];
                 if (![b64 isKindOfClass:[NSString class]] ||
-                    ![[NSData alloc] initWithBase64EncodedString:b64 options:0]) return NO;
+                    ![[NSData alloc] initWithBase64EncodedString:b64 options:0]) {
+                    if (reason) *reason = @"invalid_item"; return NO;
+                }
             } else if (!([value isKindOfClass:[NSString class]] ||
                          [value isKindOfClass:[NSNumber class]] ||
                          [value isKindOfClass:[NSData class]])) {
-                return NO;
+                if (reason) *reason = @"invalid_item"; return NO;
             }
         }
+        itemCount++;
         BOOL password = [cls isEqual:(__bridge id)kSecClassGenericPassword] ||
                         [cls isEqual:(__bridge id)kSecClassInternetPassword];
         if (!password) continue;
-        id wrapped = item[@"v_Data"];
-        NSData *secret = nil;
-        if ([wrapped isKindOfClass:[NSData class]]) secret = wrapped;
-        else if ([wrapped isKindOfClass:[NSDictionary class]]) {
-            id b64 = ((NSDictionary *)wrapped)[@"__b"];
-            if ([b64 isKindOfClass:[NSString class]])
-                secret = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
-        }
-        if (!secret) return NO;
+        NSData *secret = ci_kcUnwrapData(item[@"v_Data"]);
+        if (!secret) { if (reason) *reason = @"invalid_item"; return NO; }
         if (secret.length) {
             hasNonemptySecret = YES;
             id account = item[@"acct"];
@@ -3080,31 +3144,36 @@ static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID)
             if ([account isKindOfClass:[NSString class]]) {
                 accountName = (NSString *)account;
             } else if ([account isKindOfClass:[NSData class]]) {
-                accountName = [[NSString alloc] initWithData:(NSData *)account
-                                                    encoding:NSUTF8StringEncoding];
+                accountName = [[NSString alloc] initWithData:(NSData *)account encoding:NSUTF8StringEncoding];
             } else if ([account isKindOfClass:[NSDictionary class]]) {
-                id b64 = ((NSDictionary *)account)[@"__b"];
-                NSData *rawAccount = [b64 isKindOfClass:[NSString class]]
-                    ? [[NSData alloc] initWithBase64EncodedString:b64 options:0] : nil;
+                NSData *rawAccount = ci_kcUnwrapData(account);
                 accountName = rawAccount.length
                     ? [[NSString alloc] initWithData:rawAccount encoding:NSUTF8StringEncoding] : nil;
             }
-            if (accountName.length) secretsByAccount[accountName] = secret;
+            if (accountName.length) {
+                secretsByAccount[accountName] = secret;
+                if (![accountNames containsObject:accountName]) [accountNames addObject:accountName];
+            }
         }
     }
-    if (!hasNonemptySecret) return NO;
+    if (metadata) *metadata = @{ @"itemCount": @(itemCount),
+                                 @"accounts":  accountNames,
+                                 @"length":    @(data.length) };
+
+    if (!hasNonemptySecret) { if (reason) *reason = @"empty_secret"; return NO; }
 
     // A logged-out Viber install may still expose analytics/install passwords.
-    // SecureStorage.data is portable only when both the device key and active
+    // SecureStorage.data is portable ONLY when both the device key and the active
     // Viber user id are present in the shared access group.
     if ([bundleID isEqualToString:@"com.viber"]) {
-        return secretsByAccount[@"viberDeviceKey"].length > 0 &&
-               secretsByAccount[@"viberUID"].length > 0;
+        if (secretsByAccount[@"viberUID"].length == 0)       { if (reason) *reason = @"missing_viberUID";       return NO; }
+        if (secretsByAccount[@"viberDeviceKey"].length == 0) { if (reason) *reason = @"missing_viberDeviceKey"; return NO; }
+        if (reason) *reason = @"ok";
+        return YES;
     }
 
-    // A logged-out Zalo install still has several device/install identifiers in
-    // Keychain. Do not mistake those for a portable login: require the active
-    // numeric session UID and the database decryption key for that exact UID.
+    // Zalo: several device/install identifiers survive logout. Require the active
+    // numeric session UID and the DB decryption key for that exact UID.
     if ([bundleID containsString:@"zingalo"]) {
         NSData *uidData = secretsByAccount[@"kSessionUid"];
         NSString *uid = uidData.length
@@ -3115,11 +3184,59 @@ static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID)
             unichar c = [uid characterAtIndex:i];
             if (c < '0' || c > '9') numericUID = NO;
         }
-        if (!numericUID) return NO;
+        if (!numericUID) { if (reason) *reason = @"missing_session_uid"; return NO; }
         NSData *crypt = secretsByAccount[[@"kCryptKeyData" stringByAppendingString:uid]];
-        return crypt.length > 0;
+        if (crypt.length == 0) { if (reason) *reason = @"missing_crypt_key"; return NO; }
+        if (reason) *reason = @"ok";
+        return YES;
     }
+
+    if (reason) *reason = @"ok";
     return YES;
+}
+
+// RRS keychain validator (item 1), FILE / wrapper layer. Stages a possibly-foreign
+// dump into HIOS's OWN NSTemporaryDirectory (never literal /tmp, never parsing
+// across the sandbox boundary), then validates the bytes in RAM. Distinguishes
+// copy_failed (shell cp) from read_failed (empty after copy).
+static BOOL ci_validateRRSKeychainFile(NSString *foreignPath, NSString *bundleID,
+                                       NSString **reason, NSDictionary **metadata) {
+    if (reason) *reason = nil;
+    if (metadata) *metadata = nil;
+    if (![foreignPath isKindOfClass:[NSString class]] || foreignPath.length == 0) {
+        if (reason) *reason = @"read_failed";
+        return NO;
+    }
+    NSString *scratch = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ci_rrs_val_%@.plist", [[NSUUID UUID] UUIDString]]];
+    NSString *safeIn  = [foreignPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *safeOut = [scratch stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    int rc = ci_run([[NSString stringWithFormat:
+        @"cp -f '%@' '%@' && chmod 0644 '%@'", safeIn, safeOut, safeOut] UTF8String]);
+    if (rc != 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:scratch error:nil];
+        if (reason) *reason = @"copy_failed";
+        return NO;
+    }
+    NSData *data = [NSData dataWithContentsOfFile:scratch];
+    [[NSFileManager defaultManager] removeItemAtPath:scratch error:nil];
+    return ci_validateRRSKeychainData(data, bundleID, reason, metadata);
+}
+
+static BOOL ci_viberAppGroupHasSession(NSString *groupPath) {
+    if (groupPath.length == 0) return NO;
+    NSString *session = [groupPath stringByAppendingPathComponent:@"SecureStorage.data"];
+    NSString *safe = [session stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    return ci_run([[NSString stringWithFormat:@"test -f '%@' && test -s '%@'", safe, safe]
+                   UTF8String]) == 0;
+}
+
+// Back-compat shim used by the restore-preflight verifier (reads an already
+// EXTRACTED archive dump — a local HIOS-owned path). New backup code calls
+// ci_validateRRSKeychainFile / ci_validateRRSKeychainData directly so it can act
+// on the specific failure reason + metadata.
+static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID) {
+    return ci_validateRRSKeychainFile(path, bundleID, NULL, NULL);
 }
 
 // Resolve the real process name for a reliable cold start. pkill -f <bundleID>
@@ -3174,19 +3291,28 @@ static id ci_hostKcWrap(id v) {
 // keychain group WITHOUT that app running — this replaces the fragile in-app dump
 // that depended on Viber launching + the tweak firing. Serializes each item (attrs
 // keyed by short SecItem names + v_Data) to <container>/tmp/hios_keychain.plist in
-// the SAME format the tweak's restore path re-applies. Returns item count.
-static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container) {
+// the SAME format the tweak's restore path re-applies. 4.3.33: returns a result
+// dictionary (@"data"/@"itemCount"/@"statuses"/@"published"/@"genpOK"/@"reason")
+// after validating the serialized bytes IN RAM, and publishes atomically.
+static NSDictionary *ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container) {
     NSArray<NSString *> *groups = ci_keychainGroupsForBundle(bundleID);
-    if (groups.count == 0 || container.length == 0) return 0;
+    NSMutableArray<NSString *> *statuses = [NSMutableArray array];
+    if (groups.count == 0 || container.length == 0)
+        return @{ @"itemCount": @0, @"statuses": statuses,
+                  @"published": @NO, @"genpOK": @NO, @"reason": @"no_group_or_container" };
+
     NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
                           (__bridge id)kSecClassInternetPassword,
                           (__bridge id)kSecClassCertificate,
                           (__bridge id)kSecClassKey,
                           (__bridge id)kSecClassIdentity ];
     NSMutableArray *out = [NSMutableArray array];
-    BOOL incomplete = NO;
+    BOOL genpQueryFailed = NO;    // FATAL: the mandatory genp query itself errored
+    BOOL genpMetadataOnly = NO;   // FATAL: a genp password item had no v_Data
+
     for (NSString *grp in groups) {
         for (id cls in classes) {
+            BOOL isGenp = [cls isEqual:(__bridge id)kSecClassGenericPassword];
             // Enumerate attributes + a persistent ref per item (incl. sync items),
             // scoped to this access group so we only grab the target app's items.
             NSDictionary *enumQ = @{ (__bridge id)kSecClass:              cls,
@@ -3197,23 +3323,23 @@ static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container)
                                      (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny };
             CFTypeRef res = NULL;
             OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)enumQ, &res);
+            [statuses addObject:[NSString stringWithFormat:@"%@/%@=%d",
+                                 grp, isGenp ? @"genp" : @"other", (int)st]];
             NSArray *arr = @[];
             if (st == errSecSuccess && res) {
                 if (CFGetTypeID(res) == CFArrayGetTypeID()) {
                     arr = (__bridge NSArray *)res;
                 } else if (CFGetTypeID(res) == CFDictionaryGetTypeID()) {
                     arr = @[ (__bridge id)res ];
-                } else {
-                    incomplete = YES;
                 }
             } else if (st != errSecItemNotFound) {
-                incomplete = YES;
+                // (Item 6) Best-effort for the non-mandatory classes. Only a
+                // failed genp query is fatal — errors on inet/cert/key/identity
+                // must NOT reject the valid genp items.
+                if (isGenp) genpQueryFailed = YES;
             }
             for (id itd in arr) {
-                if (![itd isKindOfClass:[NSDictionary class]]) {
-                    incomplete = YES;
-                    continue;
-                }
+                if (![itd isKindOfClass:[NSDictionary class]]) continue;
                 NSDictionary *it = (NSDictionary *)itd;
                 NSMutableDictionary *ser = [NSMutableDictionary dictionary];
                 ser[@"class"] = cls;
@@ -3237,65 +3363,116 @@ static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container)
                 BOOL passwordItem = [cls isEqual:(__bridge id)kSecClassGenericPassword] ||
                                     [cls isEqual:(__bridge id)kSecClassInternetPassword];
                 if (passwordItem && !ser[@"v_Data"]) {
-                    incomplete = YES;
-                    NSLog(@"[ChangeInfoIos] host kc dump INVALID metadata-only password item grp=%@", grp);
+                    // A metadata-only password is fatal ONLY for the mandatory
+                    // genp class; never archive it either way.
+                    if (isGenp) genpMetadataOnly = YES;
+                    NSLog(@"[ChangeInfoIos] host kc dump metadata-only password grp=%@ genp=%d", grp, (int)isGenp);
                     continue;
                 }
                 [out addObject:ser];
             }
             if (res) CFRelease(res);
-            NSLog(@"[ChangeInfoIos] host kc dump grp=%@ cls st=%d running-total=%lu", grp, (int)st, (unsigned long)out.count);
         }
     }
-    if (incomplete || out.count == 0) {
-        NSLog(@"[ChangeInfoIos] host kc dump INVALID %@ incomplete=%d items=%lu; prior snapshot remains stale",
-              bundleID, (int)incomplete, (unsigned long)out.count);
-        return 0;
+
+    // Serialize + semantic-validate the bytes IN RAM before any publish (item 5).
+    NSData *plist = nil;
+    if (out.count) {
+        NSError *serr = nil;
+        plist = [NSPropertyListSerialization dataWithPropertyList:out
+                    format:NSPropertyListXMLFormat_v1_0 options:0 error:&serr];
+        if (plist.length == 0)
+            NSLog(@"[ChangeInfoIos] host kc dump serialize FAILED %@: %@", bundleID, serr);
     }
-    NSString *tmpDir = [container stringByAppendingPathComponent:@"tmp"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSString *path = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
-    NSError *serr = nil;
-    NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
-                        format:NSPropertyListXMLFormat_v1_0 options:0 error:&serr];
-    if (plist.length == 0) {
-        NSLog(@"[ChangeInfoIos] host kc dump serialize FAILED %@: %@", bundleID, serr);
-        return 0;
+    NSString *vreason = nil; NSDictionary *vmeta = nil;
+    BOOL semanticOK = plist.length && ci_validateRRSKeychainData(plist, bundleID, &vreason, &vmeta);
+
+    if (genpQueryFailed || genpMetadataOnly || !semanticOK) {
+        NSString *why = genpQueryFailed  ? @"genp_query_failed"
+                      : genpMetadataOnly ? @"genp_metadata_only"
+                      : (vreason ?: (out.count ? @"serialize_failed" : @"no_items"));
+        NSLog(@"[ChangeInfoIos] host kc dump INVALID %@ reason=%@ items=%lu",
+              bundleID, why, (unsigned long)out.count);
+        return @{ @"itemCount": @(out.count),
+                  @"statuses":  statuses,
+                  @"published": @NO,
+                  @"genpOK":    @(!genpQueryFailed && !genpMetadataOnly),
+                  @"reason":    why };
     }
-    if (plist.length) {
-        // Write via shell (posix_spawn) — NSFileManager into another app's tmp/ can
-        // hit the sandbox MAC even with no-sandbox; the shell child bypasses it.
-        NSString *tmpLocal = [NSString stringWithFormat:@"/tmp/ci_hostkc_%@_%@.plist",
-                              [bundleID stringByReplacingOccurrencesOfString:@"." withString:@"_"],
-                              [[NSUUID UUID] UUIDString]];
-        if (![plist writeToFile:tmpLocal atomically:YES]) return 0;
-        NSString *safeIn  = [tmpLocal stringByReplacingOccurrencesOfString:@"'" withString:@""];
-        NSString *safeOut = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
-        int copyRC = ci_run([[NSString stringWithFormat:
-            @"cp -f '%@' '%@' && chmod 0644 '%@'",
-            safeIn, safeOut, safeOut] UTF8String]);
-        [[NSFileManager defaultManager] removeItemAtPath:tmpLocal error:nil];
-        if (copyRC != 0) {
-            NSLog(@"[ChangeInfoIos] host kc dump publish FAILED %@ rc=%d", bundleID, copyRC);
-            return 0;
-        }
+
+    // Publish ATOMICALLY (item 5): serialize to a per-op scratch in HIOS temp, cp
+    // into the container's tmp as <name>.new.<uuid>, then mv over the final name.
+    // A partial reader can never see a half-written hios_keychain.plist.
+    NSString *tmpDir    = [container stringByAppendingPathComponent:@"tmp"];
+    NSString *finalPath = [tmpDir stringByAppendingPathComponent:@"hios_keychain.plist"];
+    NSString *scratch   = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ci_hostkc_%@_%@.plist",
+         [bundleID stringByReplacingOccurrencesOfString:@"." withString:@"_"],
+         [[NSUUID UUID] UUIDString]]];
+    BOOL published = NO;
+    NSString *pubReason = @"ok";
+    if (![plist writeToFile:scratch atomically:YES]) {
+        pubReason = @"scratch_write_failed";
+    } else {
+        NSString *newPath = [tmpDir stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"hios_keychain.plist.new.%@", [[NSUUID UUID] UUIDString]]];
+        NSString *safeScratch = [scratch stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        NSString *safeTmpDir  = [tmpDir stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        NSString *safeNew     = [newPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        NSString *safeFinal   = [finalPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        int pubRC = ci_run([[NSString stringWithFormat:
+            @"mkdir -p '%@' && cp -f '%@' '%@' && chmod 0644 '%@' && mv -f '%@' '%@'",
+            safeTmpDir, safeScratch, safeNew, safeNew, safeNew, safeFinal] UTF8String]);
+        published = (pubRC == 0);
+        if (!published) pubReason = [NSString stringWithFormat:@"publish_rc_%d", pubRC];
     }
-    NSLog(@"[ChangeInfoIos] host kc dump %@ → %lu items @ %@", bundleID, (unsigned long)out.count, path);
-    return (int)out.count;
+    [[NSFileManager defaultManager] removeItemAtPath:scratch error:nil];
+
+    NSLog(@"[ChangeInfoIos] host kc dump %@ → %lu items published=%d (%@)",
+          bundleID, (unsigned long)out.count, (int)published, published ? finalPath : pubReason);
+    return @{ @"data":      plist ?: [NSData data],
+              @"itemCount": @(out.count),
+              @"statuses":  statuses,
+              @"published": @(published),
+              @"genpOK":    @YES,
+              @"reason":    published ? @"ok" : pubReason };
 }
 
-// Check a fallback in-app dump through the shell as well. A marker file gives
-// us a strict freshness boundary without asking NSFileManager to stat a foreign
-// container (which is unreliable on the same devices where direct NSData reads
-// are MAC-blocked).
-static BOOL ci_foreignDumpIsFreshAndLarge(NSString *path, NSString *markerPath) {
-    if (path.length == 0 || markerPath.length == 0) return NO;
-    NSString *safePath = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
-    NSString *safeMarker = [markerPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+// Age of a foreign dump in seconds via the shell child (NSFileManager stat is
+// MAC-blocked on the same devices where direct NSData reads fail). Return codes:
+//   >= 0  age in seconds
+//   -1    file missing or smaller than 200 bytes (reject)
+//   -2    file exists but mtime could not be read (do NOT reject on age — the
+//         freshness ceiling is a best-effort guard, never the truth condition).
+//
+// (Item 4) There is deliberately NO comparison against a Backup-press marker:
+// Viber auto-dumps a few seconds after it opens, so a valid dump routinely
+// predates the Backup press and must still be accepted.
+static long ci_foreignDumpAgeSeconds(NSString *path) {
+    if (path.length == 0) return -1;
+    NSString *safe = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *out = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"ci_kcage_%@.txt", [[NSUUID UUID] UUIDString]]];
+    NSString *safeOut = [out stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    // stat differs across BSD/BusyBox/coreutils; try -f %m then -c %Y.
     NSString *cmd = [NSString stringWithFormat:
-        @"test -f '%@' && test '%@' -nt '%@' && [ \"$(wc -c < '%@' 2>/dev/null)\" -gt 200 ]",
-        safePath, safePath, safeMarker, safePath];
-    return ci_run([cmd UTF8String]) == 0;
+        @"if [ -f '%@' ] && [ \"$(wc -c < '%@' 2>/dev/null)\" -gt 200 ]; then "
+        @"m=$(stat -f %%m '%@' 2>/dev/null || stat -c %%Y '%@' 2>/dev/null); "
+        @"if [ -n \"$m\" ]; then echo $(( $(date +%%s) - m )) > '%@'; else echo -2 > '%@'; fi; "
+        @"else echo -1 > '%@'; fi",
+        safe, safe, safe, safe, safeOut, safeOut, safeOut];
+    ci_run([cmd UTF8String]);
+    NSString *txt = [NSString stringWithContentsOfFile:out encoding:NSUTF8StringEncoding error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:out error:nil];
+    if (!txt.length) return -2;   // couldn't read our own scratch → don't reject on age
+    return (long)[[txt stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]] integerValue];
+}
+
+// A dump is fresh enough when its age is within the ceiling, or when the age is
+// simply unknown (age == -2). A missing/too-small file (age == -1) is not fresh.
+static BOOL ci_dumpAgeWithinCeiling(long age, long ceilingSeconds) {
+    return age == -2 || (age >= 0 && age <= ceilingSeconds);
 }
 
 // Capture and validate only bundles whose login actually depends on keychain.
@@ -3313,51 +3490,108 @@ static NSArray<NSString *> *ci_missingRequiredRRSKeychainDumps(
     }
     if (required.count == 0) return @[];
 
-    NSString *marker = [NSString stringWithFormat:@"/tmp/ci_rrs_dump_%@.marker",
-                        [[NSUUID UUID] UUIDString]];
-    BOOL markerOK = [@"1" writeToFile:marker atomically:YES
-                              encoding:NSUTF8StringEncoding error:nil];
-    NSMutableSet<NSString *> *fresh = [NSMutableSet set];
-    BOOL needsInAppFallback = NO;
-    for (NSString *bid in required) {
-        NSString *container = ci_findDataContainerForBundle(bid);
-        int count = container.length ? ci_hostDumpKeychainForBundle(bid, container) : 0;
-        NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-        BOOL valid = count > 0 && ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid);
-        NSLog(@"[ChangeInfoIos] RRS host-dumped %d keychain items for %@ valid=%d",
-              count, bid, (int)valid);
-        if (valid) [fresh addObject:bid];
-        else needsInAppFallback = YES;
-    }
-    if (needsInAppFallback) notify_post("com.changeinfoios/dump_keychain");
+    const long kFreshnessCeiling = 15 * 60;   // seconds — upper bound only (item 4)
 
-    NSMutableArray<NSString *> *waiting = [NSMutableArray array];
-    for (int retry = 0; retry < 16; retry++) {
-        [waiting removeAllObjects];
-        for (NSString *bid in required) {
-            if ([fresh containsObject:bid]) continue; // host publish already proved fresh
-            NSString *container = ci_findDataContainerForBundle(bid);
-            NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-            if (markerOK && ci_foreignDumpIsFreshAndLarge(dumpPath, marker) &&
-                ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
-                [fresh addObject:bid];
-            else
-                [waiting addObject:bid];
+    // (Item 2) Resolve the live Data container EXACTLY ONCE per bundle and freeze
+    // the map. Every later step — existing check, host capture, notify/poll,
+    // final decision — reads from THIS map. ci_findDataContainerForBundle is
+    // never called again below, so a flaky second resolve can't pick the stale
+    // Viber UUID mid-backup.
+    NSMutableDictionary<NSString *, NSString *> *containers = [NSMutableDictionary dictionary];
+    for (NSString *bid in required) {
+        NSString *c = ci_findDataContainerForBundle(bid);
+        if (c.length) containers[bid] = c;
+        ci_rrsKcDiag([NSString stringWithFormat:@"resolve bid=%@ container=%@", bid, c ?: @"(nil)"]);
+    }
+
+    NSString *(^dumpPathFor)(NSString *) = ^NSString *(NSString *bid) {
+        NSString *c = containers[bid];
+        return c.length ? [c stringByAppendingPathComponent:@"tmp/hios_keychain.plist"] : nil;
+    };
+
+    NSMutableSet<NSString *> *valid = [NSMutableSet set];
+
+    // (Item 4) Accept an EXISTING valid dump created during a recent Viber open,
+    // even if it predates the Backup press. Only a truly stale (>15 min) file is
+    // rejected here. Semantic validity (viberUID + viberDeviceKey) is the gate.
+    for (NSString *bid in required) {
+        NSString *dumpPath = dumpPathFor(bid);
+        if (!dumpPath.length) continue;
+        long age = ci_foreignDumpAgeSeconds(dumpPath);
+        NSString *reason = nil; NSDictionary *meta = nil;
+        BOOL semanticOK = ci_validateRRSKeychainFile(dumpPath, bid, &reason, &meta);
+        BOOL fresh = ci_dumpAgeWithinCeiling(age, kFreshnessCeiling);
+        ci_rrsKcDiag([NSString stringWithFormat:
+            @"existing bid=%@ age=%lds items=%@ accounts=%@ semantic=%d reason=%@ fresh=%d",
+            bid, age, meta[@"itemCount"] ?: @"-", meta[@"accounts"] ?: @"-",
+            (int)semanticOK, reason ?: @"-", (int)fresh]);
+        if (semanticOK && fresh) [valid addObject:bid];
+    }
+
+    // (Item 5/6) Host capture for bundles that still lack a candidate. The bytes
+    // are validated IN RAM inside ci_hostDumpKeychainForBundle before publish; a
+    // successful publish is authoritative — we do NOT read the foreign container
+    // back to decide success.
+    for (NSString *bid in required) {
+        if ([valid containsObject:bid]) continue;
+        NSString *container = containers[bid];
+        if (!container.length) {
+            ci_rrsKcDiag([NSString stringWithFormat:@"host bid=%@ SKIP no-container", bid]);
+            continue;
         }
-        if (waiting.count == 0) break;
-        if (retry < 15) [NSThread sleepForTimeInterval:0.5];
+        NSDictionary *r = ci_hostDumpKeychainForBundle(bid, container);
+        BOOL published = [r[@"published"] boolValue];
+        ci_rrsKcDiag([NSString stringWithFormat:
+            @"host bid=%@ items=%@ genpOK=%@ published=%d reason=%@ statuses=%@",
+            bid, r[@"itemCount"], r[@"genpOK"], (int)published, r[@"reason"], r[@"statuses"]]);
+        if (published) [valid addObject:bid];   // bytes already semantic-validated in RAM
     }
-    [[NSFileManager defaultManager] removeItemAtPath:marker error:nil];
 
-    NSMutableArray<NSString *> *missing = [NSMutableArray array];
-    for (NSString *bid in required) {
-        NSString *container = ci_findDataContainerForBundle(bid);
-        NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-        if (![fresh containsObject:bid] || !ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
-            [missing addObject:bid];
+    // (Item 7) Only notify + poll bundles that STILL have no valid candidate.
+    // notify_post is best-effort (Viber may be suspended); we simply wait for a
+    // valid dump to appear on disk. A partial/malformed file keeps us waiting —
+    // it never crashes and never counts as valid.
+    NSMutableArray<NSString *> *pending = [NSMutableArray array];
+    for (NSString *bid in required)
+        if (![valid containsObject:bid] && containers[bid].length) [pending addObject:bid];
+
+    if (pending.count) {
+        notify_post("com.changeinfoios/dump_keychain");
+        ci_rrsKcDiag([NSString stringWithFormat:@"notify sent for %@", pending]);
+        for (int retry = 0; retry < 16 && pending.count; retry++) {
+            NSMutableArray<NSString *> *stillPending = [NSMutableArray array];
+            for (NSString *bid in pending) {
+                NSString *dumpPath = dumpPathFor(bid);
+                long age = ci_foreignDumpAgeSeconds(dumpPath);
+                NSString *reason = nil; NSDictionary *meta = nil;
+                BOOL semanticOK = dumpPath.length &&
+                    ci_validateRRSKeychainFile(dumpPath, bid, &reason, &meta);
+                BOOL fresh = ci_dumpAgeWithinCeiling(age, kFreshnessCeiling);
+                if (semanticOK && fresh) {
+                    [valid addObject:bid];
+                    ci_rrsKcDiag([NSString stringWithFormat:
+                        @"poll bid=%@ retry=%d OK age=%lds items=%@",
+                        bid, retry, age, meta[@"itemCount"] ?: @"-"]);
+                } else {
+                    [stillPending addObject:bid];
+                }
+            }
+            pending = stillPending;
+            if (pending.count && retry < 15) [NSThread sleepForTimeInterval:0.5];
+        }
     }
-    NSLog(@"[ChangeInfoIos] RRS keychain required=%@ fresh=%@ missing=%@",
-          required, fresh.allObjects, missing);
+
+    // (Item 8) The `valid` set is authoritative. Do NOT re-resolve the container
+    // or re-parse the dump here: the existing/published file already sitting at
+    // <container>/tmp/hios_keychain.plist is exactly what the tar captures.
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    for (NSString *bid in required)
+        if (![valid containsObject:bid]) [missing addObject:bid];
+
+    ci_rrsKcDiag([NSString stringWithFormat:@"FINAL required=%@ valid=%@ missing=%@",
+        required, valid.allObjects, missing]);
+    NSLog(@"[ChangeInfoIos] RRS keychain required=%@ valid=%@ missing=%@",
+          required, valid.allObjects, missing);
     return missing;
 }
 
@@ -4618,6 +4852,9 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
     // needed to carry a login across devices.
     [cmd appendString:@" --exclude='*/changeinfoios/dump_*.plist'"];
     [cmd appendString:@" --exclude='*/changeinfoios/restore_*.flag'"];
+    // Local-only diagnostic (4.3.33): never ship the RRS keychain diag log inside
+    // a portable archive.
+    [cmd appendString:@" --exclude='*/changeinfoios/rrs_keychain_diag.log'"];
     [cmd appendString:@" /var/jb/etc/changeinfoios"];
     for (NSString *p in containerPaths) [cmd appendFormat:@" '%@'", p];
     if (errLog.length) [cmd appendFormat:@" 2>%@", errLog];
