@@ -1621,13 +1621,21 @@ static id ci_kcUnwrap(id v) {
 }
 
 static void ci_dumpKeychain(void) {
-    if (!orig_SecItemCopyMatching) return;   // origs not installed yet
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
+    // Publish only after a complete in-memory serialization. Leaving an older
+    // mtime on failure is intentional: the host freshness check rejects it, while
+    // a concurrent complete host-side dump is never deleted by this writer.
+    if (!orig_SecItemCopyMatching) {
+        dbglog("Keychain.dump.INVALID %s copy-matching-unavailable\n", g_procname);
+        return;   // origs not installed yet
+    }
     NSArray *classes = @[ (__bridge id)kSecClassGenericPassword,
                           (__bridge id)kSecClassInternetPassword,
                           (__bridge id)kSecClassCertificate,
                           (__bridge id)kSecClassKey,
                           (__bridge id)kSecClassIdentity ];
     NSMutableArray *out = [NSMutableArray array];
+    BOOL incomplete = NO;
     for (id cls in classes) {
         // Step 1: ENUMERATE attributes only (NO bulk data), INCLUDING iCloud-
         // synchronizable items. The old single "attributes+data+MatchLimitAll"
@@ -1647,11 +1655,25 @@ static void ci_dumpKeychain(void) {
         // orig_ bypasses our own blocking hook so ALL items are captured.
         OSStatus st = orig_SecItemCopyMatching((__bridge CFDictionaryRef)enumQ, &res);
         NSArray *arr = @[];
-        if (st == errSecSuccess && res)
-            arr = (CFGetTypeID(res) == CFArrayGetTypeID()) ? (__bridge NSArray *)res : @[ (__bridge id)res ];
+        if (st == errSecSuccess && res) {
+            if (CFGetTypeID(res) == CFArrayGetTypeID()) {
+                arr = (__bridge NSArray *)res;
+            } else if (CFGetTypeID(res) == CFDictionaryGetTypeID()) {
+                arr = @[ (__bridge id)res ];
+            } else {
+                incomplete = YES;
+            }
+        } else if (st != errSecItemNotFound) {
+            // Locked keychain / entitlement / interaction failures must abort the
+            // whole dump. Publishing the other classes would create a partial RRS.
+            incomplete = YES;
+        }
         int got = 0;
         for (id itd in arr) {
-            if (![itd isKindOfClass:[NSDictionary class]]) continue;
+            if (![itd isKindOfClass:[NSDictionary class]]) {
+                incomplete = YES;
+                continue;
+            }
             NSDictionary *it = (NSDictionary *)itd;
             NSMutableDictionary *ser = [NSMutableDictionary dictionary];
             ser[@"class"] = cls;   // SecItemCopyMatching doesn't return the class
@@ -1679,13 +1701,25 @@ static void ci_dumpKeychain(void) {
                     ser[@"v_Data"] = ci_kcWrap((__bridge NSData *)dref);
                 if (dref) CFRelease(dref);
             }
+            BOOL passwordItem = [cls isEqual:(__bridge id)kSecClassGenericPassword] ||
+                                [cls isEqual:(__bridge id)kSecClassInternetPassword];
+            if (passwordItem && !ser[@"v_Data"]) {
+                incomplete = YES;
+                dbglog("Keychain.dump.INVALID %s class=%s missing-data\n", g_procname,
+                       [[cls description] UTF8String]);
+                continue;
+            }
             [out addObject:ser];
             got++;
         }
         if (res) CFRelease(res);
         dbglog("Keychain.dump.cls %s st=%d items=%d\n", g_procname, (int)st, got);
     }
-    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
+    if (incomplete || out.count == 0) {
+        dbglog("Keychain.dump.INVALID %s incomplete=%d items=%lu -> kept-stale\n",
+               g_procname, (int)incomplete, (unsigned long)out.count);
+        return;
+    }
     NSError *serr = nil;
     NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
                         format:NSPropertyListXMLFormat_v1_0 options:0 error:&serr];
@@ -1714,22 +1748,28 @@ static void ci_restoreKeychainIfFlagged(void) {
     NSString *lFlag = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain_restore.flag"];
     NSString *lDump = [NSTemporaryDirectory() stringByAppendingPathComponent:@"hios_keychain.plist"];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dump = nil;
-    if ([fm fileExistsAtPath:pFlag] && [fm fileExistsAtPath:pDump])       dump = pDump;   // primary
-    else if ([fm fileExistsAtPath:lFlag] && [fm fileExistsAtPath:lDump])  dump = lDump;   // legacy
-    if (!dump) return;   // nothing flagged for this app → no-op
-
-    // Run-once guard keyed by the dump's mtime, persisted in the app's own
-    // NSUserDefaults (survives the tmp purge). We usually CANNOT delete the
-    // /var/jb restore flag from a sandboxed app, so without this the restore
-    // would repeat every launch.
-    NSDate *mt = [[fm attributesOfItemAtPath:dump error:nil] fileModificationDate];
-    double mtime = mt ? [mt timeIntervalSince1970] : 0;
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    if (mtime > 0 && [ud doubleForKey:@"_ci_kc_done"] == mtime) {
-        [fm removeItemAtPath:lFlag error:nil];
-        return;   // already applied this dump
+    NSString *dump = nil, *flag = nil;
+    if ([fm fileExistsAtPath:pFlag] && [fm fileExistsAtPath:pDump]) {
+        dump = pDump; flag = pFlag;   // primary
+    } else if ([fm fileExistsAtPath:lFlag] && [fm fileExistsAtPath:lDump]) {
+        dump = lDump; flag = lFlag;   // legacy
     }
+    if (!dump) return;   // nothing flagged for this app → no-op
+    BOOL primaryTransaction = [flag isEqualToString:pFlag] && [dump isEqualToString:pDump];
+
+    // Use a host-minted transaction token plus dump identity for the run-once
+    // guard. NSUserDefaults is inside the restored Data container, so a plain
+    // boolean/mtime marker can travel from the SOURCE phone and falsely suppress
+    // the keychain replay on the DESTINATION phone.
+    NSDictionary *dumpAttrs = [fm attributesOfItemAtPath:dump error:nil];
+    NSDate *mt = [dumpAttrs fileModificationDate];
+    double mtime = mt ? [mt timeIntervalSince1970] : 0;
+    unsigned long long dumpSize = [dumpAttrs[NSFileSize] unsignedLongLongValue];
+    NSString *flagToken = ci_readTrim(flag);
+    NSString *txnKey = flagToken.length
+        ? [NSString stringWithFormat:@"%@|%.6f|%llu", flagToken, mtime, dumpSize]
+        : nil;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
 
     // Suppress the one-shot device-reset (ci_runOneShotIfDue, later in this same
     // %ctor) for this just-restored container. On a CROSS-DEVICE target that wipe was
@@ -1742,11 +1782,27 @@ static void ci_restoreKeychainIfFlagged(void) {
     // launch. A later real Change Device rewrites .ci_gen, so the ack stops matching
     // and the wipe correctly fires again then.
     g_wipeConsumed = 1;
-    @autoreleasepool {
-        NSString *gen  = ci_readTrim(ci_docPath(@".ci_gen"));
+    NSString *currentGen = getConfigStr([@"wipe_gen_" stringByAppendingString:bid]);
+    if (!currentGen.length) currentGen = getConfigStr(@"wipe_gen");
+    NSString *storedGen = ci_readTrim(ci_docPath(@".ci_gen"));
+    BOOL ackRequired = storedGen.length && currentGen.length &&
+                       [storedGen isEqualToString:currentGen];
+    BOOL ackOK = YES;
+    if (ackRequired) {
         NSString *ackP = ci_docPath(@".ci_gen_ack");
-        if (gen.length && ackP)
-            [gen writeToFile:ackP atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        BOOL wrote = ackP && [currentGen writeToFile:ackP atomically:YES
+                                            encoding:NSUTF8StringEncoding error:nil];
+        NSString *check = ci_readTrim(ackP);
+        ackOK = wrote && [check isEqualToString:currentGen];
+    }
+
+    // Check the marker only AFTER suppressing/verifying the one-shot. Returning
+    // before this protection let a later launch wipe a successfully restored login.
+    BOOL alreadyDone = txnKey.length &&
+        [[ud stringForKey:@"_ci_kc_done_txn"] isEqualToString:txnKey];
+    if (alreadyDone && ackOK) {
+        [fm removeItemAtPath:lFlag error:nil];
+        return;
     }
 
     // Apply SYNCHRONOUSLY here in %ctor — BEFORE the app's own code (main /
@@ -1757,48 +1813,145 @@ static void ci_restoreKeychainIfFlagged(void) {
     // SECOND time to get it right. Viber's items are few (7) and non-biometric, so
     // this runs in well under a second — far below the ~20s FrontBoard launch
     // watchdog (the old "inline crashed" was a much bigger/blocking replay).
-    // Mark the dump done FIRST so a crash mid-apply can never crash-loop the app
-    // (it simply won't retry; a fresh import re-drops the flag with a new mtime).
-    if (mtime > 0) { [ud setDouble:mtime forKey:@"_ci_kc_done"]; [ud synchronize]; }
-    [fm removeItemAtPath:lFlag error:nil];
+    // IMPORTANT: commit the run-once marker only AFTER every item was replayed.
+    // Marking it first turned a transient SecItemAdd/parse failure into a permanent
+    // false success: the first launch showed Login and refused to retry until the
+    // user imported the exact same snapshot a second time.
     @autoreleasepool {
     NSData *data = [NSData dataWithContentsOfFile:dump];
     id items = data.length ? [NSPropertyListSerialization propertyListWithData:data
                                   options:0 format:NULL error:NULL] : nil;
-    int applied = 0, total = 0;
-    if ([items isKindOfClass:[NSArray class]]) {
+    BOOL parsedOK = [items isKindOfClass:[NSArray class]];
+    int total = parsedOK ? (int)[(NSArray *)items count] : 0;
+    int applied = 0, failed = 0;
+    OSStatus lastError = errSecSuccess;
+    NSMutableArray<NSDictionary *> *prepared = [NSMutableArray array];
+    if (!parsedOK) {
+        failed = 1;
+        lastError = errSecDecode;
+    } else if (total == 0) {
+        failed = 1;
+        lastError = errSecItemNotFound;
+    } else {
         for (id itd in (NSArray *)items) {
-            if (![itd isKindOfClass:[NSDictionary class]]) continue;
-            total++;
+            if (![itd isKindOfClass:[NSDictionary class]]) {
+                failed++;
+                lastError = errSecParam;
+                continue;
+            }
             @autoreleasepool {
                 NSMutableDictionary *add = [NSMutableDictionary dictionary];
-                for (NSString *k in (NSDictionary *)itd) {
+                BOOL itemValid = YES;
+                for (id rawKey in (NSDictionary *)itd) {
+                    if (![rawKey isKindOfClass:[NSString class]]) {
+                        itemValid = NO;
+                        break;
+                    }
+                    NSString *k = (NSString *)rawKey;
                     if ([k isEqualToString:@"cdat"] || [k isEqualToString:@"mdat"]) continue;
-                    add[k] = ci_kcUnwrap(((NSDictionary *)itd)[k]);
+                    id value = ci_kcUnwrap(((NSDictionary *)itd)[k]);
+                    if (!value || !([value isKindOfClass:[NSString class]] ||
+                                    [value isKindOfClass:[NSNumber class]] ||
+                                    [value isKindOfClass:[NSData class]])) {
+                        itemValid = NO;
+                        break;
+                    }
+                    add[k] = value;
                 }
-                if (!add[@"class"]) continue;   // no kSecClass → cannot add
-                // Delete an existing item with the SAME identity first (avoids
-                // errSecDuplicateItem). Only when we have identifying attrs, so
-                // we never nuke a whole class.
-                if (add[@"acct"] || add[@"svce"]) {
-                    NSMutableDictionary *del = [NSMutableDictionary dictionary];
-                    for (NSString *dk in @[ @"class", @"acct", @"agrp", @"svce" ])
+                id itemClass = add[(__bridge id)kSecClass];
+                BOOL knownClass = [itemClass isEqual:(__bridge id)kSecClassGenericPassword] ||
+                                  [itemClass isEqual:(__bridge id)kSecClassInternetPassword] ||
+                                  [itemClass isEqual:(__bridge id)kSecClassCertificate] ||
+                                  [itemClass isEqual:(__bridge id)kSecClassKey] ||
+                                  [itemClass isEqual:(__bridge id)kSecClassIdentity];
+                if (!itemValid || !knownClass) {
+                    failed++;
+                    lastError = errSecParam;
+                    continue;   // malformed entry; do not commit this transaction
+                }
+                BOOL passwordItem = [itemClass isEqual:(__bridge id)kSecClassGenericPassword] ||
+                                    [itemClass isEqual:(__bridge id)kSecClassInternetPassword];
+                if (passwordItem &&
+                    ![add[(__bridge id)kSecValueData] isKindOfClass:[NSData class]]) {
+                    // Metadata without v_Data cannot restore the session/decryption
+                    // secret. Treat it as a failed transaction, never as success.
+                    failed++;
+                    lastError = errSecDecode;
+                    continue;
+                }
+                [prepared addObject:[add copy]];
+            }
+        }
+    }
+    // Pass 2 mutates the keychain only after EVERY serialized item passed pass 1.
+    // A malformed late entry can therefore never leave a half-applied login.
+    BOOL inputOK = parsedOK && txnKey.length && total > 0 && failed == 0 &&
+                   prepared.count == (NSUInteger)total;
+    if (inputOK) {
+        for (NSDictionary *preparedItem in prepared) {
+            @autoreleasepool {
+                NSMutableDictionary *add = [preparedItem mutableCopy];
+                NSMutableDictionary *del = nil;
+                if (add[@"acct"] || add[@"svce"] || add[@"srvr"] || add[@"atag"] || add[@"labl"]) {
+                    del = [NSMutableDictionary dictionary];
+                    for (NSString *dk in @[ @"class", @"acct", @"agrp", @"svce",
+                                             @"srvr", @"ptcl", @"atyp", @"port",
+                                             @"path", @"sdmn", @"atag", @"labl" ])
                         if (add[dk]) del[dk] = add[dk];
+                    del[(__bridge id)kSecAttrSynchronizable] =
+                        (__bridge id)kSecAttrSynchronizableAny;
                     SecItemDelete((__bridge CFDictionaryRef)del);
                 }
                 OSStatus st = orig_SecItemAdd ? orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL)
                                               : SecItemAdd((__bridge CFDictionaryRef)add, NULL);
-                if (st != errSecSuccess && st != errSecDuplicateItem && add[@"agrp"]) {
-                    // access group might not be writable from here → retry without it
-                    [add removeObjectForKey:@"agrp"];
+                if (st != errSecSuccess) {
+                    // One short in-process retry handles a transient keychain lock
+                    // without letting the app observe a partial session.
+                    usleep(50000);
+                    if (del.count) SecItemDelete((__bridge CFDictionaryRef)del);
                     st = orig_SecItemAdd ? orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL)
                                          : SecItemAdd((__bridge CFDictionaryRef)add, NULL);
                 }
-                if (st == errSecSuccess || st == errSecDuplicateItem) applied++;
+                if (st == errSecSuccess) {
+                    applied++;
+                } else {
+                    // Never retry without agrp: that would put the credential in
+                    // the wrong access group and create a false restore success.
+                    failed++;
+                    lastError = st;
+                    break;
+                }
             }
         }
     }
-    dbglog("Keychain.restore(sync) %s applied=%d/%d bid=%s\n", g_procname, applied, total, [bid UTF8String]);
+    BOOL keychainOK = inputOK && failed == 0 && applied == total;
+    BOOL replayOK = keychainOK && ackOK;
+    BOOL committed = NO;
+    if (replayOK) {
+        [ud removeObjectForKey:@"_ci_kc_retry_txn"];
+        [ud setObject:txnKey forKey:@"_ci_kc_done_txn"];
+        if (mtime > 0) [ud setDouble:mtime forKey:@"_ci_kc_done"];   // legacy diagnostic
+        committed = [ud synchronize] &&
+                    [[ud stringForKey:@"_ci_kc_done_txn"] isEqualToString:txnKey];
+        if (committed) [fm removeItemAtPath:lFlag error:nil];
+    } else if (keychainOK) {
+        [ud removeObjectForKey:@"_ci_kc_retry_txn"];
+        [ud synchronize];
+    }
+    dbglog("Keychain.restore(sync) %s input=%d keychain=%d ackRequired=%d ackOK=%d applied=%d/%d failed=%d last=%d committed=%d bid=%s\n",
+           g_procname, (int)inputOK, (int)keychainOK, (int)ackRequired, (int)ackOK,
+           applied, total, failed, (int)lastError, (int)committed, [bid UTF8String]);
+    if (!keychainOK && primaryTransaction && txnKey.length &&
+        ![[ud stringForKey:@"_ci_kc_retry_txn"] isEqualToString:txnKey]) {
+        // Fail closed once so this first launch cannot rewrite restored databases
+        // as logged-out after a partial add. The next launch retries this txn.
+        [ud setObject:txnKey forKey:@"_ci_kc_retry_txn"];
+        BOOL armed = [ud synchronize] &&
+                     [[ud stringForKey:@"_ci_kc_retry_txn"] isEqualToString:txnKey];
+        dbglog("Keychain.restore FAIL-CLOSED %s armed=%d err=%d applied=%d/%d\n",
+               g_procname, (int)armed, (int)lastError, applied, total);
+        if (armed) _exit(0);
+    }
     } // @autoreleasepool
 }
 
