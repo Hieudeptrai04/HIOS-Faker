@@ -70,7 +70,8 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.31";
+static NSString *const kAppVersion = @"4.3.32";
+static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
     static NSString *p = nil; static dispatch_once_t once;
@@ -2797,14 +2798,20 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     NSString *root = @"/var/mobile/Containers/Data/Application";
     NSArray *uuids = [fm contentsOfDirectoryAtPath:root error:nil];
     NSData *needle = [bundleID dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableArray<NSString *> *cocoaMatches = [NSMutableArray array];
     for (NSString *uuid in uuids) {
         NSString *full = [root stringByAppendingPathComponent:uuid];
         NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
         NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
         if (!blob) continue;
         if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
-            return full;
+            [cocoaMatches addObject:full];
         }
+    }
+    if (cocoaMatches.count == 1) return cocoaMatches.firstObject;
+    if (cocoaMatches.count > 1) {
+        NSLog(@"[ChangeInfoIos] Data container ambiguous for %@: %@", bundleID, cocoaMatches);
+        return nil; // fail closed; never archive/restore into a random stale UUID
     }
 
     // Fallback (2026-05-20 v2.4.27): NSFileManager returned no UUIDs / matches
@@ -2815,22 +2822,33 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     // listing from inside HIOS Faker's sandboxed process, but the SAME path works
     // for cp -a / pkill via ci_run (posix_spawn child of host bypasses).
     //
-    // Shell-based grep through ci_run finds it deterministically.
+    // Shell-based grep through ci_run. Do not use `head -1`: after an app
+    // reinstall there may be both a live and stale UUID. Without an
+    // authoritative LaunchServices result, ambiguity must fail closed.
     NSString *outPath = [NSString stringWithFormat:
-        @"/tmp/ci_find_%@.txt", [bundleID stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
+        @"/tmp/ci_find_%@.txt", [[NSUUID UUID] UUIDString]];
+    NSString *safeBid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
     NSString *cmd = [NSString stringWithFormat:
-        @"grep -l '%@' /var/mobile/Containers/Data/Application/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null | head -1 > '%@'",
-        bundleID, outPath];
+        @"grep -la '%@' /var/mobile/Containers/Data/Application/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null > '%@'",
+        safeBid, outPath];
     ci_run([cmd UTF8String]);
     NSString *result = [NSString stringWithContentsOfFile:outPath
                                                  encoding:NSUTF8StringEncoding error:nil];
     [fm removeItemAtPath:outPath error:nil];
-    result = [result stringByTrimmingCharactersInSet:
-              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (result.length == 0) return nil;
-    // grep -l returned <container>/.com.apple.mobile_container_manager.metadata.plist;
-    // strip the filename to get the container dir.
-    return [result stringByDeletingLastPathComponent];
+    NSMutableArray<NSString *> *shellMatches = [NSMutableArray array];
+    for (NSString *raw in [result componentsSeparatedByCharactersInSet:
+                           [NSCharacterSet newlineCharacterSet]]) {
+        NSString *meta = [raw stringByTrimmingCharactersInSet:
+                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (meta.length == 0) continue;
+        NSString *candidate = [meta stringByDeletingLastPathComponent];
+        if (candidate.length && ![shellMatches containsObject:candidate])
+            [shellMatches addObject:candidate];
+    }
+    if (shellMatches.count == 1) return shellMatches.firstObject;
+    if (shellMatches.count > 1)
+        NSLog(@"[ChangeInfoIos] Data container shell ambiguity for %@: %@", bundleID, shellMatches);
+    return nil;
 }
 
 static int ci_run(const char *cmd) {
@@ -2863,27 +2881,68 @@ static int ci_run(const char *cmd) {
 // from inside the host app's sandbox on some profiles.
 static NSString *ci_findAppGroupContainer(NSString *groupID) {
     if (groupID.length == 0) return nil;
+    // LSApplicationProxy also exposes the authoritative group binding. Use it
+    // for the one portable AppGroup we currently support, so stale UUIDs left
+    // by reinstall cannot win a filesystem scan.
+    if ([groupID isEqualToString:@"group.viber.share.container"]) {
+        id proxy = ci_applicationProxyForBundle(@"com.viber");
+        SEL groupSelector = NSSelectorFromString(@"groupContainerURLs");
+        id urls = nil;
+        if ([proxy respondsToSelector:groupSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            urls = [proxy performSelector:groupSelector];
+#pragma clang diagnostic pop
+        }
+        id liveURL = [urls isKindOfClass:[NSDictionary class]]
+            ? ((NSDictionary *)urls)[groupID] : nil;
+        NSString *livePath = [liveURL respondsToSelector:@selector(path)] ? [liveURL path] : nil;
+        if (livePath.length) {
+            NSString *safe = [livePath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            if (ci_run([[NSString stringWithFormat:@"test -d '%@'", safe] UTF8String]) == 0)
+                return livePath;
+        }
+    }
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *base = @"/var/mobile/Containers/Shared/AppGroup";
     NSData *needle = [groupID dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableArray<NSString *> *cocoaMatches = [NSMutableArray array];
     for (NSString *uuid in [fm contentsOfDirectoryAtPath:base error:nil]) {
         NSString *full = [base stringByAppendingPathComponent:uuid];
         NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
         NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
         if (blob && [blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound)
-            return full;
+            [cocoaMatches addObject:full];
+    }
+    if (cocoaMatches.count == 1) return cocoaMatches.firstObject;
+    if (cocoaMatches.count > 1) {
+        NSLog(@"[ChangeInfoIos] AppGroup container ambiguous for %@: %@", groupID, cocoaMatches);
+        return nil;
     }
     NSString *outPath = [NSString stringWithFormat:@"/tmp/ci_findg_%@.txt",
-        [groupID stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
+        [[NSUUID UUID] UUIDString]];
+    NSString *safeGroup = [groupID stringByReplacingOccurrencesOfString:@"'" withString:@""];
     NSString *cmd = [NSString stringWithFormat:
-        @"grep -la '%@' /var/mobile/Containers/Shared/AppGroup/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null | head -1 > '%@'",
-        groupID, outPath];
+        @"grep -la '%@' /var/mobile/Containers/Shared/AppGroup/*/.com.apple.mobile_container_manager.metadata.plist 2>/dev/null > '%@'",
+        safeGroup, outPath];
     ci_run([cmd UTF8String]);
-    NSString *result = [[NSString stringWithContentsOfFile:outPath encoding:NSUTF8StringEncoding error:nil]
-        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *result = [NSString stringWithContentsOfFile:outPath
+                                                  encoding:NSUTF8StringEncoding error:nil];
     [fm removeItemAtPath:outPath error:nil];
-    if (result.length == 0) return nil;
-    return [result stringByDeletingLastPathComponent];   // strip metadata filename
+    NSMutableArray<NSString *> *shellMatches = [NSMutableArray array];
+    for (NSString *raw in [result componentsSeparatedByCharactersInSet:
+                           [NSCharacterSet newlineCharacterSet]]) {
+        NSString *meta = [raw stringByTrimmingCharactersInSet:
+                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (meta.length == 0) continue;
+        NSString *candidate = [meta stringByDeletingLastPathComponent];
+        if (candidate.length && ![shellMatches containsObject:candidate])
+            [shellMatches addObject:candidate];
+    }
+    if (shellMatches.count == 1) return shellMatches.firstObject;
+    if (shellMatches.count > 1)
+        NSLog(@"[ChangeInfoIos] AppGroup shell ambiguity for %@: %@", groupID, shellMatches);
+    return nil;
 }
 
 // bundle → app-group ids that carry login/session state worth snapshotting.
@@ -2939,8 +2998,37 @@ static BOOL ci_rrsConfigHasPortableIdentity(id object) {
     return YES;
 }
 
+// The host app can lstat another app's container on some sandbox profiles but
+// open(2) is still denied by MAC. The restore path already hit and documented
+// this exact behaviour. Stage the file through our shell child before parsing
+// it so a valid Viber dump is not rejected merely because NSData cannot open a
+// foreign container directly.
+static NSData *ci_readForeignFileViaShell(NSString *path) {
+    if (![path isKindOfClass:[NSString class]] || path.length == 0) return nil;
+    NSString *tmp = [NSString stringWithFormat:@"/tmp/ci_rrs_read_%@.bin",
+                     [[NSUUID UUID] UUIDString]];
+    NSString *safeIn = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *safeTmp = [tmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    int rc = ci_run([[NSString stringWithFormat:
+        @"cp -f '%@' '%@' && chmod 0644 '%@'", safeIn, safeTmp, safeTmp] UTF8String]);
+    NSData *data = rc == 0 ? [NSData dataWithContentsOfFile:tmp] : nil;
+    [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
+    if (rc != 0 || data.length == 0) {
+        NSLog(@"[ChangeInfoIos] RRS foreign read FAILED rc=%d path=%@", rc, path);
+    }
+    return data;
+}
+
+static BOOL ci_viberAppGroupHasSession(NSString *groupPath) {
+    if (groupPath.length == 0) return NO;
+    NSString *session = [groupPath stringByAppendingPathComponent:@"SecureStorage.data"];
+    NSString *safe = [session stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    return ci_run([[NSString stringWithFormat:@"test -f '%@' && test -s '%@'", safe, safe]
+                   UTF8String]) == 0;
+}
+
 static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID) {
-    NSData *data = [NSData dataWithContentsOfFile:path];
+    NSData *data = ci_readForeignFileViaShell(path);
     id parsed = data.length ? [NSPropertyListSerialization propertyListWithData:data
         options:0 format:NULL error:NULL] : nil;
     if (![parsed isKindOfClass:[NSArray class]] || [(NSArray *)parsed count] == 0) return NO;
@@ -2988,11 +3076,31 @@ static BOOL ci_rrsKeychainDumpHasLoginSecret(NSString *path, NSString *bundleID)
         if (secret.length) {
             hasNonemptySecret = YES;
             id account = item[@"acct"];
-            if ([account isKindOfClass:[NSString class]] && [(NSString *)account length])
-                secretsByAccount[(NSString *)account] = secret;
+            NSString *accountName = nil;
+            if ([account isKindOfClass:[NSString class]]) {
+                accountName = (NSString *)account;
+            } else if ([account isKindOfClass:[NSData class]]) {
+                accountName = [[NSString alloc] initWithData:(NSData *)account
+                                                    encoding:NSUTF8StringEncoding];
+            } else if ([account isKindOfClass:[NSDictionary class]]) {
+                id b64 = ((NSDictionary *)account)[@"__b"];
+                NSData *rawAccount = [b64 isKindOfClass:[NSString class]]
+                    ? [[NSData alloc] initWithBase64EncodedString:b64 options:0] : nil;
+                accountName = rawAccount.length
+                    ? [[NSString alloc] initWithData:rawAccount encoding:NSUTF8StringEncoding] : nil;
+            }
+            if (accountName.length) secretsByAccount[accountName] = secret;
         }
     }
     if (!hasNonemptySecret) return NO;
+
+    // A logged-out Viber install may still expose analytics/install passwords.
+    // SecureStorage.data is portable only when both the device key and active
+    // Viber user id are present in the shared access group.
+    if ([bundleID isEqualToString:@"com.viber"]) {
+        return secretsByAccount[@"viberDeviceKey"].length > 0 &&
+               secretsByAccount[@"viberUID"].length > 0;
+    }
 
     // A logged-out Zalo install still has several device/install identifiers in
     // Keychain. Do not mistake those for a portable login: require the active
@@ -3174,6 +3282,83 @@ static int ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *container)
     }
     NSLog(@"[ChangeInfoIos] host kc dump %@ → %lu items @ %@", bundleID, (unsigned long)out.count, path);
     return (int)out.count;
+}
+
+// Check a fallback in-app dump through the shell as well. A marker file gives
+// us a strict freshness boundary without asking NSFileManager to stat a foreign
+// container (which is unreliable on the same devices where direct NSData reads
+// are MAC-blocked).
+static BOOL ci_foreignDumpIsFreshAndLarge(NSString *path, NSString *markerPath) {
+    if (path.length == 0 || markerPath.length == 0) return NO;
+    NSString *safePath = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *safeMarker = [markerPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    NSString *cmd = [NSString stringWithFormat:
+        @"test -f '%@' && test '%@' -nt '%@' && [ \"$(wc -c < '%@' 2>/dev/null)\" -gt 200 ]",
+        safePath, safePath, safeMarker, safePath];
+    return ci_run([cmd UTF8String]) == 0;
+}
+
+// Capture and validate only bundles whose login actually depends on keychain.
+// 4.3.31 polled Safari/Maps/Weather too, guaranteeing an unnecessary 8-second
+// wait, then parsed Viber's foreign-container plist directly and rejected a
+// valid dump when sandbox MAC denied open(2).
+static NSArray<NSString *> *ci_missingRequiredRRSKeychainDumps(
+    NSArray<NSString *> *bundleIDs) {
+    NSMutableArray<NSString *> *required = [NSMutableArray array];
+    for (id raw in bundleIDs ?: @[]) {
+        if (![raw isKindOfClass:[NSString class]]) continue;
+        NSString *bid = (NSString *)raw;
+        if (ci_bundleRequiresRRSKeychain(bid) && ![required containsObject:bid])
+            [required addObject:bid];
+    }
+    if (required.count == 0) return @[];
+
+    NSString *marker = [NSString stringWithFormat:@"/tmp/ci_rrs_dump_%@.marker",
+                        [[NSUUID UUID] UUIDString]];
+    BOOL markerOK = [@"1" writeToFile:marker atomically:YES
+                              encoding:NSUTF8StringEncoding error:nil];
+    NSMutableSet<NSString *> *fresh = [NSMutableSet set];
+    BOOL needsInAppFallback = NO;
+    for (NSString *bid in required) {
+        NSString *container = ci_findDataContainerForBundle(bid);
+        int count = container.length ? ci_hostDumpKeychainForBundle(bid, container) : 0;
+        NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
+        BOOL valid = count > 0 && ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid);
+        NSLog(@"[ChangeInfoIos] RRS host-dumped %d keychain items for %@ valid=%d",
+              count, bid, (int)valid);
+        if (valid) [fresh addObject:bid];
+        else needsInAppFallback = YES;
+    }
+    if (needsInAppFallback) notify_post("com.changeinfoios/dump_keychain");
+
+    NSMutableArray<NSString *> *waiting = [NSMutableArray array];
+    for (int retry = 0; retry < 16; retry++) {
+        [waiting removeAllObjects];
+        for (NSString *bid in required) {
+            if ([fresh containsObject:bid]) continue; // host publish already proved fresh
+            NSString *container = ci_findDataContainerForBundle(bid);
+            NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
+            if (markerOK && ci_foreignDumpIsFreshAndLarge(dumpPath, marker) &&
+                ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
+                [fresh addObject:bid];
+            else
+                [waiting addObject:bid];
+        }
+        if (waiting.count == 0) break;
+        if (retry < 15) [NSThread sleepForTimeInterval:0.5];
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:marker error:nil];
+
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    for (NSString *bid in required) {
+        NSString *container = ci_findDataContainerForBundle(bid);
+        NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
+        if (![fresh containsObject:bid] || !ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
+            [missing addObject:bid];
+    }
+    NSLog(@"[ChangeInfoIos] RRS keychain required=%@ fresh=%@ missing=%@",
+          required, fresh.allObjects, missing);
+    return missing;
 }
 
 // bundle → shared keychain-access-groups to WIPE that are NOT derivable from the
@@ -9610,10 +9795,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [NSThread sleepForTimeInterval:1.2];
             BOOL backupOK = [self createRRSForBundles:rrsBids note:note];
             if (!backupOK) {
+                NSString *failureReason = [gLastRRSCreateFailure copy] ?:
+                    @"Không tạo được snapshot đăng nhập đầy đủ.";
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self dismissHUD:hud completion:^{
                         [self alert:@"Chưa Reset dữ liệu"
-                                msg:@"Không tạo được snapshot đăng nhập đầy đủ (Data/AppGroup/keychain/config). Hãy mở app account trên máy gốc, chờ vài giây rồi thử Backup + Reset lại."];
+                                msg:[NSString stringWithFormat:
+                                     @"%@\n\nDữ liệu gốc chưa bị Reset. Nếu vừa mở Viber, chờ vài giây rồi thử lại.",
+                                     failureReason]];
                     }];
                 });
                 if (bgTask != UIBackgroundTaskInvalid) {
@@ -10120,6 +10309,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 
 - (BOOL)createRRSForBundles:(NSArray<NSString *> *)bids note:(NSString *)note {
+    gLastRRSCreateFailure = nil;
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
     CIRRSEntry *e = [[CIRRSEntry alloc] init];
     e.uid = [[NSUUID UUID] UUIDString];
@@ -10182,8 +10372,19 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSMutableSet<NSString *> *seenBids = [NSMutableSet set];
     unsigned long long total = 0;
     for (CIAppInfo *a in all) if ([bids containsObject:a.bundleID]) {
-        [n addObject:a.name]; [b addObject:a.bundleID]; [seenBids addObject:a.bundleID];
-        if (a.containerPath) { [paths addObject:a.containerPath]; total += a.containerSize; }
+        if ([seenBids containsObject:a.bundleID]) continue;
+        [n addObject:a.name ?: a.bundleID];
+        [b addObject:a.bundleID];
+        [seenBids addObject:a.bundleID];
+        // CIAppLister is cached and this phone currently has both a live and a
+        // stale Viber UUID. Always archive the authoritative live container.
+        NSString *liveDataPath = ci_findDataContainerForBundle(a.bundleID);
+        if (liveDataPath.length) {
+            [paths addObject:liveDataPath];
+            total += a.containerSize;
+        } else {
+            NSLog(@"[ChangeInfoIos] RRS: cached app has no live Data container: %@", a.bundleID);
+        }
     }
     // v2.5.37: include system apps (Safari/Maps/Weather) that CIAppLister
     // doesn't enumerate. Without this fallback, system-app bundleIDs in
@@ -10192,11 +10393,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     for (NSString *bid in bids) {
         if ([seenBids containsObject:bid]) continue;
         NSString *dataPath = ci_findDataContainerForBundle(bid);
-        if (dataPath.length == 0) continue;
         NSString *displayName = bid;
         if      ([bid isEqualToString:@"com.apple.mobilesafari"]) displayName = @"Safari";
         else if ([bid isEqualToString:@"com.apple.Maps"])         displayName = @"Maps";
         else if ([bid isEqualToString:@"com.apple.weather"])      displayName = @"Weather";
+        if (dataPath.length == 0) {
+            // Never silently drop a requested account app: the source contract
+            // below must abort before Reset if its live container is unavailable.
+            if (ci_bundleRequiresRRSKeychain(bid)) {
+                [n addObject:displayName];
+                [b addObject:bid];
+                [seenBids addObject:bid];
+            }
+            continue;
+        }
         [n addObject:displayName];
         [b addObject:bid];
         [paths addObject:dataPath];
@@ -10233,16 +10443,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 continue;
             }
             if ([gid isEqualToString:@"group.viber.share.container"]) {
-                BOOL hasSession = NO;
-                NSDirectoryEnumerator *files = [[NSFileManager defaultManager] enumeratorAtPath:groupPath];
-                NSString *relative = nil;
-                while ((relative = [files nextObject])) {
-                    if (![[relative lastPathComponent] hasPrefix:@"SecureStorage.data"]) continue;
-                    NSDictionary *attrs = [files fileAttributes];
-                    if ([attrs[NSFileType] isEqualToString:NSFileTypeRegular] &&
-                        [attrs[NSFileSize] unsignedLongLongValue] > 0) { hasSession = YES; break; }
-                }
-                if (!hasSession)
+                if (!ci_viberAppGroupHasSession(groupPath))
                     [backupContractFailures addObject:[gid stringByAppendingString:@" (thiếu SecureStorage.data)"]];
             }
         }
@@ -10255,6 +10456,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [backupContractFailures addObject:@"config.plist live thiếu/hỏng"];
     if (backupContractFailures.count) {
         NSLog(@"[ChangeInfoIos] RRS ABORT source contract: %@", backupContractFailures);
+        gLastRRSCreateFailure = [NSString stringWithFormat:@"Nguồn snapshot chưa đủ: %@",
+            [backupContractFailures componentsJoinedByString:@", "]];
         return NO;
     }
 
@@ -10279,6 +10482,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     for (NSString *p in paths) NSLog(@"[ChangeInfoIos]   archiving %@", p);
     if (paths.count == 0) {
         NSLog(@"[ChangeInfoIos] RRS ABORT: no app containers to back up");
+        gLastRRSCreateFailure = @"Không resolve được Data container của app đã chọn.";
         return NO;
     }
 
@@ -10297,71 +10501,15 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // nothing to apply → Zalo asked login next launch even though user
     // restored.
     //
-    // Now: notify, then poll each target's tmp/hios_keychain.plist for
-    // up to 8s, requiring mtime ≥ dumpStart (guard against stale file
-    // from a previous reset). Log per-bundle status; never abort backup
-    // (partial backup still saves Documents/Library), just warn user.
-    NSDate *dumpStart = [NSDate date];
-    // HOST-SIDE keychain dump (reliable — uses the wildcard keychain entitlement,
-    // does NOT need the target app running or the tweak to fire). For Viber this
-    // captures the 7 login items that decrypt SecureStorage.data straight into
-    // <container>/tmp/hios_keychain.plist so they ride into the tar. Written AFTER
-    // dumpStart so the poll below sees it as fresh and doesn't wait the full 8s.
-    BOOL needsInAppDumpFallback = NO;
-    for (NSString *bid in b) {
-        if (ci_keychainGroupsForBundle(bid).count == 0) continue;
-        NSString *hc = ci_findDataContainerForBundle(bid);
-        if (hc.length) {
-            int n = ci_hostDumpKeychainForBundle(bid, hc);
-            NSLog(@"[ChangeInfoIos] RRS host-dumped %d keychain items for %@", n, bid);
-            if (n <= 0 && ci_bundleRequiresRRSKeychain(bid)) needsInAppDumpFallback = YES;
-        }
-    }
-    // Avoid racing a complete host dump with the in-app writer. Darwin notify is
-    // now only a fallback when the authoritative explicit-group query failed.
-    if (needsInAppDumpFallback) notify_post("com.changeinfoios/dump_keychain");
-    NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];
-    NSMutableArray<NSString *> *foundDumps   = [NSMutableArray array];
-    NSFileManager *dfm = [NSFileManager defaultManager];
-    for (int retry = 0; retry < 16; retry++) {
-        [NSThread sleepForTimeInterval:0.5];
-        [missingDumps removeAllObjects];
-        [foundDumps removeAllObjects];
-        for (NSString *bid in b) {
-            NSString *container = ci_findDataContainerForBundle(bid);
-            if (container.length == 0) {
-                [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
-                continue;
-            }
-            NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-            NSDictionary *attrs = [dfm attributesOfItemAtPath:dumpPath error:nil];
-            NSDate *mtime = attrs[NSFileModificationDate];
-            unsigned long long sz = [attrs[NSFileSize] unsignedLongLongValue];
-            // sz > 200 (not just > 0): the tweak writes a ~180-byte plist even for
-            // an empty keychain, but a real capture is larger — wait for the real one
-            // so a Viber keychain (the SecureStorage decryption key) actually rides
-            // into the tar. Needed for CROSS-DEVICE restore: without the key the
-            // other phone has the data file but can't decrypt it → stays logged out.
-            if (mtime && [mtime compare:dumpStart] != NSOrderedAscending && sz > 200) {
-                [foundDumps addObject:bid];
-            } else {
-                [missingDumps addObject:bid];
-            }
-        }
-        if (missingDumps.count == 0) break; // all dumps present + fresh
-    }
-    NSLog(@"[ChangeInfoIos] RRS keychain dump: ok=%@ missing=%@ (after %d×0.5s retries)",
-          foundDumps, missingDumps, 16);
-    NSMutableArray<NSString *> *missingRequiredDumps = [NSMutableArray array];
-    for (NSString *bid in b) {
-        if (!ci_bundleRequiresRRSKeychain(bid)) continue;
-        NSString *container = ci_findDataContainerForBundle(bid);
-        NSString *dumpPath = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-        if (![foundDumps containsObject:bid] || !ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
-            [missingRequiredDumps addObject:bid];
-    }
+    // Host-capture first; only fall back to the in-app writer when needed. The
+    // helper stages foreign files through the shell before parsing them.
+    NSArray<NSString *> *missingRequiredDumps =
+        ci_missingRequiredRRSKeychainDumps(b);
     if (missingRequiredDumps.count) {
         NSLog(@"[ChangeInfoIos] RRS ABORT: required login keychain missing for %@", missingRequiredDumps);
+        gLastRRSCreateFailure = [NSString stringWithFormat:
+            @"Keychain đăng nhập chưa đầy đủ hoặc không đọc được: %@",
+            [missingRequiredDumps componentsJoinedByString:@", "]];
         return NO;
     }
 
@@ -10379,6 +10527,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
     if (rc != 0 || actualBytes < 1024) {
         NSLog(@"[ChangeInfoIos] RRS ABORT: tar rc=%d size=%llu stderr=%@", rc, actualBytes, errs ?: @"-");
+        gLastRRSCreateFailure = [NSString stringWithFormat:
+            @"Lỗi đóng gói snapshot (tar rc=%d, %llu byte).", rc, actualBytes];
         [[NSFileManager defaultManager] removeItemAtPath:tarPath error:nil];
         return NO;
     }
@@ -10406,25 +10556,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [self alert:@"Snapshot trống" msg:@"Entry này không có bundle nào để backup."];
         return;
     }
-    NSArray<CIAppInfo *> *all = [CIAppLister allApps];
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenDataBids = [NSMutableSet set];
     NSMutableArray<NSString *> *rebackupContractFailures = [NSMutableArray array];
-    for (CIAppInfo *a in all) if ([bids containsObject:a.bundleID]) {
-        if (a.containerPath) {
-            [paths addObject:a.containerPath];
-            [seenDataBids addObject:a.bundleID];
-        }
-    }
     for (NSString *bid in bids) {
-        if (![seenDataBids containsObject:bid]) {
-            NSString *dataPath = ci_findDataContainerForBundle(bid);
-            if (dataPath.length) {
-                [paths addObject:dataPath];
-                [seenDataBids addObject:bid];
-            } else {
-                [rebackupContractFailures addObject:[bid stringByAppendingString:@" (thiếu Data live)"]];
-            }
+        NSString *dataPath = ci_findDataContainerForBundle(bid);
+        if (dataPath.length) {
+            if (![paths containsObject:dataPath]) [paths addObject:dataPath];
+        } else {
+            [rebackupContractFailures addObject:[bid stringByAppendingString:@" (thiếu Data live)"]];
         }
         for (NSString *gid in ci_appGroupIDsForBundle(bid)) {
             NSString *groupPath = ci_findAppGroupContainer(gid);
@@ -10434,16 +10573,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             if (![paths containsObject:groupPath]) [paths addObject:groupPath];
             if ([gid isEqualToString:@"group.viber.share.container"]) {
-                BOOL hasSession = NO;
-                NSDirectoryEnumerator *files = [[NSFileManager defaultManager] enumeratorAtPath:groupPath];
-                NSString *relative = nil;
-                while ((relative = [files nextObject])) {
-                    if (![[relative lastPathComponent] hasPrefix:@"SecureStorage.data"]) continue;
-                    NSDictionary *attrs = [files fileAttributes];
-                    if ([attrs[NSFileType] isEqualToString:NSFileTypeRegular] &&
-                        [attrs[NSFileSize] unsignedLongLongValue] > 0) { hasSession = YES; break; }
-                }
-                if (!hasSession)
+                if (!ci_viberAppGroupHasSession(groupPath))
                     [rebackupContractFailures addObject:[gid stringByAppendingString:@" (thiếu SecureStorage.data)"]];
             }
         }
@@ -10469,59 +10599,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             });
             return;
         }
-        // Trigger keychain dump + wait for files. Same poll logic as the
-        // create path; up to 8s for every target. Missing dumps don't
-        // abort — partial tar is still useful, and the alert reports
-        // which bundles missed.
-        NSDate *dumpStart = [NSDate date];
-        // Host-side keychain dump (see createRRSForBundles note) — reliable capture
-        // of Viber's login keychain without the app running.
-        BOOL needsInAppDumpFallback = NO;
-        for (NSString *bid in bids) {
-            if (ci_keychainGroupsForBundle(bid).count == 0) continue;
-            NSString *hc = ci_findDataContainerForBundle(bid);
-            if (hc.length) {
-                int n = ci_hostDumpKeychainForBundle(bid, hc);
-                if (n <= 0 && ci_bundleRequiresRRSKeychain(bid)) needsInAppDumpFallback = YES;
-            }
-        }
-        if (needsInAppDumpFallback) notify_post("com.changeinfoios/dump_keychain");
-        NSFileManager *dfm = [NSFileManager defaultManager];
-        NSMutableArray<NSString *> *foundDumps = [NSMutableArray array];
-        NSMutableArray<NSString *> *missingDumps = [NSMutableArray array];
-        for (int retry = 0; retry < 16; retry++) {
-            [NSThread sleepForTimeInterval:0.5];
-            [foundDumps removeAllObjects];
-            [missingDumps removeAllObjects];
-            for (NSString *bid in bids) {
-                NSString *container = ci_findDataContainerForBundle(bid);
-                if (container.length == 0) {
-                    [missingDumps addObject:[bid stringByAppendingString:@" (no container)"]];
-                    continue;
-                }
-                NSString *dp = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-                NSDictionary *a2 = [dfm attributesOfItemAtPath:dp error:nil];
-                NSDate *mt = a2[NSFileModificationDate];
-                unsigned long long sz = [a2[NSFileSize] unsignedLongLongValue];
-                // sz > 200: wait for a REAL keychain (see createRRSForBundles note),
-                // not the ~180-byte empty-array plist, so the decryption key rides
-                // along for cross-device restore.
-                if (mt && [mt compare:dumpStart] != NSOrderedAscending && sz > 200) {
-                    [foundDumps addObject:bid];
-                } else {
-                    [missingDumps addObject:bid];
-                }
-            }
-            if (missingDumps.count == 0) break;
-        }
-        NSMutableArray<NSString *> *missingRequiredDumps = [NSMutableArray array];
-        for (NSString *bid in bids) {
-            if (!ci_bundleRequiresRRSKeychain(bid)) continue;
-            NSString *container = ci_findDataContainerForBundle(bid);
-            NSString *dp = [container stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-            if (![foundDumps containsObject:bid] || !ci_rrsKeychainDumpHasLoginSecret(dp, bid))
-                [missingRequiredDumps addObject:bid];
-        }
+        NSArray<NSString *> *missingRequiredDumps =
+            ci_missingRequiredRRSKeychainDumps(bids);
         if (missingRequiredDumps.count) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissHUD:hud completion:^{
@@ -10609,13 +10688,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSMutableString *body = [NSMutableString string];
             [body appendFormat:@"Snapshot \"%@\" đã được cập nhật.\n\n", labelForHUD];
             [body appendFormat:@"Tar mới: %@ (cũ: %@)\n", CIBytesString(finalBytes), CIBytesString(oldBytes)];
-            [body appendFormat:@"Keychain dumps: %lu/%lu app\n",
-                                (unsigned long)foundDumps.count,
-                                (unsigned long)bids.count];
-            if (missingDumps.count > 0) {
-                [body appendFormat:@"\n⚠️ Không lấy được keychain của: %@\n(Mở app đó 1 lần rồi cập nhật lại để có session tươi)",
-                                    [missingDumps componentsJoinedByString:@", "]];
-            }
+            [body appendString:@"Keychain đăng nhập: đã xác thực đầy đủ\n"];
             [self alert:@"Cập nhật RRS xong" msg:body];
         };
 
