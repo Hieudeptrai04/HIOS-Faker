@@ -11591,9 +11591,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
         BOOL configRestoreOK = NO;
+        NSUInteger configFiles = 0;   // display count for the final success alert
         if (sourceConfigData.length == 0) {
             rlog(@"[step4] config MISSING/empty in archive — snapshot from a build before config capture?");
         } else {
+            configFiles = [[fm contentsOfDirectoryAtPath:bkConfigDir error:nil] count];
             NSString *safeBkDir   = [bkConfigDir stringByReplacingOccurrencesOfString:@"'" withString:@""];
             NSString *safeBkPlist = [bkConfigPlist stringByReplacingOccurrencesOfString:@"'" withString:@""];
             NSString *safeLocal   = [CILocalConfigPath() stringByReplacingOccurrencesOfString:@"'" withString:@""];
