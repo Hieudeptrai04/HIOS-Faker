@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.33";
+static NSString *const kAppVersion = @"4.3.34";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -11572,61 +11572,56 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                   title:@"Khôi phục thông tin máy fake"
                subtitle:@"config.plist + DC tokens..."];
         [NSThread sleepForTimeInterval:0.8];
-        // Same private/var symlink dance as the container scan above.
+        // 4.3.34 FIX: the archive lives under HIOS's restore temp (/tmp/ci_restore_*).
+        // On this containerless build NSFileManager stat/copy of that foreign path
+        // is MAC-blocked — the SAME reason step-3 copies containers through the
+        // shell child. The old code decided success with `[fm fileExistsAtPath:]`
+        // + `[fm copyItemAtPath:]` on the /tmp path, so it aborted here even when
+        // the config bytes were perfectly fine (plain NSData reads DO work — the
+        // preflight above already read this exact file). Decide success from
+        // CONTENT the shell child can always move; publish via the shell child.
         NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
-        if (![fm fileExistsAtPath:bkConfigDir]) {
+        NSData *sourceConfigData =
+            [NSData dataWithContentsOfFile:[bkConfigDir stringByAppendingPathComponent:@"config.plist"]];
+        if (sourceConfigData.length == 0) {
             NSString *alt = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
-            if ([fm fileExistsAtPath:alt]) bkConfigDir = alt;
+            NSData *altData =
+                [NSData dataWithContentsOfFile:[alt stringByAppendingPathComponent:@"config.plist"]];
+            if (altData.length > 0) { bkConfigDir = alt; sourceConfigData = altData; }
         }
-        NSUInteger configFiles = 0;
+        NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
         BOOL configRestoreOK = NO;
-        if ([fm fileExistsAtPath:bkConfigDir]) {
-            NSArray *cfgList = [fm contentsOfDirectoryAtPath:bkConfigDir error:nil];
-            configFiles = cfgList.count;
-
-            // Copy to /var/jb/etc/changeinfoios (where the tweak reads from
-            // sandboxed apps).
-            NSString *cmd = [NSString stringWithFormat:
-                @"mkdir -p /var/jb/etc/changeinfoios && "
-                @"cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null",
-                bkConfigDir];
-            int rc = ci_run([cmd UTF8String]);
-            NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
-            NSString *liveConfigPlist = @"/var/jb/etc/changeinfoios/config.plist";
-            NSData *sourceConfigData = [NSData dataWithContentsOfFile:bkConfigPlist];
-            NSData *liveConfigData = [NSData dataWithContentsOfFile:liveConfigPlist];
-            configRestoreOK = (rc == 0 && sourceConfigData.length > 0 &&
-                               [sourceConfigData isEqualToData:liveConfigData]);
-            ci_run("chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null");
-            NSLog(@"[ChangeInfoIos] restore: /var/jb/etc/changeinfoios restored, %lu files, rc=%d",
-                  (unsigned long)configFiles, rc);
-
-            // CRITICAL: ALSO copy the restored config.plist to BOTH of the
-            // host app's other config paths — otherwise [cm load] right
-            // below reads STALE (current) values from app sandbox /
-            // /var/mobile/Library/Preferences and [cm save] would clobber
-            // the just-restored /var/jb file. Pre-fix: every restore wrote
-            // the OLD config back over the restored one and the user saw
-            // current (not restored) hardware IDs after the restore.
-            if ([fm fileExistsAtPath:bkConfigPlist]) {
-                // Local sandbox path (Documents/config.plist) — readable
-                // without sudo because it's inside the host app's container.
-                NSError *cpErr = nil;
-                [fm removeItemAtPath:CILocalConfigPath() error:nil];
-                BOOL ok = [fm copyItemAtPath:bkConfigPlist toPath:CILocalConfigPath() error:&cpErr];
-                configRestoreOK = configRestoreOK && ok;
-                NSLog(@"[ChangeInfoIos] restore: local config copy ok=%d err=%@", ok, cpErr);
-
-                // Shared prefs path /var/mobile/Library/Preferences/com.changeinfoios.plist —
-                // sometimes mobile-writable depending on rootless variant.
-                NSString *sharedCmd = [NSString stringWithFormat:
-                    @"cp -f '%@' '%@' 2>/dev/null; chmod 0644 '%@' 2>/dev/null",
-                    bkConfigPlist, kSharedPrefPath, kSharedPrefPath];
-                ci_run([sharedCmd UTF8String]);
-            } else configRestoreOK = NO;
+        if (sourceConfigData.length == 0) {
+            rlog(@"[step4] config MISSING/empty in archive — snapshot from a build before config capture?");
         } else {
-            NSLog(@"[ChangeInfoIos] restore: WARNING — backup has no config snapshot. "
-                  @"Created with old build before 3560b20? Hardware IDs won't match the saved env.");
+            NSString *safeBkDir   = [bkConfigDir stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *safeBkPlist = [bkConfigPlist stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *safeLocal   = [CILocalConfigPath() stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            NSString *safePref    = [kSharedPrefPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
+            // (1) tweak-readable /var/jb mirror — copy the whole config dir, then
+            //     verify config.plist bytes actually landed.
+            int rcShared = ci_run([[NSString stringWithFormat:
+                @"mkdir -p /var/jb/etc/changeinfoios && cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
+                @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null", safeBkDir] UTF8String]);
+            NSData *liveConfigData = [NSData dataWithContentsOfFile:kSharedConfigPath];
+            BOOL sharedOK = (liveConfigData.length > 0 && [sourceConfigData isEqualToData:liveConfigData]);
+            // (2) host-app sandbox copy ([cm load] below reads this FIRST) and the
+            //     shared-prefs mirror — BOTH via the shell child. NSFileManager
+            //     copying the foreign /tmp path is the exact op that used to fail
+            //     the whole restore; the shell child bypasses the MAC block.
+            int rcLocal = ci_run([[NSString stringWithFormat:
+                @"cp -f '%@' '%@' && chmod 0644 '%@'", safeBkPlist, safeLocal, safeLocal] UTF8String]);
+            ci_run([[NSString stringWithFormat:
+                @"cp -f '%@' '%@' 2>/dev/null; chmod 0644 '%@' 2>/dev/null",
+                safeBkPlist, safePref, safePref] UTF8String]);
+            NSData *localData = [NSData dataWithContentsOfFile:CILocalConfigPath()];
+            BOOL localOK = (localData.length > 0 && [sourceConfigData isEqualToData:localData]);
+            // Fail-closed on a GENUINE content mismatch only — not on an API rc.
+            configRestoreOK = sharedOK && localOK;
+            rlog([NSString stringWithFormat:
+                @"[step4] config src=%lu shared(rc=%d ok=%d) local(rc=%d ok=%d) result=%d",
+                (unsigned long)sourceConfigData.length, rcShared, (int)sharedOK,
+                rcLocal, (int)localOK, (int)configRestoreOK]);
         }
         if (!configRestoreOK) {
             abortRestore(@"Không khôi phục được config.plist của môi trường máy. Snapshot cũ/hỏng hoặc quyền ghi bị lỗi.");
