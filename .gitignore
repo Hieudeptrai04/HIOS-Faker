@@ -1,3 +1,6 @@
 *.deb
 # Never commit the live HMAC secret (loaded by license/lib.php hios_secret()).
 license/secret.php
+
+# Nested HIOS Restore repo — separate product, never commit into Faker repo
+toolsRestore/

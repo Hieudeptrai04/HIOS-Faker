@@ -26,6 +26,7 @@
 #import <sys/utsname.h>
 #import <sys/stat.h>
 #import <errno.h>
+#import <math.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
 #import <net/if.h>
@@ -93,8 +94,13 @@ static char g_dbgTmpResolved = 0;
 // /var/jb/etc/changeinfoios/.debug exists (touch it to enable while debugging).
 static int g_dbgOn = -1;
 static int ci_dbgEnabled(void) {
-    if (g_dbgOn < 0)
-        g_dbgOn = (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0) ? 1 : 0;
+    if (g_dbgOn < 0) {
+        // P0-2: .debug.off has the HIGHEST priority — if present, logging is OFF
+        // even when .debug exists. Release ships neither, so the default is OFF.
+        int on = (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0);
+        if (on && access("/var/jb/etc/changeinfoios/.debug.off", F_OK) == 0) on = 0;
+        g_dbgOn = on ? 1 : 0;
+    }
     return g_dbgOn;
 }
 
@@ -295,6 +301,26 @@ static inline NSString *getConfigStr(NSString *k) {
     if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return v;
     return nil;
 }
+// P0-5: coordinate/double reader that accepts BOTH NSNumber and NSString and
+// validates finiteness. The proxy/GPS-sync path once wrote lat/lon as NSNumber,
+// which getConfigStr ignored → the location hook saw "no coordinate" and leaked
+// the REAL device GPS. Returns NO (leaving *out untouched) on missing/non-finite.
+static inline BOOL ci_configDouble(NSString *k, double *out) {
+    id v = cfg()[k];
+    double d;
+    if ([v isKindOfClass:[NSNumber class]]) d = [(NSNumber *)v doubleValue];
+    else if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) d = [(NSString *)v doubleValue];
+    else return NO;
+    if (!isfinite(d)) return NO;
+    if (out) *out = d;
+    return YES;
+}
+// A usable fake GPS fix exists only when both coords are present AND in range.
+static inline BOOL ci_hasFakeCoord(void) {
+    double la, lo;
+    return ci_configDouble(@"latitude", &la) && ci_configDouble(@"longitude", &lo)
+        && fabs(la) <= 90.0 && fabs(lo) <= 180.0;
+}
 static inline BOOL getConfigBool(NSString *k) {
     id v = cfg()[k];
     if ([v isKindOfClass:[NSNumber class]]) return [v boolValue];
@@ -346,7 +372,7 @@ static void initMGKeyMap(void) {
             @"ProductType":@"ProductType", @"HardwareModel":@"HardwareModel",
             @"HWModelStr":@"HWModelStr", @"ModelNumber":@"ModelNumber",
             @"RegionCode":@"RegionCode", @"RegionInfo":@"RegionInfo",
-            @"WiFiAddress":@"WiFiAddress", @"BluetoothAddress":@"BluetoothAddress",
+            @"WiFiAddress":@"WiFiAddress", @"WifiAddress":@"WiFiAddress", @"BluetoothAddress":@"BluetoothAddress",
             @"EthernetAddress":@"EthernetAddress",
             @"BoardId":@"BoardId", @"HardwarePlatform":@"BoardId",
             @"ChipID":@"ChipID", @"FirmwareVersion":@"FirmwareVersion",
@@ -1000,13 +1026,17 @@ static void initSysctlMap(void) {
 static int writeStringSysctl(const char *s, void *oldp, size_t *oldlenp) {
     size_t need = strlen(s) + 1;
     if (!oldp) { if (oldlenp) *oldlenp = need; return 0; }
-    if (!oldlenp) return -1;
+    if (!oldlenp) { errno = EINVAL; return -1; }
     size_t avail = *oldlenp;
     if (avail < need) {
-        memcpy(oldp, s, avail);          // truncate, still set size
-        ((char*)oldp)[avail - 1] = 0;
-        *oldlenp = need;
-        return -1;                        // ENOMEM equivalent
+        // P1-2: never index oldp[avail-1] when avail==0 (out-of-bounds write).
+        if (avail > 0) {
+            memcpy(oldp, s, avail - 1);   // truncate, leave room for NUL
+            ((char*)oldp)[avail - 1] = 0;
+        }
+        *oldlenp = need;                  // report required size
+        errno = ENOMEM;
+        return -1;
     }
     memcpy(oldp, s, need);
     *oldlenp = need;
@@ -1724,6 +1754,7 @@ static void ci_dumpKeychain(void) {
     NSData *plist = [NSPropertyListSerialization dataWithPropertyList:out
                         format:NSPropertyListXMLFormat_v1_0 options:0 error:&serr];
     BOOL wrote = (plist.length > 0) && [plist writeToFile:path atomically:YES];
+    if (wrote) chmod([path fileSystemRepresentation], 0600);   // P0-2: keychain secret at rest, owner-only
     dbglog("Keychain.dump %s items=%lu serialized=%lu wrote=%d err=%s -> %s\n", g_procname,
            (unsigned long)out.count, (unsigned long)plist.length, (int)wrote,
            serr ? [[serr localizedDescription] UTF8String] : "-", [path UTF8String]);
@@ -2015,7 +2046,7 @@ static void ci_restoreKeychainIfFlagged(void) {
 // ============================================================
 %hook CLLocationManager
 + (BOOL)locationServicesEnabled {
-    if (getConfigStr(@"latitude")) return YES;
+    if (ci_hasFakeCoord()) return YES;
     return %orig;
 }
 + (int)authorizationStatus {
@@ -2027,12 +2058,12 @@ static void ci_restoreKeychainIfFlagged(void) {
     // Letting real notDetermined through makes the app show the real prompt; once
     // the user allows, this returns Always and startUpdatingLocation feeds fake.
     int real = %orig;
-    if (getConfigStr(@"latitude") && (real == 3 || real == 4)) return 3;
+    if (ci_hasFakeCoord() && (real == 3 || real == 4)) return 3;
     return real;
 }
 - (int)authorizationStatus {
     int real = %orig;
-    if (getConfigStr(@"latitude") && (real == 3 || real == 4)) return 3;
+    if (ci_hasFakeCoord() && (real == 3 || real == 4)) return 3;
     return real;
 }
 - (void)requestWhenInUseAuthorization {
@@ -2045,14 +2076,14 @@ static void ci_restoreKeychainIfFlagged(void) {
     %orig;
 }
 - (void)startUpdatingLocation {
-    NSString *latS = getConfigStr(@"latitude");
-    NSString *lonS = getConfigStr(@"longitude");
-    if (!latS || !lonS) {
+    double la, lo;
+    if (!ci_configDouble(@"latitude", &la) || !ci_configDouble(@"longitude", &lo) ||
+        fabs(la) > 90.0 || fabs(lo) > 180.0) {   // P0-5: fail-closed, never leak real GPS
         %orig;
         return;
     }
-    CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
-    double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
+    CLLocationCoordinate2D c = {la, lo};
+    double alt = 15.0; ci_configDouble(@"altitude", &alt);
     CLLocation *fake = [[CLLocation alloc] initWithCoordinate:c
                 altitude:alt horizontalAccuracy:10.0 verticalAccuracy:5.0
                 timestamp:[NSDate date]];
@@ -2083,9 +2114,9 @@ static void ci_restoreKeychainIfFlagged(void) {
     /* no-op */
 }
 - (CLLocation *)location {
-    NSString *latS = getConfigStr(@"latitude");
-    NSString *lonS = getConfigStr(@"longitude");
-    if (!latS || !lonS) return %orig;
+    double la, lo;
+    if (!ci_configDouble(@"latitude", &la) || !ci_configDouble(@"longitude", &lo) ||
+        fabs(la) > 90.0 || fabs(lo) > 180.0) return %orig;   // P0-5: fail-closed
     // Only hand out a fake fix when location is ACTUALLY authorized. A
     // notDetermined/denied app whose -location returns a real coordinate is an
     // impossible iOS state (no auth -> nil) that anti-fraud flags. [self
@@ -2094,8 +2125,8 @@ static void ci_restoreKeychainIfFlagged(void) {
     // to %orig (which is nil for an unauthorized app) → stays consistent.
     int st = (int)[self authorizationStatus];
     if (st != 3 && st != 4) return %orig;
-    CLLocationCoordinate2D c = {latS.doubleValue, lonS.doubleValue};
-    double alt = getConfigStr(@"altitude") ? [getConfigStr(@"altitude") doubleValue] : 15.0;
+    CLLocationCoordinate2D c = {la, lo};
+    double alt = 15.0; ci_configDouble(@"altitude", &alt);
     return [[CLLocation alloc] initWithCoordinate:c altitude:alt
             horizontalAccuracy:5.0 verticalAccuracy:3.0 timestamp:[NSDate date]];
 }
@@ -2822,15 +2853,22 @@ static BOOL ci_isJBBundleID(NSString *bid) {
 %end
 
 // ============================================================
-// LAYER 10: dyld image list hiding + open() JB path blocking.
+// LAYER 10: dyld image list hiding — PARTIAL (count + name only).
 //
 // Anti-fraud SDKs (Zalo / TikTok) call _dyld_image_count() then
 // iterate _dyld_get_image_name(i) looking for:
 //   "substrate", "ellekit", "ChangeInfoIos", "/var/jb/" paths.
-// We present a filtered view that skips all JB-related images.
+// We present a filtered view that skips JB-related images.
 //
-// open() hook: complements stat/lstat/access — some SDKs call
-// open(path, O_RDONLY) to check JB file existence.
+// HONESTY (P1-1): this hides ONLY the image COUNT and NAME list. The following
+// still return the REAL, unfiltered set and can expose the injection to a
+// determined SDK — do NOT advertise this as a full/deep JB hide:
+//   - _dyld_get_image_header(i) / _dyld_get_image_vmaddr_slide(i)
+//   - dladdr()
+//   - the ObjC image list (objc_copyImageNames / class_getImageName)
+// The file-existence side (stat/lstat/access/fopen) is the intended stable set;
+// a global open()/openat() hook is deliberately NOT installed (it tripped
+// Zalo's FrontBoard scene-create watchdog).
 // ============================================================
 
 static const char * const kDyldHide[] = {
@@ -3538,71 +3576,6 @@ static void ci_runOneShotIfDue(void) {
 }
 
 // ============================================================
-// VIBER IDENTITY SNAPSHOT (cross-device "1st restore = login" debug)
-// Runs ONCE at ctor (NOT in the MG hot path → no watchdog risk). For every
-// device-identity key, logs what the tweak PRESENTS (spoof, from config) vs the
-// REAL hardware value (orig_MGCopyAnswer) — so we can see which identifier (if
-// any) still leaks the REAL device to Viber on a restored-to-another-phone login.
-// Written to Viber's OWN Documents (sandbox blocks /var/jb writes); the app's
-// 3-finger log viewer shell-reads it.
-// ============================================================
-static int g_isViber = -1;
-static char g_vlogPath[512] = "";
-static char g_vlogResolved = 0;
-static int ci_isViberProc(void) {
-    if (g_isViber < 0) { const char *pn = getprogname(); g_isViber = (pn && strstr(pn, "Viber")) ? 1 : 0; }
-    return g_isViber;
-}
-static void ci_viberlog(const char *line) {
-    if (!ci_isViberProc()) return;
-    if (!g_vlogResolved) {
-        g_vlogResolved = 1;
-        @autoreleasepool {
-            NSString *home = NSHomeDirectory();
-            if (home.length) {
-                NSString *p = [[home stringByAppendingPathComponent:@"Documents"]
-                               stringByAppendingPathComponent:@"viber_idquery.log"];
-                strncpy(g_vlogPath, [p UTF8String], sizeof(g_vlogPath) - 1);
-            }
-        }
-    }
-    if (!g_vlogPath[0]) return;
-    FILE *f = fopen(g_vlogPath, "a");
-    if (!f) return;
-    fputs(line, f);
-    fclose(f);
-}
-static void ci_dumpViberIdentity(void) {
-    if (!ci_isViberProc() || !orig_MGCopyAnswer) return;
-    @autoreleasepool {
-        NSDateFormatter *df = [NSDateFormatter new]; df.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-        ci_viberlog([[NSString stringWithFormat:@"===== VIBER ID SNAPSHOT %@ =====\n",
-                      [df stringFromDate:[NSDate date]]] UTF8String]);
-        NSArray *keys = @[ @"UniqueDeviceID", @"SerialNumber", @"UniqueChipID", @"MLBSerialNumber",
-            @"IntegratedCircuitCardIdentity", @"IntegratedCircuitCardIdentity2",
-            @"MobileEquipmentIdentifier", @"InternationalMobileEquipmentIdentity",
-            @"InternationalMobileEquipmentIdentity2", @"BluetoothAddress", @"WifiAddress",
-            @"EthernetAddress", @"DeviceColor", @"DeviceEnclosureColor", @"ProductType",
-            @"HardwareModel", @"ModelNumber", @"BoardId", @"RegionInfo", @"HWModelStr",
-            @"BasebandSerialNumber", @"DiskUsage", @"UserAssignedDeviceName", @"DeviceName" ];
-        for (NSString *k in keys) {
-            NSString *cfgKey = g_mgKeyMap[k];
-            NSString *spoof = cfgKey ? getConfigStr(cfgKey) : nil;
-            CFTypeRef rv = orig_MGCopyAnswer((__bridge CFStringRef)k);
-            NSString *real = rv ? [(__bridge id)rv description] : @"(nil)";
-            const char *leak = (spoof.length && ![spoof isEqualToString:real]) ? "" :
-                               (spoof.length ? " <-- spoof==real" : " <-- NOT SPOOFED (real leaks)");
-            ci_viberlog([[NSString stringWithFormat:@"ID %@ spoof=%@ real=%@%s\n",
-                          k, spoof ?: @"(none)", real, leak] UTF8String]);
-            if (rv) CFRelease(rv);
-        }
-        NSString *idfv = getConfigStr(@"identifierForVendor");
-        ci_viberlog([[NSString stringWithFormat:@"ID identifierForVendor spoof=%@%s\n",
-                      idfv ?: @"(none)", idfv.length ? "" : " <-- NOT SPOOFED (real IDFV leaks)"] UTF8String]);
-    }
-}
-
-// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) {
@@ -3625,6 +3598,17 @@ static void notify_cb(int t) {
         if (pn && pn[0]) g_procname = pn;
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
+
+        // P0-2: with debug OFF (release default) remove any stale artifacts a
+        // previous debug build left in THIS app's own sandbox, so the target app
+        // cannot scan its own container and flag the injection.
+        if (!ci_dbgEnabled()) {
+            NSString *tmp = NSTemporaryDirectory();
+            if (tmp.length) unlink([[tmp stringByAppendingPathComponent:@"v3_mg_debug.log"] fileSystemRepresentation]);
+            NSString *home = NSHomeDirectory();
+            if (home.length) unlink([[[home stringByAppendingPathComponent:@"Documents"]
+                stringByAppendingPathComponent:@"viber_idquery.log"] fileSystemRepresentation]);
+        }
 
         // v4.0.4: lightweight mode for two Apple system apps. The Logos %hook
         // on CLLocationManager is already registered before this point, so the
@@ -3949,7 +3933,7 @@ static void notify_cb(int t) {
                 if (isViber || getConfigBool(@"zaloKeepLogin")) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
                                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                        @autoreleasepool { ci_dumpKeychain(); ci_dumpViberIdentity(); }
+                        @autoreleasepool { ci_dumpKeychain(); }
                     });
                 }
             }

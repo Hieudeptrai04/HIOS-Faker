@@ -422,13 +422,16 @@ static NSString *CIRRSDir(void) {
         double lat = [parts[0] doubleValue];
         double lng = [parts[1] doubleValue];
         if (lat == 0 && lng == 0) { finish(NO, city, country, @"zero coord"); return; }
-        // Update — keep numeric type for lat/lng (tweak reads as NSNumber).
-        [self setObject:@(lat) forKey:@"latitude"];
-        [self setObject:@(lng) forKey:@"longitude"];
+        // P0-5: store coords as NSString (%.6f/%.2f) — the SAME type every other
+        // geo writer uses. The old NSNumber write was invisible to the tweak's
+        // getConfigStr, so after a proxy/GPS sync the CLLocation hook saw "no
+        // coordinate" and leaked the REAL device GPS.
+        [self setObject:[NSString stringWithFormat:@"%.6f", lat] forKey:@"latitude"];
+        [self setObject:[NSString stringWithFormat:@"%.6f", lng] forKey:@"longitude"];
         if (tz.length) [self setObject:tz forKey:@"timezoneName"];
         if (country.length) [self setObject:country forKey:@"localeCountryCode"];
         // Refresh altitude to a plausible value (city default = sea-level + small).
-        [self setObject:@(15.0) forKey:@"altitude"];
+        [self setObject:[NSString stringWithFormat:@"%.2f", 15.0] forKey:@"altitude"];
         [self save];
         finish(YES, city, country, nil);
     }];
@@ -3421,7 +3424,7 @@ static NSDictionary *ci_hostDumpKeychainForBundle(NSString *bundleID, NSString *
         NSString *safeNew     = [newPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
         NSString *safeFinal   = [finalPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
         int pubRC = ci_run([[NSString stringWithFormat:
-            @"mkdir -p '%@' && cp -f '%@' '%@' && chmod 0644 '%@' && mv -f '%@' '%@'",
+            @"mkdir -p '%@' && cp -f '%@' '%@' && chmod 0600 '%@' && mv -f '%@' '%@'",
             safeTmpDir, safeScratch, safeNew, safeNew, safeNew, safeFinal] UTF8String]);
         published = (pubRC == 0);
         if (!published) pubReason = [NSString stringWithFormat:@"publish_rc_%d", pubRC];
@@ -8351,12 +8354,15 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     ]]];
 
     [all addObject:[C section:@"Push Tokens (anti-correlation)" icon:@"🔔" rows:@[
-        [C row:@"VoIP Push Token"   key:@"apnsTokenSpoof"],  // ZCH-05: chỉ VoIP (PKPushRegistry); standard APNS KHÔNG spoof
+        // P1-4: VoIP token via PKPushRegistry (this toggle) + LAYER 22 swizzles the
+        // STANDARD APNS deviceToken. Push-delivery impact after Change/Restore is
+        // NOT runtime-verified — a fabricated token may cause APNS to drop pushes.
+        [C row:@"APNS + VoIP Push Token" key:@"apnsTokenSpoof"],
         [C rowWithLabel:@"VoIP Token Spoof" value:[C voipTokenPreview]],
     ]]];
 
     [all addObject:[C section:@"Anti-Fraud Layers" icon:@"🛡️" rows:@[
-        [C row:@"Hide Jailbreak" key:@"hideJailbreak"],
+        [C row:@"Hide Jailbreak (cơ bản/partial)" key:@"hideJailbreak"],
         [C row:@"Keychain Reset" key:@"keychainReset"],
         [C row:@"Clear Pasteboard" key:@"clearPasteboard"],
     ]]];
@@ -12403,21 +12409,8 @@ static UIViewController *ci_topVC(UIViewController *root) {
 - (NSString *)collect {
     NSMutableString *s = [NSMutableString string];
 
-    // Pull Viber's id-query snapshot out of its sandbox to a readable spot.
-    ci_run("VLOG=$(find /var/mobile/Containers/Data/Application -maxdepth 4 "
-           "-path '*Documents/viber_idquery.log' 2>/dev/null | head -1); "
-           "[ -n \"$VLOG\" ] && cp -f \"$VLOG\" /var/jb/etc/changeinfoios/viber_idquery.log 2>/dev/null; "
-           "chmod 0644 /var/jb/etc/changeinfoios/viber_idquery.log 2>/dev/null");
-
-    NSString *vid = [NSString stringWithContentsOfFile:@"/var/jb/etc/changeinfoios/viber_idquery.log"
-                                              encoding:NSUTF8StringEncoding error:nil];
-    if (vid.length) {
-        [s appendString:@"==== VIBER ID SNAPSHOT (mở Viber rồi chờ ~5s để cập nhật) ====\n"];
-        [s appendString:vid];
-        [s appendString:@"\n"];
-    } else {
-        [s appendString:@"(chưa có viber_idquery.log — mở Viber 1 lần, chờ ~5s, rồi mở lại đây)\n\n"];
-    }
+    // P0-2: removed the viber_idquery.log snapshot (it copied REAL device IDs out of
+    // Viber's sandbox to a world-readable path). The tweak no longer produces it.
 
     NSString *p = @"/var/jb/etc/changeinfoios/restoreEntry.log";
     NSString *c = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
