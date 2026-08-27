@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.36";
+static NSString *const kAppVersion = @"4.3.37";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3934,6 +3934,20 @@ static BOOL ci_isNoInjectBundle(NSString *bid) {
     return bid.length && [s containsObject:bid];
 }
 
+// These Apple apps are part of every Change Device run even when the picker did
+// not select them. Their data is also cleared by dedicated deep-wipe routines,
+// so LaunchServices not exposing a normal app/container record must not block
+// an otherwise valid Zalo/Viber reset.
+static BOOL ci_isSystemAlwaysIncludeBundle(NSString *bid) {
+    static NSSet<NSString *> *s = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s = [NSSet setWithObjects:
+             @"com.apple.mobilesafari", @"com.apple.Maps", @"com.apple.weather", nil];
+    });
+    return bid.length && [s containsObject:bid];
+}
+
 // ITEM 3 — STATIC, READ-ONLY verification of a SHIPPED tweak filter file. The app
 // no longer WRITES these filters at runtime from the (sandboxed) mobile host; the
 // final MG/CT filter ships baked in the package (Zalo listed), and the app only
@@ -4129,9 +4143,11 @@ static BOOL ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSSt
 // (real regular file, Mode="Any", non-empty Bundles/Executables, every REQUIRED
 // bundle present), verified independently from `requiredBids`. No runtime write.
 // LOADER/INJECTION remain UNVERIFIED — see ci_staticFilterVerify.
-static BOOL ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
-    BOOL sidecarVerified = ci_syncSidecarFilterForApps(apps, requiredBids);
-    BOOL carrierVerified = ci_syncCarrierFilterForApps(apps, requiredBids);
+static BOOL ci_syncTweakFilterForApps(NSArray<CIAppInfo *> *apps,
+                                      NSArray<NSString *> *mgRequiredBids,
+                                      NSArray<NSString *> *ctRequiredBids) {
+    BOOL sidecarVerified = ci_syncSidecarFilterForApps(apps, mgRequiredBids);
+    BOOL carrierVerified = ci_syncCarrierFilterForApps(apps, ctRequiredBids);
     return sidecarVerified && carrierVerified;
 
 #if 0
@@ -9895,6 +9911,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         NSString *liveContainer = ci_findDataContainerForBundle(bid);
         CIAppInfo *matched = nil;
         for (CIAppInfo *a in targets) if ([a.bundleID isEqualToString:bid]) { matched = a; break; }
+        if (ci_isSystemAlwaysIncludeBundle(bid)) {
+            // Safari/Maps/Weather can be absent from the third-party app scan and
+            // can temporarily have no LS data-container record. Dedicated system
+            // wipes below still run; refresh the path when LS does provide one.
+            if (matched && liveContainer.length) matched.containerPath = liveContainer;
+            continue;
+        }
         if (![resolvedBids containsObject:bid] || !matched.bundlePath.length || !liveContainer.length) {
             [unresolvedBids addObject:bid];
         } else {
@@ -9923,16 +9946,23 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // filters at runtime; it only confirms the baked package filters exist, are
     // well-formed (Mode="Any", non-empty Bundles, real regular file not a symlink) and
     // cover the INJECTABLE target we gate on.
-    // Every user-selected injectable app must be present in BOTH shipped filters.
+    // Every user-selected third-party injectable app must be present in BOTH
+    // shipped filters. Safari/Maps use only the MG sidecar; Weather is wipe-only.
     // Wiping an unsupported app while silently leaving it on the real environment
     // is unsafe and was the reason Viber could be reset without receiving the new
-    // profile. Always-included Apple apps are added later and are not in resetBids.
-    NSMutableArray<NSString *> *gateBidsM = [NSMutableArray array];
-    for (NSString *bid in resetBids)
-        if (!ci_isNoInjectBundle(bid)) [gateBidsM addObject:bid];
-    NSArray<NSString *> *gateBids = [gateBidsM copy];
-    BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), gateBids) &&
-                          ci_staticFilterVerify(CICTTweakFilterPath(), gateBids);
+    // profile. targetBundles may already contain the always-included Apple apps
+    // from a prior run, so split MG and CT requirements explicitly.
+    NSMutableArray<NSString *> *mgGateBidsM = [NSMutableArray array];
+    NSMutableArray<NSString *> *ctGateBidsM = [NSMutableArray array];
+    for (NSString *bid in resetBids) {
+        if (ci_isNoInjectBundle(bid)) continue;
+        [mgGateBidsM addObject:bid];
+        if (!ci_isSystemAlwaysIncludeBundle(bid)) [ctGateBidsM addObject:bid];
+    }
+    NSArray<NSString *> *mgGateBids = [mgGateBidsM copy];
+    NSArray<NSString *> *ctGateBids = [ctGateBidsM copy];
+    BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), mgGateBids) &&
+                          ci_staticFilterVerify(CICTTweakFilterPath(), ctGateBids);
     if (!filterVerified) {
         [self alert:@"Chưa thay đổi dữ liệu"
                 msg:@"Filter MG/CT trong gói chưa bao phủ toàn bộ app đã chọn. Không đổi identity và không xóa dữ liệu; hãy cài đúng bản deb mới rồi thử lại."];
@@ -10051,7 +10081,6 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     for (NSString *bid in kSystemAlwaysInclude) {
         if ([addedBids containsObject:bid]) continue;
         NSString *dataPath = ci_findDataContainerForBundle(bid);
-        if (dataPath.length == 0) continue;
         CIAppInfo *synthetic = [CIAppInfo new];
         synthetic.bundleID = bid;
         synthetic.containerPath = dataPath;
@@ -10229,8 +10258,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         BOOL cfgReadback = ci_criticalConfigReadback(cm, allBids, wipeGen, counter, wipeDeadline);
         // CODEX P0-1 — RE-VERIFY the shipped filter here and GATE the wipe on it: if the
         // filter was swapped/deleted between preflight and now, we must NOT wipe (the
-        // tweak would not inject → data loss for nothing). gateBids = injectable target only.
-        BOOL filterOK = ci_syncTweakFilterForApps(fullTargets, gateBids);
+        // tweak would not inject → data loss for nothing). MG and CT intentionally
+        // have different system-app coverage, so re-check their separate gate lists.
+        BOOL filterOK = ci_syncTweakFilterForApps(fullTargets, mgGateBids, ctGateBids);
         if (!mirrorSaved || !cfgReadback || !filterOK) {
             NSLog(@"[ChangeInfoIos] PRE-WIPE ABORT: mirrorSaved=%d cfgReadback=%d filterOK=%d", mirrorSaved, cfgReadback, filterOK);
             NSMutableArray<NSString *> *why = [NSMutableArray array];

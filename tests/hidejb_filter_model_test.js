@@ -194,10 +194,12 @@ function wipeVerify(app){   // app: {name, subs:[{rmRc,mkdirRc,emptyRc}], lastRc
 // MODEL of the preflight filter gate: every user-selected injectable app must
 // be covered. A wipe-only unsupported app is unsafe because it receives no profile.
 function filterGate(mgBundles, ctBundles, resetBids){
-  const gateBids = resetBids.filter(bid => bid !== 'com.apple.weather');
+  const systemAlways = new Set(['com.apple.mobilesafari','com.apple.Maps','com.apple.weather']);
+  const mgGateBids = resetBids.filter(bid => bid !== 'com.apple.weather');
+  const ctGateBids = resetBids.filter(bid => bid !== 'com.apple.weather' && !systemAlways.has(bid));
   const mg = {Filter:{Bundles:mgBundles, Mode:'Any'}};
   const ct = {Filter:{Bundles:ctBundles, Mode:'Any'}};
-  return staticFilterVerify(true, mg, gateBids) && staticFilterVerify(true, ct, gateBids);
+  return staticFilterVerify(true, mg, mgGateBids) && staticFilterVerify(true, ct, ctGateBids);
 }
 
 // identity keys mirrored from ci_configMirrorMatches (drift guard verifies vs source).
@@ -327,8 +329,12 @@ eq('pre-wipe abort gates on filterOK (P0-1)',
 const idxStage = asrc.indexOf('pre-wipe gate OK');
 const idxWiped = asrc.indexOf('Step 2 done: VERIFIED-wiped');
 eq('config+filter gate BEFORE wipe', idxStage > 0 && idxWiped > 0 && idxStage < idxWiped, true);
-eq('filter gate covers every selected injectable bundle',
-   /for\s*\(NSString \*bid in resetBids\)[\s\S]*?ci_isNoInjectBundle\(bid\)[\s\S]*?gateBidsM addObject:bid/.test(asrc), true);
+eq('filter gate builds separate MG and CT requirements',
+   /for\s*\(NSString \*bid in resetBids\)[\s\S]*?mgGateBidsM addObject:bid[\s\S]*?ci_isSystemAlwaysIncludeBundle\(bid\)[\s\S]*?ctGateBidsM addObject:bid/.test(asrc), true);
+eq('strict unresolved preflight exempts always-included system apps',
+   /for\s*\(NSString \*bid in resetBids\)[\s\S]*?if\s*\(ci_isSystemAlwaysIncludeBundle\(bid\)\)[\s\S]*?continue;[\s\S]*?unresolvedBids addObject:bid/.test(asrc), true);
+eq('system targets are synthesized even without an LS data container',
+   /NSString \*dataPath = ci_findDataContainerForBundle\(bid\);\s*CIAppInfo \*synthetic/.test(asrc), true);
 // Blocker 5: every persisted targetBundles entry validated as a non-empty NSString.
 eq('resetBids entries validated as non-empty NSString',
    /isKindOfClass:\[NSString class\]\]\s*&&\s*\[\(NSString \*\)b length\]/.test(asrc), true);
@@ -479,6 +485,12 @@ eq('Zalo + Viber → both filters cover both',
 eq('unsupported WhatsApp → fail before wipe',
    filterGate(MG_BAKED, CT_BAKED, ['com.whatsapp.WhatsApp']), false);
 eq('no-inject Weather is skipped', filterGate(MG_BAKED, CT_BAKED, ['com.apple.weather']), true);
+eq('Safari is MG-only and does not require CT coverage',
+   filterGate(MG_BAKED, CT_BAKED, ['com.apple.mobilesafari']), true);
+eq('Maps is MG-only and does not require CT coverage',
+   filterGate(MG_BAKED, CT_BAKED, ['com.apple.Maps']), true);
+eq('COUNTEREXAMPLE Safari still requires MG coverage',
+   filterGate(['vn.com.vng.zingalo'], CT_BAKED, ['com.apple.mobilesafari']), false);
 eq('COUNTEREXAMPLE Zalo requested but MG filter lacks Zalo → gate fails',
    filterGate(['com.apple.mobilesafari'], CT_BAKED, ['vn.com.vng.zingalo']), false);
 eq('COUNTEREXAMPLE Zalo requested but CT filter lacks Zalo → gate fails',
