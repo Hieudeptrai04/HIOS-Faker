@@ -12,6 +12,8 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <notify.h>
 #import <time.h>
+#import <stdio.h>
+#import <string.h>
 #import <os/lock.h>
 #import <CommonCrypto/CommonCrypto.h>
 
@@ -22,6 +24,7 @@ static NSString *const kAppNote    = @"com.changeinfoios/ReloadPrefs";
 
 static NSDictionary *g_config = nil;
 static int g_licOK = 0;
+static int g_targetOK = 0;
 static dispatch_once_t g_loadOnce;
 // g_config is reassigned from the main-queue reload notifications while CT
 // getters read it on arbitrary host-app threads. Under ARC the reassignment
@@ -73,12 +76,28 @@ static int ct_computeLicOK(NSDictionary *d) {
     return (strcmp(hex, [sig UTF8String]) == 0) ? 1 : 0;
 }
 
+static int ct_targetsCurrentProcess(NSDictionary *d) {
+    id raw = d[@"targetBundles"];
+    if (![raw isKindOfClass:[NSArray class]] || [(NSArray *)raw count] == 0) return 0;
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid.length) return 0;
+    for (id item in (NSArray *)raw) {
+        if (![item isKindOfClass:[NSString class]] || ![(NSString *)item length]) continue;
+        NSString *target = (NSString *)item;
+        if ([bid isEqualToString:target] ||
+            [bid hasPrefix:[target stringByAppendingString:@"."]]) return 1;
+    }
+    return 0;
+}
+
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
     int ok = ct_computeLicOK(d);
+    int targetOK = ct_targetsCurrentProcess(d);
     os_unfair_lock_lock(&g_cfgLock);
     g_config = d;
     g_licOK = ok;
+    g_targetOK = targetOK;
     os_unfair_lock_unlock(&g_cfgLock);
 }
 
@@ -87,7 +106,7 @@ static inline NSDictionary *cfg(void) {
     os_unfair_lock_lock(&g_cfgLock);
     // Fail-closed: unlicensed → empty config → every carrier getter returns
     // %orig (real), matching tweak-mg.
-    NSDictionary *snapshot = g_licOK ? g_config : @{};   // ARC retains while we hold the lock
+    NSDictionary *snapshot = (g_licOK && g_targetOK) ? g_config : @{};
     os_unfair_lock_unlock(&g_cfgLock);
     return snapshot;                      // caller owns its own strong ref
 }
@@ -204,7 +223,8 @@ static void notify_cb(int token) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
 
         // Stealth (4.0.11): only drop the load-marker when debugging is enabled.
-        if (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0) {
+        if (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0 &&
+            access("/var/jb/etc/changeinfoios/.debug.off", F_OK) != 0) {
             NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
             NSString *body = [NSString stringWithFormat:@"%@ %ld carrier=%@/%@/%@\n",
                               exec, (long)time(NULL),

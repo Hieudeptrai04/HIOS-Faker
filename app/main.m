@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.34";
+static NSString *const kAppVersion = @"4.3.35";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -158,11 +158,8 @@ static NSString *CIRRSDir(void) {
     // stop the tweak wiping Viber's keychain/app-group so an existing login persists.
     if (_cfg[@"viberKeepLogin"]  == nil) { _cfg[@"viberKeepLogin"]  = @(NO);  seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
-    // Hardware lock default OFF: keep the FAKE model (the tweak now spoofs the
-    // SoC profile — cpufamily/cache — to match the faked model, so consistency
-    // no longer requires claiming the real model). Optional: turn it ON to claim
-    // the real device model for maximum consistency.
-    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
+    // Keep the claimed model/chip/screen on the physical hardware by default.
+    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
     // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
     // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
     // real device → show iPhone X), and a high chip can't be faked GPU-
@@ -304,14 +301,33 @@ static NSString *CIRRSDir(void) {
     NSLog(@"[ChangeInfoIos] save FINAL: fileOK=%d exists=%d sz=%llu path=%@",
           fileOK, exists, sz, kSharedPrefPath);
 
-    // Strategy 5: also push every key through CFPreferences. The tweak running
+    // Build the target-readable subset once and use it for both publication
+    // channels. App-only proxy/login/API credentials must never be exposed to
+    // every injected App Store process through cfprefsd or the shared mirror.
+    NSMutableDictionary *mirror = [_cfg mutableCopy];
+    static NSArray *kMirrorExclude = nil;
+    static dispatch_once_t exOnce;
+    dispatch_once(&exOnce, ^{
+        kMirrorExclude = @[
+            @"proxyString", @"proxyHost", @"proxyPort", @"proxyType",
+            @"proxyUser", @"proxyPassword", @"proxyEnabled",
+            @"proxyApiUrl", @"proxyApiEnabled", @"ip_api_url",
+            @"loginUser", @"loginPass", @"licenseKey",
+        ];
+    });
+    for (NSString *k in kMirrorExclude) [mirror removeObjectForKey:k];
+
+    // Strategy 5: also push the target-readable subset through CFPreferences. The tweak running
     // inside an App Store app's sandbox can't read /var/mobile/Library/Prefs
     // directly, but it CAN read via CFPreferencesCopyValue (cfprefsd brokers
     // the access). Without this, hooks load but configLoaded stays NO and
     // every getter falls through %orig — i.e. "Change" never takes effect.
     CFStringRef appID = CFSTR("com.changeinfoios");
-    for (NSString *k in _cfg) {
-        id v = _cfg[k];
+    for (NSString *k in kMirrorExclude)
+        CFPreferencesSetValue((__bridge CFStringRef)k, NULL,
+                              appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    for (NSString *k in mirror) {
+        id v = mirror[k];
         if (v) CFPreferencesSetValue((__bridge CFStringRef)k, (__bridge CFPropertyListRef)v,
                                      appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
     }
@@ -337,18 +353,6 @@ static NSString *CIRRSDir(void) {
         // mirror so a probe that opens config.plist can't lift proxy host/port/user/
         // password or the rotating-proxy/geo API URLs. (_ci_lic_tok stays — the
         // tweak license gate needs it, and it is HMAC-signed, not a usable secret.)
-        NSMutableDictionary *mirror = [_cfg mutableCopy];
-        static NSArray *kMirrorExclude = nil;
-        static dispatch_once_t exOnce;
-        dispatch_once(&exOnce, ^{
-            kMirrorExclude = @[
-                @"proxyString", @"proxyHost", @"proxyPort", @"proxyType",
-                @"proxyUser", @"proxyPassword", @"proxyEnabled",
-                @"proxyApiUrl", @"proxyApiEnabled", @"ip_api_url",
-                @"loginUser", @"loginPass", @"licenseKey",
-            ];
-        });
-        for (NSString *k in kMirrorExclude) [mirror removeObjectForKey:k];
         NSData *data = [NSPropertyListSerialization
             dataWithPropertyList:mirror
                           format:NSPropertyListBinaryFormat_v1_0
@@ -1317,6 +1321,24 @@ static NSString *ci_realProductType(void) {
     return m.length ? m : nil;
 }
 
+// HardwareModel/HWModelStr use Apple board-config codes, not ProductType.
+static NSString *ci_boardConfigForProductType(NSString *pt) {
+    static NSDictionary<NSString *, NSString *> *m = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        m = @{
+            @"iPhone8,1":@"N71AP",   @"iPhone8,2":@"N66AP",   @"iPhone8,4":@"N69AP",
+            @"iPhone9,1":@"D10AP",   @"iPhone9,2":@"D11AP",
+            @"iPhone10,1":@"D20AP",  @"iPhone10,2":@"D21AP",  @"iPhone10,3":@"D22AP",
+            @"iPhone10,6":@"D221AP", @"iPhone11,2":@"D321AP", @"iPhone11,6":@"D331pAP",
+            @"iPhone11,8":@"N841AP", @"iPhone12,1":@"N104AP", @"iPhone12,3":@"D421AP",
+            @"iPhone12,5":@"D431AP", @"iPhone12,8":@"D79AP",  @"iPhone13,1":@"D52gAP",
+            @"iPhone13,2":@"D53gAP", @"iPhone13,3":@"D53pAP", @"iPhone13,4":@"D54pAP",
+        };
+    });
+    return pt.length ? m[pt] : nil;
+}
+
 // Valid storage capacities (GB) per model — REAL Apple SKUs only. Prevents
 // impossible combos (512GB iPhone 12, 64GB iPhone 12 Pro, ...) that anti-fraud
 // flags. Sources: 9to5mac iPhone storage list + Apple spec pages.
@@ -1510,7 +1532,14 @@ static NSUInteger ci_randomizeIdentities(void) {
     // force the spoofed model to the REAL device model so the hardware profile is
     // genuinely consistent; only the unique IDs (serial/UDID/IMEI/MAC/IDFA) rotate.
     id hwLockObj = [cm objectForKey:@"_ci_hw_lock"];
-    BOOL hwLock = hwLockObj ? [hwLockObj boolValue] : NO;
+    BOOL hwLock = hwLockObj ? [hwLockObj boolValue] : YES;
+    NSArray *liveTargets = [cm targetBundles];
+    BOOL sensitiveTarget = [liveTargets containsObject:@"com.viber"] ||
+                           [liveTargets containsObject:@"vn.com.vng.zingalo"];
+    if (sensitiveTarget && !hwLock) {
+        hwLock = YES;
+        [cm setObject:@(YES) forKey:@"_ci_hw_lock"];
+    }
     if (hwLock) {
         NSString *realPT = ci_realProductType();
         if (realPT.length) {
@@ -1567,6 +1596,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSString *modelName  = preset[0];
     NSString *productTyp = preset[1];
     NSString *hwMachine  = preset[2];
+    NSString *boardConfig = ci_boardConfigForProductType(productTyp) ?: hwMachine;
     NSString *chipIDHex  = preset.count > 10 ? preset[10] : @"0x8101";
     NSString *boardIDHex = preset.count > 11 ? preset[11] : @"0x18";
     NSNumber *ramBytes   = preset.count > 12 ? preset[12] : @(4294967296);
@@ -1574,19 +1604,20 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSArray  *colors     = preset.count > 16 ? preset[16] : @[@"Black"];
 
     // Apply model preset
-    // deviceModel = full consumer name ("iPhone 15 Pro Max") so UIDevice.model hook
-    // returns something meaningful instead of generic "iPhone"
-    [cm setObject:modelName  forKey:@"deviceModel"];
-    [cm setObject:modelName  forKey:@"localizedModel"];
+    // Real UIDevice.model/localizedModel report the generic device family.
+    [cm setObject:@"iPhone" forKey:@"deviceModel"];
+    [cm setObject:@"iPhone" forKey:@"localizedModel"];
+    [cm setObject:modelName forKey:@"MarketingName"];
     // ZCH-06 R2 FIX: real -[UIDevice systemName] returns "iOS", never "iPhone".
     // The MG hook returns config["systemName"] verbatim (tweak-mg:1808), so the
     // old "iPhone" leaked a value no genuine device ever reports.
     [cm setObject:@"iOS"     forKey:@"systemName"];
     [cm setObject:productTyp forKey:@"ProductType"];
     [cm setObject:hwMachine  forKey:@"hw_machine"];
-    [cm setObject:hwMachine  forKey:@"HardwareModel"];
-    [cm setObject:hwMachine  forKey:@"HWModelStr"];     // align legacy alias to current preset
-    [cm setObject:hwMachine  forKey:@"hw_model"];       // align legacy alias to current preset
+    [cm setObject:boardConfig forKey:@"HardwareModel"];
+    [cm setObject:boardConfig forKey:@"HWModelStr"];
+    [cm setObject:boardConfig forKey:@"hw_model"];
+    [cm setObject:boardConfig forKey:@"IOBoardId"];
     [cm setObject:hwMachine  forKey:@"uname_machine"];
 
     // === Hardware capability booleans, derived from productType ===
@@ -5975,11 +6006,15 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 - (void)applyPreset:(NSArray *)p {
     // p = [name, productType, machine, w, h, scale, nativeW, nativeH, nativeScale]
     CIConfigManager *cm = [CIConfigManager shared];
-    [cm setObject:p[0] forKey:@"deviceModel"];     // full consumer name e.g. "iPhone 15 Pro Max"
-    [cm setObject:p[0] forKey:@"localizedModel"];  // same for UIDevice.localizedModel hook
+    [cm setObject:@"iPhone" forKey:@"deviceModel"];
+    [cm setObject:@"iPhone" forKey:@"localizedModel"];
     [cm setObject:p[1] forKey:@"ProductType"];     // internal identifier e.g. "iPhone15,2"
     [cm setObject:p[2] forKey:@"hw_machine"];
-    [cm setObject:p[2] forKey:@"HardwareModel"];   // MGCopyAnswer HWModelStr reads this key
+    NSString *boardConfig = ci_boardConfigForProductType(p[1]) ?: p[2];
+    [cm setObject:boardConfig forKey:@"HardwareModel"];
+    [cm setObject:boardConfig forKey:@"HWModelStr"];
+    [cm setObject:boardConfig forKey:@"hw_model"];
+    [cm setObject:boardConfig forKey:@"IOBoardId"];
     [cm setObject:p[2] forKey:@"uname_machine"];
     [cm setObject:@"iOS" forKey:@"systemName"];  // UIDevice.systemName hook (real = "iOS", ZCH-06 R2)
     [cm setObject:[NSString stringWithFormat:@"iPhone %@", p[0]] forKey:@"deviceName"];
@@ -6037,8 +6072,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
     [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
     [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
-    [_rows addObject:[C toggle:@"🔒 Khóa đúng máy thật (tùy chọn)" key:@"_ci_hw_lock" indent:24]];
-    [_rows addObject:[C note:@"TẮT (mặc định): giả model khác máy thật — tweak tự spoof cpufamily/cache theo chip của model giả (A11–A14, tới iPhone 12 Pro Max) để khớp. BẬT: luôn giả ĐÚNG model máy thật → khớp tuyệt đối nhưng đúng model thật; khi BẬT thanh chọn dải model bị bỏ qua." indent:24]];
+    [_rows addObject:[C toggle:@"🔒 Khóa đúng phần cứng thật (khuyên dùng)" key:@"_ci_hw_lock" indent:24]];
+    [_rows addObject:[C note:@"BẬT mặc định và được ép BẬT khi Change cho Zalo/Viber: giữ model/chip/màn hình nhất quán với máy thật; chỉ các ID duy nhất được đổi. Tắt chỉ dành cho kiểm thử vì GPU/board thật có thể làm lộ profile lệch." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
@@ -9851,6 +9886,31 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
     }
 
+    // Fail before changing identity when any persisted selection no longer
+    // resolves to a live app/container. Otherwise the run can succeed for only
+    // a subset while the UI still claims the whole selection was changed.
+    NSMutableSet<NSString *> *resolvedBids = [NSMutableSet set];
+    NSMutableArray<NSString *> *unresolvedBids = [NSMutableArray array];
+    for (CIAppInfo *a in targets) if (a.bundleID.length) [resolvedBids addObject:a.bundleID];
+    for (NSString *bid in resetBids) {
+        NSString *liveContainer = ci_findDataContainerForBundle(bid);
+        CIAppInfo *matched = nil;
+        for (CIAppInfo *a in targets) if ([a.bundleID isEqualToString:bid]) { matched = a; break; }
+        if (![resolvedBids containsObject:bid] || !matched.bundlePath.length || !liveContainer.length) {
+            [unresolvedBids addObject:bid];
+        } else {
+            // Always wipe the current LaunchServices container, never a cached UUID.
+            matched.containerPath = liveContainer;
+        }
+    }
+    if (unresolvedBids.count) {
+        [self alert:@"Chưa thay đổi dữ liệu"
+                msg:[NSString stringWithFormat:
+                     @"Không resolve đủ app/container đang chọn: %@.\nMở app đó một lần rồi thử lại.",
+                     [unresolvedBids componentsJoinedByString:@", "]]];
+        return;
+    }
+
     // P3 PREFLIGHT — resolve the ORIGINAL requested selection against LIVE installed
     // apps BEFORE any destructive/HUD/background/kill/save/filter/wipe/respring op.
     // If Zalo is requested it MUST resolve to a live app with bundlePath + main
@@ -9864,14 +9924,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     // filters at runtime; it only confirms the baked package filters exist, are
     // well-formed (Mode="Any", non-empty Bundles, real regular file not a symlink) and
     // cover the INJECTABLE target we gate on.
-    // IMPORTANT: require ONLY the injectable target (Zalo) — NOT every user-selected /
-    // persisted bundle. Selecting a non-baked app (e.g. WhatsApp) or a persisted
-    // always-include (Safari/Maps, which the CT filter intentionally omits) must NOT
-    // block the whole Zalo change: those apps are wipe-only and simply won't get the
-    // MG/CT spoof. Passing the full resetBids here was a false-abort regression.
-    NSArray<NSString *> *gateBids = [resetBids containsObject:kZaloBID] ? @[kZaloBID] : @[];
+    // Every user-selected injectable app must be present in BOTH shipped filters.
+    // Wiping an unsupported app while silently leaving it on the real environment
+    // is unsafe and was the reason Viber could be reset without receiving the new
+    // profile. Always-included Apple apps are added later and are not in resetBids.
+    NSMutableArray<NSString *> *gateBidsM = [NSMutableArray array];
+    for (NSString *bid in resetBids)
+        if (!ci_isNoInjectBundle(bid)) [gateBidsM addObject:bid];
+    NSArray<NSString *> *gateBids = [gateBidsM copy];
     BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), gateBids) &&
                           ci_staticFilterVerify(CICTTweakFilterPath(), gateBids);
+    if (!filterVerified) {
+        [self alert:@"Chưa thay đổi dữ liệu"
+                msg:@"Filter MG/CT trong gói chưa bao phủ toàn bộ app đã chọn. Không đổi identity và không xóa dữ liệu; hãy cài đúng bản deb mới rồi thử lại."];
+        return;
+    }
     if ([resetBids containsObject:kZaloBID]) {
         NSFileManager *fm = [NSFileManager defaultManager];
         NSMutableArray<NSString *> *missing = [NSMutableArray array];
@@ -11643,6 +11710,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         CIConfigManager *restoredCM = [CIConfigManager shared];
         [restoredCM load];
 
+        // Rebuild the live per-process allowlist from the snapshot manifest.
+        // Older .rrs files may have no targetBundles (or a stale selection from
+        // the source phone); without this the restored tweak correctly stays inert.
+        [restoredCM setTargetBundles:bundleIDs];
+
         // Push keychainReset=NO so the SecItemCopyMatching hook lets Zalo
         // read its keychain entries on next launch (instead of blocking
         // them — that block is meant for fresh-account registration).
@@ -11673,6 +11745,10 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         id publishedReset = publishedConfig[@"keychainReset"];
         if (![publishedReset respondsToSelector:@selector(boolValue)] || [publishedReset boolValue])
             configPublishOK = NO;
+        id publishedTargets = publishedConfig[@"targetBundles"];
+        if (![publishedTargets isKindOfClass:[NSArray class]] ||
+            ![[NSSet setWithArray:(NSArray *)publishedTargets]
+              isEqualToSet:[NSSet setWithArray:bundleIDs]]) configPublishOK = NO;
         if (!configPublishOK) {
             abortRestore(@"Đã chép dữ liệu nhưng không xác nhận được config môi trường cho tweak. Không mở app đích; hãy kiểm tra quyền ghi /var/jb/etc/changeinfoios rồi Restore lại.");
             return;

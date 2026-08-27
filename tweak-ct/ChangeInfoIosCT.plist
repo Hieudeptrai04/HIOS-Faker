@@ -19,12 +19,6 @@
 			<string>ph.telegra.Telegraph</string>
 			<string>com.viber</string>
 		</array>
-		<key>Executables</key>
-		<array>
-			<string>CommCenter</string>
-			<string>commcenter</string>
-			<string>CoreTelephonyHelper</string>
-		</array>
 		<key>Mode</key>
 		<string>Any</string>
 	</dict>

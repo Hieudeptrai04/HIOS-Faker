@@ -193,6 +193,8 @@ jobs:
 
           mkdir -p "$ETC" 2>/dev/null || true
           chmod 0777 "$ETC" 2>/dev/null || true
+          rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
+                "$ETC/v3_mg_debug.log" "$ETC/viber_idquery.log" 2>/dev/null || true
 
           if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
             while IFS= read -r h; do
@@ -216,7 +218,7 @@ jobs:
           Name: HIOS Faker v3
           Version: ${VERSION}
           Architecture: iphoneos-arm64
-          Description: ChangeInfoIos v3 — focused device-spoof for popular iOS apps. MobileGestalt + CoreTelephony hooks are injected into the selected target apps (incl. Zalo) via the MobileSubstrate filters, plus CoreTelephony daemons (CommCenter). Host app manages per-app spoof + data reset.
+          Description: ChangeInfoIos v3 — focused device-spoof for popular iOS apps. MobileGestalt + CoreTelephony hooks are injected into selected target apps through a runtime target allowlist. Host app manages per-app spoof + data reset.
           Maintainer: ChangeInfoIos
           Author: ChangeInfoIos
           Section: Tweaks
@@ -257,7 +259,7 @@ jobs:
           gh release create "$TAG" out/*.deb \
             --repo "$GITHUB_REPOSITORY" \
             --title "HIOS Faker v3 ${VERSION} (${GITHUB_SHA::7})" \
-            --notes "Automated v3 build from ${GITHUB_SHA}. Device spoof via MobileGestalt+CoreTelephony hooks injected into selected target apps (incl. Zalo) + CT daemons. Install via Sileo or download below."
+            --notes "Automated v3 build from ${GITHUB_SHA}. MobileGestalt and CoreTelephony hooks are limited to the selected target apps. Install via Sileo or download below."
 
       # Auto-upload the in-step-captured /tmp/build.log on failure.
       # Each build step prepends `exec > >(tee -a /tmp/build.log) 2>&1`

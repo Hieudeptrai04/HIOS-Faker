@@ -189,12 +189,12 @@ function wipeVerify(app){   // app: {name, subs:[{rmRc,mkdirRc,emptyRc}], lastRc
   return { ok: subsOK && lastWipeMarkerExact && genMarkerExact, reasons };
 }
 
-// CODEX/self-review — MODEL of the preflight filter gate: require ONLY the injectable
-// target (Zalo) to be covered, NOT every user-selected/persisted bundle.
+// MODEL of the preflight filter gate: every user-selected injectable app must
+// be covered. A wipe-only unsupported app is unsafe because it receives no profile.
 function filterGate(mgBundles, ctBundles, resetBids){
-  const gateBids = resetBids.includes(kZaloBIDModel) ? [kZaloBIDModel] : [];
+  const gateBids = resetBids.filter(bid => bid !== 'com.apple.weather');
   const mg = {Filter:{Bundles:mgBundles, Mode:'Any'}};
-  const ct = {Filter:{Bundles:ctBundles, Executables:['CommCenter'], Mode:'Any'}};
+  const ct = {Filter:{Bundles:ctBundles, Mode:'Any'}};
   return staticFilterVerify(true, mg, gateBids) && staticFilterVerify(true, ct, gateBids);
 }
 
@@ -301,9 +301,8 @@ eq('pre-wipe abort gates on filterOK (P0-1)',
 const idxStage = asrc.indexOf('pre-wipe gate OK');
 const idxWiped = asrc.indexOf('Step 2 done: VERIFIED-wiped');
 eq('config+filter gate BEFORE wipe', idxStage > 0 && idxWiped > 0 && idxStage < idxWiped, true);
-// Filter gate requires ONLY the injectable target (Zalo), not every resetBid.
-eq('filter gate uses injectable-only gateBids',
-   /gateBids\s*=\s*\[resetBids containsObject:kZaloBID\]\s*\?\s*@\[kZaloBID\]\s*:\s*@\[\]/.test(asrc), true);
+eq('filter gate covers every selected injectable bundle',
+   /for\s*\(NSString \*bid in resetBids\)[\s\S]*?ci_isNoInjectBundle\(bid\)[\s\S]*?gateBidsM addObject:bid/.test(asrc), true);
 // Blocker 5: every persisted targetBundles entry validated as a non-empty NSString.
 eq('resetBids entries validated as non-empty NSString',
    /isKindOfClass:\[NSString class\]\]\s*&&\s*\[\(NSString \*\)b length\]/.test(asrc), true);
@@ -443,19 +442,16 @@ eq('COUNTEREXAMPLE all fail → wiped=0, all PARTIAL', wipeGate([
 console.log('NOTE: ITEM 2 (LSApplicationProxy fresh-resolve) + ITEM 3 lstat + real disk I/O / shell rc are');
 console.log('      NOT exercised here (need a device/runtime) — see DEVICE RUNTIME VERIFICATION = BLOCKED_RUNTIME.');
 
-// ---------------- CODEX/self-review: filter gate = injectable-only ----------------
-// The regression: passing the FULL selection to the filter verify aborted the whole
-// Zalo change when a non-baked app (WhatsApp) or a persisted always-include (Safari/
-// Maps, absent from the CT filter) was also selected. The gate must require ONLY Zalo.
-console.log('\n== CODEX: preflight filter gate requires ONLY the injectable target ==');
-const MG_BAKED = ['vn.com.vng.zingalo','com.apple.mobilesafari','com.apple.Maps','com.apple.weather'];
-const CT_BAKED = ['vn.com.vng.zingalo','com.facebook.Facebook'];   // CT omits com.apple.* by design
+// ---------------- filter gate = every selected injectable app ----------------
+console.log('\n== preflight filter gate covers every selected injectable app ==');
+const MG_BAKED = ['vn.com.vng.zingalo','com.viber','com.apple.mobilesafari','com.apple.Maps'];
+const CT_BAKED = ['vn.com.vng.zingalo','com.viber','com.facebook.Facebook'];
 eq('Zalo alone → gate passes', filterGate(MG_BAKED, CT_BAKED, ['vn.com.vng.zingalo']), true);
-eq('REGRESSION FIX: Zalo + non-baked WhatsApp → still passes (WhatsApp is wipe-only)',
-   filterGate(MG_BAKED, CT_BAKED, ['vn.com.vng.zingalo','com.whatsapp.WhatsApp']), true);
-eq('REGRESSION FIX: Zalo + persisted Safari/Maps (absent from CT) → still passes',
-   filterGate(MG_BAKED, CT_BAKED, ['vn.com.vng.zingalo','com.apple.mobilesafari','com.apple.Maps']), true);
-eq('no Zalo selected → structural-only gate passes', filterGate(MG_BAKED, CT_BAKED, ['com.whatsapp.WhatsApp']), true);
+eq('Zalo + Viber → both filters cover both',
+   filterGate(MG_BAKED, CT_BAKED, ['vn.com.vng.zingalo','com.viber']), true);
+eq('unsupported WhatsApp → fail before wipe',
+   filterGate(MG_BAKED, CT_BAKED, ['com.whatsapp.WhatsApp']), false);
+eq('no-inject Weather is skipped', filterGate(MG_BAKED, CT_BAKED, ['com.apple.weather']), true);
 eq('COUNTEREXAMPLE Zalo requested but MG filter lacks Zalo → gate fails',
    filterGate(['com.apple.mobilesafari'], CT_BAKED, ['vn.com.vng.zingalo']), false);
 eq('COUNTEREXAMPLE Zalo requested but CT filter lacks Zalo → gate fails',

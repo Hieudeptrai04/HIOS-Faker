@@ -159,15 +159,12 @@ static NSString *const kReloadNote  = @"com.changeinfoios.v3/ReloadConfig";
 static NSString *const kLegacyNote  = @"com.changeinfoios/ReloadConfig";
 static NSString *const kAppNote     = @"com.changeinfoios/ReloadPrefs"; // app sends this
 
-// Plain strong ARC pointer + dispatch_once init. NSDictionary is
-// immutable; multi-threaded reads are safe. The 8-byte aligned pointer
-// store is atomic on arm64, so a concurrent reload can never tear the
-// pointer — worst case a thread reads the previous dict for a few ns.
-// Avoid _Atomic + ARC; their interaction releases too eagerly and the
-// dylib crashes inside objc_retain when Firebase reads systemVersion
-// from a background queue (observed in AIDA64 crash log 2026-05-25).
+// Reload notifications race with hook reads on background queues. Keep the
+// ARC strong pointer and its gates under one lock, then return a retained
+// snapshot so an old dictionary cannot be released under a reader.
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
+static os_unfair_lock g_cfgLock = OS_UNFAIR_LOCK_INIT;
 
 // ============================================================
 // License gate. Spoofing is allowed ONLY when config holds a valid signed
@@ -184,6 +181,7 @@ static dispatch_once_t g_loadOnce;
 #import <sys/time.h>
 #import <dlfcn.h>
 static int g_licOK = 0;
+static int g_targetOK = 0;
 static NSString *tw_licSecret(void) {
     static NSString *s = nil; static dispatch_once_t o;
     dispatch_once(&o, ^{
@@ -254,17 +252,16 @@ static BOOL tw_sigOK(NSString *es, NSString *sig, NSString *udid) {
     return strcmp(hex, [sig UTF8String]) == 0;
 }
 
-static void computeLicOK(void) {
-    g_licOK = 0;
-    id tv = g_config[@"_ci_lic_tok"];
-    if (![tv isKindOfClass:[NSString class]]) return;
+static int computeLicOKForConfig(NSDictionary *config) {
+    id tv = config[@"_ci_lic_tok"];
+    if (![tv isKindOfClass:[NSString class]]) return 0;
     NSString *tok = (NSString *)tv;
     NSRange bar = [tok rangeOfString:@"|"];
-    if (bar.location == NSNotFound) return;
+    if (bar.location == NSNotFound) return 0;
     NSString *es  = [tok substringToIndex:bar.location];
     NSString *sig = [tok substringFromIndex:bar.location + 1];
-    if (!es.length || !sig.length) return;
-    if ([es longLongValue] <= (long long)time(NULL)) return;     // expired
+    if (!es.length || !sig.length) return 0;
+    if ([es longLongValue] <= (long long)time(NULL)) return 0;     // expired
     // Token is signed over the epoch ONLY (HMAC(es)). Device-binding was REVERTED:
     // computing the device id here called the MSHookFunction-patched MGCopyAnswer,
     // which re-entered cfg()'s dispatch_once and DEADLOCKED the target app's launch
@@ -279,20 +276,76 @@ static void computeLicOK(void) {
     CCHmac(kCCHmacAlgSHA256, k, strlen(k), m, strlen(m), mac);
     char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + i*2, 3, "%02x", mac[i]);
-    if (strcmp(hex, [sig UTF8String]) == 0) g_licOK = 1;
+    return strcmp(hex, [sig UTF8String]) == 0 ? 1 : 0;
+}
+
+// The static substrate filter is a superset. targetBundles is the operation's
+// actual allowlist, preventing a Viber profile from reaching an unselected
+// Zalo process (and vice versa). Extensions inherit their parent bundle target.
+static int configTargetsCurrentProcess(NSDictionary *config) {
+    id raw = config[@"targetBundles"];
+    if (![raw isKindOfClass:[NSArray class]] || [(NSArray *)raw count] == 0) return 0;
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid.length) return 0;
+    for (id item in (NSArray *)raw) {
+        if (![item isKindOfClass:[NSString class]] || ![(NSString *)item length]) continue;
+        NSString *target = (NSString *)item;
+        if ([bid isEqualToString:target] ||
+            [bid hasPrefix:[target stringByAppendingString:@"."]]) return 1;
+        if ([bid isEqualToString:@"com.apple.WebKit.WebContent"] &&
+            [target isEqualToString:@"com.apple.mobilesafari"]) return 1;
+    }
+    return 0;
+}
+
+static NSString *boardConfigForProductType(NSString *pt) {
+    static NSDictionary *m = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        m = @{
+            @"iPhone8,1":@"N71AP", @"iPhone8,2":@"N66AP", @"iPhone8,4":@"N69AP",
+            @"iPhone9,1":@"D10AP", @"iPhone9,2":@"D11AP",
+            @"iPhone10,1":@"D20AP", @"iPhone10,2":@"D21AP", @"iPhone10,3":@"D22AP",
+            @"iPhone10,6":@"D221AP", @"iPhone11,2":@"D321AP", @"iPhone11,6":@"D331pAP",
+            @"iPhone11,8":@"N841AP", @"iPhone12,1":@"N104AP", @"iPhone12,3":@"D421AP",
+            @"iPhone12,5":@"D431AP", @"iPhone12,8":@"D79AP", @"iPhone13,1":@"D52gAP",
+            @"iPhone13,2":@"D53gAP", @"iPhone13,3":@"D53pAP", @"iPhone13,4":@"D54pAP",
+        };
+    });
+    return pt.length ? m[pt] : nil;
 }
 
 static void reloadConfig(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    g_config = d ?: @{};
-    computeLicOK();
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
+    NSString *board = boardConfigForProductType(pt);
+    if (board.length) {
+        NSMutableDictionary *normalized = [d mutableCopy];
+        id hm = normalized[@"HardwareModel"];
+        if (![hm isKindOfClass:[NSString class]] || ![(NSString *)hm length] || [hm isEqual:pt]) {
+            normalized[@"HardwareModel"] = board;
+            normalized[@"HWModelStr"] = board;
+            normalized[@"hw_model"] = board;
+        }
+        id ioBoard = normalized[@"IOBoardId"];
+        if (![ioBoard isKindOfClass:[NSString class]] || ![(NSString *)ioBoard length] || [ioBoard isEqual:pt])
+            normalized[@"IOBoardId"] = board;
+        d = [normalized copy];
+    }
+    int licOK = computeLicOKForConfig(d);
+    int targetOK = configTargetsCurrentProcess(d);
+    os_unfair_lock_lock(&g_cfgLock);
+    g_config = d;
+    g_licOK = licOK;
+    g_targetOK = targetOK;
+    os_unfair_lock_unlock(&g_cfgLock);
 }
 
 static inline NSDictionary *cfg(void) {
     dispatch_once(&g_loadOnce, ^{ reloadConfig(); });
-    // Not licensed → empty config → every spoof read returns nil → tweak is a
-    // no-op (real values pass through). Fail-closed, never crashes.
-    return g_licOK ? g_config : @{};
+    os_unfair_lock_lock(&g_cfgLock);
+    NSDictionary *snapshot = (g_licOK && g_targetOK) ? g_config : @{};
+    os_unfair_lock_unlock(&g_cfgLock);
+    return snapshot;
 }
 
 static inline id getConfig(NSString *k) { return cfg()[k]; }
@@ -2004,11 +2057,15 @@ static void ci_restoreKeychainIfFlagged(void) {
     return v ?: %orig;
 }
 - (NSString *)model {
+    NSString *pt = getConfigStr(@"ProductType");
+    if ([pt hasPrefix:@"iPhone"]) return @"iPhone";
     NSString *v = getConfigStr(@"deviceModel");
     dbglog("UIDevice.model %s spoof=%c\n", g_procname, v?'Y':'N');
     return v ?: %orig;
 }
 - (NSString *)localizedModel {
+    NSString *pt = getConfigStr(@"ProductType");
+    if ([pt hasPrefix:@"iPhone"]) return @"iPhone";
     NSString *v = getConfigStr(@"localizedModel"); return v ?: %orig;
 }
 - (NSString *)systemName {
@@ -2785,7 +2842,7 @@ static void ci_apnsSwizzleDelegate(Class c) {
 - (void)setDelegate:(id)delegate {
     // LAYER 22: swizzle the app delegate's APNS-token callback so Zalo forwards our
     // rotating fake token to VNG. Only when licensed (gate matches the rest).
-    if (delegate && g_licOK) ci_apnsSwizzleDelegate([delegate class]);
+    if (delegate && g_licOK && g_targetOK) ci_apnsSwizzleDelegate([delegate class]);
     %orig;
 }
 %end
@@ -3644,9 +3701,9 @@ static void notify_cb(int t) {
         // cheap. Hooks come online on the next launch after the host app writes a
         // live token (it relaunches the target on license / identity change).
         // reloadConfig() above already computed g_licOK from the on-disk token.
-        if (!g_licOK) {
-            dbglog("ctor %s UNLICENSED → inert (no C hooks, fail-open) keys=%lu\n",
-                   g_procname, (unsigned long)g_config.count);
+        if (!g_licOK || !g_targetOK) {
+            dbglog("ctor %s INERT license=%d target=%d (no C hooks) keys=%lu\n",
+                   g_procname, g_licOK, g_targetOK, (unsigned long)g_config.count);
             return;
         }
 
