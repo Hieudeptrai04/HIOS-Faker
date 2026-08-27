@@ -11713,7 +11713,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // Rebuild the live per-process allowlist from the snapshot manifest.
         // Older .rrs files may have no targetBundles (or a stale selection from
         // the source phone); without this the restored tweak correctly stays inert.
-        [restoredCM setTargetBundles:bundleIDs];
+        [restoredCM setTargetBundles:e.bundleIDs];
 
         // Push keychainReset=NO so the SecItemCopyMatching hook lets Zalo
         // read its keychain entries on next launch (instead of blocking
@@ -11748,7 +11748,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         id publishedTargets = publishedConfig[@"targetBundles"];
         if (![publishedTargets isKindOfClass:[NSArray class]] ||
             ![[NSSet setWithArray:(NSArray *)publishedTargets]
-              isEqualToSet:[NSSet setWithArray:bundleIDs]]) configPublishOK = NO;
+              isEqualToSet:[NSSet setWithArray:e.bundleIDs]]) configPublishOK = NO;
         if (!configPublishOK) {
             abortRestore(@"Đã chép dữ liệu nhưng không xác nhận được config môi trường cho tweak. Không mở app đích; hãy kiểm tra quyền ghi /var/jb/etc/changeinfoios rồi Restore lại.");
             return;
