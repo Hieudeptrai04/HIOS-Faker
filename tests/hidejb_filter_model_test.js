@@ -14,7 +14,7 @@
 //   - Foundation disk I/O, real writeToFile, DAC permissions, ci_run() shell rc,
 //     LSApplicationProxy fresh-resolve [ITEM 2] are NOT exercised.
 // TWO DRIFT GUARDS below read tweak-mg/Tweak.xm AND app/main.m and FAIL if the
-// constants (CI_CANON_MAXSEG, kCfgDir, kHide, vcam spellings, media exts; kZaloBID,
+// constants (CI_CANON_MAXSEG, kHide, exact VCam data files; kZaloBID,
 // Filter Mode="Any", the identity-key list, kSharedConfigPath) drift from this
 // model, so silent divergence is caught. Run: node tests/hidejb_filter_model_test.js
 // Benchmark at the end is NON-GATING (JS timing only; says nothing about C).
@@ -25,17 +25,23 @@ const path = require('path');
 // ---- Model constants (MUST mirror the C; drift guard verifies) ----
 const CI_CANON_MAXSEG = 512;
 const OUTSZ = 1024;                                  // sizeof(canon) in BYTES
-const kCfg = '/var/jb/etc/changeinfoios';            // no trailing slash (boundary-aware)
 const kHide = ['/var/jb','/private/var/jb','/var/lib/apt','/private/var/lib/apt','/var/lib/cydia',
   '/var/cache/apt','/Applications/Cydia.app','/Applications/Sileo.app','/Applications/Zebra.app',
   '/Applications/filza.app','/Library/MobileSubstrate','/var/MobileSubstrate','/usr/lib/libsubstrate.dylib',
   '/usr/lib/substrate','/var/checkra1n.dmg','/.bootstraprc','/bootstraprc','/private/etc/apt','/etc/apt',
   '/bin/bash','/bin/sh','/bin/zsh','/usr/sbin/sshd','/usr/bin/ssh','/etc/ssh','/usr/libexec/cydia',
   '/usr/libexec/substrate','/usr/bin/cycript','/usr/lib/libcycript.dylib','/usr/lib/TweakInject',
-  '/var/lib/dpkg','/Library/dpkg','/.installed_unc0ver','/.bootstrapped_electra','/.bootstrapped',
+  '/var/lib/dpkg','/Library/dpkg','/private/var/lib/dpkg','/private/var/lib/cydia','/private/var/cache/apt',
+  '/Library/PreferenceBundles','/Library/PreferenceLoader','/private/var/stash','/var/stash',
+  '/var/log/apt','/var/log/dpkg.log','/usr/bin/apt','/usr/bin/apt-get','/usr/bin/dpkg',
+  '/usr/lib/libhooker.dylib','/usr/lib/libsubstitute.dylib','/usr/lib/ellekit',
+  '/usr/sbin/frida-server','/usr/bin/frida-server','/FridaGadget.dylib',
+  '/.installed_unc0ver','/.bootstrapped_electra','/.bootstrapped',
   '/taurine','/var/binpack','/private/var/binpack','/jb','/Applications/Filza.app'];
-const VCAM_SPELLINGS = ['vcam','Vcam','VCam'];        // C uses 3 exact-case strstr, NOT /vcam/i
-const MEDIA_EXTS = ['.mov','.mp4','.m4v'];             // C strcasecmp on last 4 bytes (case-insensitive)
+const VCAM_DATA = ['/var/jb/var/mobile/Library/temp.mov',
+  '/var/jb/var/mobile/Library/vcam_is_mirrored_mark',
+  '/private/var/jb/var/mobile/Library/temp.mov',
+  '/private/var/jb/var/mobile/Library/vcam_is_mirrored_mark'];
 
 const S = { OK:'OK', INVALID:'INVALID', CWD_FAILED:'CWD_FAILED', SEG_OVERFLOW:'SEG_OVERFLOW', OUT_TRUNCATED:'OUT_TRUNCATED' };
 
@@ -76,10 +82,7 @@ function canonStatus(inp, cwd, outsz=OUTSZ) {
   return { status:S.OK, out };
 }
 function isTweakDataPath(cp){
-  for (const v of VCAM_SPELLINGS) if (cp.includes(v)) return true;   // exact-case substrings (not /i)
-  const low = cp.toLowerCase();
-  for (const e of MEDIA_EXTS) if (low.endsWith(e)) return true;      // last-4 case-insensitive
-  return false;
+  return VCAM_DATA.includes(cp);
 }
 function boundary(cp, pre){ return cp.startsWith(pre) && (cp.length === pre.length || cp[pre.length] === '/'); }
 function isJBPath(path_, cwd) {
@@ -92,7 +95,6 @@ function isJBPath(path_, cwd) {
   // return NO;` in tweak-mg/Tweak.xm (drift guard asserts that line exists).
   if (status !== S.OK) return false;
   const cp = out;
-  if (boundary(cp, kCfg)) return false;
   if (isTweakDataPath(cp)) return false;
   for (const h of kHide) if (boundary(cp, h)) return true;
   return false;
@@ -213,23 +215,47 @@ console.log('== DRIFT GUARD (read tweak-mg/Tweak.xm) ==');
 const src = fs.readFileSync(path.join(__dirname,'..','tweak-mg','Tweak.xm'),'utf8');
 const mMax = src.match(/#define\s+CI_CANON_MAXSEG\s+(\d+)/);
 eq('CI_CANON_MAXSEG matches', mMax?Number(mMax[1]):null, CI_CANON_MAXSEG);
-const mCfg = src.match(/static const char kCfgDir\[\]\s*=\s*"([^"]+)"/);
-eq('kCfgDir matches', mCfg?mCfg[1]:null, kCfg);
+eq('global config-dir exemption removed', /static const char kCfgDir\[\]/.test(src), false);
 // extract kHide entries from the array literal
 const hideBlock = src.slice(src.indexOf('static const char * const kHide[]'));
 const srcHide = [...hideBlock.slice(0, hideBlock.indexOf('NULL')).matchAll(/"([^"]+)"/g)].map(m=>m[1]);
 eq('kHide set matches', setEq(srcHide, kHide) && srcHide.length===kHide.length, true);
-const srcVcam = [...(src.match(/strstr\(path,\s*"(vcam|Vcam|VCam)"\)/g)||[])].map(s=>s.match(/"([^"]+)"/)[1]);
-eq('vcam spellings match', setEq(srcVcam, VCAM_SPELLINGS) && srcVcam.length===VCAM_SPELLINGS.length, true);
-const srcExt = [...(src.match(/strcasecmp\(ext,\s*"(\.[a-z0-9]+)"\)/g)||[])].map(s=>s.match(/"([^"]+)"/)[1]);
-eq('media exts match', setEq(srcExt, MEDIA_EXTS) && srcExt.length===MEDIA_EXTS.length, true);
+const vcamBlock = src.slice(src.indexOf('static const char * const kVCamData[]'));
+const srcVcam = [...vcamBlock.slice(0, vcamBlock.indexOf('NULL')).matchAll(/"([^"]+)"/g)].map(m=>m[1]);
+eq('exact VCam data allowlist matches', setEq(srcVcam, VCAM_DATA) && srcVcam.length===VCAM_DATA.length, true);
+eq('broad VCam/media exemptions removed', /strstr\(path,\s*"(?:vcam|Vcam|VCam)"\)|strcasecmp\(ext,/.test(src), false);
 // ITEM 1 — isJBPath must pass through (return NO) for ANY non-OK canonical status.
 eq('isJBPath pass-through on non-OK status (item 1)',
    /if\s*\(st\s*!=\s*CI_CANON_OK\)\s*return\s+NO;/.test(src), true);
+eq('hideJailbreak config drives runtime gate',
+   /d\[@"hideJailbreak"\][\s\S]*?g_hideJBOn\s*=\s*hideJB/.test(src), true);
+const ctorPos = src.indexOf('%ctor');
+const stealthCallPos = src.indexOf('ci_installJBHideHooks();', ctorPos);
+const licenseGatePos = src.indexOf('if (!g_licOK || !g_targetOK)', ctorPos);
+eq('lightweight JB hide installs before license gate',
+   stealthCallPos > ctorPos && licenseGatePos > stealthCallPos, true);
+for (const hook of ['fstatat','faccessat','getattrlist','readlink','readlinkat','opendir','readdir','closedir']) {
+  eq(`${hook} non-variadic hook installed`, src.includes(`(void *)hook_${hook}_fn`), true);
+}
+eq('known-crashing open/openat hooks remain absent',
+   /MSHookFunction[^\n]*hook_open(?:at)?_fn/.test(src), false);
+eq('dyld header/slide share filtered mapping',
+   src.includes('hooked_dyld_get_image_header') && src.includes('hooked_dyld_get_image_slide') &&
+   src.includes('dyldVisibleToRealIndex'), true);
+eq('dladdr hidden-image hook installed',
+   src.includes('(void *)hooked_dladdr'), true);
+eq('direct environment probes scrubbed after injection',
+   src.includes('unsetenv("DYLD_INSERT_LIBRARIES")'), true);
+eq('internal FS scope protects reload + RRS restore only',
+   (src.match(/CIInternalFSGuard fsGuard;/g)||[]).length, 2);
 
 // ---------------- DRIFT GUARD #2: app/main.m (ITEM 3/4 constants) ----------------
 console.log('\n== DRIFT GUARD #2 (read app/main.m) ==');
 const asrc = fs.readFileSync(path.join(__dirname,'..','app','main.m'),'utf8');
+eq('cosmetic fake_jbhide toggle removed from UI',
+   /\[C\s+toggle:[^\n]*key:@"fake_jbhide"/.test(asrc), false);
+eq('real hideJailbreak toggle remains in UI',
+   /\[C\s+toggle:[^\n]*key:@"hideJailbreak"/.test(asrc), true);
 // kZaloBID literal
 eq('kZaloBID present in app/main.m', asrc.includes('@"'+kZaloBIDModel+'"'), true);
 // kSharedConfigPath value
@@ -338,13 +364,14 @@ eq('UTF-8 é byte-length trunc', canonStatus('/'+'é'.repeat(6), null, 12).statu
 console.log('\n== isJBPath (status-driven) ==');
 eq('cfg-dir ../ escape hide', isJBPath('/var/jb/etc/changeinfoios/../../Applications/Sileo.app'), true);
 eq('vcam ../ escape hide',    isJBPath('/var/mobile/vcam/../../../Applications/Cydia.app'), true);
-eq('exact config dir exempt', isJBPath('/var/jb/etc/changeinfoios'), false);
-eq('config child exempt',     isJBPath('/var/jb/etc/changeinfoios/config.plist'), false);
+eq('exact config dir hidden from app', isJBPath('/var/jb/etc/changeinfoios'), true);
+eq('config child hidden from app',     isJBPath('/var/jb/etc/changeinfoios/config.plist'), true);
 eq('changeinfoiosX boundary hide', isJBPath('/var/jb/etc/changeinfoiosX/foo'), true);  // NOT config dir (boundary) → under /var/jb
 eq('legit .mov exempt',       isJBPath('/var/jb/var/mobile/Library/temp.mov'), false);
-eq('[KNOWN_BYPASS] /var/jb/apt/x.mov exempt', isJBPath('/var/jb/apt/x.mov'), false);
-eq('[KNOWN_BYPASS] /var/jb/vcam_marker exempt', isJBPath('/var/jb/vcam_marker'), false);
-eq('mixed-case vCaM NOT exempt (C 3-spelling only) → under /var/jb hide', isJBPath('/var/jb/vCaM_x'), true);
+eq('arbitrary .mov under JB root hidden', isJBPath('/var/jb/apt/x.mov'), true);
+eq('arbitrary path containing vcam hidden', isJBPath('/var/jb/vcam_marker'), true);
+eq('exact VCam marker exempt', isJBPath('/var/jb/var/mobile/Library/vcam_is_mirrored_mark'), false);
+eq('lookalike vCaM path is not allowlisted → hidden', isJBPath('/var/jb/vCaM_x'), true);
 eq('/var/jbx boundary not hidden', isJBPath('/var/jbx'), false);
 eq('CydiaX boundary not hidden', isJBPath('/Applications/CydiaX.app'), false);
 eq('/var/jb hide', isJBPath('/var/jb'), true);

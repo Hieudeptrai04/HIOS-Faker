@@ -25,6 +25,11 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
+#import <sys/attr.h>
+#import <fcntl.h>
+#import <dirent.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
 #import <errno.h>
 #import <math.h>
 #import <ifaddrs.h>
@@ -165,6 +170,21 @@ static NSString *const kAppNote     = @"com.changeinfoios/ReloadPrefs"; // app s
 static NSDictionary *g_config = nil;
 static dispatch_once_t g_loadOnce;
 static os_unfair_lock g_cfgLock = OS_UNFAIR_LOCK_INIT;
+// Hide-JB stays independent of the license gate. Once this dylib is injected,
+// exposing rootless paths merely because a token expired is inconsistent.
+static volatile int g_hideJBOn = 1;
+
+// Narrow exemption for this tweak's own config/restore reads. The app itself
+// must not see /var/jb/etc/changeinfoios through the hooked filesystem APIs.
+static __thread int g_ciInternalFS = 0;
+class CIInternalFSGuard {
+public:
+    CIInternalFSGuard()  { g_ciInternalFS++; }
+    ~CIInternalFSGuard() { g_ciInternalFS--; }
+private:
+    CIInternalFSGuard(const CIInternalFSGuard &);
+    CIInternalFSGuard &operator=(const CIInternalFSGuard &);
+};
 
 // ============================================================
 // License gate. Spoofing is allowed ONLY when config holds a valid signed
@@ -315,6 +335,7 @@ static NSString *boardConfigForProductType(NSString *pt) {
 }
 
 static void reloadConfig(void) {
+    CIInternalFSGuard fsGuard;
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
@@ -333,10 +354,13 @@ static void reloadConfig(void) {
     }
     int licOK = computeLicOKForConfig(d);
     int targetOK = configTargetsCurrentProcess(d);
+    id hideValue = d[@"hideJailbreak"];
+    int hideJB = [hideValue respondsToSelector:@selector(boolValue)] ? [hideValue boolValue] : 1;
     os_unfair_lock_lock(&g_cfgLock);
     g_config = d;
     g_licOK = licOK;
     g_targetOK = targetOK;
+    g_hideJBOn = hideJB;
     os_unfair_lock_unlock(&g_cfgLock);
 }
 
@@ -1822,6 +1846,7 @@ static NSString *ci_readTrim(NSString *path);
 static int g_wipeConsumed = 0;   // one-shot process guard; a flagged restore also sets it to keep the restored login
 
 static void ci_restoreKeychainIfFlagged(void) {
+    CIInternalFSGuard fsGuard;
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (!bid.length) return;
     NSString *shared = @"/var/jb/etc/changeinfoios";
@@ -2480,10 +2505,10 @@ static NSString *buildWKJSSpoof(void) {
 
 // ============================================================
 // LAYER 9: Jailbreak hiding — block common JB detection vectors.
-// Hooks: stat, lstat, access (C), NSFileManager (ObjC),
-//        UIApplication -canOpenURL: (URL scheme check).
-// Exempts our own config dir so config reads keep working.
-// Does NOT hide loaded dylib list — use Shadow/KernBypass for TikTok.
+// Hooks: stable libc/Foundation path probes, URL schemes, installed-app lookup,
+// environment/fork probes and a consistent index-based dyld view.
+// Our own config access uses a thread-local internal scope; the config directory
+// is no longer exposed process-wide.
 // ============================================================
 
 // A path that media/camera tweaks (VCam) legitimately store user data at.
@@ -2493,13 +2518,18 @@ static NSString *buildWKJSSpoof(void) {
 // VCam (vcamrootless) uses /var/jb/var/mobile/Library/temp.mov and
 // /var/jb/var/mobile/Library/vcam_is_mirrored_mark.
 static BOOL isTweakDataPath(const char *path) {
-    if (strstr(path, "vcam") || strstr(path, "Vcam") || strstr(path, "VCam")) return YES;
-    size_t n = strlen(path);
-    if (n >= 4) {
-        const char *ext = path + n - 4;
-        if (strcasecmp(ext, ".mov") == 0 || strcasecmp(ext, ".mp4") == 0 ||
-            strcasecmp(ext, ".m4v") == 0)
-            return YES;   // video source files for camera tweaks
+    if (!path) return NO;
+    // A substring/extension exemption was far too broad: a JB probe could simply
+    // put "vcam" or ".mov" in its path. Allow only VCam's two known data files.
+    static const char * const kVCamData[] = {
+        "/var/jb/var/mobile/Library/temp.mov",
+        "/var/jb/var/mobile/Library/vcam_is_mirrored_mark",
+        "/private/var/jb/var/mobile/Library/temp.mov",
+        "/private/var/jb/var/mobile/Library/vcam_is_mirrored_mark",
+        NULL
+    };
+    for (int i = 0; kVCamData[i]; i++) {
+        if (strcmp(path, kVCamData[i]) == 0) return YES;
     }
     return NO;
 }
@@ -2509,9 +2539,9 @@ static BOOL isTweakDataPath(const char *path) {
 // so a relative JB path is caught regardless of the caller's cwd — therefore this
 // is NOT syscall-free on the relative branch. Returns a TYPED status; the caller
 // applies exemptions ONLY on CI_CANON_OK. This closes the lexical-alias + relative
-// vectors ONLY. It does NOT hook open/openat/fstatat/getattrlist/readlink/opendir/
-// realpath, does NOT resolve symlinks, and getcwd-failure / chdir-race remain
-// LIMITATIONS. So filesystem/dyld Hide-JB is STATIC-PARTIAL, not fixed.
+// vectors ONLY. Separate stable wrappers cover fstatat/getattrlist/readlink/opendir,
+// but open/openat/realpath remain unhooked, symlinks are not resolved, and getcwd-
+// failure/chdir races remain limitations. Hide-JB therefore remains PARTIAL.
 //
 // P1 contract fix: overflow/cwd-failure RETURN IMMEDIATELY during parse (out[0]=0)
 // so a partial output can never be built or trusted. The old single BOOL + the
@@ -2579,15 +2609,15 @@ static ci_canon_status ci_canonPath(const char *in, char *out, size_t outsz) {
 }
 
 static BOOL isJBPath(const char *path) {
-    if (!path) return NO;
+    if (!g_hideJBOn || g_ciInternalFS > 0 || !path) return NO;
     // ZJB-03/R3-13: canonicalize FIRST (collapse '.'/'..'/dup-slash, NO disk I/O),
     // then run BOTH exemptions and hide-checks on the RESOLVED path. Running
     // exemptions on the RAW path let alias forms escape hiding, e.g.
     //   /var/jb/etc/changeinfoios/../../Applications/Sileo.app   (cfg-dir prefix escape)
     //   /var/mobile/vcam/../../../Applications/Cydia.app         (vcam exemption escape)
     // Canonicalizing before the exemption closes that. This still covers ONLY the
-    // lexical-alias vector — open/openat/fstatat/readlink/realpath remain UNHOOKED
-    // (see report C4), so filesystem hide is PARTIAL, not fixed.
+    // lexical-alias vector. Raw open/openat/realpath and symlink resolution remain
+    // outside this layer, so filesystem hide is still partial.
     char canon[1024];
     ci_canon_status st = ci_canonPath(path, canon, sizeof(canon));
     // ITEM 1 — ERROR PARITY: for ANY non-OK status (INVALID / CWD_FAILED /
@@ -2601,14 +2631,8 @@ static BOOL isJBPath(const char *path) {
     if (st != CI_CANON_OK) return NO;
     const char *cp = canon;
     {
-        // Never hide our own config dir — reloadConfig must still work. Boundary-aware
-        // so BOTH the exact dir and its children are exempted (exempting only the
-        // child file while hiding the dir would itself be a detectable inconsistency:
-        // stat(dir)=ENOENT but open(dir/config.plist)=OK).
-        static const char kCfgDir[] = "/var/jb/etc/changeinfoios";
-        size_t cl = sizeof(kCfgDir) - 1;
-        if (strncmp(cp, kCfgDir, cl) == 0 && (cp[cl] == '\0' || cp[cl] == '/')) return NO;
-        // Never hide camera/media tweak data (VCam video + marker files).
+        // Only exact camera-tweak data files are exempt. Config/restore access is
+        // authorized by CIInternalFSGuard, never by a globally-visible path prefix.
         if (isTweakDataPath(cp)) return NO;
     }
     static const char * const kHide[] = {
@@ -2627,6 +2651,12 @@ static BOOL isJBPath(const char *path) {
         "/usr/libexec/cydia", "/usr/libexec/substrate",
         "/usr/bin/cycript", "/usr/lib/libcycript.dylib",
         "/usr/lib/TweakInject", "/var/lib/dpkg", "/Library/dpkg",
+        "/private/var/lib/dpkg", "/private/var/lib/cydia", "/private/var/cache/apt",
+        "/Library/PreferenceBundles", "/Library/PreferenceLoader",
+        "/private/var/stash", "/var/stash", "/var/log/apt", "/var/log/dpkg.log",
+        "/usr/bin/apt", "/usr/bin/apt-get", "/usr/bin/dpkg",
+        "/usr/lib/libhooker.dylib", "/usr/lib/libsubstitute.dylib", "/usr/lib/ellekit",
+        "/usr/sbin/frida-server", "/usr/bin/frida-server", "/FridaGadget.dylib",
         "/.installed_unc0ver", "/.bootstrapped_electra", "/.bootstrapped",
         "/taurine", "/var/binpack", "/private/var/binpack", "/jb",
         "/Applications/Filza.app",
@@ -2646,9 +2676,11 @@ static BOOL isJBPath(const char *path) {
 
 typedef int (*stat_fn_t)(const char *, struct stat *);
 typedef int (*access_fn_t)(const char *, int);
+typedef int (*dladdr_fn_t)(const void *, Dl_info *);
 static stat_fn_t   orig_stat_fn   = NULL;
 static stat_fn_t   orig_lstat_fn  = NULL;
 static access_fn_t orig_access_fn = NULL;
+static dladdr_fn_t orig_dladdr_fn = NULL;
 
 // Pass-through for callers whose immediate caller is a JB tweak dylib, so
 // they can reach their own files under /var/jb/. Single-frame check via
@@ -2660,7 +2692,9 @@ static access_fn_t orig_access_fn = NULL;
 // need any caller detection — so a fast single-frame check is sufficient.)
 static BOOL statCallerIsJBTweak(void) {
     Dl_info di; di.dli_fname = NULL;
-    dladdr(__builtin_return_address(1), &di);
+    int ok = orig_dladdr_fn ? orig_dladdr_fn(__builtin_return_address(1), &di)
+                            : dladdr(__builtin_return_address(1), &di);
+    if (!ok) return NO;
     if (!di.dli_fname) return NO;
     return (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
             strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
@@ -2682,8 +2716,8 @@ static int hook_access_fn(const char *path, int mode) {
 
 // fopen — the single most common JB-file check (fopen("/Applications/Cydia.app"),
 // fopen("/bin/bash"), ...). Non-variadic → safe to hook (unlike open(), which was
-// removed for a variadic-ABI crash). Our own dbglog targets are exempt: config dir
-// is whitelisted in isJBPath and our caller is a /var/jb tweak (statCallerIsJBTweak).
+// removed for a variadic-ABI crash). Our own debug/config work is authorized by
+// the internal scope or by the /var/jb caller check; app callers see those paths hidden.
 typedef FILE *(*fopen_fn_t)(const char *, const char *);
 static fopen_fn_t orig_fopen_fn = NULL;
 static FILE *hook_fopen_fn(const char *path, const char *mode) {
@@ -2691,11 +2725,146 @@ static FILE *hook_fopen_fn(const char *path, const char *mode) {
     return orig_fopen_fn(path, mode);
 }
 
+// Non-variadic filesystem APIs that bypass stat/access/fopen. Unlike open/openat,
+// these do not have the ABI/watchdog regression seen in 4.3.23. For *at variants
+// we only evaluate absolute paths or AT_FDCWD; a relative path against another
+// dirfd must pass through because resolving it would add fcntl/I/O recursion.
+typedef int (*fstatat_fn_t)(int, const char *, struct stat *, int);
+typedef int (*faccessat_fn_t)(int, const char *, int, int);
+typedef int (*getattrlist_fn_t)(const char *, struct attrlist *, void *, size_t, unsigned long);
+typedef ssize_t (*readlink_fn_t)(const char *, char *, size_t);
+typedef ssize_t (*readlinkat_fn_t)(int, const char *, char *, size_t);
+typedef DIR *(*opendir_fn_t)(const char *);
+typedef struct dirent *(*readdir_fn_t)(DIR *);
+typedef int (*closedir_fn_t)(DIR *);
+static fstatat_fn_t     orig_fstatat_fn = NULL;
+static faccessat_fn_t   orig_faccessat_fn = NULL;
+static getattrlist_fn_t orig_getattrlist_fn = NULL;
+static readlink_fn_t    orig_readlink_fn = NULL;
+static readlinkat_fn_t  orig_readlinkat_fn = NULL;
+static opendir_fn_t     orig_opendir_fn = NULL;
+static readdir_fn_t     orig_readdir_fn = NULL;
+static closedir_fn_t    orig_closedir_fn = NULL;
+
+static inline BOOL ci_atPathCanResolve(int fd, const char *path) {
+    return path && (path[0] == '/' || fd == AT_FDCWD);
+}
+static int hook_fstatat_fn(int fd, const char *path, struct stat *buf, int flags) {
+    if (ci_atPathCanResolve(fd, path) && isJBPath(path) && !statCallerIsJBTweak()) {
+        errno = ENOENT; return -1;
+    }
+    return orig_fstatat_fn(fd, path, buf, flags);
+}
+static int hook_faccessat_fn(int fd, const char *path, int mode, int flags) {
+    if (ci_atPathCanResolve(fd, path) && isJBPath(path) && !statCallerIsJBTweak()) {
+        errno = ENOENT; return -1;
+    }
+    return orig_faccessat_fn(fd, path, mode, flags);
+}
+static int hook_getattrlist_fn(const char *path, struct attrlist *attrs, void *buf,
+                               size_t size, unsigned long options) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    return orig_getattrlist_fn(path, attrs, buf, size, options);
+}
+static ssize_t hook_readlink_fn(const char *path, char *buf, size_t size) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
+    ssize_t rc = orig_readlink_fn(path, buf, size);
+    if (rc > 0 && buf && buf[0] == '/' && !statCallerIsJBTweak()) {
+        char target[1024];
+        size_t n = ((size_t)rc < sizeof(target) - 1) ? (size_t)rc : sizeof(target) - 1;
+        memcpy(target, buf, n); target[n] = 0;
+        if (isJBPath(target)) { errno = ENOENT; return -1; }
+    }
+    return rc;
+}
+static ssize_t hook_readlinkat_fn(int fd, const char *path, char *buf, size_t size) {
+    if (ci_atPathCanResolve(fd, path) && isJBPath(path) && !statCallerIsJBTweak()) {
+        errno = ENOENT; return -1;
+    }
+    ssize_t rc = orig_readlinkat_fn(fd, path, buf, size);
+    if (rc > 0 && buf && buf[0] == '/' && !statCallerIsJBTweak()) {
+        char target[1024];
+        size_t n = ((size_t)rc < sizeof(target) - 1) ? (size_t)rc : sizeof(target) - 1;
+        memcpy(target, buf, n); target[n] = 0;
+        if (isJBPath(target)) { errno = ENOENT; return -1; }
+    }
+    return rc;
+}
+
+typedef struct ci_dir_track {
+    DIR *dir;
+    char base[1024];
+    struct ci_dir_track *next;
+} ci_dir_track;
+static pthread_mutex_t g_dirTrackMu = PTHREAD_MUTEX_INITIALIZER;
+static ci_dir_track *g_dirTracks = NULL;
+
+static void ci_trackDir(DIR *dir, const char *path) {
+    if (!dir || !path) return;
+    char canon[1024];
+    if (ci_canonPath(path, canon, sizeof(canon)) != CI_CANON_OK) return;
+    ci_dir_track *node = (ci_dir_track *)calloc(1, sizeof(ci_dir_track));
+    if (!node) return;
+    node->dir = dir;
+    strlcpy(node->base, canon, sizeof(node->base));
+    pthread_mutex_lock(&g_dirTrackMu);
+    node->next = g_dirTracks;
+    g_dirTracks = node;
+    pthread_mutex_unlock(&g_dirTrackMu);
+}
+static BOOL ci_dirBase(DIR *dir, char *out, size_t outSize) {
+    BOOL found = NO;
+    pthread_mutex_lock(&g_dirTrackMu);
+    for (ci_dir_track *n = g_dirTracks; n; n = n->next) {
+        if (n->dir == dir) { strlcpy(out, n->base, outSize); found = YES; break; }
+    }
+    pthread_mutex_unlock(&g_dirTrackMu);
+    return found;
+}
+static void ci_untrackDir(DIR *dir) {
+    pthread_mutex_lock(&g_dirTrackMu);
+    ci_dir_track **link = &g_dirTracks;
+    while (*link) {
+        if ((*link)->dir == dir) {
+            ci_dir_track *old = *link;
+            *link = old->next;
+            free(old);
+            break;
+        }
+        link = &(*link)->next;
+    }
+    pthread_mutex_unlock(&g_dirTrackMu);
+}
+static DIR *hook_opendir_fn(const char *path) {
+    if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return NULL; }
+    DIR *dir = orig_opendir_fn(path);
+    if (dir && g_hideJBOn && g_ciInternalFS == 0 && !statCallerIsJBTweak()) ci_trackDir(dir, path);
+    return dir;
+}
+static struct dirent *hook_readdir_fn(DIR *dir) {
+    if (!orig_readdir_fn) { errno = EBADF; return NULL; }
+    if (!g_hideJBOn || g_ciInternalFS > 0) return orig_readdir_fn(dir);
+    char base[1024];
+    if (!ci_dirBase(dir, base, sizeof(base))) return orig_readdir_fn(dir);
+    for (;;) {
+        struct dirent *ent = orig_readdir_fn(dir);
+        if (!ent) return NULL;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) return ent;
+        char full[2048];
+        int n = snprintf(full, sizeof(full), "%s/%s", base, ent->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(full) || !isJBPath(full)) return ent;
+    }
+}
+static int hook_closedir_fn(DIR *dir) {
+    ci_untrackDir(dir);
+    return orig_closedir_fn(dir);
+}
+
 // getenv — hide the injection env vars some anti-fraud SDKs probe.
 typedef char *(*getenv_fn_t)(const char *);
 static getenv_fn_t orig_getenv_fn = NULL;
 static char *hook_getenv_fn(const char *name) {
-    if (name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
+    if (g_hideJBOn && name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
                  strcmp(name, "_MSSafeMode") == 0 ||
                  strcmp(name, "_SubstrateMode") == 0)) return NULL;
     return orig_getenv_fn(name);
@@ -2829,12 +2998,14 @@ static void ci_apnsSwizzleDelegate(Class c) {
 %hook UIApplication
 - (BOOL)canOpenURL:(NSURL *)url {
     NSString *s = url.scheme.lowercaseString;
-    if ([s isEqualToString:@"cydia"]     || [s isEqualToString:@"sileo"] ||
+    if (g_hideJBOn && ([s isEqualToString:@"cydia"]     || [s isEqualToString:@"sileo"] ||
         [s isEqualToString:@"zbra"]      || [s isEqualToString:@"filza"] ||
         [s isEqualToString:@"santander"] || [s isEqualToString:@"undecimus"] ||
         [s isEqualToString:@"zebra"]     || [s isEqualToString:@"activator"] ||
         [s isEqualToString:@"apt-repo"]  || [s isEqualToString:@"cydia-repo"] ||
-        [s isEqualToString:@"installer"] || [s isEqualToString:@"postbox"]) {
+        [s isEqualToString:@"installer"] || [s isEqualToString:@"postbox"] ||
+        [s isEqualToString:@"dopamine"]  || [s isEqualToString:@"trollstore"] ||
+        [s isEqualToString:@"odyssey"]   || [s isEqualToString:@"palera1n"])) {
         return NO;
     }
     return %orig;
@@ -2853,6 +3024,7 @@ static void ci_apnsSwizzleDelegate(Class c) {
 // same as the NSFileManager / canOpenURL JB-hide hooks (hiding JB is not identity
 // spoofing) and it is cheap (never a hot path).
 static BOOL ci_isJBBundleID(NSString *bid) {
+    if (!g_hideJBOn) return NO;
     if (![bid isKindOfClass:[NSString class]] || !bid.length) return NO;
     static NSSet *jb = nil; static dispatch_once_t o;
     dispatch_once(&o, ^{
@@ -2910,19 +3082,17 @@ static BOOL ci_isJBBundleID(NSString *bid) {
 %end
 
 // ============================================================
-// LAYER 10: dyld image list hiding — PARTIAL (count + name only).
+// LAYER 10: dyld image hiding — still PARTIAL, but index-consistent.
 //
 // Anti-fraud SDKs (Zalo / TikTok) call _dyld_image_count() then
 // iterate _dyld_get_image_name(i) looking for:
 //   "substrate", "ellekit", "ChangeInfoIos", "/var/jb/" paths.
 // We present a filtered view that skips JB-related images.
 //
-// HONESTY (P1-1): this hides ONLY the image COUNT and NAME list. The following
-// still return the REAL, unfiltered set and can expose the injection to a
-// determined SDK — do NOT advertise this as a full/deep JB hide:
-//   - _dyld_get_image_header(i) / _dyld_get_image_vmaddr_slide(i)
-//   - dladdr()
-//   - the ObjC image list (objc_copyImageNames / class_getImageName)
+// Count/name/header/slide share one visible->real index map, and dladdr hides
+// addresses owned by known injected images. The ObjC image list, direct Mach-O
+// memory walks, hook-integrity checks and add-image callbacks can still expose
+// injection; do not advertise this as a full/deep JB hide.
 // The file-existence side (stat/lstat/access/fopen) is the intended stable set;
 // a global open()/openat() hook is deliberately NOT installed (it tripped
 // Zalo's FrontBoard scene-create watchdog).
@@ -2947,8 +3117,12 @@ static inline BOOL isDyldNameHidden(const char *name) {
 
 typedef uint32_t    (*dyld_image_count_fn_t)(void);
 typedef const char *(*dyld_image_name_fn_t)(uint32_t);
+typedef const struct mach_header *(*dyld_image_header_fn_t)(uint32_t);
+typedef intptr_t (*dyld_image_slide_fn_t)(uint32_t);
 static dyld_image_count_fn_t  orig_dyld_image_count_fn    = NULL;
 static dyld_image_name_fn_t   orig_dyld_get_image_name_fn = NULL;
+static dyld_image_header_fn_t orig_dyld_get_image_header_fn = NULL;
+static dyld_image_slide_fn_t  orig_dyld_get_image_slide_fn = NULL;
 
 // Filtered-view cache (0x8BADF00D fix, 4.1.4). The OLD hook was O(N) PER CALL:
 // every _dyld_get_image_name(i) re-counted all images AND ran dladdr() on the
@@ -2971,24 +3145,27 @@ static uint32_t  g_dyldCachedTotal   = 0;
 static uint32_t  g_dyldVisibleCount  = 0;
 static uint32_t *g_dyldVisibleToReal = NULL;   // visible index -> real dyld index
 static int       g_dyldMapBuilt      = 0;
+static int       g_dyldCachedHideOn  = -1;
 
 // Make the cache reflect `total`. Builds into a fresh local buffer with NO lock
 // held (dyld calls happen outside our mutex), then swaps it in under a short lock
 // and frees the old buffer. Two racing rebuilders both produce valid maps; last
 // swap wins, the loser's buffer is freed. Readers only ever copy an int index out
 // under the lock, so a freed buffer can never be dereferenced by another thread.
-static void dyldEnsureMap(uint32_t total) {
+static BOOL dyldEnsureMap(uint32_t total) {
+    int hideSnapshot = g_hideJBOn ? 1 : 0;
     pthread_mutex_lock(&g_dyldMapMu);
-    int ok = (g_dyldMapBuilt && total == g_dyldCachedTotal);
+    int ok = (g_dyldMapBuilt && total == g_dyldCachedTotal &&
+              hideSnapshot == g_dyldCachedHideOn);
     pthread_mutex_unlock(&g_dyldMapMu);
-    if (ok) return;
+    if (ok) return YES;
 
     uint32_t *m = (uint32_t *)malloc((total ? total : 1) * sizeof(uint32_t));
-    if (!m) return;                       // OOM: keep the stale map, degrade gracefully
+    if (!m) return NO;                    // caller falls back to one consistent real view
     uint32_t vis = 0;
     for (uint32_t i = 0; i < total; i++) {
         const char *name = orig_dyld_get_image_name_fn(i);
-        if (isDyldNameHidden(name)) continue;
+        if (hideSnapshot && isDyldNameHidden(name)) continue;
         m[vis++] = i;
     }
 
@@ -2997,38 +3174,125 @@ static void dyldEnsureMap(uint32_t total) {
     g_dyldVisibleToReal = m;
     g_dyldVisibleCount  = vis;
     g_dyldCachedTotal   = total;
+    g_dyldCachedHideOn  = hideSnapshot;
     g_dyldMapBuilt      = 1;
     pthread_mutex_unlock(&g_dyldMapMu);
     free(old);
+    return YES;
 }
 
 static uint32_t hooked_dyld_image_count(void) {
     if (!orig_dyld_image_count_fn || !orig_dyld_get_image_name_fn)
         return orig_dyld_image_count_fn ? orig_dyld_image_count_fn() : 0;
     uint32_t total = orig_dyld_image_count_fn();
-    dyldEnsureMap(total);
+    if (!dyldEnsureMap(total)) return total;
     pthread_mutex_lock(&g_dyldMapMu);
     uint32_t vc = (g_dyldMapBuilt && g_dyldCachedTotal == total) ? g_dyldVisibleCount : total;
     pthread_mutex_unlock(&g_dyldMapMu);
     return vc;
 }
 
+static BOOL dyldVisibleToRealIndex(uint32_t index, uint32_t *realOut);
+
 static const char *hooked_dyld_get_image_name(uint32_t index) {
-    if (!orig_dyld_get_image_name_fn || !orig_dyld_image_count_fn) return NULL;
+    if (!orig_dyld_get_image_name_fn) return NULL;
+    uint32_t real = 0;
+    return dyldVisibleToRealIndex(index, &real) ? orig_dyld_get_image_name_fn(real) : NULL;
+}
+
+static BOOL dyldVisibleToRealIndex(uint32_t index, uint32_t *realOut) {
+    if (!realOut || !orig_dyld_image_count_fn || !orig_dyld_get_image_name_fn) return NO;
     uint32_t total = orig_dyld_image_count_fn();
-    dyldEnsureMap(total);
+    if (!dyldEnsureMap(total)) {
+        if (index >= total) return NO;
+        *realOut = index;
+        return YES;
+    }
     pthread_mutex_lock(&g_dyldMapMu);
-    uint32_t real = (g_dyldMapBuilt && g_dyldCachedTotal == total && index < g_dyldVisibleCount)
-                    ? g_dyldVisibleToReal[index] : UINT32_MAX;
+    BOOL ok = g_dyldMapBuilt && g_dyldCachedTotal == total &&
+              g_dyldCachedHideOn == (g_hideJBOn ? 1 : 0) &&
+              index < g_dyldVisibleCount;
+    if (ok) *realOut = g_dyldVisibleToReal[index];
     pthread_mutex_unlock(&g_dyldMapMu);
-    return (real == UINT32_MAX) ? NULL : orig_dyld_get_image_name_fn(real);
+    return ok;
+}
+
+// Keep all index-based dyld APIs on the same filtered view. Previously count/name
+// were filtered while header/slide used real indexes, an easy consistency probe.
+static const struct mach_header *hooked_dyld_get_image_header(uint32_t index) {
+    uint32_t real = 0;
+    return (orig_dyld_get_image_header_fn && dyldVisibleToRealIndex(index, &real))
+        ? orig_dyld_get_image_header_fn(real) : NULL;
+}
+static intptr_t hooked_dyld_get_image_slide(uint32_t index) {
+    uint32_t real = 0;
+    return (orig_dyld_get_image_slide_fn && dyldVisibleToRealIndex(index, &real))
+        ? orig_dyld_get_image_slide_fn(real) : 0;
+}
+
+static int hooked_dladdr(const void *addr, Dl_info *info) {
+    if (!orig_dladdr_fn) return 0;
+    int rc = orig_dladdr_fn(addr, info);
+    if (!g_hideJBOn || g_ciInternalFS > 0 || !rc || !info ||
+        statCallerIsJBTweak() || !isDyldNameHidden(info->dli_fname)) return rc;
+    memset(info, 0, sizeof(*info));
+    return 0;
+}
+
+typedef const char **(*objc_copy_image_names_fn_t)(unsigned int *);
+typedef const char *(*class_get_image_name_fn_t)(Class);
+typedef const char **(*objc_copy_classes_for_image_fn_t)(const char *, unsigned int *);
+static objc_copy_image_names_fn_t orig_objc_copy_image_names = NULL;
+static class_get_image_name_fn_t orig_class_get_image_name = NULL;
+static objc_copy_classes_for_image_fn_t orig_objc_copy_classes_for_image = NULL;
+
+static const char **hooked_objc_copy_image_names(unsigned int *outCount) {
+    unsigned int total = 0;
+    const char **realNames = orig_objc_copy_image_names
+        ? orig_objc_copy_image_names(&total) : NULL;
+    if (!realNames || !g_hideJBOn || statCallerIsJBTweak()) {
+        if (outCount) *outCount = total;
+        return realNames;
+    }
+    unsigned int visible = 0;
+    for (unsigned int i = 0; i < total; i++) if (!isDyldNameHidden(realNames[i])) visible++;
+    if (visible == total) {
+        if (outCount) *outCount = total;
+        return realNames;
+    }
+    const char **filtered = (const char **)calloc((size_t)visible + 1, sizeof(char *));
+    if (!filtered) {
+        if (outCount) *outCount = total;
+        return realNames;
+    }
+    unsigned int j = 0;
+    for (unsigned int i = 0; i < total; i++)
+        if (!isDyldNameHidden(realNames[i])) filtered[j++] = realNames[i];
+    free((void *)realNames);
+    if (outCount) *outCount = visible;
+    return filtered;
+}
+
+static const char *hooked_class_get_image_name(Class cls) {
+    const char *name = orig_class_get_image_name ? orig_class_get_image_name(cls) : NULL;
+    if (g_hideJBOn && name && !statCallerIsJBTweak() && isDyldNameHidden(name)) return NULL;
+    return name;
+}
+
+static const char **hooked_objc_copy_classes_for_image(const char *image, unsigned int *outCount) {
+    if (g_hideJBOn && image && !statCallerIsJBTweak() && isDyldNameHidden(image)) {
+        if (outCount) *outCount = 0;
+        return NULL;
+    }
+    return orig_objc_copy_classes_for_image
+        ? orig_objc_copy_classes_for_image(image, outCount) : NULL;
 }
 
 // open()/openat() hooks are NOT installed. Tried twice (4.x and again 4.3.23) —
 // both times hooking these hot, variadic syscalls tripped the FrontBoard
-// scene-create watchdog on Zalo ("treo logo → văng"). stat/lstat/access/fopen
-// cover the same JB-path checks without touching the launch hot path. Leaving
-// this gap open is the correct trade — a working app beats a fuller hide.
+// scene-create watchdog on Zalo. Stable non-variadic fstatat/faccessat/readlink/
+// getattrlist/opendir coverage is installed instead; raw open/openat stays a
+// documented gap rather than reintroducing a known launch crash.
 
 // ============================================================
 // LAYER 12: DeviceCheck — block token generation.
@@ -3253,7 +3517,129 @@ static NSString *patchUA(NSString *value) {
 // since it returns EPERM on stock iOS too; no app reads its FILE*.
 typedef int (*fork_fn_t)(void);
 static fork_fn_t orig_fork_fn = NULL;
-static int hooked_fork(void) { errno = EPERM; return -1; }
+static int hooked_fork(void) {
+    if (!g_hideJBOn) return orig_fork_fn ? orig_fork_fn() : -1;
+    errno = EPERM;
+    return -1;
+}
+
+static void ci_scrubJBEnvironment(void) {
+    if (!g_hideJBOn) return;
+    // Constructor injection has already completed, so removing these variables
+    // cannot unload a tweak. It also closes direct `environ` / NSProcessInfo probes,
+    // which a getenv-only hook did not cover. Turning the option off takes full
+    // effect on the next target-app launch, when the variables are not removed.
+    unsetenv("DYLD_INSERT_LIBRARIES");
+    unsetenv("_MSSafeMode");
+    unsetenv("_SubstrateMode");
+    unsetenv("SubstrateSafeMode");
+    unsetenv("_SafeMode");
+}
+
+// Install only the lightweight anti-detection layer here. It deliberately runs
+// before the license/target spoof gate: an expired token disables identity spoofing,
+// but must not turn the already-injected dylib into an obvious JB signal. Expensive
+// MG/sysctl/IORegistry/keychain hooks remain behind the gate in %ctor.
+static void ci_installJBHideHooks(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ci_scrubJBEnvironment();
+
+        orig_dladdr_fn = (dladdr_fn_t)dlsym(RTLD_DEFAULT, "dladdr");
+
+        orig_stat_fn   = (stat_fn_t)dlsym(RTLD_DEFAULT, "stat");
+        orig_lstat_fn  = (stat_fn_t)dlsym(RTLD_DEFAULT, "lstat");
+        orig_access_fn = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
+        if (orig_stat_fn)
+            MSHookFunction((void *)orig_stat_fn, (void *)hook_stat_fn, (void **)&orig_stat_fn);
+        if (orig_lstat_fn)
+            MSHookFunction((void *)orig_lstat_fn, (void *)hook_lstat_fn, (void **)&orig_lstat_fn);
+        if (orig_access_fn)
+            MSHookFunction((void *)orig_access_fn, (void *)hook_access_fn, (void **)&orig_access_fn);
+
+        orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
+        if (orig_fopen_fn)
+            MSHookFunction((void *)orig_fopen_fn, (void *)hook_fopen_fn, (void **)&orig_fopen_fn);
+
+        orig_fstatat_fn = (fstatat_fn_t)dlsym(RTLD_DEFAULT, "fstatat");
+        orig_faccessat_fn = (faccessat_fn_t)dlsym(RTLD_DEFAULT, "faccessat");
+        orig_getattrlist_fn = (getattrlist_fn_t)dlsym(RTLD_DEFAULT, "getattrlist");
+        orig_readlink_fn = (readlink_fn_t)dlsym(RTLD_DEFAULT, "readlink");
+        orig_readlinkat_fn = (readlinkat_fn_t)dlsym(RTLD_DEFAULT, "readlinkat");
+        orig_opendir_fn = (opendir_fn_t)dlsym(RTLD_DEFAULT, "opendir");
+        orig_readdir_fn = (readdir_fn_t)dlsym(RTLD_DEFAULT, "readdir");
+        orig_closedir_fn = (closedir_fn_t)dlsym(RTLD_DEFAULT, "closedir");
+        if (orig_fstatat_fn)
+            MSHookFunction((void *)orig_fstatat_fn, (void *)hook_fstatat_fn, (void **)&orig_fstatat_fn);
+        if (orig_faccessat_fn)
+            MSHookFunction((void *)orig_faccessat_fn, (void *)hook_faccessat_fn, (void **)&orig_faccessat_fn);
+        if (orig_getattrlist_fn)
+            MSHookFunction((void *)orig_getattrlist_fn, (void *)hook_getattrlist_fn, (void **)&orig_getattrlist_fn);
+        if (orig_readlink_fn)
+            MSHookFunction((void *)orig_readlink_fn, (void *)hook_readlink_fn, (void **)&orig_readlink_fn);
+        if (orig_readlinkat_fn)
+            MSHookFunction((void *)orig_readlinkat_fn, (void *)hook_readlinkat_fn, (void **)&orig_readlinkat_fn);
+        if (orig_opendir_fn)
+            MSHookFunction((void *)orig_opendir_fn, (void *)hook_opendir_fn, (void **)&orig_opendir_fn);
+        if (orig_readdir_fn)
+            MSHookFunction((void *)orig_readdir_fn, (void *)hook_readdir_fn, (void **)&orig_readdir_fn);
+        if (orig_closedir_fn)
+            MSHookFunction((void *)orig_closedir_fn, (void *)hook_closedir_fn, (void **)&orig_closedir_fn);
+
+        orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
+        if (orig_getenv_fn)
+            MSHookFunction((void *)orig_getenv_fn, (void *)hook_getenv_fn, (void **)&orig_getenv_fn);
+
+        orig_dyld_image_count_fn = (dyld_image_count_fn_t)dlsym(RTLD_DEFAULT, "_dyld_image_count");
+        orig_dyld_get_image_name_fn = (dyld_image_name_fn_t)dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+        orig_dyld_get_image_header_fn = (dyld_image_header_fn_t)dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
+        orig_dyld_get_image_slide_fn = (dyld_image_slide_fn_t)dlsym(RTLD_DEFAULT, "_dyld_get_image_vmaddr_slide");
+        if (orig_dyld_image_count_fn && orig_dyld_get_image_name_fn) {
+            MSHookFunction((void *)orig_dyld_image_count_fn, (void *)hooked_dyld_image_count,
+                           (void **)&orig_dyld_image_count_fn);
+            MSHookFunction((void *)orig_dyld_get_image_name_fn, (void *)hooked_dyld_get_image_name,
+                           (void **)&orig_dyld_get_image_name_fn);
+            if (orig_dyld_get_image_header_fn)
+                MSHookFunction((void *)orig_dyld_get_image_header_fn,
+                               (void *)hooked_dyld_get_image_header,
+                               (void **)&orig_dyld_get_image_header_fn);
+            if (orig_dyld_get_image_slide_fn)
+                MSHookFunction((void *)orig_dyld_get_image_slide_fn,
+                               (void *)hooked_dyld_get_image_slide,
+                               (void **)&orig_dyld_get_image_slide_fn);
+        }
+        if (orig_dladdr_fn)
+            MSHookFunction((void *)orig_dladdr_fn, (void *)hooked_dladdr, (void **)&orig_dladdr_fn);
+
+        orig_objc_copy_image_names = (objc_copy_image_names_fn_t)dlsym(RTLD_DEFAULT, "objc_copyImageNames");
+        orig_class_get_image_name = (class_get_image_name_fn_t)dlsym(RTLD_DEFAULT, "class_getImageName");
+        orig_objc_copy_classes_for_image = (objc_copy_classes_for_image_fn_t)dlsym(RTLD_DEFAULT, "objc_copyClassNamesForImage");
+        if (orig_objc_copy_image_names)
+            MSHookFunction((void *)orig_objc_copy_image_names, (void *)hooked_objc_copy_image_names,
+                           (void **)&orig_objc_copy_image_names);
+        if (orig_class_get_image_name)
+            MSHookFunction((void *)orig_class_get_image_name, (void *)hooked_class_get_image_name,
+                           (void **)&orig_class_get_image_name);
+        if (orig_objc_copy_classes_for_image)
+            MSHookFunction((void *)orig_objc_copy_classes_for_image,
+                           (void *)hooked_objc_copy_classes_for_image,
+                           (void **)&orig_objc_copy_classes_for_image);
+
+        orig_fork_fn = (fork_fn_t)dlsym(RTLD_DEFAULT, "fork");
+        if (orig_fork_fn)
+            MSHookFunction((void *)orig_fork_fn, (void *)hooked_fork, (void **)&orig_fork_fn);
+
+        dbglog("ctor %s JBhide fs=%p/%p/%p/%p at=%p/%p attr=%p read=%p/%p dir=%p dyld=%p/%p/%p/%p dladdr=%p fork=%p\n",
+               g_procname, (void *)orig_stat_fn, (void *)orig_lstat_fn,
+               (void *)orig_access_fn, (void *)orig_fopen_fn,
+               (void *)orig_fstatat_fn, (void *)orig_faccessat_fn,
+               (void *)orig_getattrlist_fn, (void *)orig_readlink_fn,
+               (void *)orig_readlinkat_fn, (void *)orig_opendir_fn,
+               (void *)orig_dyld_image_count_fn, (void *)orig_dyld_get_image_name_fn,
+               (void *)orig_dyld_get_image_header_fn, (void *)orig_dyld_get_image_slide_fn,
+               (void *)orig_dladdr_fn, (void *)orig_fork_fn);
+    });
+}
 
 // ============================================================
 // LAYER 20: PKPushRegistry — VoIP push token device fingerprint.
@@ -3638,6 +4024,7 @@ static void ci_runOneShotIfDue(void) {
 static void notify_cb(int t) {
     (void)t;
     reloadConfig();
+    ci_scrubJBEnvironment();
     ci_camReloadFromConfig();   // LAYER 21: pick up a just-applied/cleared camera clip
     // ReloadPrefs after a Change Device may arrive while Zalo is (re)launching —
     // consume the one-shot if this generation is due. No unconditional wipe here
@@ -3684,23 +4071,14 @@ static void notify_cb(int t) {
             return;
         }
 
-        // 4.1.6 — UNLICENSED → stay COMPLETELY inert (install no C hooks).
-        // A tweak with no valid license spoofs nothing, so every C hook below
-        // would only pass through to the real function. But that passthrough,
-        // multiplied by the tens of thousands of MG / sysctl / dyld / keychain
-        // calls Firebase + UIKit make during Zalo's scene-create, piles up
-        // ~55-106s of CPU in <26s wall → FrontBoard scene-create watchdog SIGKILL.
-        // Proven on-device (192.168.1.175): a tweak-free process launches fine, a
-        // LICENSED launch launches fine (values answered from config, real fns
-        // barely called), only UNLICENSED-with-hooks dies — and the user's token
-        // had expired, which is exactly the "restore sang acc khác bị văng" path
-        // (restore relaunches Zalo cold; if the restored profile carries no live
-        // token it comes up unlicensed → crash). So when unlicensed we install
-        // NOTHING: identical to tweak-free, no watchdog. The Logos %hooks above
-        // stay registered but are each config-gated (→ %orig), so they're just as
-        // cheap. Hooks come online on the next launch after the host app writes a
-        // live token (it relaunches the target on license / identity change).
-        // reloadConfig() above already computed g_licOK from the on-disk token.
+        // Lightweight anti-detection stays active even when the license/profile
+        // gate below is temporarily invalid. Heavy identity hooks remain gated.
+        ci_installJBHideHooks();
+
+        // Expired/missing license disables the expensive identity/keychain hooks
+        // below. The small JB-hide layer above remains active because the dylib is
+        // already present and otherwise exposes itself. This preserves the old
+        // watchdog fix without creating an obvious unlicensed detection state.
         if (!g_licOK || !g_targetOK) {
             dbglog("ctor %s INERT license=%d target=%d (no C hooks) keys=%lu\n",
                    g_procname, g_licOK, g_targetOK, (unsigned long)g_config.count);
@@ -3857,51 +4235,6 @@ static void notify_cb(int t) {
                        g_procname, (void *)orig_IORegCreateProps);
             }
         }
-
-        // LAYER 9: JB hiding — stat / lstat / access
-        orig_stat_fn   = (stat_fn_t)  dlsym(RTLD_DEFAULT, "stat");
-        orig_lstat_fn  = (stat_fn_t)  dlsym(RTLD_DEFAULT, "lstat");
-        orig_access_fn = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
-        if (orig_stat_fn)
-            MSHookFunction((void*)orig_stat_fn,   (void*)hook_stat_fn,   (void**)&orig_stat_fn);
-        if (orig_lstat_fn)
-            MSHookFunction((void*)orig_lstat_fn,  (void*)hook_lstat_fn,  (void**)&orig_lstat_fn);
-        if (orig_access_fn)
-            MSHookFunction((void*)orig_access_fn, (void*)hook_access_fn, (void**)&orig_access_fn);
-        // fopen — covers the most common JB-file check (open() stays unhooked;
-        // hooking it tripped the scene-create watchdog — see 4.3.24 note above).
-        orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
-        if (orig_fopen_fn)
-            MSHookFunction((void*)orig_fopen_fn, (void*)hook_fopen_fn, (void**)&orig_fopen_fn);
-        // getenv — hide DYLD_INSERT_LIBRARIES / substrate env probes.
-        orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
-        if (orig_getenv_fn)
-            MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
-        // (4.0.6: realpath hook removed; 4.3.24: open/openat/fstatat reverted — both
-        //  caused Zalo launch regressions. stat/lstat/access/fopen is the stable set.)
-        dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
-               g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
-               (void*)orig_fopen_fn, (void*)orig_getenv_fn);
-
-        // LAYER 10: dyld image list hiding
-        orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
-        orig_dyld_get_image_name_fn = (dyld_image_name_fn_t)    dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
-        if (orig_dyld_image_count_fn && orig_dyld_get_image_name_fn) {
-            MSHookFunction((void*)orig_dyld_image_count_fn,    (void*)hooked_dyld_image_count,
-                           (void**)&orig_dyld_image_count_fn);
-            MSHookFunction((void*)orig_dyld_get_image_name_fn, (void*)hooked_dyld_get_image_name,
-                           (void**)&orig_dyld_get_image_name_fn);
-        }
-        dbglog("ctor %s dyldHide cnt=%p name=%p\n",
-               g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
-
-        // LAYER 19: block fork() only — popen/system omitted (crash risk).
-        orig_fork_fn = (fork_fn_t)dlsym(RTLD_DEFAULT, "fork");
-        if (orig_fork_fn)
-            MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
-        dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
-
-        // open()/openat()/fstatat() intentionally NOT installed — see note above.
 
         // LAYER 11: Keychain device-fingerprint isolation
         // MSHookFunction patches the Security.framework prologue so ALL callers

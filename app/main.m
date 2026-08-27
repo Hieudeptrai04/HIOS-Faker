@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.35";
+static NSString *const kAppVersion = @"4.3.36";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -6181,9 +6181,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // produce a clean device). Leave it OFF for normal use.
     [_rows addObject:[C toggle:@"18. Không bao giờ reset Viber (giữ login, Change sẽ KHÔNG sạch)" key:@"viberKeepLogin" indent:0]];
 
-    // 19. JB Hide
-    [_rows addObject:[C toggle:@"19. Hide Jailbreak (toggle không có tác dụng - hook JB luôn bật, chưa đầy đủ)" key:@"fake_jbhide" indent:0]];
-    [_rows addObject:[C toggle:@"    hideJailbreak runtime (không có tác dụng)" key:@"hideJailbreak" indent:24]];
+    // 19. JB Hide — single runtime control consumed by tweak-mg.
+    [_rows addObject:[C toggle:@"19. Hide Jailbreak (cơ bản, áp dụng khi mở lại app)" key:@"hideJailbreak" indent:0]];
 
     // 20. Uptime
     [_rows addObject:[C toggle:@"20. Fake system uptime (toggle không có tác dụng - chỉ kern.boottime được spoof)" key:@"fake_uptime" indent:0]];
