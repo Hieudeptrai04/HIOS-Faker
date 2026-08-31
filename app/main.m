@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.37";
+static NSString *const kAppVersion = @"4.3.38";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3774,13 +3774,14 @@ static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services)
 // Re-prompt the app for ALL its privacy permissions on the next launch, just
 // like a freshly-downloaded app: DELETE every one of the app's rows from the
 // mobile-owned TCC.db (Contacts / Photos / Camera / Microphone / Tracking).
-// Contacts (AddressBook) is DELIBERATELY LEFT ALONE (4.3.18) — restoring 4.2.0
-// behavior. Revoking Contacts each Change Device (4.3.1..4.3.17) killed Zalo's
-// "gợi ý kết bạn từ danh bạ": after the revoke+re-grant dance Zalo did not
-// rebuild suggestions for the fresh account. The deep wipe (whole Library +
-// Documents + tmp + StoreKit + SystemData) already drops Zalo's stale
-// contact-sync cache, so keeping Contacts GRANTED lets Zalo re-read the freshly
-// seeded contacts on relaunch and rebuild suggestions from scratch.
+// 4.3.38: Contacts (AddressBook) IS reset again — a truly clean device must
+// prompt for Contacts on first launch like a real fresh install. This reverts
+// the 4.3.18 "leave Contacts granted" behavior. The old worry was that Zalo did
+// not rebuild "gợi ý kết bạn từ danh bạ" after a revoke+re-grant; but Change
+// Device re-seeds fake contacts first (ci_seedRandomContacts), so once the user
+// re-grants, Zalo reads the freshly seeded contacts and rebuilds from those.
+// Location is NOT reset here: it is not stored in TCC.db (it lives in locationd's
+// root-only clients.plist, out of reach of this mobile-uid app).
 //
 // We deliberately do NOT kill tccd. The old 4.0.9 build did `killall -9 tccd`
 // to force a reload; SIGKILL'ing the permission daemon corrupted its state and
@@ -3790,14 +3791,16 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
     // Re-prompt for REAL: ask the running tccd to reset these services (drops
     // its RAM cache so Settings shows them cleared). Location is deliberately
-    // NOT here — resetting it contradicts the GPS spoof and locks the account.
-    // CONTACTS (kTCCServiceAddressBook) is INTENTIONALLY NOT reset — restoring the
-    // 4.2.0 behavior. Revoking it every Change Device (added 4.3.1) is what broke
-    // Zalo's "gợi ý kết bạn từ danh bạ": after revoke+re-grant on a fresh account
-    // Zalo did not rebuild contact suggestions. The deep wipe already clears Zalo's
-    // stale contact-sync cache, so keeping the permission granted lets Zalo re-read
-    // the freshly seeded contacts on relaunch and rebuild suggestions.
-    ci_tccResetViaXPC(bundleID, @[@"kTCCServiceCamera",
+    // NOT here — TCC.db does not store location auth (it lives in locationd's
+    // root-only clients.plist, unreachable from this mobile-uid app), and a
+    // half-reset would contradict the GPS spoof.
+    // 4.3.38: CONTACTS (kTCCServiceAddressBook) IS reset again — the user wants a
+    // fresh install to prompt for Contacts like a real first launch. The old
+    // "keep granted" behavior (4.2.0) avoided a friend-suggestion rebuild miss on
+    // Zalo, but a truly clean device must re-ask. Change Device already re-seeds
+    // fake contacts (ci_seedRandomContacts), so once the user re-grants, Zalo
+    // reads the freshly seeded contacts and rebuilds suggestions from them.
+    ci_tccResetViaXPC(bundleID, @[@"kTCCServiceAddressBook", @"kTCCServiceCamera",
         @"kTCCServicePhotos", @"kTCCServicePhotosAdd", @"kTCCServiceMicrophone",
         @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking"]);
     // IMPORTANT: use the libsqlite3 C API directly, NOT the `sqlite3` CLI.
@@ -3811,8 +3814,9 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
         sqlite3_busy_timeout(db, 1500);
         sqlite3_stmt *st = NULL;
-        // Preserve the AddressBook row (Contacts stays granted) — see above.
-        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1 AND service != 'kTCCServiceAddressBook'",
+        // 4.3.38: delete ALL of the bundle's TCC rows, AddressBook included, so
+        // Contacts re-prompts on next launch (fresh-install behavior).
+        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1",
                                -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
             sqlite3_step(st);
