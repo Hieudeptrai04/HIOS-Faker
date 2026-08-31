@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.38";
+static NSString *const kAppVersion = @"4.3.39";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3052,6 +3052,32 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *ci_restoreLivePrerequisi
 static BOOL ci_bundleRequiresRRSKeychain(NSString *bundleID) {
     return [bundleID isEqualToString:@"com.viber"] ||
            [bundleID containsString:@"zingalo"];
+}
+
+// 4.3.39: A freshly-registered Zalo account keeps its login session in the
+// CONTAINER (Documents/profile.sqlite + Documents/chat_dbs/<numeric UID>/), NOT in
+// a keychain kSessionUid item — so ci_missingRequiredRRSKeychainDumps finds only
+// device-id items and the backup used to abort ("Keychain đăng nhập chưa đầy đủ")
+// even though the account is fully logged in. The tar captures those container
+// files, so such an account is completely backup/restore-able without a keychain
+// login secret. This predicate detects that logged-in FILE session so the
+// backup/rebackup/restore gates can accept it. Shell-based (ci_run) because
+// NSFileManager stat of a foreign live container is MAC-blocked on this build —
+// the same reason the tar/copy paths shell out. Works for a live OR an untarred
+// archived container. Viber is intentionally NOT covered: its session lives in the
+// shared keychain group, so it must stay strict.
+static BOOL ci_zaloContainerHasFileSession(NSString *dataContainer) {
+    if (dataContainer.length == 0) return NO;
+    NSString *safe = [dataContainer stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    // profile.sqlite present AND at least one numeric chat_dbs/<UID>/ subdir (6–12
+    // digits) → a genuine logged-in account, not a schema-only/logged-out shell.
+    NSString *cmd = [NSString stringWithFormat:
+        @"d='%@'; [ -f \"$d/Documents/profile.sqlite\" ] || exit 1; "
+        @"for u in \"$d\"/Documents/chat_dbs/*/; do "
+        @"  [ -d \"$u\" ] || continue; b=$(basename \"$u\"); "
+        @"  case \"$b\" in ''|*[!0-9]*) ;; *) [ ${#b} -ge 6 ] && [ ${#b} -le 12 ] && exit 0 ;; esac; "
+        @"done; exit 2", safe];
+    return ci_run([cmd UTF8String]) == 0;
 }
 
 static BOOL ci_rrsConfigHasPortableIdentity(id object) {
@@ -10849,6 +10875,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSArray<NSString *> *missingRequiredDumps =
         ci_missingRequiredRRSKeychainDumps(b);
     if (missingRequiredDumps.count) {
+        // 4.3.39: a Zalo bundle whose live container holds a logged-in FILE session
+        // (profile.sqlite + chat_dbs/<UID>/) is backup-able even without a keychain
+        // kSessionUid — the tar captures the session files. Drop those from the
+        // missing list. Viber stays strict (keychain-based session).
+        NSMutableArray<NSString *> *stillMissing = [NSMutableArray array];
+        for (NSString *bid in missingRequiredDumps) {
+            if ([bid containsString:@"zingalo"] &&
+                ci_zaloContainerHasFileSession(ci_findDataContainerForBundle(bid))) {
+                NSLog(@"[ChangeInfoIos] RRS: %@ has no keychain kSessionUid but container is logged-in (file session) → allow backup", bid);
+                continue;
+            }
+            [stillMissing addObject:bid];
+        }
+        missingRequiredDumps = stillMissing;
+    }
+    if (missingRequiredDumps.count) {
         NSLog(@"[ChangeInfoIos] RRS ABORT: required login keychain missing for %@", missingRequiredDumps);
         gLastRRSCreateFailure = [NSString stringWithFormat:
             @"Keychain đăng nhập chưa đầy đủ hoặc không đọc được: %@",
@@ -10944,6 +10986,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
         NSArray<NSString *> *missingRequiredDumps =
             ci_missingRequiredRRSKeychainDumps(bids);
+        if (missingRequiredDumps.count) {
+            // 4.3.39: accept a Zalo bundle backed by a logged-in FILE session
+            // (profile.sqlite + chat_dbs/<UID>/) even without a keychain kSessionUid.
+            NSMutableArray<NSString *> *stillMissing = [NSMutableArray array];
+            for (NSString *bid in missingRequiredDumps) {
+                if ([bid containsString:@"zingalo"] &&
+                    ci_zaloContainerHasFileSession(ci_findDataContainerForBundle(bid))) {
+                    NSLog(@"[ChangeInfoIos] RRS rebackup: %@ file session → allow", bid);
+                    continue;
+                }
+                [stillMissing addObject:bid];
+            }
+            missingRequiredDumps = stillMissing;
+        }
         if (missingRequiredDumps.count) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissHUD:hud completion:^{
@@ -11361,7 +11417,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
             if (ci_bundleRequiresRRSKeychain(bid)) {
                 NSString *dumpPath = [dir stringByAppendingPathComponent:@"tmp/hios_keychain.plist"];
-                if (!ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
+                // 4.3.39: a Zalo snapshot whose archived container carries a logged-in
+                // FILE session (profile.sqlite + chat_dbs/<UID>/) restores fine without a
+                // keychain login secret — the container copy brings the session back.
+                BOOL zaloFileSession = [bid containsString:@"zingalo"] &&
+                                       ci_zaloContainerHasFileSession(dir);
+                if (!zaloFileSession && !ci_rrsKeychainDumpHasLoginSecret(dumpPath, bid))
                     [sourceFailures addObject:[bid stringByAppendingString:@" (keychain nguồn thiếu secret đăng nhập)"]];
             }
         }
@@ -12343,8 +12404,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         NSMutableArray<NSString *> *missingLoginFlags = [NSMutableArray array];
         for (NSString *bid in e.bundleIDs) {
-            if (ci_bundleRequiresRRSKeychain(bid) && ![flaggedBundleIDs containsObject:bid])
-                [missingLoginFlags addObject:bid];
+            if (!ci_bundleRequiresRRSKeychain(bid) || [flaggedBundleIDs containsObject:bid])
+                continue;
+            // 4.3.39: a Zalo bundle whose just-restored live container holds a
+            // logged-in FILE session doesn't need a keychain-restore flag — the
+            // copied profile.sqlite + chat_dbs/<UID>/ already carry the login.
+            if ([bid containsString:@"zingalo"] &&
+                ci_zaloContainerHasFileSession(ci_findDataContainerForBundle(bid))) {
+                NSLog(@"[ChangeInfoIos] restore: %@ file session restored → login flag not required", bid);
+                continue;
+            }
+            [missingLoginFlags addObject:bid];
         }
         if (missingLoginFlags.count) {
             abortRestore([NSString stringWithFormat:
