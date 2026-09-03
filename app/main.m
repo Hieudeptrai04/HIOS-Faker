@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.42";
+static NSString *const kAppVersion = @"4.3.43";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -160,6 +160,11 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
     // Keep the claimed model/chip/screen on the physical hardware by default.
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
+    // 4.3.43: "Fake tự do" — OFF by default (safe). ON lets Change Device fake any
+    // model in range (≤ iPhone 12 Pro Max under Zalo mode) even when its screen/chip
+    // differ from the physical device (e.g. iPhone 7 → iPhone 12). Zalo verifies by
+    // model identifier, not screen size, and UIScreen is hooked inside Zalo.
+    if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(NO);  seeded = YES; }
     // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
     // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
     // real device → show iPhone X), and a high chip can't be faked GPU-
@@ -1499,8 +1504,14 @@ static NSUInteger ci_randomizeIdentities(void) {
     // the claim. Falls back to the full [dLo,dHi] window when no same-screen
     // model is in range. Host app is NOT hooked, so UIScreen here is REAL.
     NSArray *preset = nil;
+    // 4.3.43: "Fake tự do mọi model" — unlock cross-screen / cross-chip faking
+    // (e.g. iPhone 7 → iPhone 12). Zalo verifies the device by its model identifier
+    // (ProductType), not by screen width, and the tweak hooks UIScreen INSIDE Zalo
+    // so the faked model's screen is what Zalo reads. So neither screen-match nor
+    // the hardware lock is required — both are disabled while this is ON.
+    BOOL freeModel = [cm boolForKey:@"_ci_free_model"];
     id smObj = [cm objectForKey:@"_ci_screen_match"];
-    BOOL screenMatch = smObj ? [smObj boolValue] : YES;
+    BOOL screenMatch = (smObj ? [smObj boolValue] : YES) && !freeModel;
     if (screenMatch) {
         double rw = 0, rh = 0;
         @try {
@@ -1536,10 +1547,11 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSArray *liveTargets = [cm targetBundles];
     BOOL sensitiveTarget = [liveTargets containsObject:@"com.viber"] ||
                            [liveTargets containsObject:@"vn.com.vng.zingalo"];
-    if (sensitiveTarget && !hwLock) {
+    if (sensitiveTarget && !hwLock && !freeModel) {
         hwLock = YES;
         [cm setObject:@(YES) forKey:@"_ci_hw_lock"];
     }
+    if (freeModel) hwLock = NO;   // 4.3.43: Fake tự do wins over the hardware lock
     if (hwLock) {
         NSString *realPT = ci_realProductType();
         if (realPT.length) {
@@ -6119,7 +6131,9 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
     [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
     [_rows addObject:[C toggle:@"🔒 Khóa đúng phần cứng thật (khuyên dùng)" key:@"_ci_hw_lock" indent:24]];
-    [_rows addObject:[C note:@"BẬT mặc định và được ép BẬT khi Change cho Zalo/Viber: giữ model/chip/màn hình nhất quán với máy thật; chỉ các ID duy nhất được đổi. Tắt chỉ dành cho kiểm thử vì GPU/board thật có thể làm lộ profile lệch." indent:24]];
+    [_rows addObject:[C note:@"BẬT mặc định: giữ model/chip/màn hình nhất quán với máy thật; chỉ các ID duy nhất được đổi. Tắt chỉ dành cho kiểm thử vì GPU/board thật có thể làm lộ profile lệch. (Có thể bị ghi đè bởi 'Fake tự do' bên dưới.)" indent:24]];
+    [_rows addObject:[C toggle:@"🔓 Fake tự do mọi model (bỏ khớp phần cứng/màn)" key:@"_ci_free_model" indent:24]];
+    [_rows addObject:[C note:@"BẬT: cho Change Device / random giả BẤT KỲ model nào trong dải thanh trượt (vẫn ≤ iPhone 12 Pro Max nếu Zalo mode bật), kể cả khác màn/chip với máy gốc — vd iPhone 7 giả thành iPhone 12. Zalo kiểm theo MÃ MÁY (ProductType), không kiểm độ rộng màn; tweak đã hook UIScreen trong Zalo nên màn Zalo đọc = máy giả. Ghi đè '🔒 Khóa phần cứng' (kể cả ép cho Zalo/Viber). Đánh đổi: chip/GPU thật vẫn lộ với app kiểm tra sâu — Zalo không kiểm. TẮT (mặc định): giữ khớp máy thật, an toàn tối đa." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
