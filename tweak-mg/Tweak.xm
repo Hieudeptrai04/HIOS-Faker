@@ -664,6 +664,17 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
 
     if (!result) return mgOrigCached(property);
 
+    // 4.3.41b: off the main thread, hand back the spoof directly and never touch
+    // dladdr. The std::terminate this caller-check guards against is a MAIN-THREAD
+    // UIKit path (_UIDeviceNativeUserInterfaceIdiomIgnoringClassic loading a device
+    // plist), so off-main there is nothing to guard. This closes the last launch
+    // deadlock vector: a spoofed STRING key (ProductType/SerialNumber/UniqueDeviceID
+    // /…) queried on a background thread during the +[FIRApp configure] dlopen
+    // window would otherwise run dladdr -> dyld loader lock -> wedge, exactly like
+    // the CoreTelephony hasBaseband thread did. Main-thread callers keep the full
+    // guard below (main-thread dladdr is a recursive lock acquire, never blocks).
+    if (!pthread_main_np()) return result;
+
     // We have a spoof value → skip UIKit/system-internal callers so a fake device
     // key can't crash them. The std::terminate this guards against is specific to a
     // fake STRING key: UIKit's _UIDeviceNativeUserInterfaceIdiomIgnoringClassic reads
@@ -2704,6 +2715,18 @@ static dladdr_fn_t orig_dladdr_fn = NULL;
 // handled by the isTweakDataPath() whitelist in isJBPath(), which doesn't
 // need any caller detection — so a fast single-frame check is sufficient.)
 static BOOL statCallerIsJBTweak(void) {
+    // 4.3.41b: never touch dladdr off the main thread. This exemption only ever
+    // says YES for a peer JB tweak reading its own /var/jb tree — which never
+    // happens inside an injected app (the tweak's OWN reads are already exempted
+    // earlier by g_ciInternalFS/CIInternalFSGuard). So off-main the honest answer
+    // is "not a peer tweak" = NO = hide, and we skip the dladdr entirely. That
+    // matters because dladdr takes the dyld loader lock: a background-thread JB
+    // probe during the launch dlopen window (an anti-fraud SDK statting
+    // /Applications/Cydia.app, /bin/bash, /var/jb/...) would otherwise block on
+    // the lock the main thread holds mid-dlopen -> the 0x8BADF00D launch deadlock.
+    // On the main thread dladdr is a recursive lock acquire and never blocks, so
+    // the real check (and the %ctor tweak-self exemption) is preserved there.
+    if (!pthread_main_np()) return NO;
     Dl_info di; di.dli_fname = NULL;
     int ok = orig_dladdr_fn ? orig_dladdr_fn(__builtin_return_address(1), &di)
                             : dladdr(__builtin_return_address(1), &di);
