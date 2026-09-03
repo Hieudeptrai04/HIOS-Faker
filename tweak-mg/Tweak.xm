@@ -2769,11 +2769,12 @@ static int hook_getattrlist_fn(const char *path, struct attrlist *attrs, void *b
 static ssize_t hook_readlink_fn(const char *path, char *buf, size_t size) {
     if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     ssize_t rc = orig_readlink_fn(path, buf, size);
-    if (rc > 0 && buf && buf[0] == '/' && !statCallerIsJBTweak()) {
+    if (rc > 0 && buf && buf[0] == '/') {
         char target[1024];
         size_t n = ((size_t)rc < sizeof(target) - 1) ? (size_t)rc : sizeof(target) - 1;
         memcpy(target, buf, n); target[n] = 0;
-        if (isJBPath(target)) { errno = ENOENT; return -1; }
+        // 4.3.40: cheap lexical check first; dladdr (dyld lock) only on a JB hit.
+        if (isJBPath(target) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     }
     return rc;
 }
@@ -2782,11 +2783,12 @@ static ssize_t hook_readlinkat_fn(int fd, const char *path, char *buf, size_t si
         errno = ENOENT; return -1;
     }
     ssize_t rc = orig_readlinkat_fn(fd, path, buf, size);
-    if (rc > 0 && buf && buf[0] == '/' && !statCallerIsJBTweak()) {
+    if (rc > 0 && buf && buf[0] == '/') {
         char target[1024];
         size_t n = ((size_t)rc < sizeof(target) - 1) ? (size_t)rc : sizeof(target) - 1;
         memcpy(target, buf, n); target[n] = 0;
-        if (isJBPath(target)) { errno = ENOENT; return -1; }
+        // 4.3.40: cheap lexical check first; dladdr (dyld lock) only on a JB hit.
+        if (isJBPath(target) && !statCallerIsJBTweak()) { errno = ENOENT; return -1; }
     }
     return rc;
 }
@@ -2835,10 +2837,31 @@ static void ci_untrackDir(DIR *dir) {
     }
     pthread_mutex_unlock(&g_dirTrackMu);
 }
+// 4.3.40: a directory can only expose a JB entry through readdir if it is a
+// PARENT of a hidden path. Every hidden path lives at canonical depth <= 4
+// (/private/var/lib/dpkg, /usr/lib/libhooker.dylib, /Library/MobileSubstrate,
+// /Applications/Sileo.app, ...) or under /var/jb, so only shallow system dirs
+// (depth <= 3) and the /var/jb tree ever need readdir tracking; an app container
+// (depth >= 6) never does. This replaces the dladdr() caller check that ran on
+// EVERY successful opendir. dladdr takes the dyld lock, and Firebase Crashlytics
+// enumerates directories during scene-create while Zalo is still dlopen-ing
+// frameworks, so the main thread blocked on that lock until FrontBoard's
+// 0x8BADF00D watchdog killed Zalo. Same stall class the 4.1.4 MGCopyAnswer fix
+// removed. The caller exemption is not needed to decide *tracking*: at worst
+// another JB tweak's own readdir gets JB names filtered, which is harmless.
+static BOOL ci_dirMayListJB(const char *path) {
+    if (!path) return NO;
+    char canon[1024];
+    if (ci_canonPath(path, canon, sizeof(canon)) != CI_CANON_OK) return NO;
+    if (strncmp(canon, "/var/jb", 7) == 0 || strncmp(canon, "/private/var/jb", 15) == 0) return YES;
+    int depth = 0;
+    for (const char *p = canon; *p; p++) if (*p == '/' && p[1]) depth++;
+    return depth <= 3;
+}
 static DIR *hook_opendir_fn(const char *path) {
     if (path && isJBPath(path) && !statCallerIsJBTweak()) { errno = ENOENT; return NULL; }
     DIR *dir = orig_opendir_fn(path);
-    if (dir && g_hideJBOn && g_ciInternalFS == 0 && !statCallerIsJBTweak()) ci_trackDir(dir, path);
+    if (dir && g_hideJBOn && g_ciInternalFS == 0 && ci_dirMayListJB(path)) ci_trackDir(dir, path);
     return dir;
 }
 static struct dirent *hook_readdir_fn(DIR *dir) {
@@ -2914,13 +2937,30 @@ static char *hook_getenv_fn(const char *name) {
     }
     NSArray *orig = %orig;
     if (!orig || orig.count == 0) return orig;
-    if (statCallerIsJBTweak()) return orig;
-    NSMutableArray *out = [NSMutableArray arrayWithCapacity:orig.count];
-    for (NSString *item in orig) {
+    // 4.3.40: decide whether there is ANYTHING to hide before paying for the
+    // dladdr() caller check. This method sits on Zalo's launch path (Firebase
+    // Crashlytics enumerates its report dirs inside +[FIRApp configure]) and
+    // dladdr takes the dyld lock while the app is still dlopen-ing frameworks —
+    // the unconditional check that used to be here was the exact frame pinning
+    // the main thread until FrontBoard's 0x8BADF00D watchdog killed Zalo
+    // (Sep 3, "văng" ~44 min into a session). App-container listings never
+    // contain a JB entry, so they now return with O(n) string work and no lock.
+    NSMutableArray *out = nil;
+    for (NSUInteger i = 0; i < orig.count; i++) {
+        NSString *item = orig[i];
         NSString *full = [path stringByAppendingPathComponent:item];
-        if (!isJBPath([full UTF8String])) [out addObject:item];
+        if (isJBPath([full UTF8String])) {
+            if (!out) {
+                // First hidden entry: a JB tweak listing its own tree keeps it.
+                if (statCallerIsJBTweak()) return orig;
+                out = [NSMutableArray arrayWithCapacity:orig.count];
+                [out addObjectsFromArray:[orig subarrayWithRange:NSMakeRange(0, i)]];
+            }
+            continue;   // hidden
+        }
+        if (out) [out addObject:item];
     }
-    return out;
+    return out ?: orig;
 }
 %end
 
@@ -3233,8 +3273,10 @@ static intptr_t hooked_dyld_get_image_slide(uint32_t index) {
 static int hooked_dladdr(const void *addr, Dl_info *info) {
     if (!orig_dladdr_fn) return 0;
     int rc = orig_dladdr_fn(addr, info);
+    // 4.3.40: name check (cheap) BEFORE the caller check — statCallerIsJBTweak
+    // re-enters dladdr, so it must only run when the name is actually hidden.
     if (!g_hideJBOn || g_ciInternalFS > 0 || !rc || !info ||
-        statCallerIsJBTweak() || !isDyldNameHidden(info->dli_fname)) return rc;
+        !isDyldNameHidden(info->dli_fname) || statCallerIsJBTweak()) return rc;
     memset(info, 0, sizeof(*info));
     return 0;
 }
@@ -3250,13 +3292,15 @@ static const char **hooked_objc_copy_image_names(unsigned int *outCount) {
     unsigned int total = 0;
     const char **realNames = orig_objc_copy_image_names
         ? orig_objc_copy_image_names(&total) : NULL;
-    if (!realNames || !g_hideJBOn || statCallerIsJBTweak()) {
+    if (!realNames || !g_hideJBOn) {
         if (outCount) *outCount = total;
         return realNames;
     }
     unsigned int visible = 0;
     for (unsigned int i = 0; i < total; i++) if (!isDyldNameHidden(realNames[i])) visible++;
-    if (visible == total) {
+    // 4.3.40: nothing hidden (the common case) returns without the dladdr caller
+    // check; only a listing that would actually drop a name pays for it.
+    if (visible == total || statCallerIsJBTweak()) {
         if (outCount) *outCount = total;
         return realNames;
     }
@@ -3275,12 +3319,12 @@ static const char **hooked_objc_copy_image_names(unsigned int *outCount) {
 
 static const char *hooked_class_get_image_name(Class cls) {
     const char *name = orig_class_get_image_name ? orig_class_get_image_name(cls) : NULL;
-    if (g_hideJBOn && name && !statCallerIsJBTweak() && isDyldNameHidden(name)) return NULL;
+    if (g_hideJBOn && name && isDyldNameHidden(name) && !statCallerIsJBTweak()) return NULL;
     return name;
 }
 
 static const char **hooked_objc_copy_classes_for_image(const char *image, unsigned int *outCount) {
-    if (g_hideJBOn && image && !statCallerIsJBTweak() && isDyldNameHidden(image)) {
+    if (g_hideJBOn && image && isDyldNameHidden(image) && !statCallerIsJBTweak()) {
         if (outCount) *outCount = 0;
         return NULL;
     }
