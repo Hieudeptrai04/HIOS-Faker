@@ -641,6 +641,7 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     // value → straight passthrough, no dladdr.
     g_inMG = 1;
     CFTypeRef result = NULL;
+    BOOL stringSpoof = NO;   // 4.3.41: only string device keys need the caller-check
     if ([g_boolKeys containsObject:key]) {
         if (getConfig(configKey)) {
             // Real MGCopyAnswer returns a CFBoolean for these keys. Return an
@@ -657,25 +658,37 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
         }
     } else {
         NSString *s = getConfigStr(configKey);
-        if (s) result = (__bridge_retained CFTypeRef)s;
+        if (s) { result = (__bridge_retained CFTypeRef)s; stringSpoof = YES; }
     }
     g_inMG = 0;
 
     if (!result) return mgOrigCached(property);
 
-    // We have a spoof value → NOW skip UIKit/system-internal callers.
-    // MSHookFunction patches MG globally, so UIKit's internal
-    // _UIDeviceNativeUserInterfaceIdiomIgnoringClassic also lands here; feeding
-    // it a fake ProductType (no matching device plist) → initWithContentsOfFile:
-    // throws → std::terminate → SIGABRT. Pass those through (real value).
-    Dl_info _di; _di.dli_fname = NULL;
-    dladdr(__builtin_return_address(0), &_di);
-    if (_di.dli_fname &&
-        (strncmp(_di.dli_fname, "/System/Library/", 16) == 0 ||
-         strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
-         strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
-        CFRelease(result);
-        return mgOrigCached(property);
+    // We have a spoof value → skip UIKit/system-internal callers so a fake device
+    // key can't crash them. The std::terminate this guards against is specific to a
+    // fake STRING key: UIKit's _UIDeviceNativeUserInterfaceIdiomIgnoringClassic reads
+    // a spoofed ProductType, does initWithContentsOfFile: on a device plist that
+    // doesn't exist → throws → SIGABRT. A fake CFBoolean/CFNumber (the capability
+    // keys HasFaceID / HasCellularConnectivity / hasBaseband / HasTouchID …, which
+    // UIKit and CoreTelephony query hundreds of times during scene-create) never
+    // triggers a plist lookup and is safe to hand back fake. So only STRING spoofs
+    // pay the dladdr caller-check.
+    //
+    // 4.3.41: this is what removes the launch-time background-thread dladdr that
+    // wedged on the dyld lock (T2 = CoreTelephony hasBaseband → MGCopyAnswer): a
+    // boolean/int key now returns without ever touching dladdr. dladdr still takes
+    // the dyld loader lock, so keeping it off the hot capability path is what makes
+    // the launch dyld-lock-contention-safe.
+    if (stringSpoof) {
+        Dl_info _di; _di.dli_fname = NULL;
+        dladdr(__builtin_return_address(0), &_di);
+        if (_di.dli_fname &&
+            (strncmp(_di.dli_fname, "/System/Library/", 16) == 0 ||
+             strncmp(_di.dli_fname, "/usr/lib/", 9) == 0 ||
+             strncmp(_di.dli_fname, "/var/jb/usr/lib/", 16) == 0)) {
+            CFRelease(result);
+            return mgOrigCached(property);
+        }
     }
     return result;
 }
@@ -3652,8 +3665,20 @@ static void ci_installJBHideHooks(void) {
                                (void *)hooked_dyld_get_image_slide,
                                (void **)&orig_dyld_get_image_slide_fn);
         }
-        if (orig_dladdr_fn)
-            MSHookFunction((void *)orig_dladdr_fn, (void *)hooked_dladdr, (void **)&orig_dladdr_fn);
+        // 4.3.41: DO NOT install a prologue hook on dladdr. A global dladdr patch
+        // funnels EVERY dladdr in the process — libMobileGestalt's own internal
+        // caller checks, Firebase/Crashlytics image walks, CoreTelephony, the ObjC
+        // runtime — through our trampoline + ElleKit's. On ElleKit 1.2 (shipped by
+        // the Sep-3 re-jailbreak) that amplified the launch-time dyld-loader-lock
+        // hot path into a cross-thread pileup: the main thread mid-dlopen in
+        // +[FIRApp configure] held the dyld lock while background threads (a
+        // CoreTelephony hasBaseband→MGCopyAnswer dispatch_once, etc.) blocked on it
+        // through the wrapped dladdr → 21s hang → FrontBoard 0x8BADF00D. The
+        // pre-4.3.36 builds never patched dladdr and were stable, so dropping it
+        // restores that behaviour. orig_dladdr_fn stays the REAL dladdr (dlsym'd
+        // above) for statCallerIsJBTweak; JB-image hiding is still done by the
+        // _dyld_* + objc_copyImageNames/class_getImageName hooks (no dyld lock).
+        (void)hooked_dladdr;   // kept for reference; intentionally not installed
 
         orig_objc_copy_image_names = (objc_copy_image_names_fn_t)dlsym(RTLD_DEFAULT, "objc_copyImageNames");
         orig_class_get_image_name = (class_get_image_name_fn_t)dlsym(RTLD_DEFAULT, "class_getImageName");
