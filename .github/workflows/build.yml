@@ -261,6 +261,38 @@ jobs:
             --title "HIOS Faker v3 ${VERSION} (${GITHUB_SHA::7})" \
             --notes "Automated v3 build from ${GITHUB_SHA}. MobileGestalt and CoreTelephony hooks are limited to the selected target apps. Install via Sileo or download below."
 
+      # Auto-publish the freshly built .deb to the customer-facing Sileo repo so
+      # a new version reaches zalosuper.net with zero manual download. Uses a PAT
+      # secret (SILEO_DEPLOY_TOKEN, Contents:write on hieudeptrai04.github.io); the
+      # step no-ops if the secret is absent. The Sileo repo's update-repo.yml then
+      # rebuilds Packages/Packages.gz/Release from the pool on this push.
+      - name: Auto-publish deb to Sileo repo
+        if: success() && github.ref == 'refs/heads/v3'
+        env:
+          SILEO_PAT: ${{ secrets.SILEO_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SILEO_PAT:-}" ]; then
+            echo "SILEO_DEPLOY_TOKEN not set — skipping Sileo auto-publish (add the secret to enable)."
+            exit 0
+          fi
+          DEB=$(ls out/*.deb | head -1)
+          BN=$(basename "$DEB")
+          echo "Publishing $BN to the Sileo pool…"
+          git clone --depth 1 "https://x-access-token:${SILEO_PAT}@github.com/Hieudeptrai04/hieudeptrai04.github.io.git" sileo_repo
+          cp "$DEB" "sileo_repo/v3/pool/main/$BN"
+          cd sileo_repo
+          git config user.name "HIOS CI"
+          git config user.email "ci@users.noreply.github.com"
+          git add "v3/pool/main/$BN"
+          if git diff --cached --quiet; then
+            echo "$BN already in pool — nothing to publish."
+          else
+            git commit -m "auto-publish $BN from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}"
+            git push origin HEAD:main
+            echo "Pushed $BN to Sileo pool; update-repo.yml rebuilds the index."
+          fi
+
       # Auto-upload the in-step-captured /tmp/build.log on failure.
       # Each build step prepends `exec > >(tee -a /tmp/build.log) 2>&1`
       # so all stdout/stderr lands in that file. We upload it as a
