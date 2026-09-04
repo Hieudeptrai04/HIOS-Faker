@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.43";
+static NSString *const kAppVersion = @"4.3.44";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -4931,6 +4931,12 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
             // device profile (config.plist) is kept — only the junk is cut.
             @"changeinfoios/camera_spoof.mp4",
             @"changeinfoios/restoreEntry.log",
+            // 4.3.44: license.plist is DEVICE-LOCAL (bound to the real UDID + the
+            // user's own key). It must never ride inside a portable snapshot —
+            // restoring an old one reset _ci_lic_lastok past the 48h offline grace,
+            // so isLicenseValidCached failed and the app asked for the key again
+            // after every restore. Keep it out of the backup entirely.
+            @"changeinfoios/license.plist",
         ];
     });
     NSMutableString *cmd = [NSMutableString stringWithFormat:@"tar -cf '%@'", tarPath];
@@ -11783,9 +11789,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSString *safePref    = [kSharedPrefPath stringByReplacingOccurrencesOfString:@"'" withString:@""];
             // (1) tweak-readable /var/jb mirror — copy the whole config dir, then
             //     verify config.plist bytes actually landed.
+            // 4.3.44: preserve the device-local license.plist across the config
+            // restore. Snapshots made before 4.3.44 still carry a license.plist, and
+            // `cp -a <snap>/.` would overwrite the live one with a stale copy whose
+            // _ci_lic_lastok is long past the 48h offline grace → app bounces to
+            // "nhập key" after every restore. Save the live license, copy the snapshot
+            // config, drop whatever license the snapshot brought, then put the live
+            // license back (if this device had one). The device keeps its OWN license.
             int rcShared = ci_run([[NSString stringWithFormat:
+                @"L=/var/jb/etc/changeinfoios/license.plist; K=/tmp/ci_lic_keep_%@.plist; "
+                @"cp -a \"$L\" \"$K\" 2>/dev/null; "
                 @"mkdir -p /var/jb/etc/changeinfoios && cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
-                @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null", safeBkDir] UTF8String]);
+                @"rm -f \"$L\" 2>/dev/null; [ -f \"$K\" ] && cp -a \"$K\" \"$L\" 2>/dev/null; rm -f \"$K\" 2>/dev/null; "
+                @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null",
+                e.uid, safeBkDir] UTF8String]);
             NSData *liveConfigData = [NSData dataWithContentsOfFile:kSharedConfigPath];
             BOOL sharedOK = (liveConfigData.length > 0 && [sourceConfigData isEqualToData:liveConfigData]);
             // (2) host-app sandbox copy ([cm load] below reads this FIRST) and the
