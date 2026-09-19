@@ -180,7 +180,7 @@ jobs:
           gh release create "$TAG" out/*.deb \
             --repo "$GITHUB_REPOSITORY" \
             --title "HIOS Faker v3 Roothide ${VERSION} (${GITHUB_SHA::7})" \
-            --notes "Roothide build from ${GITHUB_SHA}. Requires opa334 roothide bootstrap. Install via Sileo source https://hieudeptrai04.github.io/roothide/"
+            --notes "Roothide build from ${GITHUB_SHA}. Requires opa334 roothide bootstrap. Install via Sileo source https://zalosuper.net/roothide/"
 
       - name: Auto-publish deb to Sileo roothide folder
         if: success() && github.ref == 'refs/heads/roothide'
