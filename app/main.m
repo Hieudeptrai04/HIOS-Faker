@@ -10390,13 +10390,59 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             if (!mirrorSaved) [why addObject:@"ghi mirror config thất bại"];
             if (!cfgReadback) [why addObject:@"đọc-lại config (identity/token/target/one-shot) KHÔNG khớp"];
             if (!filterOK)    [why addObject:@"shipped filter đổi/xoá/hỏng cấu trúc — tweak sẽ KHÔNG inject app target"];
+            // --- DEBUG DIAGNOSTIC: pinpoint the exact failing sub-check ---
+            NSMutableString *dbg = [NSMutableString stringWithFormat:
+                @"mirror=%d readback=%d filter=%d\nroot=%@\ncfgPath=%@",
+                mirrorSaved, cfgReadback, filterOK, CIJBRoot(), kSharedConfigPath];
+            NSFileManager *_fm = [NSFileManager defaultManager];
+            BOOL cfgExists = [_fm fileExistsAtPath:kSharedConfigPath];
+            [dbg appendFormat:@"\ncfgExists=%d", cfgExists];
+            if (!cfgReadback && cfgExists) {
+                NSDictionary *dsk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
+                [dbg appendFormat:@"\ndiskKeys=%lu", (unsigned long)dsk.count];
+                id liveTok = [cm objectForKey:@"_ci_lic_tok"];
+                id diskTok = dsk[@"_ci_lic_tok"];
+                BOOL tokLiveOK = [liveTok isKindOfClass:[NSString class]] && [(NSString *)liveTok length] > 0;
+                BOOL tokDiskOK = [diskTok isKindOfClass:[NSString class]] && [(NSString *)diskTok length] > 0;
+                BOOL tokMatch = tokLiveOK && tokDiskOK && [(NSString *)diskTok isEqualToString:(NSString *)liveTok];
+                [dbg appendFormat:@"\ntok: live=%d disk=%d match=%d", tokLiveOK, tokDiskOK, tokMatch];
+                id tb = dsk[@"targetBundles"];
+                [dbg appendFormat:@"\ntargetBundles: disk=%@ want=%@",
+                    [tb isKindOfClass:[NSArray class]] ? [NSString stringWithFormat:@"%lu", (unsigned long)[(NSArray *)tb count]] : @"nil",
+                    [NSString stringWithFormat:@"%lu", (unsigned long)allBids.count]];
+                for (NSString *bid in allBids) {
+                    id g = dsk[[@"wipe_gen_" stringByAppendingString:bid]];
+                    id c = dsk[[@"wipe_counter_" stringByAppendingString:bid]];
+                    BOOL gOK = [g isKindOfClass:[NSString class]] && [(NSString *)g isEqualToString:wipeGen];
+                    BOOL cOK = [c isKindOfClass:[NSNumber class]] && [(NSNumber *)c longLongValue] == counter;
+                    [dbg appendFormat:@"\n%@: gen=%d ctr=%d", bid, gOK, cOK];
+                }
+                id dl = dsk[@"wipe_deadline"];
+                NSString *wantDl = [NSString stringWithFormat:@"%lld", wipeDeadline];
+                BOOL dlOK = [dl isKindOfClass:[NSString class]] && [(NSString *)dl isEqualToString:wantDl];
+                BOOL dlFuture = wipeDeadline > (long long)[[NSDate date] timeIntervalSince1970];
+                [dbg appendFormat:@"\ndeadline: match=%d future=%d", dlOK, dlFuture];
+                NSArray *idKeys = @[@"SerialNumber",@"UniqueDeviceID",@"InternationalMobileEquipmentIdentity",
+                    @"advertisingIdentifier",@"WiFiAddress",@"BluetoothAddress",@"ModelNumber"];
+                NSUInteger idChecked = 0;
+                for (NSString *k in idKeys) {
+                    id live = [cm objectForKey:k];
+                    if (![live isKindOfClass:[NSString class]] || ![(NSString *)live length]) continue;
+                    id got = dsk[k];
+                    BOOL m = [got isKindOfClass:[NSString class]] && [(NSString *)got isEqualToString:(NSString *)live];
+                    if (!m) [dbg appendFormat:@"\nID MISMATCH: %@", k];
+                    idChecked++;
+                }
+                [dbg appendFormat:@"\nidChecked=%lu", (unsigned long)idChecked];
+            } else if (!cfgReadback && !cfgExists) {
+                [dbg appendString:@"\nconfig.plist KHÔNG TỒN TẠI sau save!"];
+            }
             NSString *whyMsg = [why componentsJoinedByString:@"; "];
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissHUD:hud completion:^{
                     [self alert:@"Chưa xoá dữ liệu"
                             msg:[NSString stringWithFormat:
-                                 @"KHÔNG xoá dữ liệu app (tránh mất dữ liệu cho một thay đổi tweak chưa dùng được).\n"
-                                 @"Lý do: %@.\nKiểm tra /var/jb/etc/changeinfoios/ + filter DynamicLibraries rồi thử lại.", whyMsg]];
+                                 @"Lý do: %@\n\n--- DEBUG ---\n%@", whyMsg, dbg]];
                 }];
             });
             if (bgTask != UIBackgroundTaskInvalid) {
