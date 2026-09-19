@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-mg
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          make package FINALPACKAGE=1 ARCHS="arm64e"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-ct
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          make package FINALPACKAGE=1 ARCHS="arm64e"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -161,7 +161,7 @@ jobs:
           if [ -n "$JBCTL" ]; then
             for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
               [ -f "$D" ] || continue
-              "$JBCTL" trust "$D" 2>/dev/null || true
+              "$JBCTL" trustcache add "$D" 2>/dev/null || true
             done
           fi
           exit 0
