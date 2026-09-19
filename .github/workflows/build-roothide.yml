@@ -103,60 +103,54 @@ jobs:
           VERSION=$(grep '^Version:' roothide/tweak-mg/control | awk '{print $2}')
 
           cat > combined/DEBIAN/postinst <<'POSTINST'
-#!/bin/sh
-set -e
-ROOT="${JBROOT:-/var/jb}"
-MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
-ETC="$ROOT/etc/changeinfoios"
-
-for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosMG.plist" \
-          "$MS/ChangeInfoIosCT.dylib" "$MS/ChangeInfoIosCT.plist"; do
-  [ -e "$f" ] || continue
-  chown root:wheel "$f" 2>/dev/null || true
-  case "$f" in
-    *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
-    *)       chmod 0644 "$f" 2>/dev/null || true ;;
-  esac
-done
-
-for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
-  [ -f "$P" ] || continue
-  sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
-done
-
-mkdir -p "$ETC" 2>/dev/null || true
-chmod 0777 "$ETC" 2>/dev/null || true
-rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
-      "$ETC/v3_mg_debug.log" 2>/dev/null || true
-
-# Roothide trustcache via jbctl
-JBCTL=""
-for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
-  [ -x "$c" ] && JBCTL="$c" && break
-done
-if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
-  while IFS= read -r h; do
-    [ -z "$h" ] && continue
-    "$JBCTL" trustcache add "$h" 2>/dev/null || true
-  done < "$ETC/cdhashes"
-fi
-
-exit 0
-POSTINST
+          #!/bin/sh
+          set -e
+          ROOT="${JBROOT:-/var/jb}"
+          MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
+          ETC="$ROOT/etc/changeinfoios"
+          for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosMG.plist" \
+                   "$MS/ChangeInfoIosCT.dylib" "$MS/ChangeInfoIosCT.plist"; do
+            [ -e "$f" ] || continue
+            chown root:wheel "$f" 2>/dev/null || true
+            case "$f" in
+              *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
+              *)       chmod 0644 "$f" 2>/dev/null || true ;;
+            esac
+          done
+          for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
+            [ -f "$P" ] || continue
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
+          done
+          mkdir -p "$ETC" 2>/dev/null || true
+          chmod 0777 "$ETC" 2>/dev/null || true
+          rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
+                "$ETC/v3_mg_debug.log" 2>/dev/null || true
+          JBCTL=""
+          for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
+            [ -x "$c" ] && JBCTL="$c" && break
+          done
+          if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              "$JBCTL" trustcache add "$h" 2>/dev/null || true
+            done < "$ETC/cdhashes"
+          fi
+          exit 0
+          POSTINST
           chmod 0755 combined/DEBIAN/postinst
 
           cat > combined/DEBIAN/control <<EOF
-Package: com.changeinfoios.v3
-Name: HIOS Faker v3 (Roothide)
-Version: ${VERSION}
-Architecture: iphoneos-arm64-roothide
-Description: HIOS Faker v3 for Roothide jailbreak. MobileGestalt + CoreTelephony device-spoof injected into selected apps. Requires roothide bootstrap (opa334).
-Maintainer: ChangeInfoIos
-Author: @houselis
-Section: Tweaks
-Depends: dev.roothide.roothide, ellekit | mobilesubstrate, firmware (>= 15.0)
-Conflicts: com.changeinfoios.tweak, com.changeinfoios.bundle
-EOF
+          Package: com.changeinfoios.v3
+          Name: HIOS Faker v3 (Roothide)
+          Version: ${VERSION}
+          Architecture: iphoneos-arm64-roothide
+          Description: HIOS Faker v3 for Roothide jailbreak. MobileGestalt + CoreTelephony device-spoof injected into selected apps. Requires roothide bootstrap (opa334).
+          Maintainer: ChangeInfoIos
+          Author: @houselis
+          Section: Tweaks
+          Depends: dev.roothide.roothide, ellekit | mobilesubstrate, firmware (>= 15.0)
+          Conflicts: com.changeinfoios.tweak, com.changeinfoios.bundle
+          EOF
 
           mkdir -p out
           dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3-roothide_${VERSION}_iphoneos-arm64-roothide.deb"
