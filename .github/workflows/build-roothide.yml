@@ -141,6 +141,15 @@ jobs:
 
           VERSION=$(grep '^Version:' roothide/tweak-mg/control | awk '{print $2}')
 
+          # Auto-sync app Info.plist version from control file
+          APP_PLIST="combined/Applications/HIOSFakerV3.app/Info.plist"
+          if [ -f "$APP_PLIST" ]; then
+            BVER=$(echo "$VERSION" | tr -d '.')
+            sed -i "/<key>CFBundleShortVersionString<\/key>/{n;s|<string>[^<]*</string>|<string>${VERSION}</string>|}" "$APP_PLIST"
+            sed -i "/<key>CFBundleVersion<\/key>/{n;s|<string>[^<]*</string>|<string>${BVER}</string>|}" "$APP_PLIST"
+            echo "Patched Info.plist → ${VERSION} / ${BVER}"
+          fi
+
           cat > combined/DEBIAN/postinst <<'POSTINST'
           #!/bin/sh
           set -e
