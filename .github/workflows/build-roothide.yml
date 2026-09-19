@@ -148,7 +148,7 @@ jobs:
           Maintainer: ChangeInfoIos
           Author: @houselis
           Section: System
-          Depends: dev.roothide.roothide, org.coolstar.ellekit, firmware (>= 15.0)
+          Depends: firmware (>= 15.0)
           Conflicts: com.changeinfoios.tweak, com.changeinfoios.bundle
           EOF
 
