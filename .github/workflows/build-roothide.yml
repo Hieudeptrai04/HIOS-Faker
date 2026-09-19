@@ -121,14 +121,19 @@ jobs:
           cat > combined/DEBIAN/postinst <<'POSTINST'
           #!/bin/sh
           set -e
-          ROOT="${JBROOT:-/var/jb}"
+          # roothide uses jbroot to resolve randomized paths;
+          # JBROOT env is unreliable in postinst context.
+          if command -v jbroot >/dev/null 2>&1; then
+            ROOT="$(jbroot / 2>/dev/null)" || ROOT="${JBROOT:-/var/jb}"
+          else
+            ROOT="${JBROOT:-/var/jb}"
+          fi
+          # Strip trailing slash
+          ROOT="${ROOT%/}"
           MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
           ETC="$ROOT/etc/changeinfoios"
           mkdir -p "$MS"  2>/dev/null || true
           mkdir -p "$ETC" 2>/dev/null || true
-          # Deploy dylibs + filter plists from staging.
-          # They were kept out of DynamicLibraries in the .deb payload
-          # so Sileo sees no substrate tweak content → Get Patcher never fires.
           for F in ChangeInfoIosMG.dylib ChangeInfoIosCT.dylib \
                    ChangeInfoIosMG.plist ChangeInfoIosCT.plist; do
             SRC="$ETC/$F"
@@ -149,7 +154,8 @@ jobs:
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
           JBCTL=""
-          for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
+          for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl" \
+                   /usr/bin/jbctl /basebin/jbctl; do
             [ -x "$c" ] && JBCTL="$c" && break
           done
           if [ -n "$JBCTL" ]; then
