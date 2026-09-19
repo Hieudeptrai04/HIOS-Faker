@@ -41,14 +41,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /Users/runner/theos
-          key: theos-rh-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
+          key: theos-rh-roothide-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
 
       - name: Install Theos + SDK
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
           set -euo pipefail
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
           mkdir -p "$THEOS/sdks"
           curl -fSL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS${SDK_VERSION}.sdk.tar.xz" -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
