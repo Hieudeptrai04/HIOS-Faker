@@ -4040,6 +4040,52 @@ static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredB
     return YES;
 }
 
+// Dynamically patch a shipped filter plist so it covers every bundle in `requiredBids`.
+// Reads the existing plist, adds any missing bundles, writes back via NSFileManager
+// (falls back to ci_run cp if sandbox/MAC blocks the direct write).
+// Returns YES when the on-disk file ends up covering all required bundles.
+static BOOL ci_ensureFilterCovers(NSString *path, NSArray<NSString *> *requiredBids) {
+    if (!path.length || !requiredBids.count) return YES;
+    NSMutableDictionary *root = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
+    if (!root) {
+        NSLog(@"[ChangeInfoIos] ensureFilterCovers: cannot parse %@", path);
+        return NO;
+    }
+    NSMutableDictionary *filter = [root[@"Filter"] mutableCopy];
+    if (!filter) { filter = [NSMutableDictionary dictionary]; root[@"Filter"] = filter; }
+    NSMutableArray *bundles = [filter[@"Bundles"] mutableCopy];
+    if (!bundles) bundles = [NSMutableArray array];
+    if (!filter[@"Mode"]) filter[@"Mode"] = @"Any";
+    NSSet *existing = [NSSet setWithArray:bundles];
+    BOOL changed = NO;
+    for (NSString *bid in requiredBids) {
+        if (!bid.length || ci_isNoInjectBundle(bid)) continue;
+        if (![existing containsObject:bid]) {
+            [bundles addObject:bid];
+            changed = YES;
+            NSLog(@"[ChangeInfoIos] ensureFilterCovers: adding %@ → %@", bid, path);
+        }
+    }
+    if (!changed) return YES;
+    filter[@"Bundles"] = bundles;
+    root[@"Filter"] = filter;
+    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                     [NSString stringWithFormat:@"ci_filter_%u.plist", arc4random()]];
+    BOOL wrote = [root writeToFile:path atomically:YES];
+    if (!wrote) {
+        [root writeToFile:tmp atomically:YES];
+        NSString *safe = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        NSString *safeTmp = [tmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
+        int rc = ci_run([[NSString stringWithFormat:@"cp '%@' '%@'", safeTmp, safe] UTF8String]);
+        [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
+        if (rc != 0) {
+            NSLog(@"[ChangeInfoIos] ensureFilterCovers: write FAILED (direct+cp) → %@", path);
+            return NO;
+        }
+    }
+    return YES;
+}
+
 // ITEM 4 — EXACT read-back of the tweak-readable /var/jb mirror. After the identity
 // is staged + saved, re-open the ACTUAL file the tweaks consume
 // (/var/jb/etc/changeinfoios/config.plist = kSharedConfigPath) and confirm the
@@ -4157,7 +4203,8 @@ static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *
 // so the single call site is unchanged. WRITE path GONE → no root-dir write, no
 // symlink-follow, no chmod from mobile. LOADER/INJECTION still UNVERIFIED.
 static BOOL ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
-    (void)apps;   // no runtime enumeration → no runtime write
+    (void)apps;
+    ci_ensureFilterCovers(CITweakFilterPath(), requiredBids);
     BOOL verified = ci_staticFilterVerify(CITweakFilterPath(), requiredBids);
     NSLog(@"[ChangeInfoIos] sidecar filter (shipped, READ-ONLY): STATIC_VERIFIED=%@ "
           @"[no runtime write] [.appex+Zalo-helper=NOT_ENUMERATED] [LOADER/INJECTION=UNVERIFIED] → %@",
@@ -4169,6 +4216,7 @@ static BOOL ci_syncSidecarFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSSt
 // (ChangeInfoIosCT.plist) ships baked in the package; no runtime write from mobile.
 static BOOL ci_syncCarrierFilterForApps(NSArray<CIAppInfo *> *apps, NSArray<NSString *> *requiredBids) {
     (void)apps;
+    ci_ensureFilterCovers(CICTTweakFilterPath(), requiredBids);
     BOOL verified = ci_staticFilterVerify(CICTTweakFilterPath(), requiredBids);
     NSLog(@"[ChangeInfoIos] CT filter (shipped, READ-ONLY): STATIC_VERIFIED=%@ "
           @"[no runtime write] [LOADER/INJECTION=UNVERIFIED] → %@",
@@ -10007,6 +10055,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
     NSArray<NSString *> *mgGateBids = [mgGateBidsM copy];
     NSArray<NSString *> *ctGateBids = [ctGateBidsM copy];
+    ci_ensureFilterCovers(CITweakFilterPath(), mgGateBids);
+    ci_ensureFilterCovers(CICTTweakFilterPath(), ctGateBids);
     BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), mgGateBids) &&
                           ci_staticFilterVerify(CICTTweakFilterPath(), ctGateBids);
     if (!filterVerified) {
