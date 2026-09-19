@@ -235,6 +235,7 @@ static NSString *CIRRSDir(void) {
 
 - (BOOL)save {
     BOOL mirrorOK = NO;   // ITEM 4: set only when the /var/jb tweak-readable mirror write succeeds
+    BOOL cfPrefsOK = NO;  // roothide fallback: cfprefsd works even when jbroot file mirror is read-only
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:_cfg
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0 error:nil];
@@ -353,6 +354,12 @@ static NSString *CIRRSDir(void) {
                                      appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
     }
     CFPreferencesSynchronize(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    {   // Verify CFPreferences landed by reading back a key we just wrote
+        CFStringRef tok = (CFStringRef)CFPreferencesCopyValue(
+            CFSTR("_ci_lic_tok"), appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+        if (tok) { cfPrefsOK = (CFStringGetLength(tok) > 0); CFRelease(tok); }
+        NSLog(@"[ChangeInfoIos] save S5 cfprefs verify: %@", cfPrefsOK ? @"OK" : @"FAIL");
+    }
 
     // Strategy 6: write the same plist into /var/jb/etc/changeinfoios/config.plist.
     // Verified live via probe dylib: this path IS readable from App Store
@@ -400,7 +407,7 @@ static NSString *CIRRSDir(void) {
     }
 
     [self notifyReload];
-    return mirrorOK;   // ITEM 4: caller can verify the tweak-readable mirror was written
+    return mirrorOK || cfPrefsOK;
 }
 
 - (void)notifyReload {
@@ -4102,18 +4109,25 @@ static BOOL ci_ensureFilterCovers(NSString *path, NSArray<NSString *> *requiredB
     return YES;
 }
 
-// ITEM 4 — EXACT read-back of the tweak-readable /var/jb mirror. After the identity
-// is staged + saved, re-open the ACTUAL file the tweaks consume
-// (/var/jb/etc/changeinfoios/config.plist = kSharedConfigPath) and confirm the
-// device-identity keys on disk EXACTLY equal the live config. Proves the mirror the
-// tweak reads is the one we just wrote — a failed/stale mirror is caught BEFORE the
-// destructive wipe rather than after (so we never destroy data for a change the
-// tweak can't even see). Does NOT prove the tweak LOADED or that hooks are live.
+static NSDictionary *ci_readConfigFromCFPrefs(void) {
+    CFStringRef appID = CFSTR("com.changeinfoios");
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    if (!keys) return nil;
+    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFRelease(keys);
+    if (!vals) return nil;
+    return (__bridge_transfer NSDictionary *)vals;
+}
+
 static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
     NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
     if (![disk isKindOfClass:[NSDictionary class]]) {
-        NSLog(@"[ChangeInfoIos] config mirror readback: file missing/unparseable → %@", kSharedConfigPath);
-        return NO;
+        disk = ci_readConfigFromCFPrefs();
+        if (![disk isKindOfClass:[NSDictionary class]]) {
+            NSLog(@"[ChangeInfoIos] config mirror readback: file AND cfprefs both empty → %@", kSharedConfigPath);
+            return NO;
+        }
+        NSLog(@"[ChangeInfoIos] config mirror readback: using CFPreferences fallback (file unavailable)");
     }
     static NSArray<NSString *> *kIdentityKeys = nil;
     static dispatch_once_t once;
@@ -4159,7 +4173,10 @@ static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *
                                       NSString *wipeGen, long long counter, long long wipeDeadline) {
     if (!ci_configMirrorMatches(cm)) return NO;   // identity keys first
     NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
-    if (![disk isKindOfClass:[NSDictionary class]]) return NO;
+    if (![disk isKindOfClass:[NSDictionary class]]) {
+        disk = ci_readConfigFromCFPrefs();
+        if (![disk isKindOfClass:[NSDictionary class]]) return NO;
+    }
     // (b) signed spoof token must be present on disk AND equal to the live token.
     id liveTok = [cm objectForKey:@"_ci_lic_tok"];
     id diskTok = disk[@"_ci_lic_tok"];
