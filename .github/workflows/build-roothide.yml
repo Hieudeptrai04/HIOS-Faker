@@ -92,20 +92,22 @@ jobs:
           cp -R /tmp/mg-x/. combined/
           cp -R /tmp/ct-x/. combined/
 
-          # Stage .plist filter files outside DynamicLibraries so Sileo
-          # does NOT detect this as a substrate tweak and show "Get Patcher".
-          # postinst deploys them to DynamicLibraries at install time.
+          # Stage ALL MobileSubstrate content (dylibs + plists) outside
+          # DynamicLibraries so Sileo has nothing to detect as a substrate
+          # tweak → Get Patcher never fires. postinst deploys everything
+          # to DynamicLibraries after dpkg extracts the package.
           mkdir -p combined/etc/changeinfoios
-          for P in combined/Library/MobileSubstrate/DynamicLibraries/*.plist; do
-            [ -f "$P" ] || continue
-            mv "$P" combined/etc/changeinfoios/
-            echo "Staged plist: $(basename $P)"
+          for F in combined/Library/MobileSubstrate/DynamicLibraries/*.dylib \
+                   combined/Library/MobileSubstrate/DynamicLibraries/*.plist; do
+            [ -f "$F" ] || continue
+            mv "$F" combined/etc/changeinfoios/
+            echo "Staged: $(basename $F)"
           done
 
-          # Sign the dylibs
+          # Sign the dylibs (now in staging path)
           for DYLIB in \
-              $(find combined -name "ChangeInfoIosMG.dylib") \
-              $(find combined -name "ChangeInfoIosCT.dylib"); do
+              combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
+              combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
             [ -f "$DYLIB" ] || continue
             ldid -S "$DYLIB"
           done
@@ -118,23 +120,26 @@ jobs:
           ROOT="${JBROOT:-/var/jb}"
           MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
           ETC="$ROOT/etc/changeinfoios"
-          mkdir -p "$MS" 2>/dev/null || true
+          mkdir -p "$MS"  2>/dev/null || true
           mkdir -p "$ETC" 2>/dev/null || true
-          # Deploy filter plists from staging — they were excluded from
-          # DynamicLibraries in the .deb to suppress Sileo's Get Patcher check.
-          for P in ChangeInfoIosMG.plist ChangeInfoIosCT.plist; do
-            SRC="$ETC/$P"
-            DST="$MS/$P"
+          # Deploy dylibs + filter plists from staging.
+          # They were kept out of DynamicLibraries in the .deb payload
+          # so Sileo sees no substrate tweak content → Get Patcher never fires.
+          for F in ChangeInfoIosMG.dylib ChangeInfoIosCT.dylib \
+                   ChangeInfoIosMG.plist ChangeInfoIosCT.plist; do
+            SRC="$ETC/$F"
+            DST="$MS/$F"
             [ -f "$SRC" ] || continue
             cp "$SRC" "$DST"
             chown root:wheel "$DST" 2>/dev/null || true
-            chmod 0644 "$DST" 2>/dev/null || true
-            sed -i '/<string>com\.apple\.weather<\/string>/d' "$DST" 2>/dev/null || true
+            case "$F" in
+              *.dylib) chmod 0755 "$DST" 2>/dev/null || true ;;
+              *)       chmod 0644 "$DST" 2>/dev/null || true ;;
+            esac
           done
-          for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
-            [ -e "$f" ] || continue
-            chown root:wheel "$f" 2>/dev/null || true
-            chmod 0755 "$f" 2>/dev/null || true
+          for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
+            [ -f "$P" ] || continue
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
           chmod 0777 "$ETC" 2>/dev/null || true
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
@@ -143,11 +148,11 @@ jobs:
           for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
             [ -x "$c" ] && JBCTL="$c" && break
           done
-          if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
-            while IFS= read -r h; do
-              [ -z "$h" ] && continue
-              "$JBCTL" trustcache add "$h" 2>/dev/null || true
-            done < "$ETC/cdhashes"
+          if [ -n "$JBCTL" ]; then
+            for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
+              [ -f "$D" ] || continue
+              "$JBCTL" trust "$D" 2>/dev/null || true
+            done
           fi
           exit 0
           POSTINST
