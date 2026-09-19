@@ -8,6 +8,7 @@ on:
     paths:
       - "roothide/tweak-mg/**"
       - "roothide/tweak-ct/**"
+      - "app/**"
       - ".github/workflows/build-roothide.yml"
 
 permissions:
@@ -77,20 +78,35 @@ jobs:
           echo "Built: $DEB"
           ls -lh packages/
 
+      - name: Build app (roothide)
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          set -euo pipefail
+          cd app
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          DEB=$(ls packages/*.deb | head -1)
+          echo "Built: $DEB"
+          ls -lh packages/
+
       - name: Combine into single deb
         run: |
           set -euo pipefail
           MG=$(ls roothide/tweak-mg/packages/*.deb | head -1)
           CT=$(ls roothide/tweak-ct/packages/*.deb | head -1)
+          APP=$(ls app/packages/*.deb | head -1)
           echo "MG: $MG"
           echo "CT: $CT"
+          echo "APP: $APP"
 
-          rm -rf combined /tmp/mg-x /tmp/ct-x
-          mkdir -p combined/DEBIAN /tmp/mg-x /tmp/ct-x
+          rm -rf combined /tmp/mg-x /tmp/ct-x /tmp/app-x
+          mkdir -p combined/DEBIAN /tmp/mg-x /tmp/ct-x /tmp/app-x
           dpkg-deb -x "$MG" /tmp/mg-x
           dpkg-deb -x "$CT" /tmp/ct-x
+          dpkg-deb -x "$APP" /tmp/app-x
           cp -R /tmp/mg-x/. combined/
           cp -R /tmp/ct-x/. combined/
+          cp -R /tmp/app-x/. combined/
 
           # Stage ALL MobileSubstrate content (dylibs + plists) outside
           # DynamicLibraries so Sileo has nothing to detect as a substrate
@@ -116,6 +132,13 @@ jobs:
             ldid -S "$DYLIB"
           done
 
+          # Sign the app binary with entitlements
+          APP_BIN="combined/Applications/HIOSFakerV3.app/HIOSFakerV3"
+          if [ -f "$APP_BIN" ]; then
+            ldid -Sapp/entitlements.plist "$APP_BIN"
+            echo "Signed app with entitlements"
+          fi
+
           VERSION=$(grep '^Version:' roothide/tweak-mg/control | awk '{print $2}')
 
           cat > combined/DEBIAN/postinst <<'POSTINST'
@@ -130,6 +153,17 @@ jobs:
           fi
           # Strip trailing slash
           ROOT="${ROOT%/}"
+
+          # /var/jb compatibility shim: the app uses hardcoded /var/jb paths.
+          # On roothide the jbroot is a randomized path, but the bootstrap
+          # overlays it onto /, so /var/jb -> / makes all paths resolve correctly.
+          if [ -d /var/jb ] && [ ! -L /var/jb ]; then
+            rm -rf /var/jb
+          fi
+          if [ ! -e /var/jb ]; then
+            ln -s / /var/jb
+          fi
+
           MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
           ETC="$ROOT/etc/changeinfoios"
           mkdir -p "$MS"  2>/dev/null || true
@@ -159,10 +193,19 @@ jobs:
             [ -x "$c" ] && JBCTL="$c" && break
           done
           if [ -n "$JBCTL" ]; then
-            for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
+            for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib" \
+                     "$ROOT/Applications/HIOSFakerV3.app/HIOSFakerV3"; do
               [ -f "$D" ] || continue
               "$JBCTL" trustcache add "$D" 2>/dev/null || true
             done
+          fi
+          # Register app icon on SpringBoard
+          UICACHE=""
+          for u in "$ROOT/usr/bin/uicache" /usr/bin/uicache; do
+            [ -x "$u" ] && UICACHE="$u" && break
+          done
+          if [ -n "$UICACHE" ]; then
+            "$UICACHE" -p "$ROOT/Applications/HIOSFakerV3.app" 2>/dev/null || true
           fi
           exit 0
           POSTINST

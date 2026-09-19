@@ -1,6 +1,6 @@
 Package: com.changeinfoios.ct
 Name: ChangeInfoIosCT
-Version: 4.3.52
+Version: 4.3.53
 Architecture: iphoneos-arm64
 Description: ChangeInfoIos v3 — CoreTelephony carrier-spoof companion to ChangeInfoIosMG. Hooks CTCarrier and CTTelephonyNetworkInfo for selected target apps, with CommCenter/CoreTelephonyHelper as best-effort daemon targets.
 Maintainer: ChangeInfoIos
