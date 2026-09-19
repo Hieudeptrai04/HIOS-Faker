@@ -166,7 +166,7 @@ jobs:
           Package: com.changeinfoios.v3
           Name: HIOS Faker v3 (Roothide)
           Version: ${VERSION}
-          Architecture: iphoneos-arm64
+          Architecture: iphoneos-arm64e
           Description: HIOS Faker v3 for Roothide jailbreak. MobileGestalt + CoreTelephony device-spoof injected into selected apps. Requires roothide bootstrap (opa334).
           Maintainer: ChangeInfoIos
           Author: @houselis
@@ -176,7 +176,7 @@ jobs:
           EOF
 
           mkdir -p out
-          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3-roothide_${VERSION}_iphoneos-arm64.deb"
+          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3-roothide_${VERSION}_iphoneos-arm64e.deb"
           echo "=== combined deb ==="
           ls -lh out/
           dpkg-deb -I out/*.deb
