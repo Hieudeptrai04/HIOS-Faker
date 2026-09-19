@@ -2838,6 +2838,29 @@ static FILE *hook_fopen_fn(const char *path, const char *mode) {
 // we only evaluate absolute paths or AT_FDCWD; a relative path against another
 // dirfd must pass through because resolving it would add fcntl/I/O recursion.
 typedef int (*fstatat_fn_t)(int, const char *, struct stat *, int);
+// sandbox_check() returns 0 when the sandbox ALLOWS an operation, non-zero when it
+// denies. On a jailbroken device the sandbox is bypassed so the check returns 0 for
+// paths like /bin/bash — exposing the JB to apps that call it as a probe.
+// We intercept it and return EPERM for any JB path (value 1 matches stock iOS deny).
+// Only the SANDBOX_FILTER_PATH (type 1) variant carries a path arg; other types pass
+// through unchanged. Variadic is safe on ARM64 — named args are in x0-x7 registers.
+#include <sandbox.h>
+typedef int (*sandbox_check_fn_t)(pid_t, const char *, int, ...);
+static sandbox_check_fn_t orig_sandbox_check_fn = NULL;
+static int hook_sandbox_check_fn(pid_t pid, const char *op, int type, ...) {
+    if (g_hideJBOn && type == 1 /* SANDBOX_FILTER_PATH */) {
+        va_list ap; va_start(ap, type);
+        const char *path = va_arg(ap, const char *);
+        va_end(ap);
+        if (path && isJBPath(path) && !statCallerIsJBTweak()) return 1;
+        return orig_sandbox_check_fn ? orig_sandbox_check_fn(pid, op, type, path) : 0;
+    }
+    // For non-path filter types we can't safely extract the va_arg on all ABIs —
+    // pass through by calling the original with no extra arg (type alone determines
+    // the sandbox deny for non-path checks, which is fine).
+    return orig_sandbox_check_fn ? orig_sandbox_check_fn(pid, op, type) : 0;
+}
+
 typedef int (*faccessat_fn_t)(int, const char *, int, int);
 typedef int (*getattrlist_fn_t)(const char *, struct attrlist *, void *, size_t, unsigned long);
 typedef ssize_t (*readlink_fn_t)(const char *, char *, size_t);
@@ -3105,6 +3128,50 @@ static char *hook_getenv_fn(const char *name) {
 %end
 
 // ============================================================
+// NSBundle enumeration hiding.
+// Anti-fraud SDKs (Zalo, ByteDance) call +[NSBundle allBundles] /
+// +[NSBundle allFrameworks] to enumerate loaded frameworks independent
+// of dyld hooks — this strips JB-path entries from both lists.
+%hook NSBundle
++ (NSArray *)allBundles {
+    NSArray *orig = %orig;
+    if (!g_hideJBOn) return orig;
+    NSMutableArray *out = nil;
+    for (NSUInteger i = 0; i < orig.count; i++) {
+        NSBundle *b = orig[i];
+        NSString *bp = b.bundlePath;
+        if (bp && isJBPath(bp.UTF8String)) {
+            if (!out) {
+                out = [NSMutableArray arrayWithCapacity:orig.count];
+                [out addObjectsFromArray:[orig subarrayWithRange:NSMakeRange(0, i)]];
+            }
+            continue;
+        }
+        if (out) [out addObject:b];
+    }
+    return out ?: orig;
+}
++ (NSArray *)allFrameworks {
+    NSArray *orig = %orig;
+    if (!g_hideJBOn) return orig;
+    NSMutableArray *out = nil;
+    for (NSUInteger i = 0; i < orig.count; i++) {
+        NSBundle *b = orig[i];
+        NSString *bp = b.bundlePath;
+        if (bp && isJBPath(bp.UTF8String)) {
+            if (!out) {
+                out = [NSMutableArray arrayWithCapacity:orig.count];
+                [out addObjectsFromArray:[orig subarrayWithRange:NSMakeRange(0, i)]];
+            }
+            continue;
+        }
+        if (out) [out addObject:b];
+    }
+    return out ?: orig;
+}
+%end
+
+// ============================================================
 // LAYER 22: APNS device-token spoof (reg-die fix, 4.3.30).
 //
 // The STANDARD APNS push token (delivered to the app delegate's
@@ -3219,9 +3286,11 @@ static BOOL ci_isJBBundleID(NSString *bid) {
     });
     if ([jb containsObject:bid]) return YES;
     NSString *l = bid.lowercaseString;   // safety net for obvious forks / renames
-    return ([l containsString:@"cydia"] || [l containsString:@"sileo"] ||
-            [l containsString:@".filza"] || [l containsString:@"trollstore"] ||
-            [l containsString:@"dopamine"] || [l containsString:@"checkra1n"]);
+    return ([l containsString:@"cydia"]      || [l containsString:@"sileo"] ||
+            [l containsString:@".filza"]     || [l containsString:@"trollstore"] ||
+            [l containsString:@"dopamine"]   || [l containsString:@"checkra1n"] ||
+            [l containsString:@"palera1n"]   || [l containsString:@"roothide"] ||
+            [l containsString:@"unc0ver"]    || [l containsString:@"electra"]);
 }
 
 @interface LSApplicationWorkspace : NSObject
@@ -3788,6 +3857,10 @@ static void ci_installJBHideHooks(void) {
         if (orig_closedir_fn)
             MSHookFunction((void *)orig_closedir_fn, (void *)hook_closedir_fn, (void **)&orig_closedir_fn);
 
+        orig_sandbox_check_fn = (sandbox_check_fn_t)dlsym(RTLD_DEFAULT, "sandbox_check");
+        if (orig_sandbox_check_fn)
+            MSHookFunction((void *)orig_sandbox_check_fn, (void *)hook_sandbox_check_fn, (void **)&orig_sandbox_check_fn);
+
         orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
         if (orig_getenv_fn)
             MSHookFunction((void *)orig_getenv_fn, (void *)hook_getenv_fn, (void **)&orig_getenv_fn);
@@ -3843,7 +3916,7 @@ static void ci_installJBHideHooks(void) {
         if (orig_fork_fn)
             MSHookFunction((void *)orig_fork_fn, (void *)hooked_fork, (void **)&orig_fork_fn);
 
-        dbglog("ctor %s JBhide fs=%p/%p/%p/%p at=%p/%p attr=%p read=%p/%p dir=%p rdr_r=%p dyld=%p/%p/%p/%p dladdr=%p fork=%p\n",
+        dbglog("ctor %s JBhide fs=%p/%p/%p/%p at=%p/%p attr=%p read=%p/%p dir=%p rdr_r=%p dyld=%p/%p/%p/%p dladdr=%p fork=%p sbox=%p\n",
                g_procname, (void *)orig_stat_fn, (void *)orig_lstat_fn,
                (void *)orig_access_fn, (void *)orig_fopen_fn,
                (void *)orig_fstatat_fn, (void *)orig_faccessat_fn,
@@ -3852,7 +3925,8 @@ static void ci_installJBHideHooks(void) {
                (void *)orig_readdir_r_fn,
                (void *)orig_dyld_image_count_fn, (void *)orig_dyld_get_image_name_fn,
                (void *)orig_dyld_get_image_header_fn, (void *)orig_dyld_get_image_slide_fn,
-               (void *)orig_dladdr_fn, (void *)orig_fork_fn);
+               (void *)orig_dladdr_fn, (void *)orig_fork_fn,
+               (void *)orig_sandbox_check_fn);
     });
 }
 
