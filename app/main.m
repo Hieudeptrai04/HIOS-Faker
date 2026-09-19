@@ -10020,6 +10020,21 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         }
     }
     if (unresolvedBids.count) {
+        NSMutableArray *dbg = [NSMutableArray array];
+        [dbg addObject:[NSString stringWithFormat:@"unresolvedBids=%@", unresolvedBids]];
+        [dbg addObject:[NSString stringWithFormat:@"resetBids=%@", resetBids]];
+        [dbg addObject:[NSString stringWithFormat:@"allApps.count=%lu targets.count=%lu", (unsigned long)all.count, (unsigned long)targets.count]];
+        for (NSString *bid in unresolvedBids) {
+            NSString *lc = ci_findDataContainerForBundle(bid);
+            CIAppInfo *m = nil;
+            for (CIAppInfo *a in targets) if ([a.bundleID isEqualToString:bid]) { m = a; break; }
+            [dbg addObject:[NSString stringWithFormat:@"FAIL %@: inTargets=%d bundlePath=%@ container=%@",
+                bid, m!=nil, m.bundlePath ?: @"(nil)", lc ?: @"(nil)"]];
+        }
+        NSString *logStr = [dbg componentsJoinedByString:@"\n"];
+        [logStr writeToFile:@"/var/jb/etc/changeinfoios/filter_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [logStr writeToFile:@"/tmp/filter_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[ChangeInfoIos] UNRESOLVED DEBUG:\n%@", logStr);
         [self alert:@"Chưa thay đổi dữ liệu"
                 msg:[NSString stringWithFormat:
                      @"Không resolve đủ app/container đang chọn: %@.\nMở app đó một lần rồi thử lại.",
