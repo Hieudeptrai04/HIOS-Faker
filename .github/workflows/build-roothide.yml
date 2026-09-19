@@ -92,6 +92,16 @@ jobs:
           cp -R /tmp/mg-x/. combined/
           cp -R /tmp/ct-x/. combined/
 
+          # Stage .plist filter files outside DynamicLibraries so Sileo
+          # does NOT detect this as a substrate tweak and show "Get Patcher".
+          # postinst deploys them to DynamicLibraries at install time.
+          mkdir -p combined/etc/changeinfoios
+          for P in combined/Library/MobileSubstrate/DynamicLibraries/*.plist; do
+            [ -f "$P" ] || continue
+            mv "$P" combined/etc/changeinfoios/
+            echo "Staged plist: $(basename $P)"
+          done
+
           # Sign the dylibs
           for DYLIB in \
               $(find combined -name "ChangeInfoIosMG.dylib") \
@@ -108,20 +118,24 @@ jobs:
           ROOT="${JBROOT:-/var/jb}"
           MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
           ETC="$ROOT/etc/changeinfoios"
-          for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosMG.plist" \
-                   "$MS/ChangeInfoIosCT.dylib" "$MS/ChangeInfoIosCT.plist"; do
+          mkdir -p "$MS" 2>/dev/null || true
+          mkdir -p "$ETC" 2>/dev/null || true
+          # Deploy filter plists from staging — they were excluded from
+          # DynamicLibraries in the .deb to suppress Sileo's Get Patcher check.
+          for P in ChangeInfoIosMG.plist ChangeInfoIosCT.plist; do
+            SRC="$ETC/$P"
+            DST="$MS/$P"
+            [ -f "$SRC" ] || continue
+            cp "$SRC" "$DST"
+            chown root:wheel "$DST" 2>/dev/null || true
+            chmod 0644 "$DST" 2>/dev/null || true
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$DST" 2>/dev/null || true
+          done
+          for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
             [ -e "$f" ] || continue
             chown root:wheel "$f" 2>/dev/null || true
-            case "$f" in
-              *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
-              *)       chmod 0644 "$f" 2>/dev/null || true ;;
-            esac
+            chmod 0755 "$f" 2>/dev/null || true
           done
-          for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
-            [ -f "$P" ] || continue
-            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
-          done
-          mkdir -p "$ETC" 2>/dev/null || true
           chmod 0777 "$ETC" 2>/dev/null || true
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
