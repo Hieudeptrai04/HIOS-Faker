@@ -2705,6 +2705,10 @@ static BOOL isJBPath(const char *path) {
         "/.installed_unc0ver", "/.bootstrapped_electra", "/.bootstrapped",
         "/taurine", "/var/binpack", "/private/var/binpack", "/jb",
         "/Applications/Filza.app",
+        "/.procursus_trap",   // Procursus bootstrap marker
+        "/var/.roothide",     // roothide presence marker
+        "/private/var/.roothide",
+        "/.installed_palera1n",
         NULL
     };
     // Boundary-aware prefix match on the canonical path: a hide entry matches only
@@ -2717,11 +2721,26 @@ static BOOL isJBPath(const char *path) {
             return YES;
     }
     // Also hide the roothide JB prefix when it differs from /var/jb.
+    // iOS /var is a symlink to /private/var; ci_canonPath is textual-only so
+    // "/private/<rh>" and "<rh>" are distinct canonical forms — cover both.
     {
         const char *rh = ci_rh_prefix();
         size_t rl = strlen(rh);
         if (strncmp(cp, rh, rl) == 0 && (cp[rl] == '\0' || cp[rl] == '/'))
             return YES;
+        if (strncmp(rh, "/private/", 9) == 0) {
+            // rh already has /private/: also try without it (/var/... form)
+            const char *rh2 = rh + 8; size_t rl2 = rl - 8;
+            if (strncmp(cp, rh2, rl2) == 0 && (cp[rl2] == '\0' || cp[rl2] == '/'))
+                return YES;
+        } else {
+            // rh lacks /private/: also try with it (/private/var/... form)
+            char priv[528];
+            snprintf(priv, sizeof(priv), "/private%s", rh);
+            size_t pl = strlen(priv);
+            if (strncmp(cp, priv, pl) == 0 && (cp[pl] == '\0' || cp[pl] == '/'))
+                return YES;
+        }
     }
     return NO;
 }
@@ -2763,7 +2782,7 @@ static BOOL statCallerIsJBTweak(void) {
     if (strncmp(di.dli_fname, "/var/jb/Library/", 16) == 0 ||
         strncmp(di.dli_fname, "/var/jb/usr/lib/", 16) == 0 ||
         strncmp(di.dli_fname, "/private/var/jb/Library/", 24) == 0) return YES;
-    // Check roothide dynamic prefix.
+    // Check roothide dynamic prefix (both /var/... and /private/var/... forms).
     {
         const char *rh = ci_rh_prefix();
         size_t rl = strlen(rh);
@@ -2772,6 +2791,19 @@ static BOOL statCallerIsJBTweak(void) {
         snprintf(usr_chk, sizeof(usr_chk), "%s/usr/lib/", rh);
         if (strncmp(di.dli_fname, lib_chk, rl + 9) == 0 ||
             strncmp(di.dli_fname, usr_chk, rl + 9) == 0) return YES;
+        // /private/ alias
+        char priv_lib[536], priv_usr[536];
+        if (strncmp(rh, "/private/", 9) == 0) {
+            // strip /private and check bare form
+            snprintf(priv_lib, sizeof(priv_lib), "%s/Library/", rh + 8);
+            snprintf(priv_usr, sizeof(priv_usr), "%s/usr/lib/", rh + 8);
+        } else {
+            snprintf(priv_lib, sizeof(priv_lib), "/private%s/Library/", rh);
+            snprintf(priv_usr, sizeof(priv_usr), "/private%s/usr/lib/", rh);
+        }
+        size_t pl = strlen(priv_lib), pu = strlen(priv_usr);
+        if (strncmp(di.dli_fname, priv_lib, pl) == 0 ||
+            strncmp(di.dli_fname, priv_usr, pu) == 0) return YES;
         (void)rl;
     }
     return NO;
@@ -2812,6 +2844,7 @@ typedef ssize_t (*readlink_fn_t)(const char *, char *, size_t);
 typedef ssize_t (*readlinkat_fn_t)(int, const char *, char *, size_t);
 typedef DIR *(*opendir_fn_t)(const char *);
 typedef struct dirent *(*readdir_fn_t)(DIR *);
+typedef int (*readdir_r_fn_t)(DIR *, struct dirent *, struct dirent **);
 typedef int (*closedir_fn_t)(DIR *);
 static fstatat_fn_t     orig_fstatat_fn = NULL;
 static faccessat_fn_t   orig_faccessat_fn = NULL;
@@ -2820,6 +2853,7 @@ static readlink_fn_t    orig_readlink_fn = NULL;
 static readlinkat_fn_t  orig_readlinkat_fn = NULL;
 static opendir_fn_t     orig_opendir_fn = NULL;
 static readdir_fn_t     orig_readdir_fn = NULL;
+static readdir_r_fn_t   orig_readdir_r_fn = NULL;
 static closedir_fn_t    orig_closedir_fn = NULL;
 
 static inline BOOL ci_atPathCanResolve(int fd, const char *path) {
@@ -2930,9 +2964,16 @@ static BOOL ci_dirMayListJB(const char *path) {
     char canon[1024];
     if (ci_canonPath(path, canon, sizeof(canon)) != CI_CANON_OK) return NO;
     if (strncmp(canon, "/var/jb", 7) == 0 || strncmp(canon, "/private/var/jb", 15) == 0) return YES;
-    // roothide prefix
+    // roothide prefix — both /var/... and /private/var/... forms
     { const char *rh = ci_rh_prefix(); size_t rl = strlen(rh);
-      if (strncmp(canon, rh, rl) == 0 && (canon[rl] == '\0' || canon[rl] == '/')) return YES; }
+      if (strncmp(canon, rh, rl) == 0 && (canon[rl] == '\0' || canon[rl] == '/')) return YES;
+      char rh_alt[528]; size_t al;
+      if (strncmp(rh, "/private/", 9) == 0) {
+          snprintf(rh_alt, sizeof(rh_alt), "%s", rh + 8); al = rl - 8;
+      } else {
+          snprintf(rh_alt, sizeof(rh_alt), "/private%s", rh); al = strlen(rh_alt);
+      }
+      if (strncmp(canon, rh_alt, al) == 0 && (canon[al] == '\0' || canon[al] == '/')) return YES; }
     int depth = 0;
     for (const char *p = canon; *p; p++) if (*p == '/' && p[1]) depth++;
     return depth <= 3;
@@ -2957,6 +2998,23 @@ static struct dirent *hook_readdir_fn(DIR *dir) {
         if (n <= 0 || (size_t)n >= sizeof(full) || !isJBPath(full)) return ent;
     }
 }
+// readdir_r — reentrant variant; same filtering logic as readdir.
+static int hook_readdir_r_fn(DIR *dir, struct dirent *entry, struct dirent **result) {
+    if (!orig_readdir_r_fn) { if (result) *result = NULL; return EBADF; }
+    if (!g_hideJBOn || g_ciInternalFS > 0) return orig_readdir_r_fn(dir, entry, result);
+    char base[1024];
+    if (!ci_dirBase(dir, base, sizeof(base))) return orig_readdir_r_fn(dir, entry, result);
+    for (;;) {
+        int rc = orig_readdir_r_fn(dir, entry, result);
+        if (rc != 0 || !result || !*result) return rc;
+        struct dirent *ent = *result;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) return 0;
+        char full[2048];
+        int n = snprintf(full, sizeof(full), "%s/%s", base, ent->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(full) || !isJBPath(full)) return 0;
+        // entry was a JB path — skip and try the next one
+    }
+}
 static int hook_closedir_fn(DIR *dir) {
     ci_untrackDir(dir);
     return orig_closedir_fn(dir);
@@ -2968,7 +3026,10 @@ static getenv_fn_t orig_getenv_fn = NULL;
 static char *hook_getenv_fn(const char *name) {
     if (g_hideJBOn && name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
                  strcmp(name, "_MSSafeMode") == 0 ||
-                 strcmp(name, "_SubstrateMode") == 0)) return NULL;
+                 strcmp(name, "_SubstrateMode") == 0 ||
+                 strcmp(name, "JBROOT") == 0 ||          // roothide bootstrap exports JB root
+                 strcmp(name, "ROOTHIDE_APP_ROOT") == 0 ||
+                 strcmp(name, "_SafeMode") == 0)) return NULL;
     return orig_getenv_fn(name);
 }
 
@@ -3124,7 +3185,8 @@ static void ci_apnsSwizzleDelegate(Class c) {
         [s isEqualToString:@"apt-repo"]  || [s isEqualToString:@"cydia-repo"] ||
         [s isEqualToString:@"installer"] || [s isEqualToString:@"postbox"] ||
         [s isEqualToString:@"dopamine"]  || [s isEqualToString:@"trollstore"] ||
-        [s isEqualToString:@"odyssey"]   || [s isEqualToString:@"palera1n"])) {
+        [s isEqualToString:@"odyssey"]   || [s isEqualToString:@"palera1n"] ||
+        [s isEqualToString:@"roothide"])) {
         return NO;
     }
     return %orig;
@@ -3222,6 +3284,7 @@ static const char * const kDyldHide[] = {
     "ellekit", "CydiaSubstrate", "libsubstrate", "substitute",
     "MobileSubstrate", "TweakInject", "Dopamine", "palera1n",
     "libhooker", "libblackjack", "pspawn", "ChOma",
+    "roothide", "librooter",  // roothide bootstrap and root-helper dylibs
     NULL
 };
 
@@ -3231,10 +3294,16 @@ static inline BOOL isDyldNameHidden(const char *name) {
         if (strstr(name, kDyldHide[i])) return YES;
     }
     if (strstr(name, "/var/jb/") || strstr(name, "/private/var/jb/")) return YES;
-    // roothide prefix
+    // roothide prefix — check both /var/... and /private/var/... forms
     { const char *rh = ci_rh_prefix();
       char pfx_slash[514]; snprintf(pfx_slash, sizeof(pfx_slash), "%s/", rh);
-      if (strstr(name, pfx_slash)) return YES; }
+      if (strstr(name, pfx_slash)) return YES;
+      char priv_slash[522];
+      if (strncmp(rh, "/private/", 9) == 0)
+          snprintf(priv_slash, sizeof(priv_slash), "%s/", rh + 8);  // strip /private
+      else
+          snprintf(priv_slash, sizeof(priv_slash), "/private%s/", rh);
+      if (strstr(name, priv_slash)) return YES; }
     return NO;
 }
 
@@ -3661,6 +3730,9 @@ static void ci_scrubJBEnvironment(void) {
     unsetenv("_SubstrateMode");
     unsetenv("SubstrateSafeMode");
     unsetenv("_SafeMode");
+    // roothide-specific env vars that expose the JB root path to any caller
+    unsetenv("JBROOT");
+    unsetenv("ROOTHIDE_APP_ROOT");
 }
 
 // Install only the lightweight anti-detection layer here. It deliberately runs
@@ -3695,6 +3767,7 @@ static void ci_installJBHideHooks(void) {
         orig_readlinkat_fn = (readlinkat_fn_t)dlsym(RTLD_DEFAULT, "readlinkat");
         orig_opendir_fn = (opendir_fn_t)dlsym(RTLD_DEFAULT, "opendir");
         orig_readdir_fn = (readdir_fn_t)dlsym(RTLD_DEFAULT, "readdir");
+        orig_readdir_r_fn = (readdir_r_fn_t)dlsym(RTLD_DEFAULT, "readdir_r");
         orig_closedir_fn = (closedir_fn_t)dlsym(RTLD_DEFAULT, "closedir");
         if (orig_fstatat_fn)
             MSHookFunction((void *)orig_fstatat_fn, (void *)hook_fstatat_fn, (void **)&orig_fstatat_fn);
@@ -3710,6 +3783,8 @@ static void ci_installJBHideHooks(void) {
             MSHookFunction((void *)orig_opendir_fn, (void *)hook_opendir_fn, (void **)&orig_opendir_fn);
         if (orig_readdir_fn)
             MSHookFunction((void *)orig_readdir_fn, (void *)hook_readdir_fn, (void **)&orig_readdir_fn);
+        if (orig_readdir_r_fn)
+            MSHookFunction((void *)orig_readdir_r_fn, (void *)hook_readdir_r_fn, (void **)&orig_readdir_r_fn);
         if (orig_closedir_fn)
             MSHookFunction((void *)orig_closedir_fn, (void *)hook_closedir_fn, (void **)&orig_closedir_fn);
 
@@ -3768,12 +3843,13 @@ static void ci_installJBHideHooks(void) {
         if (orig_fork_fn)
             MSHookFunction((void *)orig_fork_fn, (void *)hooked_fork, (void **)&orig_fork_fn);
 
-        dbglog("ctor %s JBhide fs=%p/%p/%p/%p at=%p/%p attr=%p read=%p/%p dir=%p dyld=%p/%p/%p/%p dladdr=%p fork=%p\n",
+        dbglog("ctor %s JBhide fs=%p/%p/%p/%p at=%p/%p attr=%p read=%p/%p dir=%p rdr_r=%p dyld=%p/%p/%p/%p dladdr=%p fork=%p\n",
                g_procname, (void *)orig_stat_fn, (void *)orig_lstat_fn,
                (void *)orig_access_fn, (void *)orig_fopen_fn,
                (void *)orig_fstatat_fn, (void *)orig_faccessat_fn,
                (void *)orig_getattrlist_fn, (void *)orig_readlink_fn,
                (void *)orig_readlinkat_fn, (void *)orig_opendir_fn,
+               (void *)orig_readdir_r_fn,
                (void *)orig_dyld_image_count_fn, (void *)orig_dyld_get_image_name_fn,
                (void *)orig_dyld_get_image_header_fn, (void *)orig_dyld_get_image_slide_fn,
                (void *)orig_dladdr_fn, (void *)orig_fork_fn);
