@@ -62,10 +62,26 @@ extern void xpc_release(xpc_object_t object);
 // ============================================================
 // CONSTANTS
 // ============================================================
+// Roothide: app bundle lives at <jbroot>/Applications/HIOSFakerV3.app,
+// so stripping the suffix gives the jbroot. Rootless: /var/jb.
+static NSString *CIJBRoot(void) {
+    static NSString *root = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *bp = [[NSBundle mainBundle] bundlePath];
+        NSRange r = [bp rangeOfString:@"/Applications/" options:NSBackwardsSearch];
+        if (r.location != NSNotFound && r.location > 0)
+            root = [[bp substringToIndex:r.location] copy];
+        if (!root.length) root = @"/var/jb";
+    });
+    return root;
+}
+static NSString *CIJBPath(NSString *rel) {
+    return [CIJBRoot() stringByAppendingPathComponent:rel];
+}
 static NSString *const kSharedPrefPath = @"/var/mobile/Library/Preferences/com.changeinfoios.plist";
-// Sandbox-friendly mirror for App Store app tweaks — /var/mobile/Library/Prefs
-// is blocked by their sandboxes, /var/jb/etc/* is allowed (verified live).
-static NSString *const kSharedConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
+static NSString *CISharedConfigPath(void) { return CIJBPath(@"etc/changeinfoios/config.plist"); }
+#define kSharedConfigPath CISharedConfigPath()
 static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
@@ -2239,7 +2255,7 @@ static NSString *CIContactsPoolPath(void) {
 }
 
 static NSString *CIContactsGeneratedPath(void) {
-    return @"/var/jb/etc/changeinfoios/generated_contacts.plist";
+    return CIJBPath(@"etc/changeinfoios/generated_contacts.plist");
 }
 
 static NSString *ci_normalizeVNPhone(NSString *raw) {
@@ -3112,7 +3128,7 @@ static void ci_rrsKcDiag(NSString *line) {
     static NSString *path;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *dir = @"/var/jb/etc/changeinfoios";
+        NSString *dir = CIJBPath(@"etc/changeinfoios");
         [[NSFileManager defaultManager] createDirectoryAtPath:dir
             withIntermediateDirectories:YES attributes:nil error:nil];
         path = [dir stringByAppendingPathComponent:@"rrs_keychain_diag.log"];
@@ -3757,7 +3773,7 @@ static int ci_hostWipeKeychainForBundle(NSString *bundleID) {
     NSString *line = [NSString stringWithFormat:@"[kcwipe] bid=%@ groups=%lu classDeletes=%d :: %@\n",
                       bundleID, (unsigned long)groups.count, classDeletes,
                       [[groups allObjects] componentsJoinedByString:@" "]];
-    NSString *p = @"/var/jb/etc/changeinfoios/kc_wipe.log";
+    NSString *p = CIJBPath(@"etc/changeinfoios/kc_wipe.log");
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
     if (!fh) { [[NSData data] writeToFile:p atomically:YES]; fh = [NSFileHandle fileHandleForWritingAtPath:p]; }
     if (fh) { @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; } @finally { [fh closeFile]; } }
@@ -3941,11 +3957,11 @@ static void ci_wipeAppGroups(NSString *bundleID) {
 @end
 
 static NSString *CITweakFilterPath(void) {
-    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.plist";
+    return CIJBPath(@"Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.plist");
 }
 
 static NSString *CICTTweakFilterPath(void) {
-    return @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosCT.plist";
+    return CIJBPath(@"Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosCT.plist");
 }
 
 // v2.6.1: ALL user-selected target apps go through the ultra-thin
@@ -4005,8 +4021,8 @@ static BOOL ci_isSystemAlwaysIncludeBundle(NSString *bid) {
 static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredBids) {
     if (!path.length) return NO;
     struct stat st;
-    if (lstat([path fileSystemRepresentation], &st) != 0) {
-        NSLog(@"[ChangeInfoIos] static filter verify: lstat FAILED → %@", path);
+    if (stat([path fileSystemRepresentation], &st) != 0) {
+        NSLog(@"[ChangeInfoIos] static filter verify: stat FAILED → %@", path);
         return NO;
     }
     if (!S_ISREG(st.st_mode)) {   // reject symlink / dir / device — must be a real file
@@ -4996,7 +5012,7 @@ static NSString *ci_buildTarCommand(NSString *tarPath,
     // Local-only diagnostic (4.3.33): never ship the RRS keychain diag log inside
     // a portable archive.
     [cmd appendString:@" --exclude='*/changeinfoios/rrs_keychain_diag.log'"];
-    [cmd appendString:@" /var/jb/etc/changeinfoios"];
+    [cmd appendFormat:@" -C '%@' etc/changeinfoios", CIJBRoot()];
     for (NSString *p in containerPaths) [cmd appendFormat:@" '%@'", p];
     if (errLog.length) [cmd appendFormat:@" 2>%@", errLog];
     return cmd;
@@ -5110,7 +5126,8 @@ static NSString *const kLicUDID     = @"_ci_lic_udid";
 // after a successful key activation. Persist to the same JB config dir that already
 // reliably holds `hwid` (that file survives respring / Change Device / RRS restore).
 // NSUserDefaults is still written as a mirror so nothing else regresses.
-static NSString *const kLicStorePath = @"/var/jb/etc/changeinfoios/license.plist";
+static NSString *CILicStorePath(void) { return CIJBPath(@"etc/changeinfoios/license.plist"); }
+#define kLicStorePath CILicStorePath()
 static NSMutableDictionary *ci_licStore(void) {
     static NSMutableDictionary *s = nil; static dispatch_once_t o;
     dispatch_once(&o, ^{
@@ -5120,7 +5137,7 @@ static NSMutableDictionary *ci_licStore(void) {
     return s;
 }
 static void ci_licStoreSave(void) {
-    [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/jb/etc/changeinfoios"
+    [[NSFileManager defaultManager] createDirectoryAtPath:CIJBPath(@"etc/changeinfoios")
         withIntermediateDirectories:YES attributes:nil error:nil];
     [ci_licStore() writeToFile:kLicStorePath atomically:YES];
 }
@@ -5190,13 +5207,13 @@ static void ci_licSet(NSString *k, id v, NSUserDefaults *ud) {
 
     // FALLBACK (MG unavailable): persistent UUID in /var/jb + NSUserDefaults.
     NSUserDefaults *ud = [self lstore];
-    NSString *path = @"/var/jb/etc/changeinfoios/hwid";
+    NSString *path = CIJBPath(@"etc/changeinfoios/hwid");
     NSString *hwid = [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (hwid.length < 8) hwid = [ud stringForKey:@"_ci_hwid"];
     if (hwid.length < 8) hwid = [[NSUUID UUID] UUIDString];
     [ud setObject:hwid forKey:@"_ci_hwid"]; [ud synchronize];
-    [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/jb/etc/changeinfoios"
+    [[NSFileManager defaultManager] createDirectoryAtPath:CIJBPath(@"etc/changeinfoios")
         withIntermediateDirectories:YES attributes:nil error:nil];
     [hwid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
     cached = hwid;
@@ -7559,8 +7576,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 // Virtual-camera (VCam) media lives in the shared config dir, which — like
 // config.plist — is readable from inside every target app's sandbox, so
 // tweak-mg LAYER 21 (AVAssetReader) can open it. Host writes; tweak reads.
-static NSString *CICameraVideoPath(void) { return @"/var/jb/etc/changeinfoios/camera_spoof.mp4"; }
-static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/camera_spoof.jpg"; }
+static NSString *CICameraVideoPath(void) { return CIJBPath(@"etc/changeinfoios/camera_spoof.mp4"); }
+static NSString *CICameraImagePath(void) { return CIJBPath(@"etc/changeinfoios/camera_spoof.jpg"); }
 
 // ============================================================
 // SIDE MENU (hamburger)
@@ -8147,7 +8164,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
 
 - (void)camStageDone:(BOOL)ok why:(NSString *)why log:(NSString *)log {
     NSString *lg = [NSString stringWithFormat:@"[stage] %@\n", log];
-    [lg writeToFile:@"/var/jb/etc/changeinfoios/camera_apply.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [lg writeToFile:CIJBPath(@"etc/changeinfoios/camera_apply.log") atomically:YES encoding:NSUTF8StringEncoding error:nil];
     if (ok) {
         _stagedVideoReady = YES; _pendingImage = nil;
         _pendingLbl.text = @"Đã chọn: VIDEO — bấm Apply để dùng";
@@ -8184,7 +8201,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
 
     NSString *lg = [NSString stringWithFormat:@"[stage] src=%@ len=%lu ok=%d why=%@\n",
                     src.path ?: @"?", len, ok, why ?: @"-"];
-    [lg writeToFile:@"/var/jb/etc/changeinfoios/camera_apply.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [lg writeToFile:CIJBPath(@"etc/changeinfoios/camera_apply.log") atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
     if (ok) { chmod([dst fileSystemRepresentation], 0644); return nil; }
     return why ?: @"?";
@@ -8265,7 +8282,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     [cm save];
     [fm removeItemAtPath:CICameraVideoPath() error:nil];
     [fm removeItemAtPath:CICameraImagePath() error:nil];
-    [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb/etc/changeinfoios/camera_apply.log" error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:CIJBPath(@"etc/changeinfoios/camera_apply.log") error:nil];
     _stagedVideoReady = NO; _pendingImage = nil;
     _preview.image = nil; _pendingLbl.text = @"";
     [self refreshStatus];
@@ -9779,7 +9796,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         sharedSize, (unsigned long)sharedKeys];
 
     // 2. Dylib + filter plist in the substrate dir
-    NSString *dylibPath  = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.dylib";
+    NSString *dylibPath  = CIJBPath(@"Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.dylib");
     NSString *filterPath = CITweakFilterPath();
     BOOL dylibExists = [fm fileExistsAtPath:dylibPath];
     unsigned long long dylibSize = 0;
@@ -9827,9 +9844,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     for (NSString *bid in helloMarkers) [out appendFormat:@"  • %@\n", bid];
 
     // 4. Loader presence — confirms ellekit/substrate is even installed
-    NSArray *loaderPaths = @[@"/var/jb/usr/lib/libellekit.dylib",
-                             @"/var/jb/usr/lib/TweakInject.dylib",
-                             @"/var/jb/usr/lib/libsubstrate.dylib"];
+    NSArray *loaderPaths = @[CIJBPath(@"usr/lib/libellekit.dylib"),
+                             CIJBPath(@"usr/lib/TweakInject.dylib"),
+                             CIJBPath(@"usr/lib/libsubstrate.dylib")];
     NSMutableArray *loaderFound = [NSMutableArray array];
     for (NSString *p in loaderPaths) {
         if ([fm fileExistsAtPath:p]) [loaderFound addObject:[p lastPathComponent]];
@@ -10067,25 +10084,11 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     BOOL vfMG = ci_staticFilterVerify(CITweakFilterPath(), mgGateBids);
     BOOL vfCT = ci_staticFilterVerify(CICTTweakFilterPath(), ctGateBids);
     if (!vfMG || !vfCT) {
-        NSString *mgPath = CITweakFilterPath();
-        NSString *ctPath = CICTTweakFilterPath();
-        struct stat stMG, stCT;
-        int lsMG = lstat([mgPath fileSystemRepresentation], &stMG);
-        int lsCT = lstat([ctPath fileSystemRepresentation], &stCT);
-        NSDictionary *mgRoot = [NSDictionary dictionaryWithContentsOfFile:mgPath];
-        NSDictionary *ctRoot = [NSDictionary dictionaryWithContentsOfFile:ctPath];
-        NSArray *mgBundles = mgRoot[@"Filter"][@"Bundles"] ?: @[];
-        NSArray *ctBundles = ctRoot[@"Filter"][@"Bundles"] ?: @[];
-        NSMutableArray *d = [NSMutableArray array];
-        [d addObject:[NSString stringWithFormat:@"vfMG=%d vfCT=%d", vfMG, vfCT]];
-        [d addObject:[NSString stringWithFormat:@"lsMG=%d m=0%o reg=%d", lsMG, lsMG==0?(unsigned)stMG.st_mode:0, lsMG==0?S_ISREG(stMG.st_mode):0]];
-        [d addObject:[NSString stringWithFormat:@"lsCT=%d m=0%o reg=%d", lsCT, lsCT==0?(unsigned)stCT.st_mode:0, lsCT==0?S_ISREG(stCT.st_mode):0]];
-        [d addObject:[NSString stringWithFormat:@"mgR=%@ ctR=%@", mgRoot?@"OK":@"NIL", ctRoot?@"OK":@"NIL"]];
-        [d addObject:[NSString stringWithFormat:@"mgB=%lu ctB=%lu", (unsigned long)mgBundles.count, (unsigned long)ctBundles.count]];
-        NSSet *ms=[NSSet setWithArray:mgBundles], *cs=[NSSet setWithArray:ctBundles];
-        for (NSString *b in mgGateBids) if(![ms containsObject:b]) [d addObject:[NSString stringWithFormat:@"MG-%@",b]];
-        for (NSString *b in ctGateBids) if(![cs containsObject:b]) [d addObject:[NSString stringWithFormat:@"CT-%@",b]];
-        [self alert:@"Filter DEBUG" msg:[d componentsJoinedByString:@"\n"]];
+        NSString *whyMsg = [NSString stringWithFormat:
+            @"Filter plist không hợp lệ (MG=%@, CT=%@).\n"
+            @"Kiểm tra DynamicLibraries rồi thử lại.",
+            vfMG ? @"OK" : @"FAIL", vfCT ? @"OK" : @"FAIL"];
+        [self alert:@"Lỗi" msg:whyMsg];
         return;
     }
     if ([resetBids containsObject:kZaloBID]) {
@@ -10435,8 +10438,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             NSString *pendingBid = [a.bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
             if (pendingBid.length) {
                 ci_run([[NSString stringWithFormat:
-                    @"rm -f '/var/jb/etc/changeinfoios/restore_%@.flag' '/var/jb/etc/changeinfoios/dump_%@.plist' 2>/dev/null",
-                    pendingBid, pendingBid] UTF8String]);
+                    @"rm -f '%@/restore_%@.flag' '%@/dump_%@.plist' 2>/dev/null",
+                    CIJBPath(@"etc/changeinfoios"), pendingBid,
+                    CIJBPath(@"etc/changeinfoios"), pendingBid] UTF8String]);
             }
             if (!a.containerPath.length) continue;
             attempted++;
@@ -10578,7 +10582,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // same token (otherwise dispatch_once re-rolls and Zalo's server sees
         // token drift on every relaunch). Reset Data must wipe them so the
         // next launch generates a brand-new device identity.
-        ci_run("rm -f /var/jb/etc/changeinfoios/dc_state_*.plist 2>/dev/null");
+        ci_run([[NSString stringWithFormat:@"rm -f %@/etc/changeinfoios/dc_state_*.plist 2>/dev/null",
+                CIJBRoot()] UTF8String]);
         NSLog(@"[ChangeInfoIos] DC state files wiped");
 
         NSArray *detectPaths = @[
@@ -10626,15 +10631,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                       title:@"Restart SpringBoard"
                    subtitle:@"Reload tweak với config mới…"];
             [NSThread sleepForTimeInterval:1.5];
-            const char *respringCmd =
-                "/var/jb/usr/bin/sbreload 2>/dev/null"
-                " || sbreload 2>/dev/null"
-                " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-                " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-                " || killall -9 SpringBoard 2>/dev/null";
-            respringRC = ci_run(respringCmd);
+            NSString *respringStr = [NSString stringWithFormat:
+                @"%@/usr/bin/sbreload 2>/dev/null"
+                @" || sbreload 2>/dev/null"
+                @" || %@/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                @" || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                @" || killall -9 SpringBoard 2>/dev/null",
+                CIJBRoot(), CIJBRoot()];
+            respringRC = ci_run([respringStr UTF8String]);
             [NSThread sleepForTimeInterval:4.0];
-            ci_run("/var/jb/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null");
+            ci_run([[NSString stringWithFormat:@"%@/usr/bin/uicache -a 2>/dev/null || uicache -a 2>/dev/null",
+                     CIJBRoot()] UTF8String]);
             [NSThread sleepForTimeInterval:2.0];
             respringOK = (respringRC == 0);
             NSLog(@"[ChangeInfoIos] Step 4 done: respring rc=%d", respringRC);
@@ -10907,7 +10914,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
         }
     }
-    NSData *liveConfig = [NSData dataWithContentsOfFile:@"/var/jb/etc/changeinfoios/config.plist"];
+    NSData *liveConfig = [NSData dataWithContentsOfFile:kSharedConfigPath];
     id liveConfigObject = liveConfig.length
         ? [NSPropertyListSerialization propertyListWithData:liveConfig options:0 format:NULL error:NULL]
         : nil;
@@ -11053,7 +11060,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
         }
     }
-    NSData *rebackupConfig = [NSData dataWithContentsOfFile:@"/var/jb/etc/changeinfoios/config.plist"];
+    NSData *rebackupConfig = [NSData dataWithContentsOfFile:kSharedConfigPath];
     id rebackupConfigObject = rebackupConfig.length
         ? [NSPropertyListSerialization propertyListWithData:rebackupConfig options:0 format:NULL error:NULL]
         : nil;
@@ -11352,7 +11359,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // Each restoreEntry invocation appends a new block prefixed with
         // a timestamp + tar path. NSLog goes nowhere on Dopamine (no syslogd)
         // so this is the only way to see what step 3/5 actually did.
-        NSString *logPath = @"/var/jb/etc/changeinfoios/restoreEntry.log";
+        NSString *logPath = CIJBPath(@"etc/changeinfoios/restoreEntry.log");
         NSDateFormatter *df = [NSDateFormatter new];
         df.dateFormat = @"yyyy-MM-dd HH:mm:ss";
         __block void (^rlog)(NSString *) = ^(NSString *line) {
@@ -11387,8 +11394,9 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             for (NSString *bid in touchedFlagBids) {
                 NSString *safeBid = [bid stringByReplacingOccurrencesOfString:@"'" withString:@""];
                 ci_run([[NSString stringWithFormat:
-                    @"rm -f '/var/jb/etc/changeinfoios/restore_%@.flag' '/var/jb/etc/changeinfoios/dump_%@.plist' 2>/dev/null",
-                    safeBid, safeBid] UTF8String]);
+                    @"rm -f '%@/restore_%@.flag' '%@/dump_%@.plist' 2>/dev/null",
+                    CIJBPath(@"etc/changeinfoios"), safeBid,
+                    CIJBPath(@"etc/changeinfoios"), safeBid] UTF8String]);
                 NSString *live = ci_findDataContainerForBundle(bid);
                 if (live.length) {
                     NSString *safeLive = [live stringByReplacingOccurrencesOfString:@"'" withString:@""];
@@ -11561,10 +11569,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 [sourceFailures addObject:[gid stringByAppendingString:@" (thiếu AppGroup/session nguồn)"]];
         }
 
-        NSString *sourceConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
+        NSString *sourceConfigDir = [tmp stringByAppendingPathComponent:@"etc/changeinfoios"];
         if (![fm fileExistsAtPath:sourceConfigDir]) {
-            NSString *alt = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
+            NSString *alt = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
             if ([fm fileExistsAtPath:alt]) sourceConfigDir = alt;
+        }
+        if (![fm fileExistsAtPath:sourceConfigDir]) {
+            NSString *alt2 = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
+            if ([fm fileExistsAtPath:alt2]) sourceConfigDir = alt2;
         }
         NSData *sourceConfig = [NSData dataWithContentsOfFile:
             [sourceConfigDir stringByAppendingPathComponent:@"config.plist"]];
@@ -11837,14 +11849,20 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         // the config bytes were perfectly fine (plain NSData reads DO work — the
         // preflight above already read this exact file). Decide success from
         // CONTENT the shell child can always move; publish via the shell child.
-        NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
+        NSString *bkConfigDir = [tmp stringByAppendingPathComponent:@"etc/changeinfoios"];
         NSData *sourceConfigData =
             [NSData dataWithContentsOfFile:[bkConfigDir stringByAppendingPathComponent:@"config.plist"]];
         if (sourceConfigData.length == 0) {
-            NSString *alt = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
+            NSString *alt = [tmp stringByAppendingPathComponent:@"var/jb/etc/changeinfoios"];
             NSData *altData =
                 [NSData dataWithContentsOfFile:[alt stringByAppendingPathComponent:@"config.plist"]];
             if (altData.length > 0) { bkConfigDir = alt; sourceConfigData = altData; }
+        }
+        if (sourceConfigData.length == 0) {
+            NSString *alt2 = [tmp stringByAppendingPathComponent:@"private/var/jb/etc/changeinfoios"];
+            NSData *alt2Data =
+                [NSData dataWithContentsOfFile:[alt2 stringByAppendingPathComponent:@"config.plist"]];
+            if (alt2Data.length > 0) { bkConfigDir = alt2; sourceConfigData = alt2Data; }
         }
         NSString *bkConfigPlist = [bkConfigDir stringByAppendingPathComponent:@"config.plist"];
         BOOL configRestoreOK = NO;
@@ -11866,13 +11884,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // "nhập key" after every restore. Save the live license, copy the snapshot
             // config, drop whatever license the snapshot brought, then put the live
             // license back (if this device had one). The device keeps its OWN license.
+            NSString *jbCfg = CIJBPath(@"etc/changeinfoios");
             int rcShared = ci_run([[NSString stringWithFormat:
-                @"L=/var/jb/etc/changeinfoios/license.plist; K=/tmp/ci_lic_keep_%@.plist; "
+                @"L='%@/license.plist'; K=/tmp/ci_lic_keep_%@.plist; "
                 @"cp -a \"$L\" \"$K\" 2>/dev/null; "
-                @"mkdir -p /var/jb/etc/changeinfoios && cp -a '%@/.' /var/jb/etc/changeinfoios/ 2>/dev/null; "
+                @"mkdir -p '%@' && cp -a '%@/.' '%@/' 2>/dev/null; "
                 @"rm -f \"$L\" 2>/dev/null; [ -f \"$K\" ] && cp -a \"$K\" \"$L\" 2>/dev/null; rm -f \"$K\" 2>/dev/null; "
-                @"chmod 0644 /var/jb/etc/changeinfoios/*.plist 2>/dev/null",
-                e.uid, safeBkDir] UTF8String]);
+                @"chmod 0644 %@/*.plist 2>/dev/null",
+                jbCfg, e.uid, jbCfg, safeBkDir, jbCfg, jbCfg] UTF8String]);
             NSData *liveConfigData = [NSData dataWithContentsOfFile:kSharedConfigPath];
             BOOL sharedOK = (liveConfigData.length > 0 && [sourceConfigData isEqualToData:liveConfigData]);
             // (2) host-app sandbox copy ([cm load] below reads this FIRST) and the
@@ -12299,8 +12318,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                         NSString *queryOut = [NSString stringWithFormat:
                             @"/tmp/ci_profile_query_%@.txt", bid];
                         NSString *queryCmd = [NSString stringWithFormat:
-                            @"/var/jb/usr/bin/sqlite3 '%@' \"SELECT username || '|' || COALESCE(mobile, '') FROM ProfileEntity WHERE userid = %@\" > '%@' 2>&1",
-                            profilePath, targetUID, queryOut];
+                            @"%@/usr/bin/sqlite3 '%@' \"SELECT username || '|' || COALESCE(mobile, '') FROM ProfileEntity WHERE userid = %@\" > '%@' 2>&1",
+                            CIJBRoot(), profilePath, targetUID, queryOut];
                         ci_run([queryCmd UTF8String]);
                         NSString *queryResult = [NSString stringWithContentsOfFile:queryOut
                                                                           encoding:NSUTF8StringEncoding error:nil];
@@ -12430,7 +12449,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             //
             // The tmp/ path stays as a fallback for back-compat with
             // older tweak builds that only check tmp/.
-            NSString *sharedDir = @"/var/jb/etc/changeinfoios";
+            NSString *sharedDir = CIJBPath(@"etc/changeinfoios");
             NSString *sharedFlag = [sharedDir stringByAppendingPathComponent:
                                      [NSString stringWithFormat:@"restore_%@.flag", bid]];
             NSString *sharedDump = [sharedDir stringByAppendingPathComponent:
@@ -12537,11 +12556,13 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [NSThread sleepForTimeInterval:1.0];
         ci_run([[NSString stringWithFormat:@"rm -rf '%@'", tmp] UTF8String]);
         ci_run("killall -9 cfprefsd 2>/dev/null");
-        int respringRc = ci_run("/var/jb/usr/bin/sbreload 2>/dev/null"
-                                " || sbreload 2>/dev/null"
-                                " || /var/jb/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-                                " || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
-                                " || killall -9 SpringBoard 2>/dev/null");
+        int respringRc = ci_run([[NSString stringWithFormat:
+                                @"%@/usr/bin/sbreload 2>/dev/null"
+                                @" || sbreload 2>/dev/null"
+                                @" || %@/bin/launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                                @" || launchctl kickstart -k system/com.apple.SpringBoard 2>/dev/null"
+                                @" || killall -9 SpringBoard 2>/dev/null",
+                                CIJBRoot(), CIJBRoot()] UTF8String]);
         NSLog(@"[ChangeInfoIos] restore: respring rc=%d", respringRc);
         BOOL reloadOK = (respringRc == 0);
         if (!reloadOK) ci_unmarkRestoredIfUID(e.uid);
@@ -12692,7 +12713,7 @@ static UIViewController *ci_topVC(UIViewController *root) {
     // P0-2: removed the viber_idquery.log snapshot (it copied REAL device IDs out of
     // Viber's sandbox to a world-readable path). The tweak no longer produces it.
 
-    NSString *p = @"/var/jb/etc/changeinfoios/restoreEntry.log";
+    NSString *p = CIJBPath(@"etc/changeinfoios/restoreEntry.log");
     NSString *c = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
     if (c.length) {
         NSArray *lines = [c componentsSeparatedByString:@"\n"];
