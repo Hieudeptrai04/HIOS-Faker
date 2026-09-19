@@ -355,9 +355,24 @@ static NSString *boardConfigForProductType(NSString *pt) {
     return pt.length ? m[pt] : nil;
 }
 
+static NSDictionary *ci_cfprefsConfig(void) {
+    CFStringRef appID = CFSTR("com.changeinfoios");
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    if (!keys) return nil;
+    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFRelease(keys);
+    if (!vals) return nil;
+    return (__bridge_transfer NSDictionary *)vals;
+}
+
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (!d) {
+        d = ci_cfprefsConfig();
+        if (d) NSLog(@"[ChangeInfoIos-MG] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) d = @{};
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
     if (board.length) {
