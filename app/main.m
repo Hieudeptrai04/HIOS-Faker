@@ -10130,7 +10130,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if (ci_isNoInjectBundle(kZaloBID)) [missing addObject:@"bị policy no-inject loại"];
         // ITEM 3 — if the SHIPPED filter does not statically verify + cover Zalo, the
         // tweak will NOT inject into Zalo; ABORT before destroying data for nothing.
-        if (!filterVerified)
+        if (!vfMG || !vfCT)
             [missing addObject:@"shipped filter chưa verify (thiếu Zalo BID / Mode≠Any / symlink / rỗng)"];
         if (missing.count) {
             [self alert:@"Chưa thay đổi dữ liệu"
