@@ -2820,31 +2820,34 @@ static id ci_applicationProxyForBundle(NSString *bundleID) {
     return proxy;
 }
 
+static BOOL ci_directoryExistsAtPath(NSString *path) {
+    if (!path.length) return NO;
+    BOOL isDir = NO;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] && isDir) return YES;
+    NSString *safe = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
+    return ci_run([[NSString stringWithFormat:@"test -d '%@'", safe] UTF8String]) == 0;
+}
+
+static BOOL ci_metadataPlistMatchesBundleID(NSString *metaPath, NSString *bundleID) {
+    NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
+    if (!meta) return NO;
+    NSString *storedID = meta[@"MCMMetadataIdentifier"];
+    return [storedID isKindOfClass:[NSString class]] && [storedID isEqualToString:bundleID];
+}
+
 static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     if (bundleID.length == 0) return nil;
-    // Prefer LaunchServices' authoritative binding. A filesystem scan can leave
-    // several metadata matches after reinstall/upgrade and the old `head -1`
-    // fallback could select a stale UUID. Restoring there reports success while
-    // the app launches from a different, empty container.
     id proxy = ci_applicationProxyForBundle(bundleID);
     id liveURL = [proxy respondsToSelector:@selector(dataContainerURL)]
         ? [proxy performSelector:@selector(dataContainerURL)] : nil;
     if ([liveURL respondsToSelector:@selector(path)]) {
         NSString *livePath = [liveURL path];
-        if (livePath.length) {
-            NSString *safe = [livePath stringByReplacingOccurrencesOfString:@"'" withString:@""];
-            // NSFileManager can be MAC-blocked even for this valid foreign
-            // container. Verify through the same shell child used for copying.
-            if (ci_run([[NSString stringWithFormat:@"test -d '%@'", safe] UTF8String]) == 0)
-                return livePath;
+        if (livePath.length && ci_directoryExistsAtPath(livePath)) {
+            NSLog(@"[ChangeInfoIos] container for %@ via LSProxy: %@", bundleID, livePath);
+            return livePath;
         }
+        if (livePath.length) NSLog(@"[ChangeInfoIos] LSProxy gave %@ for %@ but dir check failed", livePath, bundleID);
     }
-    // Authoritative fallback (4.3.33): applicationProxyForIdentifier can
-    // momentarily return nil (LaunchServices not warmed) yet the app IS
-    // installed. Enumerate every installed app and EXACT-match the bundle
-    // identifier — this still yields the LIVE binding even when a stale UUID also
-    // exists on disk, so we never fall through to the ambiguous filesystem scan
-    // for an app LaunchServices can account for.
     {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -2863,48 +2866,34 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
                     id url = [app respondsToSelector:@selector(dataContainerURL)]
                         ? [app performSelector:@selector(dataContainerURL)] : nil;
                     NSString *p = [url respondsToSelector:@selector(path)] ? [url path] : nil;
-                    if (p.length) {
-                        NSString *safe2 = [p stringByReplacingOccurrencesOfString:@"'" withString:@""];
-                        if (ci_run([[NSString stringWithFormat:@"test -d '%@'", safe2] UTF8String]) == 0)
-                            return p;
+                    if (p.length && ci_directoryExistsAtPath(p)) {
+                        NSLog(@"[ChangeInfoIos] container for %@ via WS enum: %@", bundleID, p);
+                        return p;
                     }
                 }
             }
         }
 #pragma clang diagnostic pop
     }
-    // First try NSFileManager (works for some host-app sandbox profiles).
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *root = @"/var/mobile/Containers/Data/Application";
     NSArray *uuids = [fm contentsOfDirectoryAtPath:root error:nil];
-    NSData *needle = [bundleID dataUsingEncoding:NSUTF8StringEncoding];
     NSMutableArray<NSString *> *cocoaMatches = [NSMutableArray array];
     for (NSString *uuid in uuids) {
         NSString *full = [root stringByAppendingPathComponent:uuid];
         NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-        NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
-        if (!blob) continue;
-        if ([blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound) {
+        if (ci_metadataPlistMatchesBundleID(meta, bundleID))
             [cocoaMatches addObject:full];
-        }
     }
-    if (cocoaMatches.count == 1) return cocoaMatches.firstObject;
+    if (cocoaMatches.count == 1) {
+        NSLog(@"[ChangeInfoIos] container for %@ via FM scan: %@", bundleID, cocoaMatches.firstObject);
+        return cocoaMatches.firstObject;
+    }
     if (cocoaMatches.count > 1) {
-        NSLog(@"[ChangeInfoIos] Data container ambiguous for %@: %@", bundleID, cocoaMatches);
-        return nil; // fail closed; never archive/restore into a random stale UUID
+        NSLog(@"[ChangeInfoIos] Data container ambiguous for %@ (FM): %@", bundleID, cocoaMatches);
+        return nil;
     }
 
-    // Fallback (2026-05-20 v2.4.27): NSFileManager returned no UUIDs / matches
-    // even though the containers exist. Confirmed via instrumented restoreEntry.log:
-    // `matchedBid=vn.com.vng.zingalo but NO LIVE CONTAINER` even when /var/mobile/
-    // Containers/Data/Application/22B6882C.../*.metadata.plist has the bundle ID
-    // and 644 perms readable by mobile. Sandbox MAC seems to block the directory
-    // listing from inside HIOS Faker's sandboxed process, but the SAME path works
-    // for cp -a / pkill via ci_run (posix_spawn child of host bypasses).
-    //
-    // Shell-based grep through ci_run. Do not use `head -1`: after an app
-    // reinstall there may be both a live and stale UUID. Without an
-    // authoritative LaunchServices result, ambiguity must fail closed.
     NSString *outPath = [NSString stringWithFormat:
         @"/tmp/ci_find_%@.txt", [[NSUUID UUID] UUIDString]];
     NSString *safeBid = [bundleID stringByReplacingOccurrencesOfString:@"'" withString:@""];
@@ -2918,16 +2907,24 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID) {
     NSMutableArray<NSString *> *shellMatches = [NSMutableArray array];
     for (NSString *raw in [result componentsSeparatedByCharactersInSet:
                            [NSCharacterSet newlineCharacterSet]]) {
-        NSString *meta = [raw stringByTrimmingCharactersInSet:
+        NSString *line = [raw stringByTrimmingCharactersInSet:
                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (meta.length == 0) continue;
-        NSString *candidate = [meta stringByDeletingLastPathComponent];
-        if (candidate.length && ![shellMatches containsObject:candidate])
+        if (line.length == 0) continue;
+        NSString *candidate = [line stringByDeletingLastPathComponent];
+        if (!candidate.length || [shellMatches containsObject:candidate]) continue;
+        NSString *metaFull = [candidate stringByAppendingPathComponent:
+                              @".com.apple.mobile_container_manager.metadata.plist"];
+        if (ci_metadataPlistMatchesBundleID(metaFull, bundleID))
             [shellMatches addObject:candidate];
     }
-    if (shellMatches.count == 1) return shellMatches.firstObject;
+    if (shellMatches.count == 1) {
+        NSLog(@"[ChangeInfoIos] container for %@ via shell grep: %@", bundleID, shellMatches.firstObject);
+        return shellMatches.firstObject;
+    }
     if (shellMatches.count > 1)
-        NSLog(@"[ChangeInfoIos] Data container shell ambiguity for %@: %@", bundleID, shellMatches);
+        NSLog(@"[ChangeInfoIos] Data container shell ambiguity for %@ (verified): %@", bundleID, shellMatches);
+    NSLog(@"[ChangeInfoIos] ALL strategies failed for %@: proxy=%@, FM uuids=%lu, shell=%lu",
+          bundleID, liveURL ? @"yes" : @"no", (unsigned long)uuids.count, (unsigned long)shellMatches.count);
     return nil;
 }
 
@@ -2977,21 +2974,16 @@ static NSString *ci_findAppGroupContainer(NSString *groupID) {
         id liveURL = [urls isKindOfClass:[NSDictionary class]]
             ? ((NSDictionary *)urls)[groupID] : nil;
         NSString *livePath = [liveURL respondsToSelector:@selector(path)] ? [liveURL path] : nil;
-        if (livePath.length) {
-            NSString *safe = [livePath stringByReplacingOccurrencesOfString:@"'" withString:@""];
-            if (ci_run([[NSString stringWithFormat:@"test -d '%@'", safe] UTF8String]) == 0)
-                return livePath;
-        }
+        if (livePath.length && ci_directoryExistsAtPath(livePath))
+            return livePath;
     }
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *base = @"/var/mobile/Containers/Shared/AppGroup";
-    NSData *needle = [groupID dataUsingEncoding:NSUTF8StringEncoding];
     NSMutableArray<NSString *> *cocoaMatches = [NSMutableArray array];
     for (NSString *uuid in [fm contentsOfDirectoryAtPath:base error:nil]) {
         NSString *full = [base stringByAppendingPathComponent:uuid];
         NSString *meta = [full stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-        NSData *blob = [NSData dataWithContentsOfFile:meta options:NSDataReadingUncached error:nil];
-        if (blob && [blob rangeOfData:needle options:0 range:NSMakeRange(0, blob.length)].location != NSNotFound)
+        if (ci_metadataPlistMatchesBundleID(meta, groupID))
             [cocoaMatches addObject:full];
     }
     if (cocoaMatches.count == 1) return cocoaMatches.firstObject;
@@ -3012,11 +3004,14 @@ static NSString *ci_findAppGroupContainer(NSString *groupID) {
     NSMutableArray<NSString *> *shellMatches = [NSMutableArray array];
     for (NSString *raw in [result componentsSeparatedByCharactersInSet:
                            [NSCharacterSet newlineCharacterSet]]) {
-        NSString *meta = [raw stringByTrimmingCharactersInSet:
+        NSString *line = [raw stringByTrimmingCharactersInSet:
                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (meta.length == 0) continue;
-        NSString *candidate = [meta stringByDeletingLastPathComponent];
-        if (candidate.length && ![shellMatches containsObject:candidate])
+        if (line.length == 0) continue;
+        NSString *candidate = [line stringByDeletingLastPathComponent];
+        if (!candidate.length || [shellMatches containsObject:candidate]) continue;
+        NSString *metaFull = [candidate stringByAppendingPathComponent:
+                              @".com.apple.mobile_container_manager.metadata.plist"];
+        if (ci_metadataPlistMatchesBundleID(metaFull, groupID))
             [shellMatches addObject:candidate];
     }
     if (shellMatches.count == 1) return shellMatches.firstObject;
@@ -9942,6 +9937,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     }
 
     NSArray<CIAppInfo *> *all = [CIAppLister allApps];
+    NSLog(@"[ChangeInfoIos] preflight: CIAppLister.allApps count=%lu, resetBids=%@",
+          (unsigned long)all.count, resetBids);
     NSMutableArray<CIAppInfo *> *targets = [NSMutableArray array];
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (CIAppInfo *a in all) {
@@ -9950,10 +9947,8 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             [names addObject:a.name ?: a.bundleID];
         }
     }
+    NSLog(@"[ChangeInfoIos] preflight: matched targets=%lu", (unsigned long)targets.count);
 
-    // Fail before changing identity when any persisted selection no longer
-    // resolves to a live app/container. Otherwise the run can succeed for only
-    // a subset while the UI still claims the whole selection was changed.
     NSMutableSet<NSString *> *resolvedBids = [NSMutableSet set];
     NSMutableArray<NSString *> *unresolvedBids = [NSMutableArray array];
     for (CIAppInfo *a in targets) if (a.bundleID.length) [resolvedBids addObject:a.bundleID];
@@ -9962,16 +9957,17 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         CIAppInfo *matched = nil;
         for (CIAppInfo *a in targets) if ([a.bundleID isEqualToString:bid]) { matched = a; break; }
         if (ci_isSystemAlwaysIncludeBundle(bid)) {
-            // Safari/Maps/Weather can be absent from the third-party app scan and
-            // can temporarily have no LS data-container record. Dedicated system
-            // wipes below still run; refresh the path when LS does provide one.
             if (matched && liveContainer.length) matched.containerPath = liveContainer;
             continue;
         }
-        if (![resolvedBids containsObject:bid] || !matched.bundlePath.length || !liveContainer.length) {
+        BOOL inResolved = [resolvedBids containsObject:bid];
+        BOOL hasBundlePath = matched.bundlePath.length > 0;
+        BOOL hasContainer = liveContainer.length > 0;
+        if (!inResolved || !hasBundlePath || !hasContainer) {
+            NSLog(@"[ChangeInfoIos] UNRESOLVED %@: inAllApps=%d bundlePath=%@ container=%@",
+                  bid, inResolved, matched.bundlePath ?: @"(nil)", liveContainer ?: @"(nil)");
             [unresolvedBids addObject:bid];
         } else {
-            // Always wipe the current LaunchServices container, never a cached UUID.
             matched.containerPath = liveContainer;
         }
     }
