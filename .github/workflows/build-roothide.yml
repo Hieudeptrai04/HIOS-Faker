@@ -103,6 +103,10 @@ jobs:
             mv "$F" combined/etc/changeinfoios/
             echo "Staged: $(basename $F)"
           done
+          # Remove MobileSubstrate directory entirely so Sileo cannot
+          # detect any substrate content in the payload.
+          rm -rf combined/Library/MobileSubstrate
+          rm -rf combined/Library 2>/dev/null || true
 
           # Sign the dylibs (now in staging path)
           for DYLIB in \
