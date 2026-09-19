@@ -177,6 +177,7 @@ jobs:
             chown root:wheel "$DST" 2>/dev/null || true
             case "$F" in
               *.dylib) chmod 0755 "$DST" 2>/dev/null || true ;;
+              *.plist) chmod 0666 "$DST" 2>/dev/null || true ;;
               *)       chmod 0644 "$DST" 2>/dev/null || true ;;
             esac
           done

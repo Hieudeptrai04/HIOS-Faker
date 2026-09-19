@@ -4071,12 +4071,12 @@ static BOOL ci_ensureFilterCovers(NSString *path, NSArray<NSString *> *requiredB
     root[@"Filter"] = filter;
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
                      [NSString stringWithFormat:@"ci_filter_%u.plist", arc4random()]];
-    BOOL wrote = [root writeToFile:path atomically:YES];
+    BOOL wrote = [root writeToFile:path atomically:NO];
     if (!wrote) {
         [root writeToFile:tmp atomically:YES];
         NSString *safe = [path stringByReplacingOccurrencesOfString:@"'" withString:@""];
         NSString *safeTmp = [tmp stringByReplacingOccurrencesOfString:@"'" withString:@""];
-        int rc = ci_run([[NSString stringWithFormat:@"cp '%@' '%@'", safeTmp, safe] UTF8String]);
+        int rc = ci_run([[NSString stringWithFormat:@"cp '%@' '%@' && chmod 666 '%@'", safeTmp, safe, safe] UTF8String]);
         [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
         if (rc != 0) {
             NSLog(@"[ChangeInfoIos] ensureFilterCovers: write FAILED (direct+cp) → %@", path);
