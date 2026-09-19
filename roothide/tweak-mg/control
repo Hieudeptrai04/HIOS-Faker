@@ -1,0 +1,9 @@
+Package: com.changeinfoios.mg
+Name: ChangeInfoIosMG
+Version: 4.3.44
+Architecture: iphoneos-arm64
+Description: Runtime support component for HIOS Faker v3. Provides the system integration the main app needs. No standalone UI.
+Maintainer: ChangeInfoIos
+Author: ChangeInfoIos
+Section: Tweaks
+Depends: dev.roothide.roothide, ellekit | mobilesubstrate, firmware (>= 15.0)
