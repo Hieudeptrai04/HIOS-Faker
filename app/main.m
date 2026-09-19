@@ -10059,29 +10059,41 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     BOOL ensCT = ci_ensureFilterCovers(CICTTweakFilterPath(), ctGateBids);
     BOOL vfMG = ci_staticFilterVerify(CITweakFilterPath(), mgGateBids);
     BOOL vfCT = ci_staticFilterVerify(CICTTweakFilterPath(), ctGateBids);
-    if (!vfMG || !vfCT) {
+    {
         NSString *mgPath = CITweakFilterPath();
         NSString *ctPath = CICTTweakFilterPath();
+        struct stat stMG, stCT;
+        int lsMG = lstat([mgPath fileSystemRepresentation], &stMG);
+        int lsCT = lstat([ctPath fileSystemRepresentation], &stCT);
         NSDictionary *mgRoot = [NSDictionary dictionaryWithContentsOfFile:mgPath];
         NSDictionary *ctRoot = [NSDictionary dictionaryWithContentsOfFile:ctPath];
         NSArray *mgBundles = mgRoot[@"Filter"][@"Bundles"] ?: @[];
         NSArray *ctBundles = ctRoot[@"Filter"][@"Bundles"] ?: @[];
         NSMutableArray *dbg = [NSMutableArray array];
         [dbg addObject:[NSString stringWithFormat:@"ensMG=%d ensCT=%d vfMG=%d vfCT=%d", ensMG, ensCT, vfMG, vfCT]];
-        [dbg addObject:[NSString stringWithFormat:@"mgPath exists=%d readable=%d", [[NSFileManager defaultManager] fileExistsAtPath:mgPath], [[NSFileManager defaultManager] isReadableFileAtPath:mgPath]]];
-        [dbg addObject:[NSString stringWithFormat:@"ctPath exists=%d readable=%d", [[NSFileManager defaultManager] fileExistsAtPath:ctPath], [[NSFileManager defaultManager] isReadableFileAtPath:ctPath]]];
+        [dbg addObject:[NSString stringWithFormat:@"lstatMG=%d mode=0%o isreg=%d", lsMG, lsMG==0?(unsigned)stMG.st_mode:0, lsMG==0?S_ISREG(stMG.st_mode):0]];
+        [dbg addObject:[NSString stringWithFormat:@"lstatCT=%d mode=0%o isreg=%d", lsCT, lsCT==0?(unsigned)stCT.st_mode:0, lsCT==0?S_ISREG(stCT.st_mode):0]];
+        [dbg addObject:[NSString stringWithFormat:@"mgPath=%@", mgPath]];
         [dbg addObject:[NSString stringWithFormat:@"mgRoot=%@ ctRoot=%@", mgRoot ? @"OK" : @"NIL", ctRoot ? @"OK" : @"NIL"]];
         [dbg addObject:[NSString stringWithFormat:@"mgBundles(%lu) ctBundles(%lu)", (unsigned long)mgBundles.count, (unsigned long)ctBundles.count]];
-        NSSet *mgSet = [NSSet setWithArray:mgBundles];
-        NSSet *ctSet = [NSSet setWithArray:ctBundles];
         for (NSString *bid in mgGateBids) {
-            if (![mgSet containsObject:bid]) [dbg addObject:[NSString stringWithFormat:@"MG MISS: %@", bid]];
+            NSSet *s = [NSSet setWithArray:mgBundles];
+            if (![s containsObject:bid]) [dbg addObject:[NSString stringWithFormat:@"MG MISS: %@", bid]];
         }
         for (NSString *bid in ctGateBids) {
-            if (![ctSet containsObject:bid]) [dbg addObject:[NSString stringWithFormat:@"CT MISS: %@", bid]];
+            NSSet *s = [NSSet setWithArray:ctBundles];
+            if (![s containsObject:bid]) [dbg addObject:[NSString stringWithFormat:@"CT MISS: %@", bid]];
         }
         [dbg addObject:[NSString stringWithFormat:@"mgGateBids=%@", mgGateBids]];
-        [self alert:@"Filter debug" msg:[dbg componentsJoinedByString:@"\n"]];
+        [dbg addObject:[NSString stringWithFormat:@"ctGateBids=%@", ctGateBids]];
+        [dbg addObject:[NSString stringWithFormat:@"resetBids=%@", resetBids]];
+        NSString *logStr = [dbg componentsJoinedByString:@"\n"];
+        [logStr writeToFile:@"/var/jb/etc/changeinfoios/filter_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [logStr writeToFile:@"/tmp/filter_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[ChangeInfoIos] FILTER DEBUG:\n%@", logStr);
+    }
+    if (!vfMG || !vfCT) {
+        [self alert:@"Filter verify thất bại" msg:@"Chi tiết đã ghi vào /tmp/filter_debug.txt — báo dev đọc qua SSH."];
         return;
     }
     if ([resetBids containsObject:kZaloBID]) {
