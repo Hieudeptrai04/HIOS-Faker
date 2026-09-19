@@ -109,9 +109,9 @@ static int ct_targetsCurrentProcess(NSDictionary *d) {
 
 static NSDictionary *ci_cfprefsConfig(void) {
     CFStringRef appID = CFSTR("com.changeinfoios");
-    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (!keys) return nil;
-    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFRelease(keys);
     if (!vals) return nil;
     return (__bridge_transfer NSDictionary *)vals;
@@ -122,6 +122,10 @@ static void reloadConfig(void) {
     if (!d) {
         d = ci_cfprefsConfig();
         if (d) NSLog(@"[ChangeInfoIos-CT] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+        if (d) NSLog(@"[ChangeInfoIos-CT] config: using /tmp fallback (%lu keys)", (unsigned long)d.count);
     }
     if (!d) d = @{};
     int ok = ct_computeLicOK(d);

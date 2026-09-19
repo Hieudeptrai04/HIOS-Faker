@@ -347,18 +347,33 @@ static NSString *CIRRSDir(void) {
     CFStringRef appID = CFSTR("com.changeinfoios");
     for (NSString *k in kMirrorExclude)
         CFPreferencesSetValue((__bridge CFStringRef)k, NULL,
-                              appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+                              appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     for (NSString *k in mirror) {
         id v = mirror[k];
         if (v) CFPreferencesSetValue((__bridge CFStringRef)k, (__bridge CFPropertyListRef)v,
-                                     appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+                                     appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     }
-    CFPreferencesSynchronize(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     {   // Verify CFPreferences landed by reading back a key we just wrote
         CFStringRef tok = (CFStringRef)CFPreferencesCopyValue(
-            CFSTR("_ci_lic_tok"), appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+            CFSTR("_ci_lic_tok"), appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (tok) { cfPrefsOK = (CFStringGetLength(tok) > 0); CFRelease(tok); }
         NSLog(@"[ChangeInfoIos] save S5 cfprefs verify: %@", cfPrefsOK ? @"OK" : @"FAIL");
+    }
+
+    // Strategy 5.5: write mirror plist to /tmp/ as belt-and-suspenders fallback.
+    // /tmp/ is writable by app (no-sandbox) and readable by tweaks on roothide.
+    {
+        NSData *tmpData = [NSPropertyListSerialization
+            dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
+                         options:0 error:nil];
+        if (tmpData) {
+            BOOL tmpOK = [tmpData writeToFile:@"/tmp/com.changeinfoios.config.plist"
+                                      options:NSDataWritingAtomic error:nil];
+            if (tmpOK) chmod("/tmp/com.changeinfoios.config.plist", 0644);
+            NSLog(@"[ChangeInfoIos] save S5.5 /tmp mirror: %@", tmpOK ? @"OK" : @"FAIL");
+            if (!cfPrefsOK && tmpOK) cfPrefsOK = YES;
+        }
     }
 
     // Strategy 6: write the same plist into /var/jb/etc/changeinfoios/config.plist.
@@ -4111,9 +4126,9 @@ static BOOL ci_ensureFilterCovers(NSString *path, NSArray<NSString *> *requiredB
 
 static NSDictionary *ci_readConfigFromCFPrefs(void) {
     CFStringRef appID = CFSTR("com.changeinfoios");
-    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (!keys) return nil;
-    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFRelease(keys);
     if (!vals) return nil;
     return (__bridge_transfer NSDictionary *)vals;
@@ -4124,10 +4139,15 @@ static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
     if (![disk isKindOfClass:[NSDictionary class]]) {
         disk = ci_readConfigFromCFPrefs();
         if (![disk isKindOfClass:[NSDictionary class]]) {
-            NSLog(@"[ChangeInfoIos] config mirror readback: file AND cfprefs both empty → %@", kSharedConfigPath);
-            return NO;
+            disk = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+            if (![disk isKindOfClass:[NSDictionary class]]) {
+                NSLog(@"[ChangeInfoIos] config mirror readback: file + cfprefs + /tmp all empty → %@", kSharedConfigPath);
+                return NO;
+            }
+            NSLog(@"[ChangeInfoIos] config mirror readback: using /tmp fallback");
+        } else {
+            NSLog(@"[ChangeInfoIos] config mirror readback: using CFPreferences fallback (file unavailable)");
         }
-        NSLog(@"[ChangeInfoIos] config mirror readback: using CFPreferences fallback (file unavailable)");
     }
     static NSArray<NSString *> *kIdentityKeys = nil;
     static dispatch_once_t once;
@@ -4135,13 +4155,13 @@ static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
         kIdentityKeys = @[
             @"SerialNumber", @"UniqueDeviceID",
             @"InternationalMobileEquipmentIdentity", @"advertisingIdentifier",
-            @"WiFiAddress", @"BluetoothAddress", @"ModelNumber",   // WiFiAddress: capital F = canonical config key (ci_randomizeIdentities @1915)
+            @"WiFiAddress", @"BluetoothAddress", @"ModelNumber",
         ];
     });
     NSUInteger checked = 0;
     for (NSString *k in kIdentityKeys) {
         id live = [cm objectForKey:k];
-        if (![live isKindOfClass:[NSString class]] || ![(NSString *)live length]) continue;  // not in this profile
+        if (![live isKindOfClass:[NSString class]] || ![(NSString *)live length]) continue;
         id got = disk[k];
         if (![got isKindOfClass:[NSString class]] || ![(NSString *)got isEqualToString:(NSString *)live]) {
             NSLog(@"[ChangeInfoIos] config mirror readback MISMATCH key=%@ (mirror≠live) → abort before wipe", k);
@@ -4149,7 +4169,7 @@ static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
         }
         checked++;
     }
-    if (checked == 0) {   // nothing to compare = we cannot prove the mirror landed → fail closed
+    if (checked == 0) {
         NSLog(@"[ChangeInfoIos] config mirror readback: NO identity key present to verify → fail-closed");
         return NO;
     }
@@ -4175,7 +4195,10 @@ static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *
     NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
     if (![disk isKindOfClass:[NSDictionary class]]) {
         disk = ci_readConfigFromCFPrefs();
-        if (![disk isKindOfClass:[NSDictionary class]]) return NO;
+        if (![disk isKindOfClass:[NSDictionary class]]) {
+            disk = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+            if (![disk isKindOfClass:[NSDictionary class]]) return NO;
+        }
     }
     // (b) signed spoof token must be present on disk AND equal to the live token.
     id liveTok = [cm objectForKey:@"_ci_lic_tok"];
