@@ -195,11 +195,31 @@ jobs:
             sed -i '' '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
           chmod 0777 "$ETC" 2>/dev/null || true
-          # Bridge roothide read-only rootfs: symlink the config file to
-          # the data-partition copy written by the app via CFPreferences.
-          # Without this the tweak's kConfigPath read hits rootfs (empty).
-          ln -sf "/var/mobile/Library/Preferences/com.changeinfoios.plist" \
-                 "$ETC/config.plist" 2>/dev/null || true
+
+          # ── Config symlink bridge for roothide ──
+          # On roothide, CFPreferences scopes ALL writes to the calling app's
+          # container. The HIOS app writes a mirror to its own Documents/.
+          # We symlink the shared prefs path to that mirror so tweaks always
+          # read fresh data without needing cross-container file access.
+          HIOS_CONTAINER=""
+          for uuid_dir in /var/mobile/Containers/Data/Application/*/; do
+            meta="${uuid_dir}.com.apple.mobile_container_manager.metadata.plist"
+            [ -f "$meta" ] || continue
+            if plutil "$meta" 2>/dev/null | grep -q "com.changeinfoios.v3.app"; then
+              HIOS_CONTAINER="${uuid_dir%/}"
+              break
+            fi
+          done
+          SHARED="/var/mobile/Library/Preferences/com.changeinfoios.plist"
+          if [ -n "$HIOS_CONTAINER" ]; then
+            MIRROR="$HIOS_CONTAINER/Documents/ci_config_mirror.plist"
+            rm -f "$SHARED" 2>/dev/null || true
+            ln -sf "$MIRROR" "$SHARED"
+            chown mobile:mobile "$SHARED" 2>/dev/null || true
+          fi
+          # Also symlink $ETC/config.plist to the shared prefs path (which
+          # now either points to the mirror or is the original file).
+          ln -sf "$SHARED" "$ETC/config.plist" 2>/dev/null || true
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
           JBCTL=""
