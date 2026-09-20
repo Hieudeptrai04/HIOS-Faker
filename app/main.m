@@ -455,14 +455,6 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                 BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
                 if (staged) chmod([stage fileSystemRepresentation], 0644);
                 [diag appendFormat:@"staged=%d path=%@\n", staged, stage];
-                // Shell diagnostics
-                const char *sh1 = "/var/jb/usr/bin/sh";
-                const char *sh2 = "/bin/sh";
-                [diag appendFormat:@"shell: /var/jb/usr/bin/sh access=%d /bin/sh access=%d\n",
-                    access(sh1, X_OK), access(sh2, X_OK)];
-                // Quick ci_run test
-                int testRc = ci_run("echo ok 2>/dev/null");
-                [diag appendFormat:@"ci_run test='echo ok' rc=%d\n", testRc];
                 NSLog(@"[ChangeInfoIos] save S7 staged: %@ path=%@", staged ? @"OK" : @"FAIL", stage);
                 if (staged) {
                     NSUInteger s7ok = 0, s7fail = 0;
@@ -472,8 +464,14 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                         [diag appendFormat:@"%@ -> container=%@\n", bid,
                             container.length ? container : @"(nil)"];
                         if (!container.length) { s7fail++; continue; }
-                        NSString *safeCont = [container stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                        // Build target path
+                        NSString *prefsDir = [container stringByAppendingPathComponent:@"Library/Preferences"];
+                        NSString *targetPath = [prefsDir stringByAppendingPathComponent:@"com.changeinfoios.plist"];
+                        // Ensure dir exists
+                        mkdir([prefsDir fileSystemRepresentation], 0755);
+                        // Try ci_run cp first (works when shell is accessible)
                         NSString *safeStage = [stage stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                        NSString *safeCont = [container stringByReplacingOccurrencesOfString:@"'" withString:@""];
                         NSString *cmd = [NSString stringWithFormat:
                             @"mkdir -p '%@/Library/Preferences' 2>/dev/null; "
                             @"cp -f '%@' '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null && "
@@ -481,10 +479,30 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                             safeCont, safeStage, safeCont, safeCont];
                         int rc = ci_run([cmd UTF8String]);
                         BOOL ok = (rc == 0);
+                        // Fallback: direct C write if posix_spawn unavailable (roothide sandbox)
+                        if (!ok) {
+                            int fd = open([targetPath fileSystemRepresentation],
+                                          O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                            if (fd >= 0) {
+                                ssize_t w = write(fd, mirrorBin.bytes, mirrorBin.length);
+                                close(fd);
+                                ok = (w == (ssize_t)mirrorBin.length);
+                                [diag appendFormat:@"  C-write fd=%d wrote=%zd/%lu %@\n",
+                                    fd, w, (unsigned long)mirrorBin.length, ok ? @"OK" : @"FAIL"];
+                            } else {
+                                [diag appendFormat:@"  C-write open FAIL errno=%d (%s)\n",
+                                    errno, strerror(errno)];
+                            }
+                        }
+                        // Fallback 2: Cocoa NSData writeToFile (unlikely to work cross-container)
+                        if (!ok) {
+                            ok = [mirrorBin writeToFile:targetPath atomically:YES];
+                            [diag appendFormat:@"  Cocoa-write %@\n", ok ? @"OK" : @"FAIL"];
+                        }
                         if (ok) s7ok++; else s7fail++;
-                        [diag appendFormat:@"  cp rc=%d %@\n", rc, ok ? @"OK" : @"FAIL"];
-                        NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ rc=%d (%@/Library/Preferences/)",
-                              bid, ok ? @"OK" : @"FAIL", rc, container);
+                        [diag appendFormat:@"  final: %@ rc=%d\n", ok ? @"OK" : @"FAIL", rc];
+                        NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@/Library/Preferences/)",
+                              bid, ok ? @"OK" : @"FAIL", container);
                         if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
                     }
                     [diag appendFormat:@"S7 summary: ok=%lu fail=%lu\n",
