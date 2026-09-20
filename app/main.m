@@ -10198,6 +10198,38 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
                 zContainerPath = nil;
         }
         if (!zBundlePath) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+            SEL dwSel = @selector(defaultWorkspace);
+            if (wsClass && [wsClass respondsToSelector:dwSel]) {
+                id ws = [wsClass performSelector:dwSel];
+                SEL allSel = @selector(allInstalledApplications);
+                id apps = [ws respondsToSelector:allSel] ? [ws performSelector:allSel] : nil;
+                if ([apps isKindOfClass:[NSArray class]]) {
+                    for (id app in (NSArray *)apps) {
+                        id bid = [app respondsToSelector:@selector(bundleIdentifier)]
+                            ? [app performSelector:@selector(bundleIdentifier)] : nil;
+                        if (![bid isKindOfClass:[NSString class]] ||
+                            ![(NSString *)bid isEqualToString:kZaloBID]) continue;
+                        id burl = [app respondsToSelector:@selector(bundleURL)]
+                            ? [app performSelector:@selector(bundleURL)] : nil;
+                        NSString *p = [burl respondsToSelector:@selector(path)] ? [burl path] : nil;
+                        if (p.length && [fm fileExistsAtPath:p])
+                            { zBundlePath = p; break; }
+                        if (!zContainerPath) {
+                            id curl = [app respondsToSelector:@selector(dataContainerURL)]
+                                ? [app performSelector:@selector(dataContainerURL)] : nil;
+                            NSString *cp = [curl respondsToSelector:@selector(path)] ? [curl path] : nil;
+                            if (cp.length && ci_directoryExistsAtPath(cp))
+                                zContainerPath = cp;
+                        }
+                    }
+                }
+            }
+#pragma clang diagnostic pop
+        }
+        if (!zBundlePath) {
             NSString *bundleRoot = @"/var/containers/Bundle/Application";
             NSArray *uuids = [fm contentsOfDirectoryAtPath:bundleRoot error:nil];
             for (NSString *uuid in uuids) {
