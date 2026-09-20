@@ -455,6 +455,14 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                 BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
                 if (staged) chmod([stage fileSystemRepresentation], 0644);
                 [diag appendFormat:@"staged=%d path=%@\n", staged, stage];
+                // Shell diagnostics
+                const char *sh1 = "/var/jb/usr/bin/sh";
+                const char *sh2 = "/bin/sh";
+                [diag appendFormat:@"shell: /var/jb/usr/bin/sh access=%d /bin/sh access=%d\n",
+                    access(sh1, X_OK), access(sh2, X_OK)];
+                // Quick ci_run test
+                int testRc = ci_run("echo ok 2>/dev/null");
+                [diag appendFormat:@"ci_run test='echo ok' rc=%d\n", testRc];
                 NSLog(@"[ChangeInfoIos] save S7 staged: %@ path=%@", staged ? @"OK" : @"FAIL", stage);
                 if (staged) {
                     NSUInteger s7ok = 0, s7fail = 0;
@@ -3058,7 +3066,11 @@ static int ci_run(const char *cmd) {
     if (access(shell, X_OK) != 0) shell = "/bin/sh";
     const char *argv[] = {shell, "-c", cmd, NULL};
     int rc = posix_spawn(&pid, shell, NULL, NULL, (char *const *)argv, envp);
-    if (rc != 0) return -1;
+    if (rc != 0) {
+        NSLog(@"[ChangeInfoIos] ci_run posix_spawn FAIL rc=%d errno=%d (%s) shell=%s access=%d cmd=%.80s",
+              rc, errno, strerror(errno), shell, access(shell, X_OK), cmd);
+        return -1;
+    }
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return -1;
     if (!WIFEXITED(status))
