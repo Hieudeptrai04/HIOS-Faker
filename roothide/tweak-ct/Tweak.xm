@@ -120,6 +120,12 @@ static NSDictionary *ci_cfprefsConfig(void) {
 static void reloadConfig(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     if (!d) {
+        NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Preferences/com.changeinfoios.plist"];
+        d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
+        if (d) NSLog(@"[ChangeInfoIos-CT] config: using in-container prefs (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
         d = ci_cfprefsConfig();
         if (d) NSLog(@"[ChangeInfoIos-CT] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
     }

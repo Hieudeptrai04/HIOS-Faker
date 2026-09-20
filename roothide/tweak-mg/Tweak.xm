@@ -369,6 +369,12 @@ static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     if (!d) {
+        NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Preferences/com.changeinfoios.plist"];
+        d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
+        if (d) NSLog(@"[ChangeInfoIos-MG] config: using in-container prefs (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
         d = ci_cfprefsConfig();
         if (d) NSLog(@"[ChangeInfoIos-MG] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
     }
@@ -4369,10 +4375,14 @@ static void notify_cb(int t) {
                     kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
                 long cfpCount = ks ? (long)CFArrayGetCount(ks) : -1;
                 if (ks) CFRelease(ks);
+                NSString *inContainerPath = [NSHomeDirectory() stringByAppendingPathComponent:
+                    @"Library/Preferences/com.changeinfoios.plist"];
                 NSString *diag = [NSString stringWithFormat:
                     @"loaded=1 t=%ld pid=%d proc=%s\n"
                     @"kConfigPath=%@\n"
                     @"cfgPath_exists=%d\n"
+                    @"inContainer=%@\n"
+                    @"inContainer_exists=%d\n"
                     @"sharedPrefs_exists=%d\n"
                     @"cfprefs_keys=%ld\n"
                     @"g_config_count=%lu\n"
@@ -4381,6 +4391,8 @@ static void notify_cb(int t) {
                     (long)time(NULL), getpid(), g_procname,
                     kConfigPath,
                     [[NSFileManager defaultManager] fileExistsAtPath:kConfigPath],
+                    inContainerPath,
+                    [[NSFileManager defaultManager] fileExistsAtPath:inContainerPath],
                     [[NSFileManager defaultManager] fileExistsAtPath:
                         @"/var/mobile/Library/Preferences/com.changeinfoios.plist"],
                     cfpCount,

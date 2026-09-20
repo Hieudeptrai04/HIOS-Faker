@@ -108,6 +108,8 @@ static NSString *CIRRSDir(void) {
 }
 #define kRRSDir CIRRSDir()
 
+static NSString *ci_findDataContainerForBundle(NSString *bundleID);
+
 // ============================================================
 // CONFIG MANAGER
 // ============================================================
@@ -419,6 +421,37 @@ static NSString *CIRRSDir(void) {
         }
     } @catch (NSException *e) {
         NSLog(@"[ChangeInfoIos] save sandbox mirror exception: %@", e);
+    }
+
+    // Strategy 7: deploy mirror INTO each target app's data container.
+    // On roothide the tweak runs inside the target's sandbox — it can ONLY
+    // read files within that container. Strategies 1-6 write outside the
+    // sandbox so the tweak gets nothing. This copies the mirror plist into
+    // <container>/Library/Preferences/com.changeinfoios.plist for each
+    // target bundle, where the tweak can read it via NSHomeDirectory().
+    {
+        NSArray *targets = _cfg[@"targetBundles"];
+        if ([targets isKindOfClass:[NSArray class]]) {
+            NSData *mirrorBin = [NSPropertyListSerialization
+                dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
+                             options:0 error:nil];
+            if (mirrorBin) {
+                NSFileManager *fm = [NSFileManager defaultManager];
+                for (NSString *bid in targets) {
+                    if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
+                    NSString *container = ci_findDataContainerForBundle(bid);
+                    if (!container.length) continue;
+                    NSString *prefsDir = [container stringByAppendingPathComponent:@"Library/Preferences"];
+                    [fm createDirectoryAtPath:prefsDir withIntermediateDirectories:YES
+                                  attributes:nil error:nil];
+                    NSString *dst = [prefsDir stringByAppendingPathComponent:@"com.changeinfoios.plist"];
+                    BOOL ok = [mirrorBin writeToFile:dst options:NSDataWritingAtomic error:nil];
+                    if (ok) chmod([dst fileSystemRepresentation], 0644);
+                    NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@)", bid, ok ? @"OK" : @"FAIL", dst);
+                    if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
+                }
+            }
+        }
     }
 
     [self notifyReload];
