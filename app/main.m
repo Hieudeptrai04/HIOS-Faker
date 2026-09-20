@@ -449,18 +449,12 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                              options:0 error:nil];
             [diag appendFormat:@"mirrorBin=%lu\n", (unsigned long)mirrorBin.length];
             if (mirrorBin) {
-                NSString *stage = @"/tmp/ci_s7_mirror.plist";
+                // Stage inside own container — /tmp writeToFile: fails on roothide.
+                NSString *stage = [NSString stringWithFormat:@"%@/Documents/ci_s7_mirror.plist",
+                    NSHomeDirectory()];
                 BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
-                if (staged) chmod("/tmp/ci_s7_mirror.plist", 0644);
-                [diag appendFormat:@"staged=%d\n", staged];
-                if (!staged) {
-                    // Fallback: stage inside own container
-                    stage = [NSString stringWithFormat:@"%@/Documents/ci_s7_mirror.plist",
-                        NSHomeDirectory()];
-                    staged = [mirrorBin writeToFile:stage atomically:YES];
-                    if (staged) chmod([stage fileSystemRepresentation], 0644);
-                    [diag appendFormat:@"staged_fallback=%d path=%@\n", staged, stage];
-                }
+                if (staged) chmod([stage fileSystemRepresentation], 0644);
+                [diag appendFormat:@"staged=%d path=%@\n", staged, stage];
                 NSLog(@"[ChangeInfoIos] save S7 staged: %@ path=%@", staged ? @"OK" : @"FAIL", stage);
                 if (staged) {
                     NSUInteger s7ok = 0, s7fail = 0;
@@ -13023,10 +13017,10 @@ static UIViewController *ci_topVC(UIViewController *root) {
         // existing spoof config keeps working right after an update.
         [[CILicenseManager shared] writeTweakToken];
         // Deploy current config to all target app containers (S7) on launch.
-        // On roothide the app can't push config outside its sandbox except via
-        // ci_run cp in save(). If the app was killed before S7 ran, target apps
-        // would have stale config. This ensures every launch syncs.
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Delayed 5s: posix_spawn (ci_run) fails at immediate launch on roothide
+        // because the jailbreak sandbox relaxation isn't active yet.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+            dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             [[CIConfigManager shared] save];
         });
         // fresh online recheck to catch server-side revoke/expire → kick out
