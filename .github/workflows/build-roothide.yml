@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-mg
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64e"
+          make package FINALPACKAGE=1 ARCHS="arm64"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-ct
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64e"
+          make package FINALPACKAGE=1 ARCHS="arm64"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -84,7 +84,7 @@ jobs:
           set -euo pipefail
           cd app
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
+          make package FINALPACKAGE=1 ARCHS="arm64"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -237,7 +237,7 @@ jobs:
           Package: com.changeinfoios.v3
           Name: HIOS Faker v3 (Roothide)
           Version: ${VERSION}
-          Architecture: iphoneos-arm64e
+          Architecture: iphoneos-arm64
           Description: HIOS Faker v3 for Roothide jailbreak. MobileGestalt + CoreTelephony device-spoof injected into selected apps. Requires roothide bootstrap (opa334).
           Maintainer: ChangeInfoIos
           Author: @houselis
@@ -247,7 +247,7 @@ jobs:
           EOF
 
           mkdir -p out
-          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3-roothide_${VERSION}_iphoneos-arm64e.deb"
+          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3-roothide_${VERSION}_iphoneos-arm64.deb"
           echo "=== combined deb ==="
           ls -lh out/
           dpkg-deb -I out/*.deb
