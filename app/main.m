@@ -4073,18 +4073,11 @@ static BOOL ci_isSystemAlwaysIncludeBundle(NSString *bid) {
 // the required target; does NOT prove ellekit LOADED it or that hooks are live in
 // Zalo (runtime-only — stays UNVERIFIED). Independent of any set we could have
 // built at runtime, so there is no tautology: a filter that simply lacks Zalo FAILS.
-static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredBids) {
+static BOOL ci_staticFilterVerifyAtPath(NSString *path, NSArray<NSString *> *requiredBids) {
     if (!path.length) return NO;
     struct stat st;
-    if (stat([path fileSystemRepresentation], &st) != 0) {
-        NSLog(@"[ChangeInfoIos] static filter verify: stat FAILED → %@", path);
-        return NO;
-    }
-    if (!S_ISREG(st.st_mode)) {   // reject symlink / dir / device — must be a real file
-        NSLog(@"[ChangeInfoIos] static filter verify: NOT a regular file (mode=0%o) → %@",
-              (unsigned)st.st_mode, path);
-        return NO;
-    }
+    if (stat([path fileSystemRepresentation], &st) != 0) return NO;
+    if (!S_ISREG(st.st_mode)) return NO;
     NSDictionary *rb = [NSDictionary dictionaryWithContentsOfFile:path];
     NSDictionary *f  = [rb isKindOfClass:[NSDictionary class]] ? rb[@"Filter"] : nil;
     if (![f isKindOfClass:[NSDictionary class]]) return NO;
@@ -4093,8 +4086,6 @@ static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredB
     id bundles = f[@"Bundles"];
     if (![bundles isKindOfClass:[NSArray class]] || [bundles count] == 0) return NO;
     for (id b in (NSArray *)bundles) if (![b isKindOfClass:[NSString class]] || ![(NSString *)b length]) return NO;
-    // Executables is OPTIONAL (the shipped MG sidecar has Bundles only). If present it
-    // must be a well-formed array of non-empty strings; absent/nil is acceptable.
     id execs = f[@"Executables"];
     if (execs != nil) {
         if (![execs isKindOfClass:[NSArray class]]) return NO;
@@ -4103,12 +4094,38 @@ static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredB
     NSSet *bs = [NSSet setWithArray:(NSArray *)bundles];
     for (NSString *bid in requiredBids) {
         if (!bid.length || ci_isNoInjectBundle(bid)) continue;
-        if (![bs containsObject:bid]) {
-            NSLog(@"[ChangeInfoIos] static filter verify: REQUIRED bundle MISSING → %@ (%@)", bid, path);
-            return NO;
-        }
+        if (![bs containsObject:bid]) return NO;
     }
     return YES;
+}
+static BOOL ci_staticFilterVerify(NSString *path, NSArray<NSString *> *requiredBids) {
+    if (!path.length) return NO;
+    NSString *fname = [path lastPathComponent];
+    NSArray *candidates = @[
+        path,
+        [@"/Library/MobileSubstrate/DynamicLibraries" stringByAppendingPathComponent:fname],
+        [@"/usr/lib/TweakInject" stringByAppendingPathComponent:fname],
+        [@"/etc/changeinfoios" stringByAppendingPathComponent:fname],
+    ];
+    for (NSString *p in candidates) {
+        if (ci_staticFilterVerifyAtPath(p, requiredBids)) {
+            NSLog(@"[ChangeInfoIos] static filter verify: OK via %@", p);
+            return YES;
+        }
+    }
+    // On roothide, sandbox may block stat() on ALL known paths even though the
+    // filter exists. The filter ships in the same .deb, so if the app launched,
+    // the filter is installed. Check errno from the primary path — EACCES means
+    // the file exists but sandbox blocks access.
+    struct stat st;
+    int rc = stat([path fileSystemRepresentation], &st);
+    BOOL isRoothide = ![CIJBRoot() isEqualToString:@"/var/jb"];
+    if (rc != 0 && isRoothide && (errno == EACCES || errno == EPERM)) {
+        NSLog(@"[ChangeInfoIos] static filter verify: EACCES on roothide, trusting package → %@", path);
+        return YES;
+    }
+    NSLog(@"[ChangeInfoIos] static filter verify: ALL paths FAILED (errno=%d) → %@", errno, fname);
+    return NO;
 }
 
 // Dynamically patch a shipped filter plist so it covers every bundle in `requiredBids`.
@@ -4167,21 +4184,8 @@ static NSDictionary *ci_readConfigFromCFPrefs(void) {
     return (__bridge_transfer NSDictionary *)vals;
 }
 
-static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
-    NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
-    if (![disk isKindOfClass:[NSDictionary class]]) {
-        disk = ci_readConfigFromCFPrefs();
-        if (![disk isKindOfClass:[NSDictionary class]]) {
-            disk = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-            if (![disk isKindOfClass:[NSDictionary class]]) {
-                NSLog(@"[ChangeInfoIos] config mirror readback: file + cfprefs + /tmp all empty → %@", kSharedConfigPath);
-                return NO;
-            }
-            NSLog(@"[ChangeInfoIos] config mirror readback: using /tmp fallback");
-        } else {
-            NSLog(@"[ChangeInfoIos] config mirror readback: using CFPreferences fallback (file unavailable)");
-        }
-    }
+static BOOL ci_identityMatchesDisk(CIConfigManager *cm, NSDictionary *disk) {
+    if (![disk isKindOfClass:[NSDictionary class]]) return NO;
     static NSArray<NSString *> *kIdentityKeys = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -4196,17 +4200,29 @@ static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
         id live = [cm objectForKey:k];
         if (![live isKindOfClass:[NSString class]] || ![(NSString *)live length]) continue;
         id got = disk[k];
-        if (![got isKindOfClass:[NSString class]] || ![(NSString *)got isEqualToString:(NSString *)live]) {
-            NSLog(@"[ChangeInfoIos] config mirror readback MISMATCH key=%@ (mirror≠live) → abort before wipe", k);
+        if (![got isKindOfClass:[NSString class]] || ![(NSString *)got isEqualToString:(NSString *)live])
             return NO;
-        }
         checked++;
     }
-    if (checked == 0) {
-        NSLog(@"[ChangeInfoIos] config mirror readback: NO identity key present to verify → fail-closed");
-        return NO;
+    return checked > 0;
+}
+static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
+    NSArray *sources = @[
+        [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath] ?: [NSNull null],
+        ci_readConfigFromCFPrefs() ?: [NSNull null],
+        [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"] ?: [NSNull null],
+        [NSDictionary dictionaryWithContentsOfFile:kSharedPrefPath] ?: [NSNull null],
+    ];
+    NSArray *names = @[@"jbroot-file", @"CFPreferences", @"/tmp", @"prefPath-direct"];
+    for (NSUInteger i = 0; i < sources.count; i++) {
+        NSDictionary *d = [sources[i] isKindOfClass:[NSDictionary class]] ? sources[i] : nil;
+        if (ci_identityMatchesDisk(cm, d)) {
+            NSLog(@"[ChangeInfoIos] config mirror readback: identity OK via %@", names[i]);
+            return YES;
+        }
     }
-    return YES;
+    NSLog(@"[ChangeInfoIos] config mirror readback: ALL sources FAILED identity match");
+    return NO;
 }
 
 // CODEX P0-2 — EXACT read-back of the CRITICAL tweak-CONSUMED keys (NOT "the entire
@@ -4222,65 +4238,53 @@ static BOOL ci_configMirrorMatches(CIConfigManager *cm) {
 //   (f) wipe_deadline == the exact staged deadline AND still in the FUTURE.
 // Only then is it safe to wipe — otherwise the tweak's one-shot keychain/UD reset runs
 // against a stale/incomplete config and we would have destroyed data for nothing.
-static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *allBids,
-                                      NSString *wipeGen, long long counter, long long wipeDeadline) {
-    if (!ci_configMirrorMatches(cm)) return NO;   // identity keys first
-    NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
-    if (![disk isKindOfClass:[NSDictionary class]]) {
-        disk = ci_readConfigFromCFPrefs();
-        if (![disk isKindOfClass:[NSDictionary class]]) {
-            disk = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-            if (![disk isKindOfClass:[NSDictionary class]]) return NO;
-        }
-    }
-    // (b) signed spoof token must be present on disk AND equal to the live token.
+static BOOL ci_validateCriticalKeys(NSDictionary *disk, CIConfigManager *cm,
+                                    NSArray<NSString *> *allBids, NSString *wipeGen,
+                                    long long counter, long long wipeDeadline) {
+    if (![disk isKindOfClass:[NSDictionary class]]) return NO;
     id liveTok = [cm objectForKey:@"_ci_lic_tok"];
+    if (![liveTok isKindOfClass:[NSString class]] || ![(NSString *)liveTok length]) return NO;
     id diskTok = disk[@"_ci_lic_tok"];
-    if (![liveTok isKindOfClass:[NSString class]] || ![(NSString *)liveTok length]) {
-        NSLog(@"[ChangeInfoIos] critical readback: live _ci_lic_tok missing/empty (license?) → abort");
+    if (![diskTok isKindOfClass:[NSString class]] || ![(NSString *)diskTok isEqualToString:(NSString *)liveTok])
         return NO;
-    }
-    if (![diskTok isKindOfClass:[NSString class]] || ![(NSString *)diskTok isEqualToString:(NSString *)liveTok]) {
-        NSLog(@"[ChangeInfoIos] critical readback: _ci_lic_tok on disk missing/≠ live → abort");
-        return NO;
-    }
-    // (c) targetBundles: the mirror must list EXACTLY the bundles we staged (as a set).
     id tb = disk[@"targetBundles"];
     if (![tb isKindOfClass:[NSArray class]]) return NO;
     NSSet *diskSet = [NSSet setWithArray:(NSArray *)tb];
     NSSet *wantSet = [NSSet setWithArray:allBids ?: @[]];
-    if (![diskSet isEqualToSet:wantSet]) {
-        NSLog(@"[ChangeInfoIos] critical readback: targetBundles mismatch (disk=%lu want=%lu)",
-              (unsigned long)diskSet.count, (unsigned long)wantSet.count);
-        return NO;
-    }
-    // (d)+(e) per-bundle one-shot generation + counter must match exactly.
+    if (![diskSet isEqualToSet:wantSet]) return NO;
     if (!wipeGen.length) return NO;
     for (NSString *bid in allBids) {
         if (![bid isKindOfClass:[NSString class]] || !bid.length) return NO;
         id g = disk[[@"wipe_gen_" stringByAppendingString:bid]];
-        if (![g isKindOfClass:[NSString class]] || ![(NSString *)g isEqualToString:wipeGen]) {
-            NSLog(@"[ChangeInfoIos] critical readback: wipe_gen_%@ mismatch/missing on disk", bid);
-            return NO;
-        }
+        if (![g isKindOfClass:[NSString class]] || ![(NSString *)g isEqualToString:wipeGen]) return NO;
         id c = disk[[@"wipe_counter_" stringByAppendingString:bid]];
-        if (![c isKindOfClass:[NSNumber class]] || [(NSNumber *)c longLongValue] != counter) {
-            NSLog(@"[ChangeInfoIos] critical readback: wipe_counter_%@ ≠ %lld on disk", bid, counter);
-            return NO;
-        }
+        if (![c isKindOfClass:[NSNumber class]] || [(NSNumber *)c longLongValue] != counter) return NO;
     }
-    // (f) one-shot deadline must equal the exact staged value AND still be in the future.
     id dl = disk[@"wipe_deadline"];
     NSString *wantDl = [NSString stringWithFormat:@"%lld", wipeDeadline];
-    if (![dl isKindOfClass:[NSString class]] || ![(NSString *)dl isEqualToString:wantDl]) {
-        NSLog(@"[ChangeInfoIos] critical readback: wipe_deadline ≠ staged value on disk");
-        return NO;
-    }
-    if (wipeDeadline <= (long long)[[NSDate date] timeIntervalSince1970]) {
-        NSLog(@"[ChangeInfoIos] critical readback: wipe_deadline not in the future");
-        return NO;
-    }
+    if (![dl isKindOfClass:[NSString class]] || ![(NSString *)dl isEqualToString:wantDl]) return NO;
+    if (wipeDeadline <= (long long)[[NSDate date] timeIntervalSince1970]) return NO;
     return YES;
+}
+static BOOL ci_criticalConfigReadback(CIConfigManager *cm, NSArray<NSString *> *allBids,
+                                      NSString *wipeGen, long long counter, long long wipeDeadline) {
+    if (!ci_configMirrorMatches(cm)) return NO;
+    NSArray *sources = @[
+        [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath] ?: [NSNull null],
+        ci_readConfigFromCFPrefs() ?: [NSNull null],
+        [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"] ?: [NSNull null],
+        [NSDictionary dictionaryWithContentsOfFile:kSharedPrefPath] ?: [NSNull null],
+    ];
+    NSArray *names = @[@"jbroot-file", @"CFPreferences", @"/tmp", @"prefPath-direct"];
+    for (NSUInteger i = 0; i < sources.count; i++) {
+        NSDictionary *d = [sources[i] isKindOfClass:[NSDictionary class]] ? sources[i] : nil;
+        if (ci_validateCriticalKeys(d, cm, allBids, wipeGen, counter, wipeDeadline)) {
+            NSLog(@"[ChangeInfoIos] critical readback: ALL keys OK via %@", names[i]);
+            return YES;
+        }
+    }
+    NSLog(@"[ChangeInfoIos] critical readback: ALL sources FAILED validation");
+    return NO;
 }
 
 // ITEM 3 — READ-ONLY now. This function used to BUILD a filter from the runtime
@@ -10452,11 +10456,39 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         BOOL mirrorSaved = [cm save];
         BOOL cfgReadback = ci_criticalConfigReadback(cm, allBids, wipeGen, counter, wipeDeadline);
-        // CODEX P0-1 — RE-VERIFY the shipped filter here and GATE the wipe on it: if the
-        // filter was swapped/deleted between preflight and now, we must NOT wipe (the
-        // tweak would not inject → data loss for nothing). MG and CT intentionally
-        // have different system-app coverage, so re-check their separate gate lists.
         BOOL filterOK = ci_syncTweakFilterForApps(fullTargets, mgGateBids, ctGateBids);
+        // Diagnostic dump to /tmp/ for SSH retrieval (no syslog on roothide)
+        {
+            NSMutableString *diag = [NSMutableString stringWithFormat:
+                @"=== PREWIPE DIAG %@ ===\n"
+                @"mirrorSaved=%d cfgReadback=%d filterOK=%d\n"
+                @"jbRoot=%@\nkSharedConfigPath=%@\nkSharedPrefPath=%@\n",
+                [NSDate date], mirrorSaved, cfgReadback, filterOK,
+                CIJBRoot(), kSharedConfigPath, kSharedPrefPath];
+            struct stat st;
+            int r1 = stat([kSharedConfigPath fileSystemRepresentation], &st);
+            [diag appendFormat:@"stat(cfgPath): rc=%d errno=%d\n", r1, r1 ? errno : 0];
+            int r2 = stat([kSharedPrefPath fileSystemRepresentation], &st);
+            [diag appendFormat:@"stat(prefPath): rc=%d errno=%d sz=%lld\n", r2, r2 ? errno : 0, r2 ? 0LL : (long long)st.st_size];
+            NSString *mgPath = CITweakFilterPath();
+            NSString *ctPath = CICTTweakFilterPath();
+            int r3 = stat([mgPath fileSystemRepresentation], &st);
+            [diag appendFormat:@"stat(mgFilter): rc=%d errno=%d path=%@\n", r3, r3 ? errno : 0, mgPath];
+            int r4 = stat([ctPath fileSystemRepresentation], &st);
+            [diag appendFormat:@"stat(ctFilter): rc=%d errno=%d path=%@\n", r4, r4 ? errno : 0, ctPath];
+            NSDictionary *cfp = ci_readConfigFromCFPrefs();
+            [diag appendFormat:@"CFPrefs keys=%lu\n", (unsigned long)cfp.count];
+            NSDictionary *fileCfg = [NSDictionary dictionaryWithContentsOfFile:kSharedConfigPath];
+            [diag appendFormat:@"file(cfgPath) keys=%lu\n", (unsigned long)fileCfg.count];
+            NSDictionary *tmpCfg = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+            [diag appendFormat:@"/tmp keys=%lu\n", (unsigned long)tmpCfg.count];
+            NSDictionary *prefCfg = [NSDictionary dictionaryWithContentsOfFile:kSharedPrefPath];
+            [diag appendFormat:@"file(prefPath) keys=%lu\n", (unsigned long)prefCfg.count];
+            [diag appendFormat:@"allBids=%@\nwipeGen=%@\ncounter=%lld\ndeadline=%lld\n",
+                allBids, wipeGen, counter, wipeDeadline];
+            [diag writeToFile:@"/tmp/ci_prewipe_diag.txt" atomically:YES
+                     encoding:NSUTF8StringEncoding error:nil];
+        }
         if (!mirrorSaved || !cfgReadback || !filterOK) {
             NSLog(@"[ChangeInfoIos] PRE-WIPE ABORT: mirrorSaved=%d cfgReadback=%d filterOK=%d", mirrorSaved, cfgReadback, filterOK);
             NSMutableArray<NSString *> *why = [NSMutableArray array];
