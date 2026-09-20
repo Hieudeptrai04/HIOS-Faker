@@ -419,11 +419,17 @@ static void reloadConfig(void) {
     NSString *proc = [[NSProcessInfo processInfo] processName] ?: @"?";
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
     NSString *diag = [NSString stringWithFormat:
-        @"%@ pid=%d bid=%s src=%s keys=%lu pt=%@ lic=%d target=%d hide=%d\n",
+        @"%@ pid=%d bid=%s src=%s keys=%lu pt=%@ lic=%d target=%d hide=%d ts=%ld\n",
         proc, getpid(), [bid UTF8String], src,
-        (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK, hideJB];
-    NSString *diagPath = [NSString stringWithFormat:@"/tmp/ci_mg_%@.txt", bid];
-    [diag writeToFile:diagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK, hideJB, (long)time(NULL)];
+    // Try multiple locations — sandbox may block some
+    for (NSString *dir in @[@"/var/mobile/Library/Preferences",
+                            @"/tmp",
+                            NSTemporaryDirectory() ?: @"/tmp"]) {
+        NSString *p = [dir stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"ci_mg_%@.txt", bid]];
+        if ([diag writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil]) break;
+    }
 }
 
 static inline NSDictionary *cfg(void) {
