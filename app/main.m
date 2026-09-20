@@ -10186,7 +10186,44 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         if (LSAppProxyCls && [LSAppProxyCls respondsToSelector:@selector(applicationProxyForIdentifier:)])
             px = [LSAppProxyCls performSelector:@selector(applicationProxyForIdentifier:) withObject:kZaloBID];
         if (!px) {
-            [missing addObject:@"LSApplicationProxy nil (Zalo chưa cài / class không nạp / không resolve)"];
+            // LSApplicationProxy nil — on roothide sandbox this is common.
+            // Filesystem fallback: scan Bundle/Application for the .app and
+            // use ci_findDataContainerForBundle for the data container.
+            NSString *bundleRoot = @"/var/containers/Bundle/Application";
+            NSArray *uuids = [fm contentsOfDirectoryAtPath:bundleRoot error:nil];
+            NSArray *appNames = @[@"Zalo.app", @"ZaloiOS.app"];
+            for (NSString *uuid in uuids) {
+                if (zBundlePath) break;
+                for (NSString *an in appNames) {
+                    NSString *candidate = [[bundleRoot stringByAppendingPathComponent:uuid] stringByAppendingPathComponent:an];
+                    BOOL isDir = NO;
+                    if ([fm fileExistsAtPath:candidate isDirectory:&isDir] && isDir) {
+                        zBundlePath = candidate; break;
+                    }
+                }
+            }
+            if (!zBundlePath) {
+                NSString *outFile = [NSString stringWithFormat:@"/tmp/ci_zalo_%@.txt", [[NSUUID UUID] UUIDString]];
+                ci_run([[NSString stringWithFormat:
+                    @"find /var/containers/Bundle/Application -maxdepth 2 \\( -name Zalo.app -o -name ZaloiOS.app \\) -type d 2>/dev/null | head -1 > '%@'",
+                    outFile] UTF8String]);
+                NSString *found = [[NSString stringWithContentsOfFile:outFile encoding:NSUTF8StringEncoding error:nil]
+                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                [fm removeItemAtPath:outFile error:nil];
+                if (found.length && [fm fileExistsAtPath:found]) zBundlePath = found;
+            }
+            zContainerPath = ci_findDataContainerForBundle(kZaloBID);
+            if (!zBundlePath)
+                [missing addObject:@"Zalo.app bundle không tìm thấy (LSProxy nil + filesystem scan fail)"];
+            else {
+                NSString *execPath = [[NSBundle bundleWithPath:zBundlePath] executablePath];
+                if (!execPath.length || ![fm fileExistsAtPath:execPath])
+                    [missing addObject:@"main executable không tồn tại"];
+            }
+            if (!zContainerPath)
+                [missing addObject:@"data container không tồn tại (LSProxy nil + filesystem scan fail)"];
+            if (zBundlePath && zContainerPath)
+                NSLog(@"[ChangeInfoIos] preflight: Zalo resolved via filesystem fallback: bundle=%@ container=%@", zBundlePath, zContainerPath);
         } else {
             NSString *rid = [px respondsToSelector:@selector(bundleIdentifier)]
                 ? [px performSelector:@selector(bundleIdentifier)] : nil;
