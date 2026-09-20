@@ -357,6 +357,7 @@ static NSString *boardConfigForProductType(NSString *pt) {
 
 static NSDictionary *ci_cfprefsConfig(void) {
     CFStringRef appID = CFSTR("com.changeinfoios");
+    CFPreferencesAppSynchronize(appID);
     CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (!keys) return nil;
     CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
