@@ -369,14 +369,14 @@ static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
     if (!d) {
+        d = ci_cfprefsConfig();
+        if (d) NSLog(@"[ChangeInfoIos-MG] config: using CFPreferences (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
         NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
             @"Library/Preferences/com.changeinfoios.plist"];
         d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
         if (d) NSLog(@"[ChangeInfoIos-MG] config: using in-container prefs (%lu keys)", (unsigned long)d.count);
-    }
-    if (!d) {
-        d = ci_cfprefsConfig();
-        if (d) NSLog(@"[ChangeInfoIos-MG] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
     }
     if (!d) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
