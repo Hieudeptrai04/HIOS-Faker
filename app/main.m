@@ -248,19 +248,6 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
     NSLog(@"[ChangeInfoIos] save: local=%@ (%lu bytes, %lu keys)",
           localOK ? @"OK" : @"FAIL", (unsigned long)data.length, (unsigned long)_cfg.count);
 
-    // DEBUG: dump save diagnostic to /tmp/ so we can verify from SSH
-    {
-        NSString *pt = _cfg[@"ProductType"] ?: @"(nil)";
-        NSString *mn = _cfg[@"MarketingName"] ?: @"(nil)";
-        NSString *localPath = CILocalConfigPath();
-        BOOL localExists = [[NSFileManager defaultManager] fileExistsAtPath:localPath];
-        NSString *dbg = [NSString stringWithFormat:
-            @"ts=%f\npt=%@\nmn=%@\nlocalPath=%@\nlocalOK=%d\nlocalExists=%d\nkeys=%lu\nbytes=%lu\nsharedPath=%@\n",
-            [[NSDate date] timeIntervalSince1970], pt, mn, localPath,
-            localOK, localExists, (unsigned long)_cfg.count, (unsigned long)data.length, kSharedPrefPath];
-        [dbg writeToFile:@"/tmp/ci_save_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-
     // Now try multiple strategies to write to shared prefs path
     NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -442,6 +429,10 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
     // sandbox so the tweak gets nothing. This copies the mirror plist into
     // <container>/Library/Preferences/com.changeinfoios.plist for each
     // target bundle, where the tweak can read it via NSHomeDirectory().
+    //
+    // CRITICAL: Cocoa writeToFile: silently FAILS across containers on
+    // roothide (same bug documented in Clear Data at v2.5.39). Use ci_run
+    // cp which posix_spawn bypasses the cross-container NSFileManager check.
     {
         NSArray *targets = _cfg[@"targetBundles"];
         if ([targets isKindOfClass:[NSArray class]]) {
@@ -449,47 +440,40 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                 dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
                              options:0 error:nil];
             if (mirrorBin) {
-                NSFileManager *fm = [NSFileManager defaultManager];
-                for (NSString *bid in targets) {
-                    if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
-                    NSString *container = ci_findDataContainerForBundle(bid);
-                    if (!container.length) continue;
-                    NSString *prefsDir = [container stringByAppendingPathComponent:@"Library/Preferences"];
-                    [fm createDirectoryAtPath:prefsDir withIntermediateDirectories:YES
-                                  attributes:nil error:nil];
-                    NSString *dst = [prefsDir stringByAppendingPathComponent:@"com.changeinfoios.plist"];
-                    NSError *s7Err = nil;
-                    BOOL ok = [mirrorBin writeToFile:dst options:NSDataWritingAtomic error:&s7Err];
-                    if (ok) chmod([dst fileSystemRepresentation], 0644);
-                    NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@) err=%@", bid, ok ? @"OK" : @"FAIL", dst, s7Err);
-                    if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
-                    // DEBUG: S7 detail to /tmp
-                    {
-                        NSString *s7d = [NSString stringWithFormat:@"S7 %@: container=%@ ok=%d err=%@\n",
-                            bid, container ?: @"(nil)", ok, s7Err ?: @"(none)"];
-                        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/ci_save_debug.txt"];
-                        [fh seekToEndOfFile];
-                        [fh writeData:[s7d dataUsingEncoding:NSUTF8StringEncoding]];
-                        [fh closeFile];
+                NSString *stage = @"/tmp/ci_s7_mirror.plist";
+                BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
+                if (staged) chmod("/tmp/ci_s7_mirror.plist", 0644);
+                NSLog(@"[ChangeInfoIos] save S7 staged to /tmp: %@", staged ? @"OK" : @"FAIL");
+                if (staged) {
+                    NSUInteger s7ok = 0, s7fail = 0;
+                    for (NSString *bid in targets) {
+                        if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
+                        NSString *container = ci_findDataContainerForBundle(bid);
+                        if (!container.length) { s7fail++; continue; }
+                        NSString *safeCont = [container stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                        NSString *cmd = [NSString stringWithFormat:
+                            @"mkdir -p '%@/Library/Preferences' 2>/dev/null; "
+                            @"cp -f '%@' '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null && "
+                            @"chmod 0644 '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null",
+                            safeCont, stage, safeCont, safeCont];
+                        int rc = ci_run([cmd UTF8String]);
+                        BOOL ok = (rc == 0);
+                        if (ok) s7ok++; else s7fail++;
+                        NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ rc=%d (%@/Library/Preferences/)",
+                              bid, ok ? @"OK" : @"FAIL", rc, container);
+                        if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
                     }
+                    NSLog(@"[ChangeInfoIos] save S7 summary: ok=%lu fail=%lu",
+                          (unsigned long)s7ok, (unsigned long)s7fail);
+                    [[NSFileManager defaultManager] removeItemAtPath:stage error:nil];
                 }
             }
         }
     }
 
-    // DEBUG: append final save result
-    {
-        NSString *pt = _cfg[@"ProductType"] ?: @"(nil)";
-        BOOL sharedExists = [[NSFileManager defaultManager] fileExistsAtPath:kSharedPrefPath];
-        NSString *dbg = [NSString stringWithFormat:
-            @"mirrorOK=%d\ncfPrefsOK=%d\nfileOK_shared=%d\nsharedExists=%d\npt_final=%@\ntargets=%@\n",
-            mirrorOK, cfPrefsOK, fileOK, sharedExists, pt,
-            _cfg[@"targetBundles"] ?: @"(nil)"];
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/ci_save_debug.txt"];
-        [fh seekToEndOfFile];
-        [fh writeData:[dbg dataUsingEncoding:NSUTF8StringEncoding]];
-        [fh closeFile];
-    }
+    // Kill cfprefsd so target apps pick up fresh plist from their container
+    // (cfprefsd caches the old domain values in memory across processes).
+    ci_run("killall -9 cfprefsd 2>/dev/null");
 
     [self notifyReload];
     return mirrorOK || cfPrefsOK;
