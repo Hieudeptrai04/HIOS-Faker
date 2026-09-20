@@ -5637,7 +5637,7 @@ static NSString *CIDeviceBanner(void) {
     struct utsname u; uname(&u);
     NSString *ver = [UIDevice currentDevice].systemVersion;
     NSString *model = [NSString stringWithUTF8String:u.machine];
-    return [NSString stringWithFormat:@"%@ (rootless, %@, %@)", kAppVersion, ver, model];
+    return [NSString stringWithFormat:@"%@ (roothide, %@, %@)", kAppVersion, ver, model];
 }
 
 // ============================================================
@@ -8870,7 +8870,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     [phoneCard addSubview:verLbl];
 
     UILabel *rootBadge = [[UILabel alloc] initWithFrame:CGRectMake(cardW-100, 16, 84, 30)];
-    rootBadge.text = @"Rootless";
+    rootBadge.text = @"Roothide";
     rootBadge.textAlignment = NSTextAlignmentCenter;
     rootBadge.font = [UIFont boldSystemFontOfSize:13];
     rootBadge.textColor = [UIColor whiteColor];
