@@ -118,27 +118,50 @@ static NSDictionary *ci_cfprefsConfig(void) {
     return (__bridge_transfer NSDictionary *)vals;
 }
 
+static long long ci_extractSaveTs(NSDictionary *d) {
+    id v = d[@"_ci_save_ts"];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v longLongValue];
+    if ([v isKindOfClass:[NSString class]]) return [(NSString *)v longLongValue];
+    return 0;
+}
+
 static void reloadConfig(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (!d) {
-        d = ci_cfprefsConfig();
-        if (d) NSLog(@"[ChangeInfoIos-CT] config: using CFPreferences (%lu keys)", (unsigned long)d.count);
+    const char *src = "none";
+    NSDictionary *best = nil;
+    long long bestTs = 0;
+
+    struct { NSDictionary *d; const char *name; } candidates[5];
+    int n = 0;
+
+    NSDictionary *d1 = ci_cfprefsConfig();
+    if (d1) candidates[n++] = (typeof(candidates[0])){d1, "CFPreferences"};
+
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (d2) candidates[n++] = (typeof(candidates[0])){d2, "kConfigPath"};
+
+    NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Preferences/com.changeinfoios.plist"];
+    NSDictionary *d3 = [NSDictionary dictionaryWithContentsOfFile:inContainer];
+    if (d3) candidates[n++] = (typeof(candidates[0])){d3, "in-container"};
+
+    NSDictionary *d4 = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
+    if (d4) candidates[n++] = (typeof(candidates[0])){d4, "direct-/var/mobile"};
+
+    NSDictionary *d5 = [NSDictionary dictionaryWithContentsOfFile:
+        @"/tmp/com.changeinfoios.config.plist"];
+    if (d5) candidates[n++] = (typeof(candidates[0])){d5, "/tmp-fallback"};
+
+    for (int i = 0; i < n; i++) {
+        long long ts = ci_extractSaveTs(candidates[i].d);
+        if (!best || ts > bestTs) {
+            best = candidates[i].d;
+            bestTs = ts;
+            src = candidates[i].name;
+        }
     }
-    if (!d) {
-        NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
-            @"Library/Preferences/com.changeinfoios.plist"];
-        d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
-        if (d) NSLog(@"[ChangeInfoIos-CT] config: using in-container prefs (%lu keys)", (unsigned long)d.count);
-    }
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
-        if (d) NSLog(@"[ChangeInfoIos-CT] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count);
-    }
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-        if (d) NSLog(@"[ChangeInfoIos-CT] config: using /tmp fallback (%lu keys)", (unsigned long)d.count);
-    }
-    if (!d) d = @{};
+
+    NSDictionary *d = best ?: @{};
     int ok = ct_computeLicOK(d);
     int targetOK = ct_targetsCurrentProcess(d);
     os_unfair_lock_lock(&g_cfgLock);
@@ -146,6 +169,9 @@ static void reloadConfig(void) {
     g_licOK = ok;
     g_targetOK = targetOK;
     os_unfair_lock_unlock(&g_cfgLock);
+
+    NSLog(@"[ChangeInfoIos-CT] config: src=%s keys=%lu ts=%lld lic=%d target=%d",
+          src, (unsigned long)d.count, bestTs, ok, targetOK);
 }
 
 static inline NSDictionary *cfg(void) {

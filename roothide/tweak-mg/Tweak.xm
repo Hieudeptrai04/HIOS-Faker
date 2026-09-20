@@ -366,30 +366,56 @@ static NSDictionary *ci_cfprefsConfig(void) {
     return (__bridge_transfer NSDictionary *)vals;
 }
 
+static long long ci_extractSaveTs(NSDictionary *d) {
+    id v = d[@"_ci_save_ts"];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v longLongValue];
+    if ([v isKindOfClass:[NSString class]]) return [(NSString *)v longLongValue];
+    return 0;
+}
+
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
     const char *src = "none";
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (d) src = "kConfigPath";
-    if (!d) {
-        d = ci_cfprefsConfig();
-        if (d) { src = "CFPreferences"; NSLog(@"[ChangeInfoIos-MG] config: using CFPreferences (%lu keys)", (unsigned long)d.count); }
+    NSDictionary *best = nil;
+    long long bestTs = 0;
+
+    // Gather all available sources and pick the one with the highest _ci_save_ts.
+    // On roothide the app can only update CFPreferences (cfprefsd brokers the
+    // write), while kConfigPath (/var/jb/etc/...) may be stale/read-only.
+    // Checking ALL sources and comparing timestamps guarantees the tweak always
+    // uses the freshest config regardless of which write channel succeeded.
+    struct { NSDictionary *d; const char *name; } candidates[5];
+    int n = 0;
+
+    NSDictionary *d1 = ci_cfprefsConfig();
+    if (d1) candidates[n++] = (typeof(candidates[0])){d1, "CFPreferences"};
+
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (d2) candidates[n++] = (typeof(candidates[0])){d2, "kConfigPath"};
+
+    NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Preferences/com.changeinfoios.plist"];
+    NSDictionary *d3 = [NSDictionary dictionaryWithContentsOfFile:inContainer];
+    if (d3) candidates[n++] = (typeof(candidates[0])){d3, "in-container"};
+
+    NSDictionary *d4 = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
+    if (d4) candidates[n++] = (typeof(candidates[0])){d4, "direct-/var/mobile"};
+
+    NSDictionary *d5 = [NSDictionary dictionaryWithContentsOfFile:
+        @"/tmp/com.changeinfoios.config.plist"];
+    if (d5) candidates[n++] = (typeof(candidates[0])){d5, "/tmp-fallback"};
+
+    for (int i = 0; i < n; i++) {
+        long long ts = ci_extractSaveTs(candidates[i].d);
+        if (!best || ts > bestTs) {
+            best = candidates[i].d;
+            bestTs = ts;
+            src = candidates[i].name;
+        }
     }
-    if (!d) {
-        NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
-            @"Library/Preferences/com.changeinfoios.plist"];
-        d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
-        if (d) { src = "in-container"; NSLog(@"[ChangeInfoIos-MG] config: using in-container prefs (%lu keys)", (unsigned long)d.count); }
-    }
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
-        if (d) { src = "direct-/var/mobile"; NSLog(@"[ChangeInfoIos-MG] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count); }
-    }
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-        if (d) { src = "/tmp-fallback"; NSLog(@"[ChangeInfoIos-MG] config: using /tmp fallback (%lu keys)", (unsigned long)d.count); }
-    }
-    if (!d) d = @{};
+
+    NSDictionary *d = best ?: @{};
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
     if (board.length) {
@@ -416,20 +442,8 @@ static void reloadConfig(void) {
     g_hideJBOn = hideJB;
     os_unfair_lock_unlock(&g_cfgLock);
 
-    NSString *proc = [[NSProcessInfo processInfo] processName] ?: @"?";
-    NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
-    NSString *diag = [NSString stringWithFormat:
-        @"%@ pid=%d bid=%s src=%s keys=%lu pt=%@ lic=%d target=%d hide=%d ts=%ld\n",
-        proc, getpid(), [bid UTF8String], src,
-        (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK, hideJB, (long)time(NULL)];
-    // Try multiple locations — sandbox may block some
-    for (NSString *dir in @[@"/var/mobile/Library/Preferences",
-                            @"/tmp",
-                            NSTemporaryDirectory() ?: @"/tmp"]) {
-        NSString *p = [dir stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"ci_mg_%@.txt", bid]];
-        if ([diag writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil]) break;
-    }
+    NSLog(@"[ChangeInfoIos-MG] config: src=%s keys=%lu pt=%@ ts=%lld lic=%d target=%d",
+          src, (unsigned long)d.count, pt ?: @"(nil)", bestTs, licOK, targetOK);
 }
 
 static inline NSDictionary *cfg(void) {

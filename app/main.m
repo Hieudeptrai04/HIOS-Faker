@@ -340,6 +340,7 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
         ];
     });
     for (NSString *k in kMirrorExclude) [mirror removeObjectForKey:k];
+    mirror[@"_ci_save_ts"] = @((long long)time(NULL));
 
     // Strategy 5: also push the target-readable subset through CFPreferences. The tweak running
     // inside an App Store app's sandbox can't read /var/mobile/Library/Prefs
@@ -423,105 +424,51 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
         NSLog(@"[ChangeInfoIos] save sandbox mirror exception: %@", e);
     }
 
-    // Strategy 7: deploy mirror INTO each target app's data container.
-    // On roothide the tweak runs inside the target's sandbox — it can ONLY
-    // read files within that container. Strategies 1-6 write outside the
-    // sandbox so the tweak gets nothing. This copies the mirror plist into
-    // <container>/Library/Preferences/com.changeinfoios.plist for each
-    // target bundle, where the tweak can read it via NSHomeDirectory().
-    //
-    // CRITICAL: Cocoa writeToFile: silently FAILS across containers on
-    // roothide (same bug documented in Clear Data at v2.5.39). Use ci_run
-    // cp which posix_spawn bypasses the cross-container NSFileManager check.
+    // Strategy 7: best-effort deploy mirror INTO each target container.
+    // On roothide kernel MAC blocks cross-container writes (EPERM); this
+    // succeeds only on rootless. The tweak now compares _ci_save_ts across
+    // ALL sources (CFPreferences, kConfigPath, in-container, etc.) and
+    // picks the freshest, so S5 (cfprefsd) is the reliable channel on
+    // roothide while S7 remains a belt-and-suspenders for rootless.
     {
-        NSString *s7log = [NSString stringWithFormat:@"%@/Documents/s7_diag.txt",
-            NSHomeDirectory()];
-        NSMutableString *diag = [NSMutableString stringWithFormat:
-            @"S7 start %@\n", [NSDate date]];
         NSArray *targets = _cfg[@"targetBundles"];
-        [diag appendFormat:@"targets=%@ class=%@\n",
-            targets, NSStringFromClass([targets class])];
-        [diag appendFormat:@"mirror keys=%lu ProductType=%@\n",
-            (unsigned long)mirror.count, mirror[@"ProductType"]];
         if ([targets isKindOfClass:[NSArray class]]) {
             NSData *mirrorBin = [NSPropertyListSerialization
                 dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
                              options:0 error:nil];
-            [diag appendFormat:@"mirrorBin=%lu\n", (unsigned long)mirrorBin.length];
             if (mirrorBin) {
-                // Stage inside own container — /tmp writeToFile: fails on roothide.
                 NSString *stage = [NSString stringWithFormat:@"%@/Documents/ci_s7_mirror.plist",
                     NSHomeDirectory()];
                 BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
-                if (staged) chmod([stage fileSystemRepresentation], 0644);
-                [diag appendFormat:@"staged=%d path=%@\n", staged, stage];
-                NSLog(@"[ChangeInfoIos] save S7 staged: %@ path=%@", staged ? @"OK" : @"FAIL", stage);
                 if (staged) {
-                    NSUInteger s7ok = 0, s7fail = 0;
+                    chmod([stage fileSystemRepresentation], 0644);
+                    NSUInteger s7ok = 0;
                     for (NSString *bid in targets) {
                         if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
                         NSString *container = ci_findDataContainerForBundle(bid);
-                        [diag appendFormat:@"%@ -> container=%@\n", bid,
-                            container.length ? container : @"(nil)"];
-                        if (!container.length) { s7fail++; continue; }
-                        // Build target path
+                        if (!container.length) continue;
                         NSString *prefsDir = [container stringByAppendingPathComponent:@"Library/Preferences"];
                         NSString *targetPath = [prefsDir stringByAppendingPathComponent:@"com.changeinfoios.plist"];
-                        // Ensure dir exists
                         mkdir([prefsDir fileSystemRepresentation], 0755);
-                        // Try ci_run cp first (works when shell is accessible)
-                        NSString *safeStage = [stage stringByReplacingOccurrencesOfString:@"'" withString:@""];
                         NSString *safeCont = [container stringByReplacingOccurrencesOfString:@"'" withString:@""];
                         NSString *cmd = [NSString stringWithFormat:
                             @"mkdir -p '%@/Library/Preferences' 2>/dev/null; "
                             @"cp -f '%@' '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null && "
                             @"chmod 0644 '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null",
-                            safeCont, safeStage, safeCont, safeCont];
-                        int rc = ci_run([cmd UTF8String]);
-                        BOOL ok = (rc == 0);
-                        // Fallback: direct C write if posix_spawn unavailable (roothide sandbox)
-                        if (!ok) {
-                            int fd = open([targetPath fileSystemRepresentation],
-                                          O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                            if (fd >= 0) {
-                                ssize_t w = write(fd, mirrorBin.bytes, mirrorBin.length);
-                                close(fd);
-                                ok = (w == (ssize_t)mirrorBin.length);
-                                [diag appendFormat:@"  C-write fd=%d wrote=%zd/%lu %@\n",
-                                    fd, w, (unsigned long)mirrorBin.length, ok ? @"OK" : @"FAIL"];
-                            } else {
-                                [diag appendFormat:@"  C-write open FAIL errno=%d (%s)\n",
-                                    errno, strerror(errno)];
-                            }
-                        }
-                        // Fallback 2: Cocoa NSData writeToFile (unlikely to work cross-container)
-                        if (!ok) {
-                            ok = [mirrorBin writeToFile:targetPath atomically:YES];
-                            [diag appendFormat:@"  Cocoa-write %@\n", ok ? @"OK" : @"FAIL"];
-                        }
-                        if (ok) s7ok++; else s7fail++;
-                        [diag appendFormat:@"  final: %@ rc=%d\n", ok ? @"OK" : @"FAIL", rc];
-                        NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@/Library/Preferences/)",
-                              bid, ok ? @"OK" : @"FAIL", container);
+                            safeCont, [stage stringByReplacingOccurrencesOfString:@"'" withString:@""],
+                            safeCont, safeCont];
+                        BOOL ok = (ci_run([cmd UTF8String]) == 0);
+                        if (!ok) ok = [mirrorBin writeToFile:targetPath atomically:YES];
+                        if (ok) s7ok++;
                         if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
                     }
-                    [diag appendFormat:@"S7 summary: ok=%lu fail=%lu\n",
-                        (unsigned long)s7ok, (unsigned long)s7fail];
-                    NSLog(@"[ChangeInfoIos] save S7 summary: ok=%lu fail=%lu",
-                          (unsigned long)s7ok, (unsigned long)s7fail);
+                    NSLog(@"[ChangeInfoIos] save S7: %lu/%lu deployed",
+                          (unsigned long)s7ok, (unsigned long)targets.count);
                     [[NSFileManager defaultManager] removeItemAtPath:stage error:nil];
                 }
             }
-        } else {
-            [diag appendString:@"SKIP: targets not NSArray\n"];
         }
-        [diag appendFormat:@"S7 end %@\n", [NSDate date]];
-        [diag writeToFile:s7log atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
-
-    // Kill cfprefsd so target apps pick up fresh plist from their container
-    // (cfprefsd caches the old domain values in memory across processes).
-    ci_run("killall -9 cfprefsd 2>/dev/null");
 
     [self notifyReload];
     return mirrorOK || cfPrefsOK;
