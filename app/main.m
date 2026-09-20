@@ -248,6 +248,19 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
     NSLog(@"[ChangeInfoIos] save: local=%@ (%lu bytes, %lu keys)",
           localOK ? @"OK" : @"FAIL", (unsigned long)data.length, (unsigned long)_cfg.count);
 
+    // DEBUG: dump save diagnostic to /tmp/ so we can verify from SSH
+    {
+        NSString *pt = _cfg[@"ProductType"] ?: @"(nil)";
+        NSString *mn = _cfg[@"MarketingName"] ?: @"(nil)";
+        NSString *localPath = CILocalConfigPath();
+        BOOL localExists = [[NSFileManager defaultManager] fileExistsAtPath:localPath];
+        NSString *dbg = [NSString stringWithFormat:
+            @"ts=%f\npt=%@\nmn=%@\nlocalPath=%@\nlocalOK=%d\nlocalExists=%d\nkeys=%lu\nbytes=%lu\nsharedPath=%@\n",
+            [[NSDate date] timeIntervalSince1970], pt, mn, localPath,
+            localOK, localExists, (unsigned long)_cfg.count, (unsigned long)data.length, kSharedPrefPath];
+        [dbg writeToFile:@"/tmp/ci_save_debug.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+
     // Now try multiple strategies to write to shared prefs path
     NSString *dir = [kSharedPrefPath stringByDeletingLastPathComponent];
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -452,6 +465,20 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                 }
             }
         }
+    }
+
+    // DEBUG: append final save result
+    {
+        NSString *pt = _cfg[@"ProductType"] ?: @"(nil)";
+        BOOL sharedExists = [[NSFileManager defaultManager] fileExistsAtPath:kSharedPrefPath];
+        NSString *dbg = [NSString stringWithFormat:
+            @"mirrorOK=%d\ncfPrefsOK=%d\nfileOK_shared=%d\nsharedExists=%d\npt_final=%@\ntargets=%@\n",
+            mirrorOK, cfPrefsOK, fileOK, sharedExists, pt,
+            _cfg[@"targetBundles"] ?: @"(nil)"];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/ci_save_debug.txt"];
+        [fh seekToEndOfFile];
+        [fh writeData:[dbg dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
     }
 
     [self notifyReload];
