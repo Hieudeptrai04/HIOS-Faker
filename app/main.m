@@ -12994,6 +12994,13 @@ static UIViewController *ci_topVC(UIViewController *root) {
         // Refresh the tweak token from the cached license immediately so the
         // existing spoof config keeps working right after an update.
         [[CILicenseManager shared] writeTweakToken];
+        // Deploy current config to all target app containers (S7) on launch.
+        // On roothide the app can't push config outside its sandbox except via
+        // ci_run cp in save(). If the app was killed before S7 ran, target apps
+        // would have stale config. This ensures every launch syncs.
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            [[CIConfigManager shared] save];
+        });
         // fresh online recheck to catch server-side revoke/expire → kick out
         [[CILicenseManager shared] recheckWithCompletion:^(BOOL ok, NSString *st) {
             if (!ok) [self showLogin];
