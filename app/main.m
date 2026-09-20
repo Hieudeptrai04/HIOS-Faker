@@ -458,10 +458,20 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
                     [fm createDirectoryAtPath:prefsDir withIntermediateDirectories:YES
                                   attributes:nil error:nil];
                     NSString *dst = [prefsDir stringByAppendingPathComponent:@"com.changeinfoios.plist"];
-                    BOOL ok = [mirrorBin writeToFile:dst options:NSDataWritingAtomic error:nil];
+                    NSError *s7Err = nil;
+                    BOOL ok = [mirrorBin writeToFile:dst options:NSDataWritingAtomic error:&s7Err];
                     if (ok) chmod([dst fileSystemRepresentation], 0644);
-                    NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@)", bid, ok ? @"OK" : @"FAIL", dst);
+                    NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ (%@) err=%@", bid, ok ? @"OK" : @"FAIL", dst, s7Err);
                     if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
+                    // DEBUG: S7 detail to /tmp
+                    {
+                        NSString *s7d = [NSString stringWithFormat:@"S7 %@: container=%@ ok=%d err=%@\n",
+                            bid, container ?: @"(nil)", ok, s7Err ?: @"(none)"];
+                        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/ci_save_debug.txt"];
+                        [fh seekToEndOfFile];
+                        [fh writeData:[s7d dataUsingEncoding:NSUTF8StringEncoding]];
+                        [fh closeFile];
+                    }
                 }
             }
         }
