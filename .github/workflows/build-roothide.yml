@@ -195,6 +195,11 @@ jobs:
             sed -i '' '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
           chmod 0777 "$ETC" 2>/dev/null || true
+          # Bridge roothide read-only rootfs: symlink the config file to
+          # the data-partition copy written by the app via CFPreferences.
+          # Without this the tweak's kConfigPath read hits rootfs (empty).
+          ln -sf "/var/mobile/Library/Preferences/com.changeinfoios.plist" \
+                 "$ETC/config.plist" 2>/dev/null || true
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
           JBCTL=""

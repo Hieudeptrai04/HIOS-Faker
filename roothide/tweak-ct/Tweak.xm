@@ -124,6 +124,10 @@ static void reloadConfig(void) {
         if (d) NSLog(@"[ChangeInfoIos-CT] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
     }
     if (!d) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
+        if (d) NSLog(@"[ChangeInfoIos-CT] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
         if (d) NSLog(@"[ChangeInfoIos-CT] config: using /tmp fallback (%lu keys)", (unsigned long)d.count);
     }

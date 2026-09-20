@@ -373,6 +373,10 @@ static void reloadConfig(void) {
         if (d) NSLog(@"[ChangeInfoIos-MG] config: file unavailable, using CFPreferences (%lu keys)", (unsigned long)d.count);
     }
     if (!d) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
+        if (d) NSLog(@"[ChangeInfoIos-MG] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count);
+    }
+    if (!d) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
         if (d) NSLog(@"[ChangeInfoIos-MG] config: using /tmp fallback (%lu keys)", (unsigned long)d.count);
     }
@@ -4354,6 +4358,40 @@ static void notify_cb(int t) {
         if (pn && pn[0]) g_procname = pn;
         dbglog("ctor pid=%d %s start cfg_keys=%lu\n",
                getpid(), g_procname, (unsigned long)g_config.count);
+
+        // Diagnostic: write load status to the target app's own tmp dir
+        // (always writable from inside sandbox, survives until app exit).
+        // SSH: find /var/mobile/Containers/Data/Application -name ci_mg_diag.txt
+        {
+            NSString *tmpDir = NSTemporaryDirectory();
+            if (tmpDir.length) {
+                CFArrayRef ks = CFPreferencesCopyKeyList(CFSTR("com.changeinfoios"),
+                    kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                long cfpCount = ks ? (long)CFArrayGetCount(ks) : -1;
+                if (ks) CFRelease(ks);
+                NSString *diag = [NSString stringWithFormat:
+                    @"loaded=1 t=%ld pid=%d proc=%s\n"
+                    @"kConfigPath=%@\n"
+                    @"cfgPath_exists=%d\n"
+                    @"sharedPrefs_exists=%d\n"
+                    @"cfprefs_keys=%ld\n"
+                    @"g_config_count=%lu\n"
+                    @"g_licOK=%d g_targetOK=%d\n"
+                    @"bundleID=%@\n",
+                    (long)time(NULL), getpid(), g_procname,
+                    kConfigPath,
+                    [[NSFileManager defaultManager] fileExistsAtPath:kConfigPath],
+                    [[NSFileManager defaultManager] fileExistsAtPath:
+                        @"/var/mobile/Library/Preferences/com.changeinfoios.plist"],
+                    cfpCount,
+                    (unsigned long)g_config.count,
+                    g_licOK, g_targetOK,
+                    [[NSBundle mainBundle] bundleIdentifier]
+                ];
+                [diag writeToFile:[tmpDir stringByAppendingPathComponent:@"ci_mg_diag.txt"]
+                       atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        }
 
         // P0-2: with debug OFF (release default) remove any stale artifacts a
         // previous debug build left in THIS app's own sandbox, so the target app
