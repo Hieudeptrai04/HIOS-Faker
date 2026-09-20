@@ -368,24 +368,26 @@ static NSDictionary *ci_cfprefsConfig(void) {
 
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
+    const char *src = "none";
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (d) src = "kConfigPath";
     if (!d) {
         d = ci_cfprefsConfig();
-        if (d) NSLog(@"[ChangeInfoIos-MG] config: using CFPreferences (%lu keys)", (unsigned long)d.count);
+        if (d) { src = "CFPreferences"; NSLog(@"[ChangeInfoIos-MG] config: using CFPreferences (%lu keys)", (unsigned long)d.count); }
     }
     if (!d) {
         NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
             @"Library/Preferences/com.changeinfoios.plist"];
         d = [NSDictionary dictionaryWithContentsOfFile:inContainer];
-        if (d) NSLog(@"[ChangeInfoIos-MG] config: using in-container prefs (%lu keys)", (unsigned long)d.count);
+        if (d) { src = "in-container"; NSLog(@"[ChangeInfoIos-MG] config: using in-container prefs (%lu keys)", (unsigned long)d.count); }
     }
     if (!d) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
-        if (d) NSLog(@"[ChangeInfoIos-MG] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count);
+        if (d) { src = "direct-/var/mobile"; NSLog(@"[ChangeInfoIos-MG] config: using /var/mobile direct read (%lu keys)", (unsigned long)d.count); }
     }
     if (!d) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-        if (d) NSLog(@"[ChangeInfoIos-MG] config: using /tmp fallback (%lu keys)", (unsigned long)d.count);
+        if (d) { src = "/tmp-fallback"; NSLog(@"[ChangeInfoIos-MG] config: using /tmp fallback (%lu keys)", (unsigned long)d.count); }
     }
     if (!d) d = @{};
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
@@ -413,6 +415,15 @@ static void reloadConfig(void) {
     g_targetOK = targetOK;
     g_hideJBOn = hideJB;
     os_unfair_lock_unlock(&g_cfgLock);
+
+    NSString *proc = [[NSProcessInfo processInfo] processName] ?: @"?";
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"?";
+    NSString *diag = [NSString stringWithFormat:
+        @"%@ pid=%d bid=%s src=%s keys=%lu pt=%@ lic=%d target=%d hide=%d\n",
+        proc, getpid(), [bid UTF8String], src,
+        (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK, hideJB];
+    NSString *diagPath = [NSString stringWithFormat:@"/tmp/ci_mg_%@.txt", bid];
+    [diag writeToFile:diagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static inline NSDictionary *cfg(void) {
