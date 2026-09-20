@@ -434,41 +434,69 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
     // roothide (same bug documented in Clear Data at v2.5.39). Use ci_run
     // cp which posix_spawn bypasses the cross-container NSFileManager check.
     {
+        NSString *s7log = [NSString stringWithFormat:@"%@/Documents/s7_diag.txt",
+            NSHomeDirectory()];
+        NSMutableString *diag = [NSMutableString stringWithFormat:
+            @"S7 start %@\n", [NSDate date]];
         NSArray *targets = _cfg[@"targetBundles"];
+        [diag appendFormat:@"targets=%@ class=%@\n",
+            targets, NSStringFromClass([targets class])];
+        [diag appendFormat:@"mirror keys=%lu ProductType=%@\n",
+            (unsigned long)mirror.count, mirror[@"ProductType"]];
         if ([targets isKindOfClass:[NSArray class]]) {
             NSData *mirrorBin = [NSPropertyListSerialization
                 dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
                              options:0 error:nil];
+            [diag appendFormat:@"mirrorBin=%lu\n", (unsigned long)mirrorBin.length];
             if (mirrorBin) {
                 NSString *stage = @"/tmp/ci_s7_mirror.plist";
                 BOOL staged = [mirrorBin writeToFile:stage atomically:YES];
                 if (staged) chmod("/tmp/ci_s7_mirror.plist", 0644);
-                NSLog(@"[ChangeInfoIos] save S7 staged to /tmp: %@", staged ? @"OK" : @"FAIL");
+                [diag appendFormat:@"staged=%d\n", staged];
+                if (!staged) {
+                    // Fallback: stage inside own container
+                    stage = [NSString stringWithFormat:@"%@/Documents/ci_s7_mirror.plist",
+                        NSHomeDirectory()];
+                    staged = [mirrorBin writeToFile:stage atomically:YES];
+                    if (staged) chmod([stage fileSystemRepresentation], 0644);
+                    [diag appendFormat:@"staged_fallback=%d path=%@\n", staged, stage];
+                }
+                NSLog(@"[ChangeInfoIos] save S7 staged: %@ path=%@", staged ? @"OK" : @"FAIL", stage);
                 if (staged) {
                     NSUInteger s7ok = 0, s7fail = 0;
                     for (NSString *bid in targets) {
                         if (![bid isKindOfClass:[NSString class]] || !bid.length) continue;
                         NSString *container = ci_findDataContainerForBundle(bid);
+                        [diag appendFormat:@"%@ -> container=%@\n", bid,
+                            container.length ? container : @"(nil)"];
                         if (!container.length) { s7fail++; continue; }
                         NSString *safeCont = [container stringByReplacingOccurrencesOfString:@"'" withString:@""];
+                        NSString *safeStage = [stage stringByReplacingOccurrencesOfString:@"'" withString:@""];
                         NSString *cmd = [NSString stringWithFormat:
                             @"mkdir -p '%@/Library/Preferences' 2>/dev/null; "
                             @"cp -f '%@' '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null && "
                             @"chmod 0644 '%@/Library/Preferences/com.changeinfoios.plist' 2>/dev/null",
-                            safeCont, stage, safeCont, safeCont];
+                            safeCont, safeStage, safeCont, safeCont];
                         int rc = ci_run([cmd UTF8String]);
                         BOOL ok = (rc == 0);
                         if (ok) s7ok++; else s7fail++;
+                        [diag appendFormat:@"  cp rc=%d %@\n", rc, ok ? @"OK" : @"FAIL"];
                         NSLog(@"[ChangeInfoIos] save S7 deploy to %@: %@ rc=%d (%@/Library/Preferences/)",
                               bid, ok ? @"OK" : @"FAIL", rc, container);
                         if (!mirrorOK && !cfPrefsOK && ok) cfPrefsOK = YES;
                     }
+                    [diag appendFormat:@"S7 summary: ok=%lu fail=%lu\n",
+                        (unsigned long)s7ok, (unsigned long)s7fail];
                     NSLog(@"[ChangeInfoIos] save S7 summary: ok=%lu fail=%lu",
                           (unsigned long)s7ok, (unsigned long)s7fail);
                     [[NSFileManager defaultManager] removeItemAtPath:stage error:nil];
                 }
             }
+        } else {
+            [diag appendString:@"SKIP: targets not NSArray\n"];
         }
+        [diag appendFormat:@"S7 end %@\n", [NSDate date]];
+        [diag writeToFile:s7log atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 
     // Kill cfprefsd so target apps pick up fresh plist from their container
