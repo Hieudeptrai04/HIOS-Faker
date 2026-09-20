@@ -366,6 +366,55 @@ static NSDictionary *ci_cfprefsConfig(void) {
     return (__bridge_transfer NSDictionary *)vals;
 }
 
+static NSDictionary *ci_cfprefsSharedConfig(void) {
+    CFStringRef appID = CFSTR("com.changeinfoios.shared");
+    CFPreferencesAppSynchronize(appID);
+    CFArrayRef keys = CFPreferencesCopyKeyList(appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (!keys) return nil;
+    CFDictionaryRef vals = CFPreferencesCopyMultiple(keys, appID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFRelease(keys);
+    if (!vals) return nil;
+    return (__bridge_transfer NSDictionary *)vals;
+}
+
+static NSString *ci_findHIOSAppContainer(void) {
+    static NSString *cached = nil;
+    static dispatch_once_t tok;
+    dispatch_once(&tok, ^{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        Class LSProxy = NSClassFromString(@"LSApplicationProxy");
+        SEL proxySel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        if (LSProxy && [LSProxy respondsToSelector:proxySel]) {
+            id proxy = [LSProxy performSelector:proxySel withObject:@"com.changeinfoios.v3.app"];
+            SEL dcSel = NSSelectorFromString(@"dataContainerURL");
+            if ([proxy respondsToSelector:dcSel]) {
+                NSURL *url = [proxy performSelector:dcSel];
+                if ([url isKindOfClass:[NSURL class]] && [(NSURL *)url path].length)
+                    cached = [[(NSURL *)url path] copy];
+            }
+        }
+#pragma clang diagnostic pop
+        if (!cached) {
+            NSString *root = @"/var/mobile/Containers/Data/Application";
+            NSArray *uuids = [[NSFileManager defaultManager]
+                contentsOfDirectoryAtPath:root error:nil];
+            for (NSString *uuid in uuids) {
+                NSString *full = [root stringByAppendingPathComponent:uuid];
+                NSString *meta = [full stringByAppendingPathComponent:
+                    @".com.apple.mobile_container_manager.metadata.plist"];
+                NSDictionary *md = [NSDictionary dictionaryWithContentsOfFile:meta];
+                if ([md[@"MCMMetadataIdentifier"] isEqualToString:@"com.changeinfoios.v3.app"]) {
+                    cached = [full copy];
+                    break;
+                }
+            }
+        }
+        NSLog(@"[ChangeInfoIos-MG] HIOS container: %@", cached ?: @"(not found)");
+    });
+    return cached;
+}
+
 static long long ci_extractSaveTs(NSDictionary *d) {
     id v = d[@"_ci_save_ts"];
     if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v longLongValue];
@@ -384,7 +433,7 @@ static void reloadConfig(void) {
     // write), while kConfigPath (/var/jb/etc/...) may be stale/read-only.
     // Checking ALL sources and comparing timestamps guarantees the tweak always
     // uses the freshest config regardless of which write channel succeeded.
-    struct { NSDictionary *d; const char *name; } candidates[5];
+    struct { NSDictionary *d; const char *name; } candidates[8];
     int n = 0;
 
     NSDictionary *d1 = ci_cfprefsConfig();
@@ -405,6 +454,20 @@ static void reloadConfig(void) {
     NSDictionary *d5 = [NSDictionary dictionaryWithContentsOfFile:
         @"/tmp/com.changeinfoios.config.plist"];
     if (d5) candidates[n++] = (typeof(candidates[0])){d5, "/tmp-fallback"};
+
+    NSDictionary *d6 = ci_cfprefsSharedConfig();
+    if (d6) candidates[n++] = (typeof(candidates[0])){d6, "CFPrefs-shared"};
+
+    NSString *hiosContainer = ci_findHIOSAppContainer();
+    if (hiosContainer) {
+        NSDictionary *d7 = [NSDictionary dictionaryWithContentsOfFile:
+            [hiosContainer stringByAppendingPathComponent:@"Documents/ci_config_mirror.plist"]];
+        if (d7) candidates[n++] = (typeof(candidates[0])){d7, "hios-mirror"};
+        NSDictionary *d8 = [NSDictionary dictionaryWithContentsOfFile:
+            [hiosContainer stringByAppendingPathComponent:
+                @"Library/Preferences/com.changeinfoios.plist"]];
+        if (d8) candidates[n++] = (typeof(candidates[0])){d8, "hios-prefs"};
+    }
 
     for (int i = 0; i < n; i++) {
         long long ts = ci_extractSaveTs(candidates[i].d);

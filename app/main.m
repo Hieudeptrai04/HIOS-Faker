@@ -364,6 +364,36 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
         NSLog(@"[ChangeInfoIos] save S5 cfprefs verify: %@", cfPrefsOK ? @"OK" : @"FAIL");
     }
 
+    // Strategy 5.1: write mirror to Documents — tweaks can try cross-container
+    // read via LSApplicationProxy to find this app's data container.
+    {
+        NSString *docMirror = [NSString stringWithFormat:@"%@/Documents/ci_config_mirror.plist",
+            NSHomeDirectory()];
+        NSData *mirrorData = [NSPropertyListSerialization
+            dataWithPropertyList:mirror format:NSPropertyListBinaryFormat_v1_0
+                         options:0 error:nil];
+        if (mirrorData) {
+            BOOL ok = [mirrorData writeToFile:docMirror atomically:YES];
+            if (ok) chmod([docMirror fileSystemRepresentation], 0644);
+            NSLog(@"[ChangeInfoIos] save S5.1 Documents mirror: %@", ok ? @"OK" : @"FAIL");
+        }
+    }
+
+    // Strategy 5.2: write CFPreferences to a domain that no installed app owns.
+    // On roothide cfprefsd scopes "com.changeinfoios" writes to the calling
+    // app's container (bundle-ID mismatch). A domain matching NO installed
+    // bundle ID should land in /var/mobile/Library/Preferences/ instead.
+    {
+        CFStringRef sharedDomain = CFSTR("com.changeinfoios.shared");
+        for (NSString *k in mirror) {
+            id v = mirror[k];
+            if (v) CFPreferencesSetValue((__bridge CFStringRef)k, (__bridge CFPropertyListRef)v,
+                                         sharedDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        }
+        CFPreferencesSynchronize(sharedDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        NSLog(@"[ChangeInfoIos] save S5.2 shared-domain: synced");
+    }
+
     // Strategy 5.5: write mirror plist to /tmp/ as belt-and-suspenders fallback.
     // /tmp/ is writable by app (no-sandbox) and readable by tweaks on roothide.
     {
