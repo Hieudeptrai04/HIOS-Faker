@@ -10256,11 +10256,6 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             zContainerPath = ci_findDataContainerForBundle(kZaloBID);
         if (!zBundlePath)
             [missing addObject:@"bundlePath không tồn tại"];
-        else {
-            NSString *execPath = [[NSBundle bundleWithPath:zBundlePath] executablePath];
-            if (!execPath.length || ![fm fileExistsAtPath:execPath])
-                [missing addObject:@"main executable không tồn tại"];
-        }
         if (!zContainerPath)
             [missing addObject:@"data container không tồn tại (cần cho wipe)"];
         if (ci_isNoInjectBundle(kZaloBID)) [missing addObject:@"bị policy no-inject loại"];
