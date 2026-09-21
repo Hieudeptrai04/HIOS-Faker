@@ -4503,6 +4503,26 @@ static void notify_cb(int t) {
         {
             const char *pnz0 = getprogname();
             if (pnz0 && (strstr(pnz0,"Zalo")||strstr(pnz0,"zalo")||strstr(pnz0,"zingalo"))) {
+                // ROOTHIDE Zalo: the libc identity hooks (sysctl / sysctl_raw /
+                // getifaddrs / gethostname / uname) and the heavy IOReg/SecItem/
+                // keychain layers fire-crash Zalo. Install ONLY the MGCopyAnswer
+                // hook — that is what Zalo reads for the device model — and skip
+                // everything else. Register config-reload so model changes sync.
+                if (g_licOK && g_targetOK) {
+                    void *hz = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+                    if (hz) orig_MGCopyAnswer = (MGCopyAnswer_t)dlsym(hz, "MGCopyAnswer");
+                    if (orig_MGCopyAnswer) {
+                        struct rebinding rz[] = {
+                            { "MGCopyAnswer", (void *)hooked_MGCopyAnswer,
+                              (void **)&orig_MGCopyAnswer },
+                        };
+                        rebind_symbols(rz, 1);
+                        MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer,
+                                       (void **)&orig_MGCopyAnswer);
+                    }
+                    dbglog("ctor %s roothide Zalo MG-only orig=%p\n",
+                           g_procname, (void *)orig_MGCopyAnswer);
+                }
                 int z0a=0,z0b=0,z0c=0;
                 notify_register_dispatch([kReloadNote UTF8String], &z0a,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
@@ -4510,7 +4530,7 @@ static void notify_cb(int t) {
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
                 notify_register_dispatch([kAppNote UTF8String], &z0c,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
-                ci_bisect("H0_zalo_nohooks_return");
+                ci_bisect("H0_zalo_mgonly_return");
                 return;
             }
         }
