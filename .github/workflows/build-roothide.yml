@@ -8,6 +8,7 @@ on:
     paths:
       - "roothide/tweak-mg/**"
       - "roothide/tweak-ct/**"
+      - "roothide/ci_configsync.sh"
       - "app/**"
       - ".github/workflows/build-roothide.yml"
 
@@ -131,6 +132,10 @@ jobs:
             [ -f "$DYLIB" ] || continue
             ldid -S "$DYLIB"
           done
+
+          # Copy config sync daemon script into staging
+          cp roothide/ci_configsync.sh combined/etc/changeinfoios/ci_configsync.sh
+          chmod 0755 combined/etc/changeinfoios/ci_configsync.sh
 
           # Sign the app binary with entitlements
           APP_BIN="combined/Applications/HIOSFakerV3.app/HIOSFakerV3"
@@ -256,9 +261,54 @@ jobs:
           if [ -n "$UICACHE" ]; then
             "$UICACHE" -p "$ROOT/Applications/HIOSFakerV3.app" 2>/dev/null || true
           fi
+          # ── WatchPaths config-sync daemon ──
+          SYNC_SCRIPT="$ETC/ci_configsync.sh"
+          chmod 0755 "$SYNC_SCRIPT" 2>/dev/null || true
+          LD_DIR="$ROOT/Library/LaunchDaemons"
+          LD_PLIST="$LD_DIR/com.changeinfoios.configsync.plist"
+          mkdir -p "$LD_DIR" 2>/dev/null || true
+          cat > "$LD_PLIST" <<LDEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key>
+            <string>com.changeinfoios.configsync</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>/bin/sh</string>
+              <string>$SYNC_SCRIPT</string>
+            </array>
+            <key>WatchPaths</key>
+            <array>
+              <string>/tmp/com.changeinfoios.config.plist</string>
+            </array>
+            <key>RunAtLoad</key>
+            <false/>
+          </dict>
+          </plist>
+          LDEOF
+          launchctl bootout system/com.changeinfoios.configsync 2>/dev/null || true
+          launchctl bootstrap system "$LD_PLIST" 2>/dev/null || \
+            launchctl load "$LD_PLIST" 2>/dev/null || true
+          sh "$SYNC_SCRIPT" 2>/dev/null &
           exit 0
           POSTINST
           chmod 0755 combined/DEBIAN/postinst
+
+          cat > combined/DEBIAN/prerm <<'PRERM'
+          #!/bin/sh
+          launchctl bootout system/com.changeinfoios.configsync 2>/dev/null || true
+          if command -v jbroot >/dev/null 2>&1; then
+            R="$(jbroot / 2>/dev/null)" || R="${JBROOT:-/var/jb}"
+          else
+            R="${JBROOT:-/var/jb}"
+          fi
+          R="${R%/}"
+          rm -f "$R/Library/LaunchDaemons/com.changeinfoios.configsync.plist" 2>/dev/null || true
+          exit 0
+          PRERM
+          chmod 0755 combined/DEBIAN/prerm
 
           cat > combined/DEBIAN/control <<EOF
           Package: com.changeinfoios.v3

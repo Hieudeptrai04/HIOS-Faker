@@ -4462,6 +4462,10 @@ static void notify_cb(int t) {
     // consume the one-shot if this generation is due. No unconditional wipe here
     // any more (that used to destroy restored/kept accounts on every reload).
     ci_runOneShotIfDue();
+    // Roothide: WatchPaths daemon copies config to target containers AFTER
+    // the app's notification fires (race). 2s retry picks up d3 in-container copy.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ reloadConfig(); });
 }
 
 %ctor {
