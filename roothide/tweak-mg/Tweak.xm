@@ -59,19 +59,17 @@
 #import <os/lock.h>
 #import "fishhook.h"
 
-// Early-boot diagnostic: runs BEFORE Logos %init (priority 101 < default).
-// If /tmp/ci_earlyboot_mg.txt appears → dylib loaded, issue is in Logos init.
-// If it does NOT appear → dlopen itself failed (binary format / deps).
-__attribute__((constructor(101)))
-static void ci_earlyboot(void) {
-    int fd = open("/tmp/ci_earlyboot_mg.txt", O_CREAT|O_WRONLY|O_TRUNC, 0666);
-    if (fd >= 0) {
-        char msg[256];
-        int n = snprintf(msg, sizeof(msg), "earlyboot pid=%d proc=%s\n",
-                         getpid(), getprogname() ?: "?");
-        write(fd, msg, n);
-        close(fd);
-    }
+// Bisect diagnostic: append a marker to the app's OWN sandbox tmp ($TMPDIR),
+// writable + flushed per write even from sandboxed apps. Used to pinpoint where
+// MG's %ctor crashes Zalo (heavy hooks). Pure C — safe at ctor time.
+static void ci_bisect(const char *m) {
+    const char *td = getenv("TMPDIR");
+    char path[600];
+    if (td && td[0]) snprintf(path, sizeof(path), "%s%sci_bisect_mg.log",
+                              td, (td[strlen(td)-1]=='/') ? "" : "/");
+    else snprintf(path, sizeof(path), "/tmp/ci_bisect_mg.log");
+    int fd = open(path, O_CREAT|O_WRONLY|O_APPEND, 0666);
+    if (fd >= 0) { write(fd, m, strlen(m)); write(fd, "\n", 1); close(fd); }
 }
 
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
@@ -4518,6 +4516,7 @@ static void notify_cb(int t) {
         // Lightweight anti-detection stays active even when the license/profile
         // gate below is temporarily invalid. Heavy identity hooks remain gated.
         ci_installJBHideHooks();
+        ci_bisect("H1_jbhide_done");
 
         // Expired/missing license disables the expensive identity/keychain hooks
         // below. The small JB-hide layer above remains active because the dylib is
@@ -4617,6 +4616,7 @@ static void notify_cb(int t) {
         dbglog("ctor %s after MSHook libc orig: sysctl=%p sysctl_raw=%p getif=%p ghn=%p\n",
                g_procname, (void *)orig_sysctlbyname, (void *)orig_sysctl_raw,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
+        ci_bisect("H2_libc_mg_mshook_done");
 
         // SCDynamicStoreCopyComputerName — SystemConfiguration framework,
         // used by apps that bypass UIDevice.name for device name.
@@ -4679,6 +4679,7 @@ static void notify_cb(int t) {
                        g_procname, (void *)orig_IORegCreateProps);
             }
         }
+        ci_bisect("H3_ioreg_done");
 
         // LAYER 11: Keychain device-fingerprint isolation
         // MSHookFunction patches the Security.framework prologue so ALL callers
@@ -4709,6 +4710,7 @@ static void notify_cb(int t) {
                    (void *)orig_SecItemAdd,
                    (void *)orig_SecItemUpdate);
         }
+        ci_bisect("H4_secitem_done");
 
         // Reload config on any of the 3 notification names:
         //   kReloadNote  = com.changeinfoios.v3/ReloadConfig  (v3 native)
@@ -4808,7 +4810,9 @@ static void notify_cb(int t) {
         // and why an ADManager .adbk restore always showed "thiết bị mới". The wipe
         // now fires at most ONCE per Change Device; every other launch (and every
         // .adbk restore) is a no-op so the account keeps its identity.
+        ci_bisect("H5_before_oneshot");
         ci_runOneShotIfDue();
+        ci_bisect("H6_after_oneshot");
 
         // LAYER 22: cache the APNS delegate selector so the UIApplication setDelegate:
         // hook can swizzle didRegisterForRemoteNotificationsWithDeviceToken:.
@@ -4821,6 +4825,7 @@ static void notify_cb(int t) {
         g_camSel = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
         ci_camReloadFromConfig();
 
+        ci_bisect("H7_ctor_end");
         dbglog("ctor %s done\n", g_procname);
     }
 }
