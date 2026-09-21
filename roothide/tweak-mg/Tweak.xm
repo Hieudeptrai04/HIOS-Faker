@@ -4810,8 +4810,20 @@ static void notify_cb(int t) {
         // and why an ADManager .adbk restore always showed "thiết bị mới". The wipe
         // now fires at most ONCE per Change Device; every other launch (and every
         // .adbk restore) is a no-op so the account keeps its identity.
+        // ROOTHIDE: the one-shot device reset (keychain wipe + WKWebView data
+        // removal) fire-crashes Zalo after %ctor completes. Gate it off on
+        // roothide — model spoof (MGCopyAnswer/sysctl) stays fully active; only
+        // the secondary anti-reg-ban device-reset is skipped. It also leaves
+        // g_freshRegisterWipe==0 so the SecItem device-id block stays inert.
         ci_bisect("H5_before_oneshot");
-        ci_runOneShotIfDue();
+        {
+            char rh_marker[600];
+            snprintf(rh_marker, sizeof(rh_marker), "%s/usr/lib/roothidepatch.dylib", ci_rh_prefix());
+            int isRoothide = (access(rh_marker, F_OK) == 0) ||
+                             (access("/usr/lib/roothidepatch.dylib", F_OK) == 0);
+            if (!isRoothide) ci_runOneShotIfDue();
+            else dbglog("ctor %s roothide: skip one-shot device reset (Zalo crash guard)\n", g_procname);
+        }
         ci_bisect("H6_after_oneshot");
 
         // LAYER 22: cache the APNS delegate selector so the UIApplication setDelegate:
