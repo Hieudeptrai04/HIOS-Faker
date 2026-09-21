@@ -4515,7 +4515,15 @@ static void notify_cb(int t) {
 
         // Lightweight anti-detection stays active even when the license/profile
         // gate below is temporarily invalid. Heavy identity hooks remain gated.
-        ci_installJBHideHooks();
+        // ROOTHIDE Zalo: skip the JB-hide fishhook layer — it fire-crashes Zalo
+        // on roothide (Zalo's anti-JB path). Test whether this alone unblocks
+        // Zalo; the model spoof (MGCopyAnswer/sysctl) is installed below.
+        {
+            const char *pnj = getprogname();
+            BOOL zj = pnj && (strstr(pnj,"Zalo") || strstr(pnj,"zalo") || strstr(pnj,"zingalo"));
+            if (!zj) ci_installJBHideHooks();
+            else dbglog("ctor %s roothide Zalo: skip JB-hide hooks\n", g_procname);
+        }
         ci_bisect("H1_jbhide_done");
 
         // Expired/missing license disables the expensive identity/keychain hooks
