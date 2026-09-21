@@ -177,56 +177,13 @@ static long long ci_extractSaveTs(NSDictionary *d) {
 static const char *g_lastSrc = "none";
 
 static void reloadConfig(void) {
-    const char *src = "none";
-    NSDictionary *best = nil;
-    long long bestTs = 0;
-
-    struct { NSDictionary *d; const char *name; } candidates[8];
-    int n = 0;
-
-    NSDictionary *d1 = ci_cfprefsConfig();
-    if (d1) candidates[n++] = (typeof(candidates[0])){d1, "CFPreferences"};
-
-    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (d2) candidates[n++] = (typeof(candidates[0])){d2, "kConfigPath"};
-
-    NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
-        @"Library/Preferences/com.changeinfoios.plist"];
-    NSDictionary *d3 = [NSDictionary dictionaryWithContentsOfFile:inContainer];
-    if (d3) candidates[n++] = (typeof(candidates[0])){d3, "in-container"};
-
-    NSDictionary *d4 = [NSDictionary dictionaryWithContentsOfFile:
-        @"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
-    if (d4) candidates[n++] = (typeof(candidates[0])){d4, "direct-/var/mobile"};
-
-    NSDictionary *d5 = [NSDictionary dictionaryWithContentsOfFile:
-        @"/tmp/com.changeinfoios.config.plist"];
-    if (d5) candidates[n++] = (typeof(candidates[0])){d5, "/tmp-fallback"};
-
-    NSDictionary *d6 = ci_cfprefsSharedConfig();
-    if (d6) candidates[n++] = (typeof(candidates[0])){d6, "CFPrefs-shared"};
-
-    NSString *hiosContainer = ci_findHIOSAppContainer();
-    if (hiosContainer) {
-        NSDictionary *d7 = [NSDictionary dictionaryWithContentsOfFile:
-            [hiosContainer stringByAppendingPathComponent:@"Documents/ci_config_mirror.plist"]];
-        if (d7) candidates[n++] = (typeof(candidates[0])){d7, "hios-mirror"};
-        NSDictionary *d8 = [NSDictionary dictionaryWithContentsOfFile:
-            [hiosContainer stringByAppendingPathComponent:
-                @"Library/Preferences/com.changeinfoios.plist"]];
-        if (d8) candidates[n++] = (typeof(candidates[0])){d8, "hios-prefs"};
+    const char *src = "kConfigPath";
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (!d) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+        src = d ? "/tmp" : "none";
     }
-
-    for (int i = 0; i < n; i++) {
-        long long ts = ci_extractSaveTs(candidates[i].d);
-        if (!best || ts > bestTs) {
-            best = candidates[i].d;
-            bestTs = ts;
-            src = candidates[i].name;
-        }
-    }
-
-    NSDictionary *d = best ?: @{};
+    if (!d) d = @{};
     g_lastSrc = src;
     int ok = ct_computeLicOK(d);
     int targetOK = ct_targetsCurrentProcess(d);
@@ -236,8 +193,8 @@ static void reloadConfig(void) {
     g_targetOK = targetOK;
     os_unfair_lock_unlock(&g_cfgLock);
 
-    NSLog(@"[ChangeInfoIos-CT] config: src=%s keys=%lu ts=%lld lic=%d target=%d",
-          src, (unsigned long)d.count, bestTs, ok, targetOK);
+    NSLog(@"[ChangeInfoIos-CT] config: src=%s keys=%lu lic=%d target=%d",
+          src, (unsigned long)d.count, ok, targetOK);
 }
 
 static inline NSDictionary *cfg(void) {
@@ -347,10 +304,6 @@ static NSString *fakeRadioTech(void) {
 static void notify_cb(int token) {
     (void)token;
     reloadConfig();
-    // Roothide: WatchPaths daemon copies config to target containers AFTER
-    // the app's notification fires (race). 2s retry picks up d3 in-container copy.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ reloadConfig(); });
 }
 
 %ctor {

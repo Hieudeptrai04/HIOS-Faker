@@ -426,77 +426,13 @@ static const char *g_lastSrc = "none";
 
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
-    const char *src = "none";
-    NSDictionary *best = nil;
-    long long bestTs = 0;
-
-    struct { NSDictionary *d; const char *name; } candidates[8];
-    int n = 0;
-
-    NSDictionary *d1 = ci_cfprefsConfig();
-    if (d1) candidates[n++] = (typeof(candidates[0])){d1, "CFPreferences"};
-    dbglog("reload.d1 CFPrefs keys=%ld ts=%lld pt=%s\n",
-           d1 ? (long)d1.count : -1, ci_extractSaveTs(d1),
-           d1[@"ProductType"] ? [d1[@"ProductType"] UTF8String] : "(nil)");
-
-    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (d2) candidates[n++] = (typeof(candidates[0])){d2, "kConfigPath"};
-    dbglog("reload.d2 kConfigPath keys=%ld ts=%lld pt=%s path=%s\n",
-           d2 ? (long)d2.count : -1, ci_extractSaveTs(d2),
-           d2[@"ProductType"] ? [d2[@"ProductType"] UTF8String] : "(nil)",
-           [kConfigPath UTF8String]);
-
-    NSString *inContainer = [NSHomeDirectory() stringByAppendingPathComponent:
-        @"Library/Preferences/com.changeinfoios.plist"];
-    NSDictionary *d3 = [NSDictionary dictionaryWithContentsOfFile:inContainer];
-    if (d3) candidates[n++] = (typeof(candidates[0])){d3, "in-container"};
-    dbglog("reload.d3 inContainer keys=%ld ts=%lld\n",
-           d3 ? (long)d3.count : -1, ci_extractSaveTs(d3));
-
-    NSDictionary *d4 = [NSDictionary dictionaryWithContentsOfFile:
-        @"/var/mobile/Library/Preferences/com.changeinfoios.plist"];
-    if (d4) candidates[n++] = (typeof(candidates[0])){d4, "direct-/var/mobile"};
-    dbglog("reload.d4 /var/mobile keys=%ld ts=%lld\n",
-           d4 ? (long)d4.count : -1, ci_extractSaveTs(d4));
-
-    NSDictionary *d5 = [NSDictionary dictionaryWithContentsOfFile:
-        @"/tmp/com.changeinfoios.config.plist"];
-    if (d5) candidates[n++] = (typeof(candidates[0])){d5, "/tmp-fallback"};
-    dbglog("reload.d5 /tmp keys=%ld ts=%lld\n",
-           d5 ? (long)d5.count : -1, ci_extractSaveTs(d5));
-
-    NSDictionary *d6 = ci_cfprefsSharedConfig();
-    if (d6) candidates[n++] = (typeof(candidates[0])){d6, "CFPrefs-shared"};
-    dbglog("reload.d6 CFPrefs-shared keys=%ld ts=%lld\n",
-           d6 ? (long)d6.count : -1, ci_extractSaveTs(d6));
-
-    NSString *hiosContainer = ci_findHIOSAppContainer();
-    dbglog("reload hiosContainer=%s\n", hiosContainer ? [hiosContainer UTF8String] : "(nil)");
-    if (hiosContainer) {
-        NSDictionary *d7 = [NSDictionary dictionaryWithContentsOfFile:
-            [hiosContainer stringByAppendingPathComponent:@"Documents/ci_config_mirror.plist"]];
-        if (d7) candidates[n++] = (typeof(candidates[0])){d7, "hios-mirror"};
-        dbglog("reload.d7 hios-mirror keys=%ld ts=%lld\n",
-               d7 ? (long)d7.count : -1, ci_extractSaveTs(d7));
-        NSDictionary *d8 = [NSDictionary dictionaryWithContentsOfFile:
-            [hiosContainer stringByAppendingPathComponent:
-                @"Library/Preferences/com.changeinfoios.plist"]];
-        if (d8) candidates[n++] = (typeof(candidates[0])){d8, "hios-prefs"};
-        dbglog("reload.d8 hios-prefs keys=%ld ts=%lld\n",
-               d8 ? (long)d8.count : -1, ci_extractSaveTs(d8));
+    const char *src = "kConfigPath";
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (!d) {
+        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+        src = d ? "/tmp" : "none";
     }
-
-    for (int i = 0; i < n; i++) {
-        long long ts = ci_extractSaveTs(candidates[i].d);
-        if (!best || ts > bestTs) {
-            best = candidates[i].d;
-            bestTs = ts;
-            src = candidates[i].name;
-        }
-    }
-    dbglog("reload.WINNER src=%s ts=%lld n=%d\n", src, bestTs, n);
-
-    NSDictionary *d = best ?: @{};
+    if (!d) d = @{};
     g_lastSrc = src;
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
@@ -524,8 +460,8 @@ static void reloadConfig(void) {
     g_hideJBOn = hideJB;
     os_unfair_lock_unlock(&g_cfgLock);
 
-    NSLog(@"[ChangeInfoIos-MG] config: src=%s keys=%lu pt=%@ ts=%lld lic=%d target=%d",
-          src, (unsigned long)d.count, pt ?: @"(nil)", bestTs, licOK, targetOK);
+    NSLog(@"[ChangeInfoIos-MG] config: src=%s keys=%lu pt=%@ lic=%d target=%d",
+          src, (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK);
 }
 
 static inline NSDictionary *cfg(void) {
@@ -4462,10 +4398,6 @@ static void notify_cb(int t) {
     // consume the one-shot if this generation is due. No unconditional wipe here
     // any more (that used to destroy restored/kept accounts on every reload).
     ci_runOneShotIfDue();
-    // Roothide: WatchPaths daemon copies config to target containers AFTER
-    // the app's notification fires (race). 2s retry picks up d3 in-container copy.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ reloadConfig(); });
 }
 
 %ctor {
