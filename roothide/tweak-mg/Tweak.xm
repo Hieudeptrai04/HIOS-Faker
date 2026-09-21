@@ -59,6 +59,21 @@
 #import <os/lock.h>
 #import "fishhook.h"
 
+// Early-boot diagnostic: runs BEFORE Logos %init (priority 101 < default).
+// If /tmp/ci_earlyboot_mg.txt appears → dylib loaded, issue is in Logos init.
+// If it does NOT appear → dlopen itself failed (binary format / deps).
+__attribute__((constructor(101)))
+static void ci_earlyboot(void) {
+    int fd = open("/tmp/ci_earlyboot_mg.txt", O_CREAT|O_WRONLY|O_TRUNC, 0666);
+    if (fd >= 0) {
+        char msg[256];
+        int n = snprintf(msg, sizeof(msg), "earlyboot pid=%d proc=%s\n",
+                         getpid(), getprogname() ?: "?");
+        write(fd, msg, n);
+        close(fd);
+    }
+}
+
 // MSHookFunction — provided by ellekit/CydiaSubstrate. Used for IOKit
 // framework functions which fishhook can't rebind (they're indirect
 // symbol stubs / direct calls, not lazy-bound). Declared extern "C"

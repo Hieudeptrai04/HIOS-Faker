@@ -18,6 +18,20 @@
 #import <CommonCrypto/CommonCrypto.h>
 #import <dlfcn.h>
 
+// Early-boot diagnostic: runs BEFORE Logos %init (priority 101 < default).
+#import <fcntl.h>
+__attribute__((constructor(101)))
+static void ci_earlyboot(void) {
+    int fd = open("/tmp/ci_earlyboot_ct.txt", O_CREAT|O_WRONLY|O_TRUNC, 0666);
+    if (fd >= 0) {
+        char msg[256];
+        int n = snprintf(msg, sizeof(msg), "earlyboot pid=%d proc=%s\n",
+                         getpid(), getprogname() ?: "?");
+        write(fd, msg, n);
+        close(fd);
+    }
+}
+
 // Roothide JB root prefix — resolves via rootdir() from the bootstrap on roothide,
 // falls back to "/var/jb" on rootless (Dopamine 2) where dlsym returns NULL.
 static const char *ci_rh_prefix(void) {

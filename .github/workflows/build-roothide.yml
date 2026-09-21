@@ -63,7 +63,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-mg
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64"
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           cd roothide/tweak-ct
           rm -rf packages .theos obj
-          make package FINALPACKAGE=1 ARCHS="arm64"
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
           DEB=$(ls packages/*.deb | head -1)
           echo "Built: $DEB"
           ls -lh packages/
@@ -115,7 +115,8 @@ jobs:
           # to DynamicLibraries after dpkg extracts the package.
           mkdir -p combined/etc/changeinfoios
           for F in combined/Library/MobileSubstrate/DynamicLibraries/*.dylib \
-                   combined/Library/MobileSubstrate/DynamicLibraries/*.plist; do
+                   combined/Library/MobileSubstrate/DynamicLibraries/*.plist \
+                   combined/Library/MobileSubstrate/DynamicLibraries/*.roothidepatch; do
             [ -f "$F" ] || continue
             mv "$F" combined/etc/changeinfoios/
             echo "Staged: $(basename $F)"
@@ -234,6 +235,19 @@ jobs:
           fi
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
+          # Patch @loader_path/.jbroot/ → absolute jbroot paths so dyld
+          # resolves dependencies without relying on .jbroot symlink chains.
+          RHPATCH=""
+          for p in "$ROOT/usr/bin/roothidepatch" /usr/bin/roothidepatch \
+                   "$ROOT/basebin/roothidepatch" /basebin/roothidepatch; do
+            [ -x "$p" ] && RHPATCH="$p" && break
+          done
+          if [ -n "$RHPATCH" ]; then
+            for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
+              [ -f "$D" ] || continue
+              "$RHPATCH" "$D" 2>/dev/null || true
+            done
+          fi
           JBCTL=""
           for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl" \
                    /usr/bin/jbctl /basebin/jbctl; do
@@ -247,8 +261,6 @@ jobs:
             for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib" \
                      "$ROOT/Applications/HIOSFakerV3.app/HIOSFakerV3"; do
               [ -f "$D" ] || continue
-              # Re-sign on-device so CDHash is sha256-only;
-              # CI ldid produces sha1+sha256 dual which jbctl ignores.
               [ -n "$LDID" ] && "$LDID" -S "$D" 2>/dev/null || true
               "$JBCTL" trustcache add "$D" 2>/dev/null || true
             done
