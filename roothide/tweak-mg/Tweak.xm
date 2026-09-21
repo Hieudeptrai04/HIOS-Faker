@@ -4617,6 +4617,34 @@ static void notify_cb(int t) {
                g_procname, (void *)orig_sysctlbyname, (void *)orig_sysctl_raw,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
         ci_bisect("H2_libc_mg_mshook_done");
+        // ROOTHIDE Zalo: model-spoof-only mode. The heavy secondary hooks below
+        // (IORegistry / SecItem keychain / APNS / camera) fire-crash Zalo on
+        // roothide AFTER %ctor completes (Zalo's anti-fraud + keychain paths).
+        // The identity hooks already installed above (MGCopyAnswer + sysctl =
+        // ProductType/model) are what Zalo reads for the device model, so keep
+        // ONLY those, register config-reload so model changes still sync, and
+        // skip the rest. AIDA64/Viber/Maps keep the full hook set.
+        {
+            const char *pnz = getprogname();
+            BOOL zaloProc = pnz && (strstr(pnz,"Zalo") || strstr(pnz,"zalo") ||
+                                    strstr(pnz,"zingalo"));
+            char rhm[600];
+            snprintf(rhm, sizeof(rhm), "%s/usr/lib/roothidepatch.dylib", ci_rh_prefix());
+            BOOL rh = (access(rhm, F_OK) == 0) ||
+                      (access("/usr/lib/roothidepatch.dylib", F_OK) == 0);
+            if (zaloProc && rh) {
+                int z1 = 0, z2 = 0, z3 = 0;
+                notify_register_dispatch([kReloadNote UTF8String], &z1,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                notify_register_dispatch([kLegacyNote UTF8String], &z2,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                notify_register_dispatch([kAppNote UTF8String], &z3,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                ci_bisect("H2b_zalo_minimal_return");
+                dbglog("ctor %s roothide Zalo minimal (model-only, no heavy hooks)\n", g_procname);
+                return;
+            }
+        }
 
         // SCDynamicStoreCopyComputerName — SystemConfiguration framework,
         // used by apps that bypass UIDevice.name for device name.
