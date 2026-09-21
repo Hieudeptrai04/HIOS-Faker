@@ -4496,6 +4496,25 @@ static void notify_cb(int t) {
                 stringByAppendingPathComponent:@"viber_idquery.log"] fileSystemRepresentation]);
         }
 
+        // ROOTHIDE Zalo crash-isolation probe: return here installing ZERO C-hooks
+        // (no JB-hide, no fishhook/MSHook of MGCopyAnswer/sysctl, no IOReg/SecItem).
+        // Only the Logos %hooks (registered pre-%ctor) remain. If Zalo survives now
+        // → a C-hook fire-crashes it. If Zalo still crashes → a Logos %hook does.
+        {
+            const char *pnz0 = getprogname();
+            if (pnz0 && (strstr(pnz0,"Zalo")||strstr(pnz0,"zalo")||strstr(pnz0,"zingalo"))) {
+                int z0a=0,z0b=0,z0c=0;
+                notify_register_dispatch([kReloadNote UTF8String], &z0a,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                notify_register_dispatch([kLegacyNote UTF8String], &z0b,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                notify_register_dispatch([kAppNote UTF8String], &z0c,
+                    dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                ci_bisect("H0_zalo_nohooks_return");
+                return;
+            }
+        }
+
         // v4.0.4: lightweight mode for two Apple system apps. The Logos %hook
         // on CLLocationManager is already registered before this point, so the
         // GPS spoof stays active; returning here only skips the heavy C-function
