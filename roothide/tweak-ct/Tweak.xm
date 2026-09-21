@@ -18,18 +18,25 @@
 #import <CommonCrypto/CommonCrypto.h>
 #import <dlfcn.h>
 
-// Early-boot diagnostic: runs BEFORE Logos %init (priority 101 < default).
+// Bisect diagnostic (roothide crash hunt): append a marker to the app's OWN
+// sandbox tmp ($TMPDIR) — writable even from sandboxed App Store apps, unlike
+// /tmp. ReportCrash is dead on this device, so this is how we see how far the
+// tweak gets before a crash. Pure C (getenv/open/write) — safe at ctor time.
 #import <fcntl.h>
+#import <stdlib.h>
+static void ci_bisect(const char *m) {
+    const char *td = getenv("TMPDIR");
+    char path[600];
+    if (td && td[0]) snprintf(path, sizeof(path), "%s%sci_bisect_ct.log",
+                              td, (td[strlen(td)-1]=='/') ? "" : "/");
+    else snprintf(path, sizeof(path), "/tmp/ci_bisect_ct.log");
+    int fd = open(path, O_CREAT|O_WRONLY|O_APPEND, 0666);
+    if (fd >= 0) { write(fd, m, strlen(m)); write(fd, "\n", 1); close(fd); }
+}
+// Early-boot diagnostic: runs BEFORE Logos %init (priority 101 < default).
 __attribute__((constructor(101)))
 static void ci_earlyboot(void) {
-    int fd = open("/tmp/ci_earlyboot_ct.txt", O_CREAT|O_WRONLY|O_TRUNC, 0666);
-    if (fd >= 0) {
-        char msg[256];
-        int n = snprintf(msg, sizeof(msg), "earlyboot pid=%d proc=%s\n",
-                         getpid(), getprogname() ?: "?");
-        write(fd, msg, n);
-        close(fd);
-    }
+    ci_bisect("A_ctor101");
 }
 
 // Roothide JB root prefix — resolves via rootdir() from the bootstrap on roothide,
@@ -322,9 +329,12 @@ static void notify_cb(int token) {
 }
 
 %ctor {
+    ci_bisect("B_ctor_enter");
     @autoreleasepool {
         kConfigPath = [NSString stringWithFormat:@"%s/etc/changeinfoios/config.plist", ci_rh_prefix()];
+        ci_bisect("C_cfgpath");
         reloadConfig();
+        ci_bisect("D_reload_done");
 
         int t1 = 0, t2 = 0, t3 = 0;
         notify_register_dispatch([kReloadNote UTF8String], &t1,
@@ -333,6 +343,7 @@ static void notify_cb(int token) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        ci_bisect("E_notify_done");
 
         // Per-app diagnostic: write load info to app's own tmp
         {
@@ -361,6 +372,7 @@ static void notify_cb(int token) {
                        atomically:YES encoding:NSUTF8StringEncoding error:nil];
             }
         }
+        ci_bisect("F_diag_done");
 
         // Stealth (4.0.11): only drop the load-marker when debugging is enabled.
         char ct_dbg_flag[512], ct_dbg_off[512];
@@ -381,4 +393,5 @@ static void notify_cb(int token) {
                         error:nil];
         }
     }
+    ci_bisect("G_ctor_end");
 }
