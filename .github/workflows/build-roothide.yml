@@ -196,9 +196,24 @@ jobs:
               *)       chmod 0644 "$DST" 2>/dev/null || true ;;
             esac
           done
+          # ── roothide AutoPatches marker (CRITICAL) ──
+          # A roothide tweak dylib only loads if it has a sibling
+          # "<dylib>.roothidepatch" that is a SYMLINK to the roothide runtime
+          # compat layer AutoPatches.dylib. ElleKit sees the marker and loads
+          # AutoPatches alongside the tweak so its @loader_path/.jbroot deps +
+          # rootless->roothide shims resolve. Without it (or as an empty file)
+          # dyld aborts the whole target app at load, before any tweak code
+          # runs. This is what the RootHide "Patcher" adds; our stealth deploy
+          # bypasses the Patcher, so we must create the symlink ourselves.
+          AUTOPATCH="/usr/lib/DynamicPatches/AutoPatches.dylib"
+          for D in ChangeInfoIosMG.dylib ChangeInfoIosCT.dylib; do
+            [ -f "$MS/$D" ] || continue
+            rm -f "$MS/$D.roothidepatch" 2>/dev/null || true
+            ln -s "$AUTOPATCH" "$MS/$D.roothidepatch" 2>/dev/null || true
+          done
           for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
             [ -f "$P" ] || continue
-            sed -i '' '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
           chmod 0777 "$ETC" 2>/dev/null || true
 
