@@ -4628,11 +4628,10 @@ static void notify_cb(int t) {
             const char *pnz = getprogname();
             BOOL zaloProc = pnz && (strstr(pnz,"Zalo") || strstr(pnz,"zalo") ||
                                     strstr(pnz,"zingalo"));
-            char rhm[600];
-            snprintf(rhm, sizeof(rhm), "%s/usr/lib/roothidepatch.dylib", ci_rh_prefix());
-            BOOL rh = (access(rhm, F_OK) == 0) ||
-                      (access("/usr/lib/roothidepatch.dylib", F_OK) == 0);
-            if (zaloProc && rh) {
+            // This file is the roothide-scheme build (roothide/tweak-mg), only
+            // ever loaded on roothide — no runtime roothide check needed (an
+            // access() probe of jbroot is unreliable from the app sandbox).
+            if (zaloProc) {
                 int z1 = 0, z2 = 0, z3 = 0;
                 notify_register_dispatch([kReloadNote UTF8String], &z1,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
