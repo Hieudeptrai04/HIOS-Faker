@@ -174,6 +174,8 @@ static long long ci_extractSaveTs(NSDictionary *d) {
     return 0;
 }
 
+static const char *g_lastSrc = "none";
+
 static void reloadConfig(void) {
     const char *src = "none";
     NSDictionary *best = nil;
@@ -225,6 +227,7 @@ static void reloadConfig(void) {
     }
 
     NSDictionary *d = best ?: @{};
+    g_lastSrc = src;
     int ok = ct_computeLicOK(d);
     int targetOK = ct_targetsCurrentProcess(d);
     os_unfair_lock_lock(&g_cfgLock);
@@ -358,6 +361,34 @@ static void notify_cb(int token) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+
+        // Per-app diagnostic: write load info to app's own tmp
+        {
+            NSString *tmpDir = NSTemporaryDirectory();
+            if (tmpDir.length) {
+                NSString *exec = [[NSProcessInfo processInfo] processName] ?: @"?";
+                NSString *pt = g_config[@"ProductType"];
+                NSString *diag = [NSString stringWithFormat:
+                    @"loaded=1 t=%ld proc=%@ src=%s\n"
+                    @"ProductType=%@\n"
+                    @"kConfigPath=%@\n"
+                    @"cfgPath_exists=%d\n"
+                    @"g_config_count=%lu\n"
+                    @"g_licOK=%d g_targetOK=%d\n"
+                    @"carrier=%@/%@/%@\n",
+                    (long)time(NULL), exec, g_lastSrc,
+                    pt ?: @"(nil)",
+                    kConfigPath,
+                    [[NSFileManager defaultManager] fileExistsAtPath:kConfigPath],
+                    (unsigned long)g_config.count,
+                    g_licOK, g_targetOK,
+                    cfgStr(@"carrierName") ?: @"",
+                    cfgStr(@"carrierMCC") ?: @"",
+                    cfgStr(@"carrierMNC") ?: @""];
+                [diag writeToFile:[tmpDir stringByAppendingPathComponent:@"ci_ct_diag.txt"]
+                       atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        }
 
         // Stealth (4.0.11): only drop the load-marker when debugging is enabled.
         char ct_dbg_flag[512], ct_dbg_off[512];

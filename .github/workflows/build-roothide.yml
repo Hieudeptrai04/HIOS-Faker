@@ -196,11 +196,13 @@ jobs:
           done
           chmod 0777 "$ETC" 2>/dev/null || true
 
-          # ── Config symlink bridge for roothide ──
-          # On roothide, CFPreferences scopes ALL writes to the calling app's
-          # container. The HIOS app writes a mirror to its own Documents/.
-          # We symlink the shared prefs path to that mirror so tweaks always
-          # read fresh data without needing cross-container file access.
+          # ── Config REAL-FILE bridge for roothide ──
+          # On roothide, sandbox blocks following symlinks across containers.
+          # CFPreferences scopes writes to the calling app's container, so each
+          # target app sees DIFFERENT stale data — the 3-apps-3-results bug.
+          # Fix: COPY the mirror as a REAL FILE to $ETC/config.plist (jbroot
+          # path, readable by all processes on roothide) instead of symlinking.
+          # The app's S6 write updates this same real file at runtime.
           HIOS_CONTAINER=""
           for uuid_dir in /var/mobile/Containers/Data/Application/*/; do
             meta="${uuid_dir}.com.apple.mobile_container_manager.metadata.plist"
@@ -210,16 +212,21 @@ jobs:
               break
             fi
           done
+          # Remove any stale symlinks from previous builds
           SHARED="/var/mobile/Library/Preferences/com.changeinfoios.plist"
+          [ -L "$SHARED" ] && rm -f "$SHARED" 2>/dev/null || true
+          [ -L "$ETC/config.plist" ] && rm -f "$ETC/config.plist" 2>/dev/null || true
           if [ -n "$HIOS_CONTAINER" ]; then
             MIRROR="$HIOS_CONTAINER/Documents/ci_config_mirror.plist"
-            rm -f "$SHARED" 2>/dev/null || true
-            ln -sf "$MIRROR" "$SHARED"
-            chown mobile:mobile "$SHARED" 2>/dev/null || true
+            if [ -f "$MIRROR" ]; then
+              cp -f "$MIRROR" "$ETC/config.plist" 2>/dev/null || true
+              chmod 0666 "$ETC/config.plist" 2>/dev/null || true
+              chown mobile:mobile "$ETC/config.plist" 2>/dev/null || true
+              cp -f "$MIRROR" "$SHARED" 2>/dev/null || true
+              chmod 0666 "$SHARED" 2>/dev/null || true
+              chown mobile:mobile "$SHARED" 2>/dev/null || true
+            fi
           fi
-          # Also symlink $ETC/config.plist to the shared prefs path (which
-          # now either points to the mirror or is the original file).
-          ln -sf "$SHARED" "$ETC/config.plist" 2>/dev/null || true
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
           JBCTL=""
