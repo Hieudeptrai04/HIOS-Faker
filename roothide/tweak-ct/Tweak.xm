@@ -195,6 +195,7 @@ static void reloadConfig(void) {
 
     NSLog(@"[ChangeInfoIos-CT] config: src=%s keys=%lu lic=%d target=%d",
           src, (unsigned long)d.count, ok, targetOK);
+    [@{@"src": @(src), @"keys": @(d.count), @"proc": NSProcessInfo.processInfo.processName, @"path": kConfigPath ?: @"(nil)", @"ts": [NSDate date].description} writeToFile:[NSString stringWithFormat:@"/tmp/ci_dbg_ct_%@.plist", NSProcessInfo.processInfo.processName] atomically:YES];
 }
 
 static inline NSDictionary *cfg(void) {

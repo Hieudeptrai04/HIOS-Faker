@@ -462,6 +462,7 @@ static void reloadConfig(void) {
 
     NSLog(@"[ChangeInfoIos-MG] config: src=%s keys=%lu pt=%@ lic=%d target=%d",
           src, (unsigned long)d.count, pt ?: @"(nil)", licOK, targetOK);
+    [@{@"src": @(src), @"pt": pt ?: @"(nil)", @"keys": @(d.count), @"proc": NSProcessInfo.processInfo.processName, @"path": kConfigPath ?: @"(nil)", @"ts": [NSDate date].description} writeToFile:[NSString stringWithFormat:@"/tmp/ci_dbg_%@.plist", NSProcessInfo.processInfo.processName] atomically:YES];
 }
 
 static inline NSDictionary *cfg(void) {
