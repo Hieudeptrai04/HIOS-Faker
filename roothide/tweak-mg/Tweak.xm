@@ -447,6 +447,14 @@ static void reloadConfig(void) {
         d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
         src = d ? "/tmp" : "none";
     }
+    // roothide: the config FILE (/var/jb/etc/changeinfoios/config.plist) is not
+    // readable from inside App-Store sandboxes, so read the config from the
+    // CFPreferences "com.changeinfoios" domain instead — it is populated by the
+    // app + postinst and IS reachable cross-sandbox on roothide.
+    if (!d || d.count == 0) {
+        NSDictionary *cp = ci_cfprefsConfig();
+        if (cp.count) { d = cp; src = "cfprefs"; }
+    }
     if (!d) d = @{};
     g_lastSrc = src;
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
