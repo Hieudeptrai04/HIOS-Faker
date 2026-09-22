@@ -797,16 +797,6 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     // guard below (main-thread dladdr is a recursive lock acquire, never blocks).
     if (!pthread_main_np()) return result;
 
-    // ROOTHIDE: skip the dladdr(__builtin_return_address(0)) caller-check below.
-    // dladdr takes the dyld loader lock; under roothide's dyld hooks it wedges on
-    // the MAIN thread while Zalo dlopens images during scene-create (Zalo hammers
-    // ProductType there) → ~19s stall → FrontBoard scene-create watchdog SIGKILL
-    // ("Zalo văng"). The UIKit std::terminate the caller-check guards against only
-    // happens when the spoofed ProductType has NO device plist; we only ever fake
-    // to REAL models (e.g. iPhone12,3 = iPhone 11 Pro), whose plist exists, so
-    // handing UIKit the fake is safe. This build is roothide-only.
-    return result;
-
     // We have a spoof value → skip UIKit/system-internal callers so a fake device
     // key can't crash them. The std::terminate this guards against is specific to a
     // fake STRING key: UIKit's _UIDeviceNativeUserInterfaceIdiomIgnoringClassic reads
