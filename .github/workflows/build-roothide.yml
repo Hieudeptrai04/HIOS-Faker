@@ -1,4 +1,4 @@
-name: Build HIOS Faker v3 â€” roothide
+name: Build HIOS Faker v3 — roothide
 
 on:
   workflow_dispatch:
@@ -111,7 +111,7 @@ jobs:
 
           # Stage ALL MobileSubstrate content (dylibs + plists) outside
           # DynamicLibraries so Sileo has nothing to detect as a substrate
-          # tweak â†’ Get Patcher never fires. postinst deploys everything
+          # tweak → Get Patcher never fires. postinst deploys everything
           # to DynamicLibraries after dpkg extracts the package.
           mkdir -p combined/etc/changeinfoios
           for F in combined/Library/MobileSubstrate/DynamicLibraries/*.dylib \
@@ -125,6 +125,23 @@ jobs:
           # detect any substrate content in the payload.
           rm -rf combined/Library/MobileSubstrate
           rm -rf combined/Library 2>/dev/null || true
+
+          # Fix roothide sandbox: Theos links libsubstrate via
+          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — dyld
+          # resolves @loader_path to an absolute jbroot subdir, then
+          # follows the .jbroot→/ symlink, which the kernel sandbox
+          # blocks for third-party (App Store) apps (EPERM).
+          # Rewrite to the rootless /usr/lib/ path that roothide's
+          # dyldhook translates to the real jbroot at runtime.
+          for DYLIB in \
+              combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
+              combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
+            [ -f "$DYLIB" ] || continue
+            install_name_tool -change \
+              "@loader_path/.jbroot/usr/lib/libsubstrate.dylib" \
+              "/usr/lib/libsubstrate.dylib" \
+              "$DYLIB" 2>/dev/null || true
+          done
 
           # Sign the dylibs (now in staging path)
           for DYLIB in \
@@ -153,7 +170,7 @@ jobs:
             BVER=$(echo "$VERSION" | tr -d '.')
             LC_ALL=C sed -i '' "/<key>CFBundleShortVersionString<\/key>/{n;s|<string>[^<]*</string>|<string>${VERSION}</string>|;}" "$APP_PLIST"
             LC_ALL=C sed -i '' "/<key>CFBundleVersion<\/key>/{n;s|<string>[^<]*</string>|<string>${BVER}</string>|;}" "$APP_PLIST"
-            echo "Patched Info.plist â†’ ${VERSION} / ${BVER}"
+            echo "Patched Info.plist → ${VERSION} / ${BVER}"
           fi
 
           cat > combined/DEBIAN/postinst <<'POSTINST'
@@ -196,7 +213,7 @@ jobs:
               *)       chmod 0644 "$DST" 2>/dev/null || true ;;
             esac
           done
-          # â”€â”€ roothide AutoPatches marker (CRITICAL) â”€â”€
+          # ── roothide AutoPatches marker (CRITICAL) ──
           # A roothide tweak dylib only loads if it has a sibling
           # "<dylib>.roothidepatch" that is a SYMLINK to the roothide runtime
           # compat layer AutoPatches.dylib. ElleKit sees the marker and loads
@@ -217,10 +234,10 @@ jobs:
           done
           chmod 0777 "$ETC" 2>/dev/null || true
 
-          # â”€â”€ Config REAL-FILE bridge for roothide â”€â”€
+          # ── Config REAL-FILE bridge for roothide ──
           # On roothide, sandbox blocks following symlinks across containers.
           # CFPreferences scopes writes to the calling app's container, so each
-          # target app sees DIFFERENT stale data â€” the 3-apps-3-results bug.
+          # target app sees DIFFERENT stale data — the 3-apps-3-results bug.
           # Fix: COPY the mirror as a REAL FILE to $ETC/config.plist (jbroot
           # path, readable by all processes on roothide) instead of symlinking.
           # The app's S6 write updates this same real file at runtime.
@@ -250,7 +267,7 @@ jobs:
           fi
           rm -f "$ETC/v3_mg_loaded.txt" "$ETC/v3_ct_loaded.txt" \
                 "$ETC/v3_mg_debug.log" 2>/dev/null || true
-          # Patch @loader_path/.jbroot/ â†’ absolute jbroot paths so dyld
+          # Patch @loader_path/.jbroot/ → absolute jbroot paths so dyld
           # resolves dependencies without relying on .jbroot symlink chains.
           RHPATCH=""
           for p in "$ROOT/usr/bin/roothidepatch" /usr/bin/roothidepatch \
@@ -288,9 +305,9 @@ jobs:
           if [ -n "$UICACHE" ]; then
             "$UICACHE" -p "$ROOT/Applications/HIOSFakerV3.app" 2>/dev/null || true
           fi
-          # â”€â”€ Periodic config-sync daemon (StartInterval) â”€â”€
+          # ── Periodic config-sync daemon (StartInterval) ──
           # On roothide the app is sandboxed and cannot write /tmp, so WatchPaths
-          # on /tmp never fires.  Use StartInterval (8 s) instead â€” the script
+          # on /tmp never fires.  Use StartInterval (8 s) instead — the script
           # discovers the HIOS mirror plist inside the app container, stages it
           # to /tmp, then distributes everywhere.
           SYNC_SCRIPT="$ETC/ci_configsync.sh"
@@ -391,12 +408,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${SILEO_PAT:-}" ]; then
-            echo "SILEO_DEPLOY_TOKEN not set â€” skipping auto-publish."
+            echo "SILEO_DEPLOY_TOKEN not set — skipping auto-publish."
             exit 0
           fi
           DEB=$(ls out/*.deb | head -1)
           BN=$(basename "$DEB")
-          echo "Publishing $BN to roothide Sileo poolâ€¦"
+          echo "Publishing $BN to roothide Sileo pool…"
           git clone --depth 1 "https://x-access-token:${SILEO_PAT}@github.com/Hieudeptrai04/hieudeptrai04.github.io.git" sileo_repo
           cp "$DEB" "sileo_repo/roothide/pool/main/$BN"
           cd sileo_repo
@@ -411,7 +428,7 @@ jobs:
             echo "Pushed $BN to roothide pool."
           fi
 
-      - name: On failure â€” publish build.log
+      - name: On failure — publish build.log
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
