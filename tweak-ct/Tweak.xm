@@ -16,6 +16,7 @@
 #import <string.h>
 #import <os/lock.h>
 #import <CommonCrypto/CommonCrypto.h>
+#import <fcntl.h>
 
 static NSString *const kConfigPath = @"/var/jb/etc/changeinfoios/config.plist";
 static NSString *const kReloadNote = @"com.changeinfoios.v3/ReloadConfig";
@@ -90,8 +91,23 @@ static int ct_targetsCurrentProcess(NSDictionary *d) {
     return 0;
 }
 
+static long long ci_extractSaveTs(NSDictionary *d) {
+    id v = d[@"_ci_save_ts"];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v longLongValue];
+    if ([v isKindOfClass:[NSString class]]) return [(NSString *)v longLongValue];
+    return 0;
+}
+
 static void reloadConfig(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    // 4.3.60: read both kConfigPath and /tmp fallback, pick the freshest.
+    NSDictionary *d1 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+    NSDictionary *d;
+    if (d1.count && d2.count) {
+        d = (ci_extractSaveTs(d2) > ci_extractSaveTs(d1)) ? d2 : d1;
+    } else {
+        d = d1.count ? d1 : (d2.count ? d2 : @{});
+    }
     int ok = ct_computeLicOK(d);
     int targetOK = ct_targetsCurrentProcess(d);
     os_unfair_lock_lock(&g_cfgLock);
@@ -210,6 +226,47 @@ static void notify_cb(int token) {
     reloadConfig();
 }
 
+// 4.3.60: foreground reload + VNODE file watcher (rootless).
+extern NSNotificationName const UIApplicationWillEnterForegroundNotification;
+static dispatch_source_t g_vnodeSource_ct = NULL;
+
+static void ci_tryArmVnodeWatcher(void) {
+    if (g_vnodeSource_ct) return;
+    int fd = open([kConfigPath fileSystemRepresentation], O_EVTONLY);
+    if (fd < 0) return;
+    dispatch_source_t ds = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_VNODE, fd,
+        DISPATCH_VNODE_WRITE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE,
+        dispatch_get_main_queue());
+    if (!ds) { close(fd); return; }
+    dispatch_source_set_event_handler(ds, ^{
+        unsigned long flags = dispatch_source_get_data(ds);
+        if (flags & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {
+            dispatch_source_cancel(ds);
+            g_vnodeSource_ct = NULL;
+            ci_tryArmVnodeWatcher();
+        }
+        reloadConfig();
+    });
+    dispatch_source_set_cancel_handler(ds, ^{ close(fd); });
+    g_vnodeSource_ct = ds;
+    dispatch_resume(ds);
+}
+
+static void ci_installForegroundAndWatcher(void) {
+    static dispatch_once_t fgOnce;
+    dispatch_once(&fgOnce, ^{
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *__unused n) {
+            reloadConfig();
+            ci_tryArmVnodeWatcher();
+        }];
+    });
+    ci_tryArmVnodeWatcher();
+}
+
 %ctor {
     @autoreleasepool {
         reloadConfig();
@@ -221,6 +278,7 @@ static void notify_cb(int token) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        ci_installForegroundAndWatcher();
 
         // Stealth (4.0.11): only drop the load-marker when debugging is enabled.
         if (access("/var/jb/etc/changeinfoios/.debug", F_OK) == 0 &&

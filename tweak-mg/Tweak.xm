@@ -334,9 +334,24 @@ static NSString *boardConfigForProductType(NSString *pt) {
     return pt.length ? m[pt] : nil;
 }
 
+static long long ci_extractSaveTs(NSDictionary *d) {
+    id v = d[@"_ci_save_ts"];
+    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v longLongValue];
+    if ([v isKindOfClass:[NSString class]]) return [(NSString *)v longLongValue];
+    return 0;
+}
+
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath] ?: @{};
+    // 4.3.60: read both kConfigPath and /tmp fallback, pick the freshest.
+    NSDictionary *d1 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+    NSDictionary *d;
+    if (d1.count && d2.count) {
+        d = (ci_extractSaveTs(d2) > ci_extractSaveTs(d1)) ? d2 : d1;
+    } else {
+        d = d1.count ? d1 : (d2.count ? d2 : @{});
+    }
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
     if (board.length) {
@@ -4111,6 +4126,51 @@ static void ci_runOneShotIfDue(void) {
 }
 
 // ============================================================
+// 4.3.60: foreground reload + VNODE file watcher.
+// Rootless can read kConfigPath directly, so the watcher monitors
+// THAT path (not /tmp). Foreground reload catches missed notify_post.
+// ============================================================
+static dispatch_source_t g_vnodeSource = NULL;
+
+static void ci_tryArmVnodeWatcher(void) {
+    if (g_vnodeSource) return;
+    if (!kConfigPath) return;
+    int fd = open([kConfigPath fileSystemRepresentation], O_EVTONLY);
+    if (fd < 0) return;
+    dispatch_source_t ds = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_VNODE, fd,
+        DISPATCH_VNODE_WRITE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE,
+        dispatch_get_main_queue());
+    if (!ds) { close(fd); return; }
+    dispatch_source_set_event_handler(ds, ^{
+        unsigned long flags = dispatch_source_get_data(ds);
+        if (flags & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {
+            dispatch_source_cancel(ds);
+            g_vnodeSource = NULL;
+            ci_tryArmVnodeWatcher();
+        }
+        reloadConfig();
+    });
+    dispatch_source_set_cancel_handler(ds, ^{ close(fd); });
+    g_vnodeSource = ds;
+    dispatch_resume(ds);
+}
+
+static void ci_installForegroundAndWatcher(void) {
+    static dispatch_once_t fgOnce;
+    dispatch_once(&fgOnce, ^{
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *__unused n) {
+            reloadConfig();
+            ci_tryArmVnodeWatcher();
+        }];
+    });
+    ci_tryArmVnodeWatcher();
+}
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) {
@@ -4369,6 +4429,7 @@ static void notify_cb(int t) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        ci_installForegroundAndWatcher();
 
         // RRS keychain DUMP + RESTORE — RE-ENABLED 4.3.2 (crash-safe rewrite).
         // The 4.1.3 disable was because the replay ran too eagerly AND a stale

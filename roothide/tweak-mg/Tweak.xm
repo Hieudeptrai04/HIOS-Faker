@@ -439,21 +439,30 @@ static const char *g_lastSrc = "none";
 
 static void reloadConfig(void) {
     CIInternalFSGuard fsGuard;
-    const char *src = "kConfigPath";
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-        src = d ? "/tmp" : "none";
+    // 4.3.60: freshness-aware config loading. Read ALL available sources,
+    // extract _ci_save_ts from each, pick the one with the highest timestamp.
+    // The old cascade (kConfigPath → /tmp → cfprefs) took the FIRST source
+    // that returned data, so a stale kConfigPath file could shadow a fresh
+    // CFPreferences write — the "3-apps-stale" bug on roothide.
+    struct { NSDictionary *d; const char *tag; long long ts; } sources[4];
+    int nSrc = 0;
+    NSDictionary *d1 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (d1.count) sources[nSrc++] = (typeof(sources[0])){d1, "kConfigPath", ci_extractSaveTs(d1)};
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+    if (d2.count) sources[nSrc++] = (typeof(sources[0])){d2, "/tmp", ci_extractSaveTs(d2)};
+    NSDictionary *d3 = ci_cfprefsConfig();
+    if (d3.count) sources[nSrc++] = (typeof(sources[0])){d3, "cfprefs", ci_extractSaveTs(d3)};
+    NSDictionary *d4 = ci_cfprefsSharedConfig();
+    if (d4.count) sources[nSrc++] = (typeof(sources[0])){d4, "cfprefs.shared", ci_extractSaveTs(d4)};
+    // Pick the source with the highest _ci_save_ts (newest write wins).
+    int best = -1;
+    for (int i = 0; i < nSrc; i++) {
+        if (best < 0 || sources[i].ts > sources[best].ts) best = i;
     }
-    // roothide: the config FILE (/var/jb/etc/changeinfoios/config.plist) is not
-    // readable from inside App-Store sandboxes, so read the config from the
-    // CFPreferences "com.changeinfoios" domain instead — it is populated by the
-    // app + postinst and IS reachable cross-sandbox on roothide.
-    if (!d || d.count == 0) {
-        NSDictionary *cp = ci_cfprefsConfig();
-        if (cp.count) { d = cp; src = "cfprefs"; }
-    }
-    if (!d) d = @{};
+    const char *src;
+    NSDictionary *d;
+    if (best >= 0) { d = sources[best].d; src = sources[best].tag; }
+    else           { d = @{};             src = "none"; }
     g_lastSrc = src;
     NSString *pt = [d[@"ProductType"] isKindOfClass:[NSString class]] ? d[@"ProductType"] : nil;
     NSString *board = boardConfigForProductType(pt);
@@ -4409,6 +4418,72 @@ static void ci_runOneShotIfDue(void) {
 }
 
 // ============================================================
+// 4.3.60: foreground reload + file watcher. Call once per ctor
+// path (Zalo-MG-only, Zalo-minimal, full) AFTER registering
+// notify_register_dispatch. This covers the two remaining gaps:
+//   (a) notify_post doesn't reach a suspended app — reload on
+//       UIApplicationWillEnterForeground catches it.
+//   (b) on roothide the LaunchDaemon writes config to kConfigPath
+//       asynchronously — a VNODE watcher picks it up instantly
+//       instead of waiting for a notification.
+// ============================================================
+static dispatch_source_t g_vnodeSource = NULL;
+
+// (b) Try to arm the VNODE watcher on /tmp/com.changeinfoios.config.plist.
+//     Safe to call multiple times — no-op if already armed.
+static void ci_tryArmVnodeWatcher(void) {
+    if (g_vnodeSource) return;   // already armed
+    const char *watchPath = "/tmp/com.changeinfoios.config.plist";
+    int fd = open(watchPath, O_EVTONLY);
+    if (fd < 0) {
+        dbglog("vnode open FAIL %s errno=%d\n", watchPath, errno);
+        return;
+    }
+    dispatch_source_t ds = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_VNODE, fd,
+        DISPATCH_VNODE_WRITE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE,
+        dispatch_get_main_queue());
+    if (!ds) { close(fd); return; }
+    dispatch_source_set_event_handler(ds, ^{
+        unsigned long flags = dispatch_source_get_data(ds);
+        dbglog("vnode event 0x%lx %s\n", flags, g_procname);
+        if (flags & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {
+            // File was replaced atomically (writeToFile:atomically:YES
+            // unlinks + renames). Re-open the fd so we keep watching.
+            dispatch_source_cancel(ds);
+            g_vnodeSource = NULL;
+            ci_tryArmVnodeWatcher();   // re-arm on the new inode
+        }
+        reloadConfig();
+    });
+    dispatch_source_set_cancel_handler(ds, ^{ close(fd); });
+    g_vnodeSource = ds;
+    dispatch_resume(ds);
+    dbglog("vnode watch fd=%d %s\n", fd, watchPath);
+}
+
+static void ci_installForegroundAndWatcher(void) {
+    // (a) Foreground reload: re-read config every time the host app
+    //     activates. Cost is negligible (one plist parse + pointer swap).
+    //     Also retries arming the VNODE watcher if it failed at ctor
+    //     (file didn't exist yet).
+    static dispatch_once_t fgOnce;
+    dispatch_once(&fgOnce, ^{
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *__unused n) {
+            dbglog("foreground reload %s\n", g_procname);
+            reloadConfig();
+            ci_tryArmVnodeWatcher();   // retry if not yet armed
+        }];
+    });
+
+    // Initial attempt to arm the VNODE watcher.
+    ci_tryArmVnodeWatcher();
+}
+
+// ============================================================
 // ctor: install hook + register reload notify.
 // ============================================================
 static void notify_cb(int t) {
@@ -4530,6 +4605,7 @@ static void notify_cb(int t) {
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
                 notify_register_dispatch([kAppNote UTF8String], &z0c,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                ci_installForegroundAndWatcher();
                 ci_bisect("H0_zalo_mgonly_return");
                 return;
             }
@@ -4686,6 +4762,7 @@ static void notify_cb(int t) {
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
                 notify_register_dispatch([kAppNote UTF8String], &z3,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+                ci_installForegroundAndWatcher();
                 ci_bisect("H2b_zalo_minimal_return");
                 dbglog("ctor %s roothide Zalo minimal (model-only, no heavy hooks)\n", g_procname);
                 return;
@@ -4797,6 +4874,7 @@ static void notify_cb(int t) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        ci_installForegroundAndWatcher();
 
         // RRS keychain DUMP + RESTORE — RE-ENABLED 4.3.2 (crash-safe rewrite).
         // The 4.1.3 disable was because the replay ran too eagerly AND a stale

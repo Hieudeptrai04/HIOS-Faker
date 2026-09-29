@@ -18,6 +18,10 @@
 #import <CommonCrypto/CommonCrypto.h>
 #import <dlfcn.h>
 
+// UIKit is always loaded in app processes but CT doesn't link it.
+// Declare the notification constant so the linker resolves it at runtime.
+extern NSNotificationName const UIApplicationWillEnterForegroundNotification;
+
 // Bisect diagnostic (roothide crash hunt): append a marker to the app's OWN
 // sandbox tmp ($TMPDIR) — writable even from sandboxed App Store apps, unlike
 // /tmp. ReportCrash is dead on this device, so this is how we see how far the
@@ -198,19 +202,26 @@ static long long ci_extractSaveTs(NSDictionary *d) {
 static const char *g_lastSrc = "none";
 
 static void reloadConfig(void) {
-    const char *src = "kConfigPath";
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    if (!d) {
-        d = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
-        src = d ? "/tmp" : "none";
+    // 4.3.60: freshness-aware config loading — same logic as tweak-mg.
+    // Read ALL sources, pick the one with the highest _ci_save_ts.
+    struct { NSDictionary *d; const char *tag; long long ts; } sources[4];
+    int nSrc = 0;
+    NSDictionary *d1 = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
+    if (d1.count) sources[nSrc++] = (typeof(sources[0])){d1, "kConfigPath", ci_extractSaveTs(d1)};
+    NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/com.changeinfoios.config.plist"];
+    if (d2.count) sources[nSrc++] = (typeof(sources[0])){d2, "/tmp", ci_extractSaveTs(d2)};
+    NSDictionary *d3 = ci_cfprefsConfig();
+    if (d3.count) sources[nSrc++] = (typeof(sources[0])){d3, "cfprefs", ci_extractSaveTs(d3)};
+    NSDictionary *d4 = ci_cfprefsSharedConfig();
+    if (d4.count) sources[nSrc++] = (typeof(sources[0])){d4, "cfprefs.shared", ci_extractSaveTs(d4)};
+    int best = -1;
+    for (int i = 0; i < nSrc; i++) {
+        if (best < 0 || sources[i].ts > sources[best].ts) best = i;
     }
-    // roothide: config FILE is sandbox-blocked from app containers; fall back to
-    // the CFPreferences "com.changeinfoios" domain (reachable cross-sandbox).
-    if (!d || d.count == 0) {
-        NSDictionary *cp = ci_cfprefsConfig();
-        if (cp.count) { d = cp; src = "cfprefs"; }
-    }
-    if (!d) d = @{};
+    const char *src;
+    NSDictionary *d;
+    if (best >= 0) { d = sources[best].d; src = sources[best].tag; }
+    else           { d = @{};             src = "none"; }
     g_lastSrc = src;
     int ok = ct_computeLicOK(d);
     int targetOK = ct_targetsCurrentProcess(d);
@@ -334,6 +345,47 @@ static void notify_cb(int token) {
     reloadConfig();
 }
 
+// 4.3.60: foreground reload + file watcher (same as tweak-mg).
+static dispatch_source_t g_vnodeSource_ct = NULL;
+
+static void ci_tryArmVnodeWatcher(void) {
+    if (g_vnodeSource_ct) return;
+    const char *watchPath = "/tmp/com.changeinfoios.config.plist";
+    int fd = open(watchPath, O_EVTONLY);
+    if (fd < 0) return;
+    dispatch_source_t ds = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_VNODE, fd,
+        DISPATCH_VNODE_WRITE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE,
+        dispatch_get_main_queue());
+    if (!ds) { close(fd); return; }
+    dispatch_source_set_event_handler(ds, ^{
+        unsigned long flags = dispatch_source_get_data(ds);
+        if (flags & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {
+            dispatch_source_cancel(ds);
+            g_vnodeSource_ct = NULL;
+            ci_tryArmVnodeWatcher();
+        }
+        reloadConfig();
+    });
+    dispatch_source_set_cancel_handler(ds, ^{ close(fd); });
+    g_vnodeSource_ct = ds;
+    dispatch_resume(ds);
+}
+
+static void ci_installForegroundAndWatcher(void) {
+    static dispatch_once_t fgOnce;
+    dispatch_once(&fgOnce, ^{
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *__unused n) {
+            reloadConfig();
+            ci_tryArmVnodeWatcher();
+        }];
+    });
+    ci_tryArmVnodeWatcher();
+}
+
 %ctor {
     ci_bisect("B_ctor_enter");
     @autoreleasepool {
@@ -349,6 +401,7 @@ static void notify_cb(int token) {
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
         notify_register_dispatch([kAppNote UTF8String], &t3,
             dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
+        ci_installForegroundAndWatcher();
         ci_bisect("E_notify_done");
 
         // Per-app diagnostic: write load info to app's own tmp
