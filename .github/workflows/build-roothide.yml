@@ -127,21 +127,21 @@ jobs:
           rm -rf combined/Library 2>/dev/null || true
 
           # Fix roothide sandbox: Theos links libsubstrate via
-          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — the
-          # .jbroot→/ symlink chain crosses container boundaries,
-          # which the kernel sandbox blocks for third-party apps
-          # (EPERM) and /usr/lib/ rootfs overlay isn't visible via
-          # dlopen inside sandboxed processes either.
-          # Rewrite to @loader_path/libsubstrate.dylib so the dep
-          # resolves from the same TweakInject dir; postinst copies
-          # the real libsubstrate.dylib there.
+          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — sandbox
+          # blocks the .jbroot symlink chain for third-party apps.
+          # Rewrite to /usr/local/lib/libellekit.dylib — the INSTALL
+          # NAME of the library ElleKit tweakloader already loaded into
+          # every hooked process.  dyld matches the LC_LOAD_DYLIB path
+          # against already-loaded images by install_name and reuses the
+          # in-memory image, so no filesystem access occurs and sandbox
+          # cannot block it.
           for DYLIB in \
               combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
               combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
             [ -f "$DYLIB" ] || continue
             install_name_tool -change \
               "@loader_path/.jbroot/usr/lib/libsubstrate.dylib" \
-              "@loader_path/libsubstrate.dylib" \
+              "/usr/local/lib/libellekit.dylib" \
               "$DYLIB" 2>/dev/null || true
           done
 
@@ -235,16 +235,6 @@ jobs:
             sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
           done
           chmod 0777 "$ETC" 2>/dev/null || true
-          # ── Local libsubstrate copy for sandbox-safe loading ──
-          # CI rewrites the LC_LOAD_DYLIB to @loader_path/libsubstrate.dylib
-          # so the dep resolves from TweakInject without symlink chains.
-          # Copy the real file (follow symlinks) next to the tweaks.
-          SUBSTRATE="$ROOT/usr/lib/libsubstrate.dylib"
-          if [ -e "$SUBSTRATE" ]; then
-            cp -fL "$SUBSTRATE" "$MS/libsubstrate.dylib" 2>/dev/null || true
-            chmod 0755 "$MS/libsubstrate.dylib" 2>/dev/null || true
-            chown root:wheel "$MS/libsubstrate.dylib" 2>/dev/null || true
-          fi
 
           # ── Config REAL-FILE bridge for roothide ──
           # On roothide, sandbox blocks following symlinks across containers.
