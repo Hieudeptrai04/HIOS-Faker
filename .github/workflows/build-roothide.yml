@@ -404,7 +404,7 @@ jobs:
             --notes "Roothide build from ${GITHUB_SHA}. Requires opa334 roothide bootstrap. Install via Sileo source https://zalosuper.net/roothide/"
 
       - name: Auto-publish deb to Sileo roothide folder
-        if: success() && github.ref == 'refs/heads/roothide'
+        if: false  # TEMP(4.3.61 MG-inject verify): install+verify on device FIRST, then re-enable to publish Sileo
         env:
           SILEO_PAT: ${{ secrets.SILEO_DEPLOY_TOKEN }}
         run: |
