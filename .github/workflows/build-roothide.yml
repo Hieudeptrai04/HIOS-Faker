@@ -127,21 +127,25 @@ jobs:
           rm -rf combined/Library 2>/dev/null || true
 
           # Fix roothide sandbox: Theos links libsubstrate via
-          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — sandbox
-          # blocks the .jbroot symlink chain for third-party apps.
-          # Rewrite to /usr/local/lib/libellekit.dylib — the INSTALL
-          # NAME of the library ElleKit tweakloader already loaded into
-          # every hooked process.  dyld matches the LC_LOAD_DYLIB path
-          # against already-loaded images by install_name and reuses the
-          # in-memory image, so no filesystem access occurs and sandbox
-          # cannot block it.
+          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — the .jbroot
+          # symlink chain is sandbox-blocked for third-party apps, so dyld
+          # fails the tweak's load BEFORE any constructor runs (tweak never
+          # injects). Rewrite it to @loader_path/libsubstrate.dylib:
+          # ElleKit's libsubstrate.dylib ships right next to the tweak in
+          # both TweakInject and DynamicLibraries, so the direct sibling
+          # path resolves with no .jbroot symlink and nothing for the
+          # sandbox to block. VERIFIED on device (iPhone10,3): the previous
+          # target /usr/local/lib/libellekit.dylib was WRONG here — no such
+          # file, and no loaded image carries that install_name — so BOTH
+          # MG and CT silently failed to load. @loader_path/libsubstrate is
+          # exactly what the working CT build already resolved against.
           for DYLIB in \
               combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
               combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
             [ -f "$DYLIB" ] || continue
             install_name_tool -change \
               "@loader_path/.jbroot/usr/lib/libsubstrate.dylib" \
-              "/usr/local/lib/libellekit.dylib" \
+              "@loader_path/libsubstrate.dylib" \
               "$DYLIB" 2>/dev/null || true
           done
 
