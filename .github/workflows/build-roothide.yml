@@ -9,6 +9,7 @@ on:
       - "roothide/tweak-mg/**"
       - "roothide/tweak-ct/**"
       - "roothide/ci_configsync.sh"
+      - "roothide/tools/**"
       - "app/**"
       - ".github/workflows/build-roothide.yml"
 
@@ -90,6 +91,28 @@ jobs:
           echo "Built: $DEB"
           ls -lh packages/
 
+      - name: Build insert_dylib tool
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          set -euo pipefail
+          SDK_PATH="$THEOS/sdks/iPhoneOS${SDK_VERSION}.sdk"
+          # Use Xcode's clang with Theos SDK sysroot for arm64/arm64e cross-compile
+          clang \
+            -target arm64-apple-ios15.0 \
+            -isysroot "$SDK_PATH" \
+            -O2 -o /tmp/insert_dylib_arm64 \
+            roothide/tools/insert_dylib.c
+          clang \
+            -target arm64e-apple-ios15.0 \
+            -isysroot "$SDK_PATH" \
+            -O2 -o /tmp/insert_dylib_arm64e \
+            roothide/tools/insert_dylib.c
+          lipo -create /tmp/insert_dylib_arm64 /tmp/insert_dylib_arm64e \
+            -output roothide/tools/insert_dylib
+          ldid -S roothide/tools/insert_dylib
+          file roothide/tools/insert_dylib
+          echo "insert_dylib built OK"
+
       - name: Combine into single deb
         run: |
           set -euo pipefail
@@ -160,6 +183,12 @@ jobs:
           # Copy config sync daemon script into staging
           cp roothide/ci_configsync.sh combined/etc/changeinfoios/ci_configsync.sh
           chmod 0755 combined/etc/changeinfoios/ci_configsync.sh
+
+          # Copy insert_dylib tool + patch script into staging
+          cp roothide/tools/insert_dylib combined/etc/changeinfoios/insert_dylib
+          chmod 0755 combined/etc/changeinfoios/insert_dylib
+          cp roothide/tools/ci_patch_apps.sh combined/etc/changeinfoios/ci_patch_apps.sh
+          chmod 0755 combined/etc/changeinfoios/ci_patch_apps.sh
 
           # Sign the app binary with entitlements
           APP_BIN="combined/Applications/HIOSFakerV3.app/HIOSFakerV3"
@@ -303,6 +332,12 @@ jobs:
               "$JBCTL" trustcache add "$D" 2>/dev/null || true
             done
           fi
+          # ── Force-inject into apps that systemhook skips ──
+          PATCH_SCRIPT="$ETC/ci_patch_apps.sh"
+          if [ -x "$PATCH_SCRIPT" ]; then
+            sh "$PATCH_SCRIPT" "$ETC" "$MS" 2>/dev/null || true
+          fi
+
           # Register app icon on SpringBoard
           UICACHE=""
           for u in "$ROOT/usr/bin/uicache" /usr/bin/uicache; do
@@ -360,6 +395,31 @@ jobs:
           fi
           R="${R%/}"
           rm -f "$R/Library/LaunchDaemons/com.changeinfoios.configsync.plist" 2>/dev/null || true
+          # Restore patched app binaries from backup
+          ETC="$R/etc/changeinfoios"
+          BACKUP="$ETC/backup"
+          if [ -d "$BACKUP" ]; then
+            for orig in "$BACKUP"/*.orig; do
+              [ -f "$orig" ] || continue
+              APP_NAME="$(basename "$orig" .orig)"
+              for uuid_dir in /var/containers/Bundle/Application/*/; do
+                if [ -d "${uuid_dir}${APP_NAME}.app" ]; then
+                  BIN="${uuid_dir}${APP_NAME}.app/${APP_NAME}"
+                  if [ -f "$BIN" ]; then
+                    cp "$orig" "$BIN" 2>/dev/null || true
+                    rm -f "${uuid_dir}${APP_NAME}.app/Frameworks/ChangeInfoIosMG.dylib" 2>/dev/null || true
+                    rm -f "${uuid_dir}${APP_NAME}.app/Frameworks/libsubstrate.dylib" 2>/dev/null || true
+                    JBCTL=""
+                    for c in /usr/bin/jbctl /var/jb/basebin/jbctl /basebin/jbctl; do
+                      [ -x "$c" ] && JBCTL="$c" && break
+                    done
+                    [ -n "$JBCTL" ] && "$JBCTL" trust "$BIN" 2>/dev/null || true
+                  fi
+                fi
+              done
+            done
+            rm -rf "$BACKUP" 2>/dev/null || true
+          fi
           exit 0
           PRERM
           chmod 0755 combined/DEBIAN/prerm
