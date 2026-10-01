@@ -4499,6 +4499,24 @@ static void notify_cb(int t) {
 
 %ctor {
     @autoreleasepool {
+        // Universal filter: skip system daemons that should never be hooked.
+        // UIKit filter already excludes most non-GUI processes, but SpringBoard
+        // and a few others link UIKit and must be excluded explicitly.
+        {
+            const char *ep = getprogname();
+            if (ep && (strcmp(ep, "SpringBoard") == 0 ||
+                       strcmp(ep, "backboardd") == 0 ||
+                       strcmp(ep, "aggregated") == 0 ||
+                       strcmp(ep, "installd") == 0 ||
+                       strcmp(ep, "lsd") == 0 ||
+                       strcmp(ep, "assertiond") == 0 ||
+                       strcmp(ep, "runningboardd") == 0 ||
+                       strcmp(ep, "FrontBoardAgent") == 0 ||
+                       strcmp(ep, "HIOSFakerV3") == 0)) {
+                return;
+            }
+        }
+
         // Initialize roothide-dynamic paths before any config read.
         snprintf(kDbgPath, sizeof(kDbgPath), "%s/etc/changeinfoios/v3_mg_debug.log", ci_rh_prefix());
         kConfigPath = [NSString stringWithFormat:@"%s/etc/changeinfoios/config.plist", ci_rh_prefix()];
