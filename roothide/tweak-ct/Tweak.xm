@@ -387,6 +387,20 @@ static void ci_installForegroundAndWatcher(void) {
 }
 
 %ctor {
+    {
+        const char *ep = getprogname();
+        if (ep && (strcmp(ep, "SpringBoard") == 0 ||
+                   strcmp(ep, "backboardd") == 0 ||
+                   strcmp(ep, "aggregated") == 0 ||
+                   strcmp(ep, "installd") == 0 ||
+                   strcmp(ep, "lsd") == 0 ||
+                   strcmp(ep, "assertiond") == 0 ||
+                   strcmp(ep, "runningboardd") == 0 ||
+                   strcmp(ep, "FrontBoardAgent") == 0 ||
+                   strcmp(ep, "HIOSFakerV3") == 0)) {
+            return;
+        }
+    }
     ci_bisect("B_ctor_enter");
     @autoreleasepool {
         kConfigPath = [NSString stringWithFormat:@"%s/etc/changeinfoios/config.plist", ci_rh_prefix()];
