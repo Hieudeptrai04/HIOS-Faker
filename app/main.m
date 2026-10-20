@@ -86,7 +86,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.57";
+static NSString *const kAppVersion = @"1.0.1";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -4160,6 +4160,15 @@ static BOOL ci_staticFilterVerifyAtPath(NSString *path, NSArray<NSString *> *req
         for (id e in (NSArray *)execs) if (![e isKindOfClass:[NSString class]] || ![(NSString *)e length]) return NO;
     }
     NSSet *bs = [NSSet setWithArray:(NSArray *)bundles];
+    // Roothide packaging ships a thin catch-all filter: Bundles=[com.apple.UIKit].
+    // ElleKit + Mode=Any then injects the dylib into every process linking UIKit
+    // (= every iOS app, including the target bundles the user selects). The dylib's
+    // own %ctor + per-process guard already restricts behavior to the configured
+    // targets, so a catch-all plist covers any required bundle. Treat it as the
+    // ships-everywhere wildcard and short-circuit the per-bundle membership check;
+    // without this, roothide can't pre-write per-target bundle IDs (sandbox blocks
+    // the plist write) and Change Device fails with "Filter plist khong hop le".
+    if ([bs containsObject:@"com.apple.UIKit"]) return YES;
     for (NSString *bid in requiredBids) {
         if (!bid.length || ci_isNoInjectBundle(bid)) continue;
         if (![bs containsObject:bid]) return NO;
