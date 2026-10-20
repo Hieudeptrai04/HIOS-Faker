@@ -168,7 +168,7 @@ jobs:
             [ -f "$DYLIB" ] || continue
             install_name_tool -change \
               "@loader_path/.jbroot/usr/lib/libsubstrate.dylib" \
-              "@loader_path/libsubstrate.dylib" \
+              "/var/jb/usr/lib/libsubstrate.dylib" \
               "$DYLIB" 2>/dev/null || true
           done
 
