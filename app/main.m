@@ -500,6 +500,19 @@ static NSString *ci_findDataContainerForBundle(NSString *bundleID);
         }
     }
 
+    // Flush cfprefsd so the injected tweak's CFPreferences read returns the values
+    // we JUST wrote instead of a stale cache. ROOT CAUSE this fixes (roothide,
+    // proven on-device): after a Change the app updates the com.changeinfoios /
+    // .shared cfprefs domains, but the per-user cfprefsd can keep serving the
+    // PREVIOUS model to Tweak.xm's ci_cfprefsConfig() (and the kConfigPath disk
+    // mirror can lag when S6 doesn't re-fire), so the freshness picker sees only
+    // stale sources and the target app (AIDA64 / Zalo) keeps showing the old model
+    // — the "change xong vẫn máy cũ" bug. The periodic config-sync LaunchAgent used
+    // to flush this (its Stage 4), but that agent dies on every re-JB (its exec path
+    // pins a now-stale jbroot), so the flush has to live here, in the writer, where
+    // it always runs. killall is idempotent and cfprefsd auto-respawns.
+    ci_run("killall cfprefsd 2>/dev/null");
+
     [self notifyReload];
     return mirrorOK || cfPrefsOK;
 }
