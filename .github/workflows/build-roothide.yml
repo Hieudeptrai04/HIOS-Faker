@@ -330,8 +330,20 @@ jobs:
                    "$ROOT/usr/bin/fastPathSign" /usr/bin/fastPathSign; do
             [ -x "$p" ] && FPS="$p" && break
           done
-          for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib" \
-                   "$ROOT/Applications/HIOSFakerV3.app/HIOSFakerV3"; do
+          # 1.0.8: NEVER touch /Applications/HIOSFakerV3.app/HIOSFakerV3
+          # here. The CI build step signed it with its full entitlements
+          # plist (platform-application + tcc/no-sandbox/private.security
+          # keys per app/entitlements.plist); a plain `ldid -S` without
+          # a plist here STRIPS those entitlements. The user then taps
+          # HIOS Faker on the home screen, SpringBoard spawns it as the
+          # mobile user, iOS refuses to grant platform-application, and
+          # the app crashes on launch. CLI exec as root bypasses the
+          # check so it looks like the binary is fine when you test from
+          # SSH — this is how I missed it in 1.0.7. The dpkg data.tar.xz
+          # already shipped the signed binary; nothing in the postinst
+          # should re-sign it unless we also hand ldid the entitlements
+          # file, which lives in CI build context only.
+          for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib"; do
             [ -f "$D" ] || continue
             [ -n "$LDID" ] && "$LDID" -S "$D" 2>/dev/null || true
             [ -n "$FPS" ] && "$FPS" "$D" 2>/dev/null || true
