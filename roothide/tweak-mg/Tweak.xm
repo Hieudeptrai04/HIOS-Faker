@@ -4624,6 +4624,25 @@ static void notify_cb(int t) {
                 notify_register_dispatch([kAppNote UTF8String], &z0c,
                     dispatch_get_main_queue(), ^(int x){ notify_cb(x); });
                 ci_installForegroundAndWatcher();
+                // 1.0.5: install the JB-hide fs filter even in the Zalo
+                // minimal branch. Without it Zalo's anti-tamper SDK scans
+                // /var/jb /usr/lib/TweakInject .jbroot etc. right after
+                // UIApplicationMain, finds roothide artifacts, and self-
+                // SIGKILLs AFTER our %ctor completed (bisect H0_zalo_mgonly_
+                // return fires 5x per launch, confirming the ctor runs clean
+                // and Zalo kills itself later). ci_installJBHideHooks hooks
+                // only the fs introspection surface (stat / lstat / access /
+                // fopen / fstatat / faccessat / getattrlist / readlink /
+                // opendir / readdir / sandbox_check / getenv / dyld image
+                // enum / dladdr) — it does NOT touch the libc identity
+                // surface (sysctl / getifaddrs / gethostname / uname) that
+                // actually fire-crashes Zalo per the comment above, so
+                // adding it here is safe. AIDA64 proves the model-spoof
+                // pipeline works end-to-end (shows iPhone 8 Plus from fake
+                // config); Zalo just needs the fs curtain.
+                ci_bisect("H0a_zalo_jbhide_pre");
+                ci_installJBHideHooks();
+                ci_bisect("H0b_zalo_jbhide_post");
                 ci_bisect("H0_zalo_mgonly_return");
                 return;
             }
