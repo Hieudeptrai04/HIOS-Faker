@@ -149,30 +149,26 @@ jobs:
           rm -rf combined/Library/MobileSubstrate
           rm -rf combined/Library 2>/dev/null || true
 
-          # Fix roothide sandbox: Theos links libsubstrate via
-          # @loader_path/.jbroot/usr/lib/libsubstrate.dylib — the .jbroot
-          # symlink chain is sandbox-blocked for third-party apps, so dyld
-          # fails the tweak's load BEFORE any constructor runs (tweak never
-          # injects). Rewrite it to @loader_path/libsubstrate.dylib:
-          # ElleKit's libsubstrate.dylib ships right next to the tweak in
-          # both TweakInject and DynamicLibraries, so the direct sibling
-          # path resolves with no .jbroot symlink and nothing for the
-          # sandbox to block. VERIFIED on device (iPhone10,3): the previous
-          # target /usr/local/lib/libellekit.dylib was WRONG here — no such
-          # file, and no loaded image carries that install_name — so BOTH
-          # MG and CT silently failed to load. @loader_path/libsubstrate is
-          # exactly what the working CT build already resolved against.
-          for DYLIB in \
-              combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
-              combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
-            [ -f "$DYLIB" ] || continue
-            install_name_tool -change \
-              "@loader_path/.jbroot/usr/lib/libsubstrate.dylib" \
-              "/var/jb/usr/lib/libsubstrate.dylib" \
-              "$DYLIB" 2>/dev/null || true
-          done
+          # DO NOT rewrite install_name on roothide dylibs. Theos's roothide
+          # fork emits @loader_path/.jbroot/usr/lib/libsubstrate.dylib which is
+          # the ROOTHIDE-SPEC-COMPLIANT format: at dyld load time the sibling
+          # ".jbroot" symlink next to each tweak (installed by dpkg into
+          # /usr/lib/TweakInject/.jbroot -> /) resolves "@loader_path/.jbroot/
+          # usr/lib/libsubstrate.dylib" to "/usr/lib/libsubstrate.dylib" where
+          # ElleKit's libsubstrate lives. Three previous "fix" rewrites
+          # (@loader_path/libsubstrate, /usr/local/lib/libellekit, /var/jb/
+          # usr/lib/libsubstrate) all moved AWAY from the correct Theos
+          # default; they masked the real bug — missing CoreTrust/AMFI trust
+          # for our dylib's cdhash — which surfaced as a SpringBoard
+          # CODESIGNING crashloop (runs=40, LastExitReason=OS_REASON_CODESIGNING)
+          # the moment a fresh dyld tried to load our tweak. Trust-cache
+          # population via jbctl silently fails on this bootstrap, so we
+          # replace it below with fastPathSign's CoreTrust bypass, which
+          # rewrites each slice's signature blob so AMFI accepts the dylib
+          # without needing a trustcache entry at all.
 
-          # Sign the dylibs (now in staging path)
+          # Sign the dylibs (ad-hoc first), then apply fastPathSign CoreTrust
+          # bypass so dyld / AMFI load them without a trustcache insert.
           for DYLIB in \
               combined/etc/changeinfoios/ChangeInfoIosMG.dylib \
               combined/etc/changeinfoios/ChangeInfoIosCT.dylib; do
@@ -315,22 +311,33 @@ jobs:
               "$RHPATCH" "$D" 2>/dev/null || true
             done
           fi
-          JBCTL=""
-          for c in "$ROOT/basebin/jbctl" "$ROOT/usr/bin/jbctl" \
-                   /usr/bin/jbctl /basebin/jbctl; do
-            [ -x "$c" ] && JBCTL="$c" && break
-          done
           LDID=""
           for l in "$ROOT/usr/bin/ldid" /usr/bin/ldid; do
             [ -x "$l" ] && LDID="$l" && break
           done
-          if [ -n "$JBCTL" ]; then
-            for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib" \
-                     "$ROOT/Applications/HIOSFakerV3.app/HIOSFakerV3"; do
-              [ -f "$D" ] || continue
-              [ -n "$LDID" ] && "$LDID" -S "$D" 2>/dev/null || true
-              "$JBCTL" trustcache add "$D" 2>/dev/null || true
-            done
+          # fastPathSign is roothide's CoreTrust-bypass signer: it rewrites each
+          # arm64 slice's signature blob so AMFI accepts the dylib WITHOUT a
+          # trustcache insert. We rely on this instead of "jbctl trustcache add"
+          # because jbctl's trustcache-add handler on this bootstrap silently
+          # rejects every path we feed it ("ERROR: passed macho path does not
+          # exist" even when stat() succeeds — probably a jbroot path-
+          # resolution mismatch inside jbctl's own fs view). Without AMFI
+          # accepting our dylib, a fresh SpringBoard respring hits a
+          # CODESIGNING crashloop (runs=40+, LastExitReason=OS_REASON_CODESIGNING)
+          # the moment dyld tries to load it.
+          FPS=""
+          for p in "$ROOT/basebin/fastPathSign" /basebin/fastPathSign \
+                   "$ROOT/usr/bin/fastPathSign" /usr/bin/fastPathSign; do
+            [ -x "$p" ] && FPS="$p" && break
+          done
+          for D in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosCT.dylib" \
+                   "$ROOT/Applications/HIOSFakerV3.app/HIOSFakerV3"; do
+            [ -f "$D" ] || continue
+            [ -n "$LDID" ] && "$LDID" -S "$D" 2>/dev/null || true
+            [ -n "$FPS" ] && "$FPS" "$D" 2>/dev/null || true
+          done
+          if [ -z "$FPS" ]; then
+            echo "[postinst] WARN: fastPathSign not found; dylibs may fail AMFI"
           fi
           # ── Force-inject into apps that systemhook skips ──
           PATCH_SCRIPT="$ETC/ci_patch_apps.sh"
