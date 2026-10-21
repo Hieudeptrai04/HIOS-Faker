@@ -1,136 +1,87 @@
 #!/bin/sh
-# ci_patch_apps.sh — force-inject tweak into apps that systemhook skips
+# ci_patch_apps.sh - enable target apps for tweak injection on roothide.
 # Called from postinst: ci_patch_apps.sh <etc_dir> <ms_dir>
 #
-# For each app that systemhook fails to inject (e.g. Zalo), this script:
-# 1. Copies our dylib + libsubstrate into AppName.app/Frameworks/
-# 2. Patches the app binary to add LC_LOAD_DYLIB -> our dylib
-# 3. Re-signs + adds to trustcache
+# Roothide's dyldhook_merge loader only injects tweaks
+# (/usr/lib/TweakInject/*.dylib) into app bundles that carry a sibling
+# .jbroot symlink pointing at the jbroot. The RootHide Bootstrap app
+# (/var/jb/Applications/RootHide.app/RootHide) ships with the private
+# com.apple.private.security.storage.AppBundles entitlement and exposes an
+# "enableapp <bundlePath>" CLI that performs the full backup + .jbroot
+# symlink + uicache re-register sequence. Kernel AMFI validates RootHide's
+# cdhash against the trustcache on exec and grants it those entitlements
+# regardless of the caller's uid context, so our postinst (plain dpkg
+# sudo-root) can delegate the privileged bundle write to RootHide instead
+# of trying to patch Mach-O binaries ourselves - the previous insert_dylib
+# path always failed with EPERM at open() because dpkg's postinst context
+# lacks AppBundles.
 #
-# The tweak's %ctor already gates per-app activation via targetBundles,
-# so injecting into extra apps is safe — unselected apps only get JB-hide.
-
-set -e
+# Reference: roothide/Bootstrap/main.m "enableapp" branch; AppEnabler.m.
 
 ETC="${1:?usage: ci_patch_apps.sh <etc_dir> <ms_dir>}"
 MS="${2:?}"
 
-INSERT="$ETC/insert_dylib"
-MG_DYLIB="$MS/ChangeInfoIosMG.dylib"
-LIBSUB="$MS/libsubstrate.dylib"
-
-# Fallback libsubstrate location
-[ -f "$LIBSUB" ] || LIBSUB="/usr/lib/TweakInject/libsubstrate.dylib"
-[ -f "$LIBSUB" ] || LIBSUB="/usr/lib/libsubstrate.dylib"
-
-if [ ! -x "$INSERT" ]; then
-    echo "[ci_patch] insert_dylib not found, skipping"
-    exit 0
-fi
-if [ ! -f "$MG_DYLIB" ]; then
-    echo "[ci_patch] MG dylib not found, skipping"
-    exit 0
-fi
-
-# Resolve tools
-LDID=""
-for l in /usr/bin/ldid /var/jb/usr/bin/ldid; do
-    [ -x "$l" ] && LDID="$l" && break
-done
-JBCTL=""
-for c in /usr/bin/jbctl /var/jb/basebin/jbctl /basebin/jbctl; do
-    [ -x "$c" ] && JBCTL="$c" && break
+# Locate RootHide bootstrap binary across possible mount paths.
+ROOTHIDE=""
+for p in /var/jb/Applications/RootHide.app/RootHide \
+         /Applications/RootHide.app/RootHide; do
+    if [ -x "$p" ]; then
+        ROOTHIDE="$p"
+        break
+    fi
 done
 
-patch_app() {
-    APP_PATH="$1"
-    APP_NAME="$2"
-    APP_BIN="$APP_PATH/$APP_NAME"
+if [ -z "$ROOTHIDE" ]; then
+    echo "[ci_patch] RootHide app not found, cannot auto-enable targets"
+    echo "[ci_patch] install RootHide Bootstrap then reinstall ChangeInfoIos"
+    exit 0
+fi
 
-    if [ ! -f "$APP_BIN" ]; then
-        echo "[ci_patch] binary not found: $APP_BIN"
-        return 1
+echo "[ci_patch] RootHide binary: $ROOTHIDE"
+
+# Common target bundles the tool is expected to spoof against. Enabling
+# here means dyldhook will load /usr/lib/TweakInject/ChangeInfoIos*.dylib
+# into these apps on their NEXT launch. The dylib's own %ctor + per-process
+# guard still restricts behavior to the apps the user actually selected via
+# Change Device's targetBundles, so pre-enabling a wider list only means
+# more apps get the lightweight JB-hide layer loaded; identity spoof stays
+# scoped to user-selected targets.
+TARGET_APP_NAMES="Zalo Viber Facebook Instagram Telegram AIDA64 Shadowrocket"
+
+enable_bundle() {
+    bundle_path="$1"
+    name="$2"
+    if [ ! -d "$bundle_path" ]; then
+        return 0
     fi
-
-    FW_DIR="$APP_PATH/Frameworks"
-    mkdir -p "$FW_DIR" 2>/dev/null || true
-
-    DYLIB_NAME="ChangeInfoIosMG.dylib"
-    DYLIB_PATH="@executable_path/Frameworks/$DYLIB_NAME"
-
-    # Check if already patched (dylib exists in Frameworks)
-    if [ -f "$FW_DIR/$DYLIB_NAME" ]; then
-        # Check if the dylib is current (same size as source)
-        SRC_SIZE=$(wc -c < "$MG_DYLIB" 2>/dev/null || echo 0)
-        DST_SIZE=$(wc -c < "$FW_DIR/$DYLIB_NAME" 2>/dev/null || echo 1)
-        if [ "$SRC_SIZE" = "$DST_SIZE" ]; then
-            echo "[ci_patch] $APP_NAME already patched and current"
-            return 0
-        fi
+    if [ -L "$bundle_path/.jbroot" ]; then
+        echo "[ci_patch] $name already enabled (.jbroot present)"
+        return 0
     fi
-
-    echo "[ci_patch] patching $APP_NAME..."
-
-    # Copy dylibs into app's Frameworks
-    cp "$MG_DYLIB" "$FW_DIR/$DYLIB_NAME"
-    if [ -f "$LIBSUB" ]; then
-        cp "$LIBSUB" "$FW_DIR/libsubstrate.dylib"
+    echo "[ci_patch] enabling $name -> $bundle_path"
+    # RootHide asserts getuid() == 0 at entry; postinst is already root.
+    out="$("$ROOTHIDE" enableapp "$bundle_path" 2>&1)"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "[ci_patch] enableapp FAILED for $name (rc=$rc): $out"
+        return $rc
     fi
-    chmod 755 "$FW_DIR/$DYLIB_NAME" "$FW_DIR/libsubstrate.dylib" 2>/dev/null || true
-    chown _installd:_installd "$FW_DIR/$DYLIB_NAME" "$FW_DIR/libsubstrate.dylib" 2>/dev/null || true
-
-    # Sign the dylibs in Frameworks
-    if [ -n "$LDID" ]; then
-        "$LDID" -S "$FW_DIR/$DYLIB_NAME" 2>/dev/null || true
-        "$LDID" -S "$FW_DIR/libsubstrate.dylib" 2>/dev/null || true
+    if [ -L "$bundle_path/.jbroot" ]; then
+        echo "[ci_patch] $name enabled OK"
+    else
+        echo "[ci_patch] enableapp rc=0 but .jbroot missing for $name"
     fi
-
-    # Trust dylibs
-    if [ -n "$JBCTL" ]; then
-        "$JBCTL" trust "$FW_DIR/$DYLIB_NAME" 2>/dev/null || \
-        "$JBCTL" trustcache add "$FW_DIR/$DYLIB_NAME" 2>/dev/null || true
-        "$JBCTL" trust "$FW_DIR/libsubstrate.dylib" 2>/dev/null || \
-        "$JBCTL" trustcache add "$FW_DIR/libsubstrate.dylib" 2>/dev/null || true
-    fi
-
-    # Back up the original binary before patching
-    BACKUP_DIR="$ETC/backup"
-    mkdir -p "$BACKUP_DIR" 2>/dev/null || true
-    BACKUP_FILE="$BACKUP_DIR/${APP_NAME}.orig"
-    if [ ! -f "$BACKUP_FILE" ]; then
-        cp "$APP_BIN" "$BACKUP_FILE" 2>/dev/null || true
-        echo "[ci_patch] backed up original to $BACKUP_FILE"
-    fi
-
-    # Patch the binary — insert_dylib checks for duplicates
-    "$INSERT" "$APP_BIN" "$DYLIB_PATH" 2>&1 || {
-        echo "[ci_patch] insert_dylib failed for $APP_NAME"
-        return 1
-    }
-
-    # Re-sign the patched binary
-    if [ -n "$LDID" ]; then
-        "$LDID" -S "$APP_BIN" 2>/dev/null || true
-    fi
-
-    # Trust the patched binary
-    if [ -n "$JBCTL" ]; then
-        "$JBCTL" trust "$APP_BIN" 2>/dev/null || \
-        "$JBCTL" trustcache add "$APP_BIN" 2>/dev/null || true
-    fi
-
-    echo "[ci_patch] $APP_NAME patched OK"
     return 0
 }
 
-# ── Find and patch known problematic apps ──
-# Zalo: systemhook does not inject DYLD_INSERT_LIBRARIES into this app.
+# Walk every installed user bundle; enable any whose .app name matches
+# our target list.
 for uuid_dir in /var/containers/Bundle/Application/*/; do
     [ -d "$uuid_dir" ] || continue
-    # Check for Zalo.app
-    if [ -d "${uuid_dir}Zalo.app" ]; then
-        patch_app "${uuid_dir}Zalo.app" "Zalo"
-    fi
+    for name in $TARGET_APP_NAMES; do
+        bundle="${uuid_dir}${name}.app"
+        [ -d "$bundle" ] && enable_bundle "$bundle" "$name"
+    done
 done
 
 echo "[ci_patch] done"
