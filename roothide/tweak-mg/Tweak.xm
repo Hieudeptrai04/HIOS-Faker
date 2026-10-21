@@ -131,14 +131,10 @@ static char g_dbgTmpResolved = 0;
 static int g_dbgOn = -1;
 static int ci_dbgEnabled(void) {
     if (g_dbgOn < 0) {
-        // P0-2: .debug.off has the HIGHEST priority — if present, logging is OFF
-        // even when .debug exists. Release ships neither, so the default is OFF.
-        char ci_dbg_flag[512], ci_dbg_off[512];
-        snprintf(ci_dbg_flag, sizeof(ci_dbg_flag), "%s/etc/changeinfoios/.debug",     ci_rh_prefix());
-        snprintf(ci_dbg_off,  sizeof(ci_dbg_off),  "%s/etc/changeinfoios/.debug.off", ci_rh_prefix());
-        int on = (access(ci_dbg_flag, F_OK) == 0);
-        if (on && access(ci_dbg_off, F_OK) == 0) on = 0;
-        g_dbgOn = on ? 1 : 0;
+        // 1.0.10 TRACE BUILD: debug logging always ON so we can observe
+        // what AIDA/Zalo actually query at the sysctl / MG surface.
+        // Revert this when the AIDA XS fallback is isolated.
+        g_dbgOn = 1;
     }
     return g_dbgOn;
 }

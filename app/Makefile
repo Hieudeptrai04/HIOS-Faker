@@ -1,4 +1,4 @@
-PACKAGE_VERSION = 1.0.9
+PACKAGE_VERSION = 1.0.10
 ARCHS = arm64 arm64e
 TARGET := iphone:clang:16.5:15.0
 
