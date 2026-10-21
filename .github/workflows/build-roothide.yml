@@ -91,6 +91,33 @@ jobs:
           echo "Built: $DEB"
           ls -lh packages/
 
+      - name: Build fastPathSign (CoreTrust bypass signer)
+        run: |
+          exec > >(tee -a /tmp/build.log) 2>&1
+          set -euo pipefail
+          # roothide 0.1.0 bootstraps do NOT ship fastPathSign in /var/jb/basebin,
+          # which left our postinst stuck ldid-S-ing the tweak dylibs without a
+          # CoreTrust bypass. On every SpringBoard respring (which dpkg install
+          # of a tweak into /usr/lib/TweakInject implicitly triggers via
+          # systemhook's inotify-style watch), launchd/dyld tried to load our
+          # ad-hoc-signed MG+CT, AMFI slammed OS_REASON_CODESIGNING, SB
+          # crashlooped (runs=15, 23, 40+ depending on how fast we quarantined).
+          # Build fastPathSign ourselves and ship it inside the .deb so postinst
+          # can do the bypass without depending on the bootstrap's basebin.
+          git clone --recursive https://github.com/roothide/Bootstrap-basebin.git /tmp/basebin
+          cd /tmp/basebin/ChOma-main
+          make TARGET=ios
+          cd /tmp/basebin/fastPathSign
+          make clean && make
+          cp ./fastPathSign /tmp/fastPathSign
+          # ldid-S with the roothide.xml entitlements the fastPathSign Makefile
+          # expects (platform-application + no-sandbox so the on-device helper
+          # can rewrite macho signature blobs system-wide).
+          ldid -S/tmp/basebin/fastPathSign/roothide.xml /tmp/fastPathSign
+          file /tmp/fastPathSign
+          ls -la /tmp/fastPathSign
+          echo "fastPathSign built OK"
+
       - name: Build insert_dylib tool
         run: |
           exec > >(tee -a /tmp/build.log) 2>&1
@@ -185,6 +212,14 @@ jobs:
           chmod 0755 combined/etc/changeinfoios/insert_dylib
           cp roothide/tools/ci_patch_apps.sh combined/etc/changeinfoios/ci_patch_apps.sh
           chmod 0755 combined/etc/changeinfoios/ci_patch_apps.sh
+
+          # Ship fastPathSign (built in the "Build fastPathSign" step above) so
+          # the postinst can CoreTrust-bypass the tweak dylibs on roothide
+          # bootstraps that don't carry basebin/fastPathSign themselves (0.1.0).
+          # The postinst's $FPS lookup also walks $ETC first, so this binary
+          # wins over any older bootstrap copy.
+          cp /tmp/fastPathSign combined/etc/changeinfoios/fastPathSign
+          chmod 0755 combined/etc/changeinfoios/fastPathSign
 
           # Sign the app binary with entitlements
           APP_BIN="combined/Applications/HIOSFakerV3.app/HIOSFakerV3"
@@ -326,7 +361,11 @@ jobs:
           # CODESIGNING crashloop (runs=40+, LastExitReason=OS_REASON_CODESIGNING)
           # the moment dyld tries to load it.
           FPS=""
-          for p in "$ROOT/basebin/fastPathSign" /basebin/fastPathSign \
+          # Search our shipped copy first ($ETC) — older bootstraps (roothide
+          # 0.1.0) do not have fastPathSign in basebin at all, which left SB
+          # crashlooping on CODESIGNING for every dpkg install.
+          for p in "$ETC/fastPathSign" \
+                   "$ROOT/basebin/fastPathSign" /basebin/fastPathSign \
                    "$ROOT/usr/bin/fastPathSign" /usr/bin/fastPathSign; do
             [ -x "$p" ] && FPS="$p" && break
           done
