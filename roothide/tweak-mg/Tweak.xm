@@ -3917,6 +3917,79 @@ static void ci_scrubJBEnvironment(void) {
 // Install only the lightweight anti-detection layer here. It deliberately runs
 // before the license/target spoof gate: an expired token disables identity spoofing,
 // but must not turn the already-injected dylib into an obvious JB signal. Expensive
+// 1.0.6: narrow JB-hide variant for Zalo. The full ci_installJBHideHooks
+// (below) installed OK inside Zalo (bisect H0a_pre -> H0b_post -> H0_return
+// fires cleanly) but Zalo still SIGKILLs itself after %ctor. The suspect
+// surface is NOT the fs hooks (stat/access/open/opendir/readdir) — those
+// just hide /var/jb and /usr/lib/TweakInject from Zalo's existence check —
+// but one of the non-fs hooks is almost certainly returning something that
+// makes Zalo tag the device as tampered: sandbox_check (returns 0 for
+// container-access probes that should fail outside jb), getenv (hides
+// DYLD_INSERT_LIBRARIES and friends → Zalo may expect those env vars NOT
+// to be there and panic when getenv returns NULL instead of the actual
+// empty value), _dyld_image_count / _dyld_get_image_name /
+// _dyld_get_image_header / _dyld_get_image_vmaddr_slide (lie about loaded
+// images → Zalo cross-checks header pointer against image count and
+// catches the mismatch). This variant installs ONLY the fs curtain and
+// skips sandbox_check / getenv / dyld-image hooks. If Zalo passes with
+// this, we add the removed hooks back one by one to pin the one that
+// trips Zalo. If Zalo still fails, the detection vector is deeper
+// (ptrace / sysctl kinfo_proc / direct syscall) and needs a Dopamine fork.
+static void ci_installJBHideHooksMinimalFS(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ci_scrubJBEnvironment();
+
+        orig_dladdr_fn = (dladdr_fn_t)dlsym(RTLD_DEFAULT, "dladdr");
+
+        orig_stat_fn   = (stat_fn_t)dlsym(RTLD_DEFAULT, "stat");
+        orig_lstat_fn  = (stat_fn_t)dlsym(RTLD_DEFAULT, "lstat");
+        orig_access_fn = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
+        if (orig_stat_fn)
+            MSHookFunction((void *)orig_stat_fn, (void *)hook_stat_fn, (void **)&orig_stat_fn);
+        if (orig_lstat_fn)
+            MSHookFunction((void *)orig_lstat_fn, (void *)hook_lstat_fn, (void **)&orig_lstat_fn);
+        if (orig_access_fn)
+            MSHookFunction((void *)orig_access_fn, (void *)hook_access_fn, (void **)&orig_access_fn);
+
+        orig_fopen_fn = (fopen_fn_t)dlsym(RTLD_DEFAULT, "fopen");
+        if (orig_fopen_fn)
+            MSHookFunction((void *)orig_fopen_fn, (void *)hook_fopen_fn, (void **)&orig_fopen_fn);
+
+        orig_fstatat_fn = (fstatat_fn_t)dlsym(RTLD_DEFAULT, "fstatat");
+        orig_faccessat_fn = (faccessat_fn_t)dlsym(RTLD_DEFAULT, "faccessat");
+        orig_getattrlist_fn = (getattrlist_fn_t)dlsym(RTLD_DEFAULT, "getattrlist");
+        orig_readlink_fn = (readlink_fn_t)dlsym(RTLD_DEFAULT, "readlink");
+        orig_readlinkat_fn = (readlinkat_fn_t)dlsym(RTLD_DEFAULT, "readlinkat");
+        orig_opendir_fn = (opendir_fn_t)dlsym(RTLD_DEFAULT, "opendir");
+        orig_readdir_fn = (readdir_fn_t)dlsym(RTLD_DEFAULT, "readdir");
+        orig_readdir_r_fn = (readdir_r_fn_t)dlsym(RTLD_DEFAULT, "readdir_r");
+        orig_closedir_fn = (closedir_fn_t)dlsym(RTLD_DEFAULT, "closedir");
+        if (orig_fstatat_fn)
+            MSHookFunction((void *)orig_fstatat_fn, (void *)hook_fstatat_fn, (void **)&orig_fstatat_fn);
+        if (orig_faccessat_fn)
+            MSHookFunction((void *)orig_faccessat_fn, (void *)hook_faccessat_fn, (void **)&orig_faccessat_fn);
+        if (orig_getattrlist_fn)
+            MSHookFunction((void *)orig_getattrlist_fn, (void *)hook_getattrlist_fn, (void **)&orig_getattrlist_fn);
+        if (orig_readlink_fn)
+            MSHookFunction((void *)orig_readlink_fn, (void *)hook_readlink_fn, (void **)&orig_readlink_fn);
+        if (orig_readlinkat_fn)
+            MSHookFunction((void *)orig_readlinkat_fn, (void *)hook_readlinkat_fn, (void **)&orig_readlinkat_fn);
+        if (orig_opendir_fn)
+            MSHookFunction((void *)orig_opendir_fn, (void *)hook_opendir_fn, (void **)&orig_opendir_fn);
+        if (orig_readdir_fn)
+            MSHookFunction((void *)orig_readdir_fn, (void *)hook_readdir_fn, (void **)&orig_readdir_fn);
+        if (orig_readdir_r_fn)
+            MSHookFunction((void *)orig_readdir_r_fn, (void *)hook_readdir_r_fn, (void **)&orig_readdir_r_fn);
+        if (orig_closedir_fn)
+            MSHookFunction((void *)orig_closedir_fn, (void *)hook_closedir_fn, (void **)&orig_closedir_fn);
+        // NOTE: no sandbox_check, no getenv, no _dyld_* hooks here — those
+        // are the suspects we are isolating. The full-featured install
+        // ci_installJBHideHooks (defined just below) keeps them for every
+        // other target where they're known-safe.
+    });
+}
+
 // MG/sysctl/IORegistry/keychain hooks remain behind the gate in %ctor.
 static void ci_installJBHideHooks(void) {
     static dispatch_once_t once;
@@ -4640,8 +4713,11 @@ static void notify_cb(int t) {
                 // adding it here is safe. AIDA64 proves the model-spoof
                 // pipeline works end-to-end (shows iPhone 8 Plus from fake
                 // config); Zalo just needs the fs curtain.
+                // 1.0.6: minimal fs-only variant (no sandbox_check /
+                // getenv / dyld-image hooks). See ci_installJBHideHooksMinimalFS
+                // comment above for the bisect reasoning.
                 ci_bisect("H0a_zalo_jbhide_pre");
-                ci_installJBHideHooks();
+                ci_installJBHideHooksMinimalFS();
                 ci_bisect("H0b_zalo_jbhide_post");
                 ci_bisect("H0_zalo_mgonly_return");
                 return;
