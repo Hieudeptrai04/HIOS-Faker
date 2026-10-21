@@ -3917,6 +3917,86 @@ static void ci_scrubJBEnvironment(void) {
 // Install only the lightweight anti-detection layer here. It deliberately runs
 // before the license/target spoof gate: an expired token disables identity spoofing,
 // but must not turn the already-injected dylib into an obvious JB signal. Expensive
+// 1.0.7: Zalo suicide-path tracer. Hooks the exit/_exit/abort/kill/
+// __assert_rtn surface and writes to ci_bisect_mg.log just before the
+// original is called. Lets us see from a crashed-Zalo bisect WHICH exit
+// path fires + the exit code + (for kill) the signal — then we know
+// whether Zalo is self-dying via exit(), aborting via abort(), kill()
+// via SIGKILL on getpid(), or asserting out. Each tag is distinct so
+// one line in the bisect pin-points the path. These hooks are
+// Zalo-only — do not install the suicide bisect for other apps, their
+// legitimate exit paths would fill the log.
+typedef void (*exit_fn_t)(int);
+typedef void (*abort_fn_t)(void);
+typedef int  (*kill_fn_t)(pid_t, int);
+typedef void (*assert_rtn_fn_t)(const char *, const char *, int, const char *);
+static exit_fn_t         orig_exit_fn       = NULL;
+static exit_fn_t         orig__exit_fn      = NULL;
+static abort_fn_t        orig_abort_fn      = NULL;
+static kill_fn_t         orig_kill_fn       = NULL;
+static assert_rtn_fn_t   orig_assert_rtn_fn = NULL;
+
+static void hook_exit_suicide(int code) {
+    char buf[80]; snprintf(buf, sizeof(buf), "SUICIDE_exit code=%d", code);
+    ci_bisect(buf);
+    if (orig_exit_fn) orig_exit_fn(code);
+    else _Exit(code);
+}
+static void hook__exit_suicide(int code) {
+    char buf[80]; snprintf(buf, sizeof(buf), "SUICIDE__exit code=%d", code);
+    ci_bisect(buf);
+    if (orig__exit_fn) orig__exit_fn(code);
+    else _Exit(code);
+}
+static void hook_abort_suicide(void) {
+    ci_bisect("SUICIDE_abort");
+    if (orig_abort_fn) orig_abort_fn();
+    else _Exit(134);
+}
+static int hook_kill_suicide(pid_t pid, int sig) {
+    if (pid == getpid() || pid == 0 || pid == -1) {
+        char buf[96]; snprintf(buf, sizeof(buf), "SUICIDE_kill pid=%d sig=%d (self)", pid, sig);
+        ci_bisect(buf);
+    }
+    if (orig_kill_fn) return orig_kill_fn(pid, sig);
+    errno = ENOSYS;
+    return -1;
+}
+static void hook_assert_rtn_suicide(const char *fn, const char *file, int line, const char *expr) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "SUICIDE_assert fn=%s file=%s:%d expr=%s",
+             fn ?: "?", file ?: "?", line, expr ?: "?");
+    ci_bisect(buf);
+    if (orig_assert_rtn_fn) orig_assert_rtn_fn(fn, file, line, expr);
+    else _Exit(134);
+}
+
+static void ci_installZaloSuicideBisect(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        orig_exit_fn       = (exit_fn_t)dlsym(RTLD_DEFAULT, "exit");
+        orig__exit_fn      = (exit_fn_t)dlsym(RTLD_DEFAULT, "_exit");
+        orig_abort_fn      = (abort_fn_t)dlsym(RTLD_DEFAULT, "abort");
+        orig_kill_fn       = (kill_fn_t)dlsym(RTLD_DEFAULT, "kill");
+        orig_assert_rtn_fn = (assert_rtn_fn_t)dlsym(RTLD_DEFAULT, "__assert_rtn");
+        if (orig_exit_fn)
+            MSHookFunction((void *)orig_exit_fn, (void *)hook_exit_suicide,
+                           (void **)&orig_exit_fn);
+        if (orig__exit_fn)
+            MSHookFunction((void *)orig__exit_fn, (void *)hook__exit_suicide,
+                           (void **)&orig__exit_fn);
+        if (orig_abort_fn)
+            MSHookFunction((void *)orig_abort_fn, (void *)hook_abort_suicide,
+                           (void **)&orig_abort_fn);
+        if (orig_kill_fn)
+            MSHookFunction((void *)orig_kill_fn, (void *)hook_kill_suicide,
+                           (void **)&orig_kill_fn);
+        if (orig_assert_rtn_fn)
+            MSHookFunction((void *)orig_assert_rtn_fn, (void *)hook_assert_rtn_suicide,
+                           (void **)&orig_assert_rtn_fn);
+    });
+}
+
 // 1.0.6: narrow JB-hide variant for Zalo. The full ci_installJBHideHooks
 // (below) installed OK inside Zalo (bisect H0a_pre -> H0b_post -> H0_return
 // fires cleanly) but Zalo still SIGKILLs itself after %ctor. The suspect
@@ -4719,6 +4799,14 @@ static void notify_cb(int t) {
                 ci_bisect("H0a_zalo_jbhide_pre");
                 ci_installJBHideHooksMinimalFS();
                 ci_bisect("H0b_zalo_jbhide_post");
+                // 1.0.7: hook exit/_exit/abort/kill/__assert_rtn so when
+                // Zalo kills itself post-ctor the bisect log pin-points
+                // which path (self-exit via what code, abort stack from
+                // what, kill(getpid(),SIGKILL) by whom). Combined with the
+                // existing ci_bisect markers this lets us see from a
+                // single SSH read what Zalo did last before dying.
+                ci_installZaloSuicideBisect();
+                ci_bisect("H0c_zalo_suicide_bisect_on");
                 ci_bisect("H0_zalo_mgonly_return");
                 return;
             }
