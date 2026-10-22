@@ -14,41 +14,34 @@ static NSString *const kMGCacheLive =
 static NSString *const kMGCacheBackup =
     @"/var/jb/etc/changeinfoios/mg_cache_orig.plist";
 
-// Known reversible keys (value-type match confirms semantic). More keys can be
-// added as they become needed; absent patches just mean the live file keeps
-// its original value for that key.
-static NSString *const kKeyHWMachine        = @"h9jDsbgj7xIVeIQ8S3/X3Q"; // iPhone11,2
-static NSString *const kKeyHWModelStr       = @"/YYygAofPDbhrwToVsXdeA"; // D321AP
-static NSString *const kKeyMarketingName    = @"Z/dqyWS6OZTRy10UcmUAhw"; // iPhone XS
-static NSString *const kKeyMarketingNameAlt = @"bbtR9jQx50Fv5Af/affNtA"; // iPhone XS
-static NSString *const kKeyModelNumber      = @"97JDvERpVwO+GHtthIh7hA"; // A1920
+// Known reversible keys (value-type match confirms semantic).
+static NSString *const kKeyHWMachine        = @"h9jDsbgj7xIVeIQ8S3/X3Q";
+static NSString *const kKeyHWModelStr       = @"/YYygAofPDbhrwToVsXdeA";
+static NSString *const kKeyMarketingName    = @"Z/dqyWS6OZTRy10UcmUAhw";
+static NSString *const kKeyMarketingNameAlt = @"bbtR9jQx50Fv5Af/affNtA";
+static NSString *const kKeyModelNumber      = @"97JDvERpVwO+GHtthIh7hA";
 
-// Run a short command through /usr/bin/sudo so we inherit root and can write
-// to the SystemGroup container. iOS has no NSTask so we use posix_spawn.
-// -n keeps sudo non-interactive: if a password would be prompted, we fail
-// loudly rather than hang the main thread.
-static BOOL ci_runSudo(NSArray<NSString *> *args) {
-    NSMutableArray<NSString *> *full = [NSMutableArray arrayWithObjects:@"sudo", @"-n", nil];
-    [full addObjectsFromArray:args];
-    char **argv = (char **)malloc(sizeof(char *) * (full.count + 1));
-    for (NSUInteger i = 0; i < full.count; i++) {
-        argv[i] = strdup([full[i] UTF8String]);
-    }
-    argv[full.count] = NULL;
+// HIOSFakerV3.app ships with com.apple.private.security.no-sandbox, so the
+// entitled process can read/write files outside its container directly — no
+// external binary spawn needed.
+static BOOL ci_writeDataToPath(NSData *data, NSString *path) {
+    NSError *err = nil;
+    BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:&err];
+    if (!ok) NSLog(@"[MGCache] write %@: %@", path, err);
+    return ok;
+}
 
-    pid_t pid = 0;
-    int rc = posix_spawn(&pid, "/usr/bin/sudo", NULL, NULL, argv, environ);
-    for (NSUInteger i = 0; i < full.count; i++) free(argv[i]);
-    free(argv);
+static BOOL ci_copyFileAtPath(NSString *src, NSString *dst) {
+    NSError *err = nil;
+    [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+    BOOL ok = [[NSFileManager defaultManager] copyItemAtPath:src toPath:dst error:&err];
+    if (!ok) NSLog(@"[MGCache] copy %@ -> %@: %@", src, dst, err);
+    return ok;
+}
 
-    if (rc != 0) {
-        NSLog(@"[MGCache] posix_spawn err=%d", rc);
-        return NO;
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    return exitCode == 0;
+static void ci_chmodMobileWheel(NSString *path) {
+    (void)chown([path fileSystemRepresentation], 501, 0);
+    (void)chmod([path fileSystemRepresentation], 0644);
 }
 
 @implementation CIMGCachePatcher
@@ -59,8 +52,6 @@ static BOOL ci_runSudo(NSArray<NSString *> *args) {
 
 + (BOOL)backupOriginalIfNeeded {
     if ([self backupExists]) return YES;
-    // Parent dir is created by the dpkg postinst; guard with mkdirpath in case
-    // the user wiped /var/jb/etc/changeinfoios earlier.
     NSString *parent = [kMGCacheBackup stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:parent
                               withIntermediateDirectories:YES
@@ -107,19 +98,15 @@ static BOOL ci_runSudo(NSArray<NSString *> *args) {
     NSMutableDictionary *top = (NSMutableDictionary *)plist;
     NSMutableDictionary *extra = top[@"CacheExtra"];
     if (![extra isKindOfClass:[NSMutableDictionary class]]) {
-        // Create CacheExtra if missing; iOS reads it when present.
         extra = [NSMutableDictionary dictionary];
         top[@"CacheExtra"] = extra;
     }
 
-    // Build the exact set of (keyHash -> value) patches from the semantic
-    // input. Missing semantic fields are skipped so partial profiles still
-    // apply the rest.
     NSMutableDictionary *patches = [NSMutableDictionary dictionary];
-    NSString *productType  = fakeValues[@"productType"];     // iPhone12,5
-    NSString *hwModelStr   = fakeValues[@"hwModelStr"];      // D431AP
-    NSString *marketing    = fakeValues[@"marketingName"];   // iPhone 11 Pro Max
-    NSString *modelNumber  = fakeValues[@"modelNumber"];     // A2160
+    NSString *productType  = fakeValues[@"productType"];
+    NSString *hwModelStr   = fakeValues[@"hwModelStr"];
+    NSString *marketing    = fakeValues[@"marketingName"];
+    NSString *modelNumber  = fakeValues[@"modelNumber"];
 
     if (productType.length)  patches[kKeyHWMachine]        = productType;
     if (hwModelStr.length)   patches[kKeyHWModelStr]       = hwModelStr;
@@ -140,24 +127,8 @@ static BOOL ci_runSudo(NSArray<NSString *> *args) {
         return NO;
     }
 
-    // Stage to tmp then sudo cp onto the live path. Writing directly to the
-    // SystemGroup container needs root; the staging keeps the live file atomic
-    // and keeps the error surface small (one cp either works or doesn't).
-    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"mg_cache_patched.plist"];
-    if (![outData writeToFile:tmp atomically:YES]) {
-        NSLog(@"[MGCache] tmp write failed");
-        return NO;
-    }
-
-    BOOL cp = ci_runSudo(@[@"cp", tmp, kMGCacheLive]);
-    if (!cp) {
-        NSLog(@"[MGCache] sudo cp onto live failed");
-        [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
-        return NO;
-    }
-    (void)ci_runSudo(@[@"chown", @"mobile:wheel", kMGCacheLive]);
-    (void)ci_runSudo(@[@"chmod", @"644", kMGCacheLive]);
-    [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
+    if (!ci_writeDataToPath(outData, kMGCacheLive)) return NO;
+    ci_chmodMobileWheel(kMGCacheLive);
     NSLog(@"[MGCache] live patched OK");
     return YES;
 }
@@ -167,13 +138,12 @@ static BOOL ci_runSudo(NSArray<NSString *> *args) {
         NSLog(@"[MGCache] restore: no backup");
         return NO;
     }
-    BOOL ok = ci_runSudo(@[@"cp", kMGCacheBackup, kMGCacheLive]);
+    BOOL ok = ci_copyFileAtPath(kMGCacheBackup, kMGCacheLive);
     if (ok) {
-        (void)ci_runSudo(@[@"chown", @"mobile:wheel", kMGCacheLive]);
-        (void)ci_runSudo(@[@"chmod", @"644", kMGCacheLive]);
+        ci_chmodMobileWheel(kMGCacheLive);
         NSLog(@"[MGCache] restored from backup");
     } else {
-        NSLog(@"[MGCache] restore cp failed");
+        NSLog(@"[MGCache] restore failed");
     }
     return ok;
 }
