@@ -20,10 +20,39 @@ static NSString *const kKeyHWModelStr       = @"/YYygAofPDbhrwToVsXdeA";
 static NSString *const kKeyMarketingName    = @"Z/dqyWS6OZTRy10UcmUAhw";
 static NSString *const kKeyMarketingNameAlt = @"bbtR9jQx50Fv5Af/affNtA";
 static NSString *const kKeyModelNumber      = @"97JDvERpVwO+GHtthIh7hA";
+// 4.4.5: Artwork + GPU-family dict. Anti-tamper SDKs read this to decide which
+// GPU feature set the device claims. Must stay in sync with the claimed chip.
+static NSString *const kKeyArtworkDict      = @"oPeik/9e8lQWMszEjbPzng";
+
+// Metal GPU family per iPhone generation. iPhone 8+ anti-tamper uses this to
+// compare claimed vs real GPU. Not every ProductType is listed; nil means we
+// don't rewrite the artwork dict (user can still patch the plain string keys).
+static NSString *ci_graphicsClassForProductType(NSString *pt) {
+    if ([pt hasPrefix:@"iPhone8,"]  || [pt hasPrefix:@"iPhone9,"])   return @"APPLE3"; // A9/A10
+    if ([pt hasPrefix:@"iPhone10,"])                                 return @"APPLE4"; // A11
+    if ([pt hasPrefix:@"iPhone11,"])                                 return @"APPLE5"; // A12
+    if ([pt hasPrefix:@"iPhone12,"])                                 return @"APPLE6"; // A13
+    if ([pt hasPrefix:@"iPhone13,"])                                 return @"APPLE7"; // A14
+    if ([pt hasPrefix:@"iPhone14,"])                                 return @"APPLE8"; // A15
+    if ([pt hasPrefix:@"iPhone15,"] || [pt hasPrefix:@"iPhone16,"])  return @"APPLE8"; // A16/A17
+    if ([pt hasPrefix:@"iPhone17,"])                                 return @"APPLE9"; // A18
+    return nil;
+}
+
+static NSString *ci_fallbackChainForClass(NSString *gpuClass) {
+    if (![gpuClass hasPrefix:@"APPLE"]) return nil;
+    NSInteger n = [[gpuClass substringFromIndex:5] integerValue];
+    if (n < 1) return nil;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSInteger i = n - 1; i >= 1; i--) {
+        [items addObject:[NSString stringWithFormat:@"APPLE%ld", (long)i]];
+    }
+    [items addObject:@"GLES2,0"];
+    return [items componentsJoinedByString:@":"];
+}
 
 // HIOSFakerV3.app ships with com.apple.private.security.no-sandbox, so the
-// entitled process can read/write files outside its container directly — no
-// external binary spawn needed.
+// entitled process can read/write files outside its container directly.
 static BOOL ci_writeDataToPath(NSData *data, NSString *path) {
     NSError *err = nil;
     BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:&err];
@@ -102,20 +131,40 @@ static void ci_chmodMobileWheel(NSString *path) {
         top[@"CacheExtra"] = extra;
     }
 
-    NSMutableDictionary *patches = [NSMutableDictionary dictionary];
     NSString *productType  = fakeValues[@"productType"];
     NSString *hwModelStr   = fakeValues[@"hwModelStr"];
     NSString *marketing    = fakeValues[@"marketingName"];
     NSString *modelNumber  = fakeValues[@"modelNumber"];
 
-    if (productType.length)  patches[kKeyHWMachine]        = productType;
-    if (hwModelStr.length)   patches[kKeyHWModelStr]       = hwModelStr;
-    if (marketing.length)    patches[kKeyMarketingName]    = marketing;
-    if (marketing.length)    patches[kKeyMarketingNameAlt] = marketing;
-    if (modelNumber.length)  patches[kKeyModelNumber]      = modelNumber;
+    NSInteger patched = 0;
+    if (productType.length)  { extra[kKeyHWMachine]        = productType; patched++; }
+    if (hwModelStr.length)   { extra[kKeyHWModelStr]       = hwModelStr;  patched++; }
+    if (marketing.length)    { extra[kKeyMarketingName]    = marketing;   patched++; }
+    if (marketing.length)    { extra[kKeyMarketingNameAlt] = marketing;   patched++; }
+    if (modelNumber.length)  { extra[kKeyModelNumber]      = modelNumber; patched++; }
 
-    for (NSString *k in patches) extra[k] = patches[k];
-    NSLog(@"[MGCache] applying %lu patches", (unsigned long)patches.count);
+    // 4.4.5: patch the Artwork / GPU-family dict so anti-tamper probes that
+    // ask MG for GraphicsFeatureSetClass get a value consistent with the
+    // claimed chip. Prevents the "claim iPhone 12 but MG says APPLE5" tell.
+    NSString *gpuClass = productType.length ? ci_graphicsClassForProductType(productType) : nil;
+    if (productType.length && gpuClass.length && marketing.length) {
+        NSMutableDictionary *artwork = extra[kKeyArtworkDict];
+        if (![artwork isKindOfClass:[NSMutableDictionary class]]) {
+            artwork = [NSMutableDictionary dictionary];
+        } else {
+            artwork = [artwork mutableCopy];
+        }
+        artwork[@"ArtworkDeviceProductDescription"] = marketing;
+        artwork[@"GraphicsFeatureSetClass"]         = gpuClass;
+        artwork[@"CompatibleDeviceFallback"]        = productType;
+        NSString *chain = ci_fallbackChainForClass(gpuClass);
+        if (chain.length) artwork[@"GraphicsFeatureSetFallbacks"] = chain;
+        extra[kKeyArtworkDict] = artwork;
+        patched++;
+    }
+
+    NSLog(@"[MGCache] applied %ld patches (ProductType=%@ GPU=%@)",
+          (long)patched, productType ?: @"-", gpuClass ?: @"-");
 
     NSData *outData = [NSPropertyListSerialization
                            dataWithPropertyList:top
@@ -159,11 +208,14 @@ static void ci_chmodMobileWheel(NSString *path) {
     if (![plist isKindOfClass:[NSDictionary class]]) return nil;
     NSDictionary *extra = plist[@"CacheExtra"];
     if (![extra isKindOfClass:[NSDictionary class]]) return @{};
+    NSDictionary *artwork = extra[kKeyArtworkDict];
+    if (![artwork isKindOfClass:[NSDictionary class]]) artwork = @{};
     return @{
-        @"productType":   extra[kKeyHWMachine]        ?: @"",
-        @"hwModelStr":    extra[kKeyHWModelStr]       ?: @"",
-        @"marketingName": extra[kKeyMarketingName]    ?: @"",
-        @"modelNumber":   extra[kKeyModelNumber]      ?: @"",
+        @"productType":            extra[kKeyHWMachine]        ?: @"",
+        @"hwModelStr":             extra[kKeyHWModelStr]       ?: @"",
+        @"marketingName":          extra[kKeyMarketingName]    ?: @"",
+        @"modelNumber":            extra[kKeyModelNumber]      ?: @"",
+        @"graphicsFeatureSetClass": artwork[@"GraphicsFeatureSetClass"] ?: @"",
     };
 }
 

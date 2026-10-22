@@ -71,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.4.4";
+static NSString *const kAppVersion = @"4.4.5";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -168,11 +168,12 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
     if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(NO);  seeded = YES; }
     if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
-    // 4.4.4: chip-safe clamp default ON. Fake model with chip generation newer
-    // than the real device crashes Zalo on Metal/GPU family probe. Clamp caps
-    // the pick to models sharing the real chip family. User can turn it off
-    // for apps that don't probe GPU (at crash risk for Zalo).
-    if (_cfg[@"_ci_chip_safe_clamp"] == nil) { _cfg[@"_ci_chip_safe_clamp"] = @(YES); seeded = YES; }
+    // 4.4.5: chip-safe clamp default OFF. 4.4.4 defaulted it ON because fake
+    // chip > real crashed Zalo on Metal probe. 4.4.5 adds a Metal supportsFamily
+    // + GPU-name hook in tweak-mg AND patches MG CacheExtra's Artwork dict so
+    // the GraphicsFeatureSetClass reported by MG matches the claimed chip. With
+    // both layers in place, iPhone 12 claim on real A12 passes Zalo's probe.
+    if (_cfg[@"_ci_chip_safe_clamp"] == nil) { _cfg[@"_ci_chip_safe_clamp"] = @(NO); seeded = YES; }
     // 4.3.53: 4.3.51 seeded trackingAuthorizationStatus into the shared config,
     // which fans out to every target app's container prefs via config-sync. Zalo
     // reads back the key in its own NSUserDefaults, treats the unexpected entry
