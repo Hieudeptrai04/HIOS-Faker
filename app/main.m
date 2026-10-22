@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.39";
+static NSString *const kAppVersion = @"4.3.40";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -163,11 +163,9 @@ static NSString *CIRRSDir(void) {
     // no longer requires claiming the real model). Optional: turn it ON to claim
     // the real device model for maximum consistency.
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
-    // 4.3.39: Location reset default ON (toggle removed from UI, part of the
-    // fresh-install feel every Change Device). The GPS hook has been hardened
-    // to return nil when auth is not Always/WhenInUse so there's no "no perm
-    // + valid fix" window for anti-fraud to flag.
-    if (_cfg[@"_ci_reset_location"] == nil) { _cfg[@"_ci_reset_location"] = @(YES); seeded = YES; }
+    // 4.3.40: `_ci_reset_location` no longer gates ci_resetAppLocation (hook
+    // always runs now), so stop seeding it. If an old mirror still has a `NO`
+    // value from 4.3.38, it's simply ignored.
     // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
     // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
     // real device → show iPhone X), and a high chip can't be faked GPU-
@@ -3823,15 +3821,13 @@ static void ci_resetAppTCC(NSString *bundleID) {
 // isn't surprised. Toggle: "🧭 Reset vị trí (hỏi lại khi mở app)".
 static void ci_resetAppLocation(NSString *bundleID) {
     if (!bundleID.length) return;
-    // 4.3.39: default ON. UI toggle removed; `_ci_reset_location` key is still
-    // read so an advanced user who manually writes it to the mirror config can
-    // opt back out, but no one has to touch it to get the fresh-install prompt.
-    id resetObj = [[CIConfigManager shared] objectForKey:@"_ci_reset_location"];
-    BOOL resetLoc = resetObj ? [resetObj boolValue] : YES;
-    if (!resetLoc) {
-        NSLog(@"[ChangeInfoIos] Location reset DISABLED (user opt-out) for %@", bundleID);
-        return;
-    }
+    // 4.3.40: unconditional — the opt-out config check from 4.3.38/4.3.39 is
+    // gone. Kai: "mặc định change như app mới phải hỏi quyền truy cập chứ k
+    // cần bật toggle". Location reset now always runs so a Change Device
+    // behaves like a fresh install for every target bundle, same as the
+    // camera/mic/photos TCC reset above. The GPS hook (tweak-mg/Tweak.xm
+    // :2149-2150) returns nil until the user re-grants, so no "no perm +
+    // valid fix" anti-fraud window reopens.
     // Reset the Location TCC rows via the same running-tccd XPC path camera/
     // photos reset uses — tccd deletes rows + drops its RAM cache so iOS
     // re-prompts on next CLLocationManager auth check. No daemon kill; the
