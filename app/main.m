@@ -16,6 +16,7 @@
 #import <errno.h>
 #import <CommonCrypto/CommonCrypto.h>  // HMAC-SHA256 for license response verify
 #import <sqlite3.h>                      // libsqlite3 (always on iOS) — reset TCC.db in-process
+#import "MGCachePatcher.h"
 #import <CoreLocation/CoreLocation.h>    // CLLocationManager manager SPI — reset app location auth
 #import <Security/Security.h>            // SecItemCopyMatching — host-side keychain dump (wildcard entitlement)
 // xpc/xpc.h is stripped from the Theos iPhoneOS SDK, so declare the libxpc C
@@ -70,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.56";
+static NSString *const kAppVersion = @"4.4.0";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -5992,6 +5993,10 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         handler:^(UIAlertAction *_) { [self showIOSPresets]; }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Bật/tắt toàn bộ Fake" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) { [self toggleAllFakes]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"🔧 Patch MG Cache (BETA)" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *_) { [self patchMGCacheAction]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"⟲ Restore MG Cache gốc" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *_) { [self restoreMGCacheAction]; }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Huỷ" style:UIAlertActionStyleCancel handler:nil]];
     ac.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:ac animated:YES completion:nil];
@@ -6013,6 +6018,66 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [t dismissViewControllerAnimated:YES completion:nil]; });
     }];
+}
+
+// 5.0.0: patch the system MG cache with the user's current fake model so
+// every app on the device sees the spoof without a per-app dylib hook. Reads
+// values from the live cfg (same keys the tweak would spoof) and hands them
+// to CIMGCachePatcher.
+- (void)patchMGCacheAction {
+    CIConfigManager *cm = [CIConfigManager shared];
+    NSMutableDictionary *fv = [NSMutableDictionary dictionary];
+    NSString *pt = [cm stringForKey:@"hw_machine"];      // iPhone12,5
+    NSString *hm = [cm stringForKey:@"hw_model"];        // D431AP
+    NSString *mn = [cm stringForKey:@"MarketingName"];   // iPhone 11 Pro Max
+    NSString *num = [cm stringForKey:@"ModelNumber"];    // A2160
+    if (pt.length) fv[@"productType"]   = pt;
+    if (hm.length) fv[@"hwModelStr"]    = hm;
+    if (mn.length) fv[@"marketingName"] = mn;
+    if (num.length) fv[@"modelNumber"]  = num;
+
+    if (fv.count == 0) {
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Chưa có cấu hình fake"
+                             message:@"Mở Fake Settings → Change Device trước để sinh fake model, rồi quay lại bấm nút này."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
+
+    BOOL ok = [CIMGCachePatcher patchWithFakeValues:fv];
+    NSString *title = ok ? @"✅ MG Cache đã patch" : @"❌ Patch failed";
+    NSMutableString *msg = [NSMutableString stringWithString:ok ?
+        @"Mọi app trên máy sẽ đọc fake model từ MG cache sau khi mày tắt + mở lại từng app. Nếu muốn hiệu lực lập tức → Reboot Userspace (Dopamine).\n\nPatched:\n" :
+        @"Không ghi được MG cache. Xem Console log để biết lý do.\n"];
+    if (ok) for (NSString *k in fv) [msg appendFormat:@"  %@ = %@\n", k, fv[k]];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:title
+                                                                message:msg
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+// 5.0.0: restore the pristine MG cache saved on the first patch. Lets the
+// user roll the device back to its true identity without reinstalling iOS.
+- (void)restoreMGCacheAction {
+    if (![CIMGCachePatcher backupExists]) {
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Không có backup"
+                             message:@"Chưa patch MG Cache lần nào trên máy này — không có file gốc để restore."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
+    BOOL ok = [CIMGCachePatcher restoreOriginal];
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:ok ? @"✅ MG Cache restored" : @"❌ Restore failed"
+                         message:ok ? @"Máy quay lại identity gốc. Reboot để mọi app re-read cache." : @"Xem Console log."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)toggleAllFakes {
