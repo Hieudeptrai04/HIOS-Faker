@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.45";
+static NSString *const kAppVersion = @"4.3.46";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -158,19 +158,25 @@ static NSString *CIRRSDir(void) {
     // stop the tweak wiping Viber's keychain/app-group so an existing login persists.
     if (_cfg[@"viberKeepLogin"]  == nil) { _cfg[@"viberKeepLogin"]  = @(NO);  seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
-    // Keep the claimed model/chip/screen on the physical hardware by default.
-    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
-    // 4.3.43: "Fake tự do" — OFF by default (safe). ON lets Change Device fake any
-    // model in range (≤ iPhone 12 Pro Max under Zalo mode) even when its screen/chip
-    // differ from the physical device (e.g. iPhone 7 → iPhone 12). Zalo verifies by
-    // model identifier, not screen size, and UIScreen is hooked inside Zalo.
-    if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(NO);  seeded = YES; }
-    // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
-    // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
-    // real device → show iPhone X), and a high chip can't be faked GPU-
-    // consistently on old hardware without crashing camera/video. Keeping Zalo
-    // registrations on ≤ iPhone 12 is the proven, stable strategy.
+    // 4.3.46: free model picking is the proven-safe default (Zalo verifies by
+    // ProductType, not screen size; tweak hooks UIScreen inside Zalo). Keep
+    // zalo_mode ON so the model cap at iPhone 12 Pro Max still protects reg
+    // flow against Zalo not recognising iPhone 13+ identifiers.
+    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO);  seeded = YES; }
+    if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(YES); seeded = YES; }
     if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
+    // 4.3.46 one-time migration: existing installs may still carry 4.3.43 defaults
+    // (hw_lock=YES / free_model=NO) that pinned Change Device to screen-matched
+    // models of the real hardware. Flip them once to the new free-pick defaults.
+    if (![_cfg[@"_ci_migrated_4_3_46"] boolValue]) {
+        _cfg[@"_ci_hw_lock"]    = @(NO);
+        _cfg[@"_ci_free_model"] = @(YES);
+        _cfg[@"zalo_mode"]      = @(YES);
+        _cfg[@"__deviceMinIdx"] = @(0);   // iPhone SE (1) — first preset
+        _cfg[@"__deviceMaxIdx"] = @(18);  // iPhone 12 Pro Max — last cap for Zalo mode
+        _cfg[@"_ci_migrated_4_3_46"] = @(YES);
+        seeded = YES;
+    }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -6134,15 +6140,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C range:@"" labels:iosLabels minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
 
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
-    [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
-    [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
-    [_rows addObject:[C toggle:@"🔒 Khóa đúng phần cứng thật (khuyên dùng)" key:@"_ci_hw_lock" indent:24]];
-    [_rows addObject:[C note:@"BẬT mặc định: giữ model/chip/màn hình nhất quán với máy thật; chỉ các ID duy nhất được đổi. Tắt chỉ dành cho kiểm thử vì GPU/board thật có thể làm lộ profile lệch. (Có thể bị ghi đè bởi 'Fake tự do' bên dưới.)" indent:24]];
-    [_rows addObject:[C toggle:@"🔓 Fake tự do mọi model (bỏ khớp phần cứng/màn)" key:@"_ci_free_model" indent:24]];
-    [_rows addObject:[C note:@"BẬT: cho Change Device / random giả BẤT KỲ model nào trong dải thanh trượt (vẫn ≤ iPhone 12 Pro Max nếu Zalo mode bật), kể cả khác màn/chip với máy gốc — vd iPhone 7 giả thành iPhone 12. Zalo kiểm theo MÃ MÁY (ProductType), không kiểm độ rộng màn; tweak đã hook UIScreen trong Zalo nên màn Zalo đọc = máy giả. Ghi đè '🔒 Khóa phần cứng' (kể cả ép cho Zalo/Viber). Đánh đổi: chip/GPU thật vẫn lộ với app kiểm tra sâu — Zalo không kiểm. TẮT (mặc định): giữ khớp máy thật, an toàn tối đa." indent:24]];
+    [_rows addObject:[C note:@"Kéo 2 tay cầm để chọn khoảng model (iPhone SE1 → iPhone 12 Pro Max). Change Device sẽ random trong khoảng đó, bất kỳ model nào (không khớp màn/chip cũng OK — Zalo kiểm theo ProductType, UIScreen đã hook)." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
-    [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
-    [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
 
     // 3. Fake Name — kept editable since the user often wants a custom one.
     [_rows addObject:[C toggle:@"3. Fake Name" key:@"fake_processinfo" indent:0]];
@@ -6187,9 +6186,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C note:@"Thay đổi Serial sẽ yêu cầu login lại App Store khi reset data." indent:24]];
     [_rows addObject:[C text:@"Serial (16 ký tự)" key:@"serialNumber" placeholder:@"F2LX...." indent:24]];
 
-    // 7. Sensors
-    [_rows addObject:[C toggle:@"7. Fake sensors (rung, gia tốc) (không có tác dụng)" key:@"fake_sensor" indent:0]];
-
     // 8. Advertising
     [_rows addObject:[C toggle:@"8. Fake IDFA" key:@"fake_ads" indent:0]];
     [_rows addObject:[C text:@"IDFA" key:@"advertisingIdentifier" placeholder:@"00000000-0000-0000-0000-000000000000" indent:24]];
@@ -6226,18 +6222,7 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"14. Fake WebKit fingerprint" key:@"fake_browser" indent:0]];
     [_rows addObject:[C text:@"WebGL Vendor" key:@"web_glVendor" placeholder:@"Apple Inc." indent:24]];
     [_rows addObject:[C text:@"WebGL Renderer" key:@"web_glRenderer" placeholder:@"Apple GPU" indent:24]];
-    [_rows addObject:[C toggle:@"    Canvas noise (không có tác dụng - luôn bật khi có WebView spoof)" key:@"web_canvasNoise" indent:24]];
 
-    // 15. Metal
-    [_rows addObject:[C toggle:@"15. Fake Metal GPU (không có tác dụng - GPU để thật)" key:@"fake_metal" indent:0]];
-    [_rows addObject:[C text:@"GPU name" key:@"zalo_metalGPU" placeholder:@"Apple A17 Pro GPU" indent:24]];
-
-    // 16. WebRTC
-    [_rows addObject:[C toggle:@"16. Fake WebRTC (không có tác dụng - đã gỡ)" key:@"fake_webrtc" indent:0]];
-
-    // 17. Timing
-    [_rows addObject:[C toggle:@"17. Fake timing offset (không có tác dụng)" key:@"fake_timing" indent:0]];
-    [_rows addObject:[C text:@"Offset (seconds)" key:@"zalo_timingOffset" placeholder:@"0" indent:24]];
 
     // 18. Viber. v4.2.7: REMOVED "Reset keychain on launch" (fake_keychain) and
     // "Clear keychain every time" (keychainReset) — both keys were DEAD, the
@@ -6249,10 +6234,6 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     // 19. JB Hide — single runtime control consumed by tweak-mg.
     [_rows addObject:[C toggle:@"19. Hide Jailbreak (cơ bản, áp dụng khi mở lại app)" key:@"hideJailbreak" indent:0]];
-
-    // 20. Uptime
-    [_rows addObject:[C toggle:@"20. Fake system uptime (toggle không có tác dụng - chỉ kern.boottime được spoof)" key:@"fake_uptime" indent:0]];
-    [_rows addObject:[C text:@"systemUptime (seconds)" key:@"systemUptime" placeholder:@"3600" indent:24]];
 
     // 21. Reset Data behavior — let user opt out of the SpringBoard
     // respring that fires at the end of every Reset Data run. Respring
