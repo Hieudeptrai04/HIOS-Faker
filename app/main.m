@@ -71,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.4.8";
+static NSString *const kAppVersion = @"4.4.9";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -10440,24 +10440,35 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 
         BOOL mirrorSaved = [cm save];
         BOOL cfgReadback = ci_criticalConfigReadback(cm, allBids, wipeGen, counter, wipeDeadline);
-        // CODEX P0-1 — RE-VERIFY the shipped filter here and GATE the wipe on it: if the
-        // filter was swapped/deleted between preflight and now, we must NOT wipe (the
-        // tweak would not inject → data loss for nothing). MG and CT intentionally
-        // have different system-app coverage, so re-check their separate gate lists.
+        // 4.4.8: PRE-WIPE re-check. Previously this gated the wipe on BOTH
+        // mirror/config readback AND the per-app ellekit filter coverage. The
+        // filter gate is dropped (soft-warn only) because 4.4.7+ runs the pure
+        // device-wide architecture: identity is faked via the MG cache plist
+        // patch, so apps uncovered by the shipped filter still get the fake
+        // and the wipe is still useful (fresh container for registration).
+        // Keep the config-readback hard gate: a stale/missing mirror would mean
+        // the tweak doesn't see our fresh identity even on the covered apps.
         BOOL filterOK = ci_syncTweakFilterForApps(fullTargets, mgGateBids, ctGateBids);
-        if (!mirrorSaved || !cfgReadback || !filterOK) {
-            NSLog(@"[ChangeInfoIos] PRE-WIPE ABORT: mirrorSaved=%d cfgReadback=%d filterOK=%d", mirrorSaved, cfgReadback, filterOK);
+        if (!filterOK) {
+            NSLog(@"[ChangeInfoIos] PRE-WIPE filter soft-warn (4.4.8): shipped filter does not cover all "
+                  @"selected bids — mg-need=%@ ct-need=%@ — proceeding; uncovered apps rely on device-wide "
+                  @"MG cache patch for identity, wipe still runs for a clean container.",
+                  [mgGateBids componentsJoinedByString:@","],
+                  [ctGateBids componentsJoinedByString:@","]);
+        }
+        if (!mirrorSaved || !cfgReadback) {
+            NSLog(@"[ChangeInfoIos] PRE-WIPE ABORT: mirrorSaved=%d cfgReadback=%d (filterOK=%d soft-warn only)",
+                  mirrorSaved, cfgReadback, filterOK);
             NSMutableArray<NSString *> *why = [NSMutableArray array];
             if (!mirrorSaved) [why addObject:@"ghi mirror config thất bại"];
             if (!cfgReadback) [why addObject:@"đọc-lại config (identity/token/target/one-shot) KHÔNG khớp"];
-            if (!filterOK)    [why addObject:@"shipped filter đổi/xoá/hỏng cấu trúc — tweak sẽ KHÔNG inject app target"];
             NSString *whyMsg = [why componentsJoinedByString:@"; "];
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self dismissHUD:hud completion:^{
                     [self alert:@"Chưa xoá dữ liệu"
                             msg:[NSString stringWithFormat:
-                                 @"KHÔNG xoá dữ liệu app (tránh mất dữ liệu cho một thay đổi tweak chưa dùng được).\n"
-                                 @"Lý do: %@.\nKiểm tra /var/jb/etc/changeinfoios/ + filter DynamicLibraries rồi thử lại.", whyMsg]];
+                                 @"KHÔNG xoá dữ liệu app (tránh mất dữ liệu cho một config chưa ghi được).\n"
+                                 @"Lý do: %@.\nKiểm tra /var/jb/etc/changeinfoios/ (quyền ghi) rồi thử lại.", whyMsg]];
                 }];
             });
             if (bgTask != UIBackgroundTaskInvalid) {
@@ -10468,7 +10479,7 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
             return;   // hard stop BEFORE any container wipe
         }
-        NSLog(@"[ChangeInfoIos] pre-wipe gate OK (config+filter, %lu bundles) — proceeding to wipe", (unsigned long)allBids.count);
+        NSLog(@"[ChangeInfoIos] pre-wipe gate OK (config saved+read-back, filter soft-warn permitted, %lu bundles) — proceeding to wipe", (unsigned long)allBids.count);
 
         // Step 2: Kill + wipe target app sandboxes.
         // Kill FIRST so file handles release and the app can't re-create files
