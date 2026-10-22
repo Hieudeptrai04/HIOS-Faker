@@ -4180,9 +4180,16 @@ static void notify_cb(int t) {
         //    stays rock-solid (verified: CLLocation.start fires, no crash).
         //  - com.apple.weather: also kept out of the filter entirely because the
         //    heavy hooks crash WeatherCore; this bail is belt-and-suspenders.
+        //  - 4.3.56: com.apple.mobilesafari + com.apple.WebKit.WebContent — must stay
+        //    in filter for preflight (user targetBundles can list them) but the heavy
+        //    MG/sysctl/IORegistry hook stack broke Safari networking on 4.3.53. Add
+        //    them here so Safari gets the UIKit-level Logos hooks (device name,
+        //    locale, timezone) but skips the C-function stack entirely.
         NSString *mainBID = [[NSBundle mainBundle] bundleIdentifier];
         if ([mainBID isEqualToString:@"com.apple.weather"] ||
-            [mainBID isEqualToString:@"com.apple.Maps"]) {
+            [mainBID isEqualToString:@"com.apple.Maps"]  ||
+            [mainBID isEqualToString:@"com.apple.mobilesafari"] ||
+            [mainBID isEqualToString:@"com.apple.WebKit.WebContent"]) {
             dbglog("ctor %s lightweight (loc-hook only, skip C-hooks) %s\n",
                    g_procname, mainBID.UTF8String);
             return;
