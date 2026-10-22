@@ -618,6 +618,22 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     // CPU → FrontBoard "scene-create watchdog" SIGKILL ("văng ra màn hình
     // chính"). Now dladdr fires only for the handful of keys we actually spoof.
     NSString *key = (__bridge NSString *)property;
+
+    // 4.3.50: constant anti-detect boolean keys. iOS MG does not actually hold
+    // "JailbreakStatus" / "IsAppleInternal" / "IsSimulator" on a shipping device
+    // (they are only ever asked by anti-fraud SDKs probing for them), so our
+    // return of kCFBooleanFalse looks exactly like a stock non-JB iPhone. Gated
+    // on g_hideJBOn to match the rest of the JB-hide layer and only costs one
+    // NSString -isEqualToString per probe — cheaper than the generic map path.
+    if (g_hideJBOn) {
+        if ([key isEqualToString:@"JailbreakStatus"] ||
+            [key isEqualToString:@"IsAppleInternal"] ||
+            [key isEqualToString:@"IsSimulator"] ||
+            [key isEqualToString:@"InternalBuild"] ||
+            [key isEqualToString:@"IsThereEnoughBatteryLevelForSoftwareUpdate"])
+            return (CFTypeRef)CFRetain(kCFBooleanFalse);
+    }
+
     NSString *configKey = g_mgKeyMap[key];
     if (!configKey) {
         if (ci_dbgEnabled()) {   // only stringify the key when logging is on
