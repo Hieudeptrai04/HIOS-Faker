@@ -26,6 +26,7 @@
 #import <sys/utsname.h>
 #import <sys/stat.h>
 #import <sys/proc.h>
+#import <mach-o/loader.h>  // 4.3.41: struct mach_header for dyld-add-image shim
 #import <errno.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -939,12 +940,17 @@ typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 typedef int (*uname_t)(struct utsname *);
 typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37
+typedef int (*csops_audittoken_t)(pid_t, uint32_t, void *, size_t, void *);   // 4.3.41
+typedef void (*dyld_add_image_cb_t)(const struct mach_header *, intptr_t);     // 4.3.41
+typedef void (*dyld_register_cb_t)(dyld_add_image_cb_t);                        // 4.3.41
 static sysctlbyname_t orig_sysctlbyname = NULL;
 static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 static uname_t        orig_uname        = NULL;
 static csops_t        orig_csops        = NULL;
+static csops_audittoken_t  orig_csops_audittoken = NULL;    // 4.3.41
+static dyld_register_cb_t  orig_dyld_register_add_image = NULL;    // 4.3.41
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
@@ -1303,6 +1309,74 @@ static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize
         }
     }
     return rc;
+}
+
+// 4.3.41: csops_audittoken variant — iOS 15+ SDK (ZShield / FirebaseCrashlytics
+// / Guardsquare) call csops_audittoken(getpid(), CS_OPS_STATUS, &flags, 4,
+// &audit_token) instead of the plain csops. Same bits to scrub, same self-pid
+// gate; the extra `token` argument identifies the caller for XPC audit, we
+// just forward it untouched.
+static int hooked_csops_audittoken(pid_t pid, uint32_t ops,
+                                   void *useraddr, size_t usersize,
+                                   void *token) {
+    int rc = orig_csops_audittoken(pid, ops, useraddr, usersize, token);
+    if ((pid == 0 || pid == getpid()) && ops == CI_CS_OPS_STATUS &&
+        useraddr && usersize >= sizeof(uint32_t)) {
+        uint32_t *flags = (uint32_t *)useraddr;
+        uint32_t before = *flags;
+        *flags &= ~(CI_CS_DEBUGGED | CI_CS_INVALID_ALLOWED |
+                    CI_CS_GET_TASK_ALLOW | CI_CS_INSTALLER);
+        if (before != *flags) {
+            dbglog("csops_audittoken %s pid=%d STATUS 0x%08x -> 0x%08x\n",
+                   g_procname, (int)pid, before, *flags);
+        }
+    }
+    return rc;
+}
+
+// 4.3.41: _dyld_register_func_for_add_image — anti-fraud SDKs register a
+// callback that fires for every dylib that was/will be loaded, giving them the
+// full image list regardless of _dyld_image_count hooking. Wrap the SDK's
+// callback in our own that drops JB-named images (same blacklist LAYER 10
+// uses). Pass that wrapper to dyld, so when it fires per real image, we only
+// forward the ones the SDK should see. Zero overhead on image load (one strstr
+// per path) and transparent to the SDK — it still gets normal callback
+// semantics, just not for our dylibs.
+static dyld_add_image_cb_t g_dyld_add_cbs[32] = {0};
+static int                 g_dyld_add_cb_n   = 0;
+static pthread_mutex_t     g_dyld_add_cb_mu  = PTHREAD_MUTEX_INITIALIZER;
+
+static void ci_dyld_add_image_shim(const struct mach_header *mh, intptr_t slide) {
+    Dl_info info; info.dli_fname = NULL;
+    if (dladdr((void *)mh, &info) && info.dli_fname && isDyldNameHidden(info.dli_fname)) {
+        return;    // swallow — SDK never sees this JB image
+    }
+    pthread_mutex_lock(&g_dyld_add_cb_mu);
+    int n = g_dyld_add_cb_n;
+    dyld_add_image_cb_t cbs[32];
+    for (int i = 0; i < n; i++) cbs[i] = g_dyld_add_cbs[i];
+    pthread_mutex_unlock(&g_dyld_add_cb_mu);
+    for (int i = 0; i < n; i++) if (cbs[i]) cbs[i](mh, slide);
+}
+
+static void hooked_dyld_register_func_for_add_image(dyld_add_image_cb_t cb) {
+    if (!cb) return;
+    pthread_mutex_lock(&g_dyld_add_cb_mu);
+    int already = 0;
+    for (int i = 0; i < g_dyld_add_cb_n; i++) {
+        if (g_dyld_add_cbs[i] == cb) { already = 1; break; }
+    }
+    int first = (g_dyld_add_cb_n == 0);
+    if (!already && g_dyld_add_cb_n < 32) {
+        g_dyld_add_cbs[g_dyld_add_cb_n++] = cb;
+    }
+    pthread_mutex_unlock(&g_dyld_add_cb_mu);
+    if (first && orig_dyld_register_add_image) {
+        // Register our shim ONCE with dyld, no matter how many SDKs call us.
+        orig_dyld_register_add_image(ci_dyld_add_image_shim);
+    }
+    dbglog("dyld_register_add_image %s cb=%p (total=%d)\n",
+           g_procname, (void *)cb, g_dyld_add_cb_n);
 }
 
 // gethostname → spoof to deviceName if set.
@@ -3797,6 +3871,28 @@ static void notify_cb(int t) {
             MSHookFunction((void *)orig_csops, (void *)hooked_csops,
                            (void **)&orig_csops);
             dbglog("ctor %s csops hook installed\n", g_procname);
+        }
+        // 4.3.41: csops_audittoken — the iOS 15+ SDK variant that supersedes
+        // csops in commercial anti-fraud SDKs (ZShield / Guardsquare, used by
+        // Zalo in recent builds).
+        orig_csops_audittoken = (csops_audittoken_t)dlsym(RTLD_DEFAULT, "csops_audittoken");
+        if (orig_csops_audittoken) {
+            MSHookFunction((void *)orig_csops_audittoken,
+                           (void *)hooked_csops_audittoken,
+                           (void **)&orig_csops_audittoken);
+            dbglog("ctor %s csops_audittoken hook installed\n", g_procname);
+        }
+        // 4.3.41: _dyld_register_func_for_add_image — SDK registers a callback
+        // that fires for each loaded dylib, bypassing the _dyld_image_count
+        // blacklist filter in LAYER 10. Our shim intercepts the registration,
+        // filters JB images from the stream, then forwards everything else.
+        orig_dyld_register_add_image = (dyld_register_cb_t)dlsym(RTLD_DEFAULT,
+                                            "_dyld_register_func_for_add_image");
+        if (orig_dyld_register_add_image) {
+            MSHookFunction((void *)orig_dyld_register_add_image,
+                           (void *)hooked_dyld_register_func_for_add_image,
+                           (void **)&orig_dyld_register_add_image);
+            dbglog("ctor %s _dyld_register_func_for_add_image hook installed\n", g_procname);
         }
 
         if (orig_uname) {
