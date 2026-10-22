@@ -71,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.4.5";
+static NSString *const kAppVersion = @"4.4.6";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -1551,8 +1551,8 @@ static NSUInteger ci_randomizeIdentities(void) {
     // A12), iPhone 12 Pro Max = crash. Keep the pick inside the real chip's
     // generation unless the user explicitly disables the clamp.
     BOOL chipClamp = [[CIConfigManager shared] objectForKey:@"_ci_chip_safe_clamp"]
-        ? [[CIConfigManager shared] boolForKey:@"_ci_chip_safe_clamp"] : YES;
-    if (chipClamp && !hwLock) {
+        ? [[CIConfigManager shared] boolForKey:@"_ci_chip_safe_clamp"] : NO;
+    if (chipClamp) {
         NSString *realPT = ci_realProductType();
         NSUInteger realIdx = NSNotFound;
         NSString *realChipID = nil;
