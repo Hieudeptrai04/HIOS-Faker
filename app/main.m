@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.54";
+static NSString *const kAppVersion = @"4.3.55";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -6138,6 +6138,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
     [_rows addObject:[C note:@"Mặc định: Change Device chỉ random trong các model có cùng kích thước màn với máy thật (an toàn — cross-screen hay bị Zalo nghi). Bật '🔓 Fake tự do' bên dưới để mở toàn dải SE1..12 Pro Max." indent:24]];
     [_rows addObject:[C toggle:@"🔓 Fake tự do mọi model (cross-screen)" key:@"_ci_free_model" indent:24]];
+    [_rows addObject:[C toggle:@"📇 Seed fake contacts mỗi Change Device" key:@"seed_fake_contacts" indent:24]];
+    [_rows addObject:[C note:@"TẮT (mặc định): KHÔNG tạo contacts giả vào AddressBook — Zalo/app sẽ không bị cash khi grant quyền Danh bạ. BẬT: tạo 30-100 contacts giả mỗi Change Device (một số app có thể cash khi iterate danh bạ)." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
 
     // 3. Fake Name — kept editable since the user often wants a custom one.
@@ -10244,8 +10246,24 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
         [NSThread sleepForTimeInterval:1.5];
         ci_randomizeIdentities();
         NSLog(@"[ChangeInfoIos] Step 1 done: fake identities generated");
-        NSUInteger seededContacts = ci_seedRandomContacts();
-        NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
+        // 4.3.55: gate contacts seeding behind config toggle. Default OFF because
+        // Zalo (and some other apps) read the full AddressBook via CNContactStore
+        // on first Contacts grant and iteration over our generated contacts has
+        // been observed to crash the host app. Clear previously-seeded contacts
+        // whenever seeding is OFF so repeated upgrades do not leave stale fake
+        // entries in the user's AB.
+        BOOL seedOn = [[CIConfigManager shared] boolForKey:@"seed_fake_contacts"];
+        NSUInteger seededContacts = 0;
+        if (seedOn) {
+            seededContacts = ci_seedRandomContacts();
+            NSLog(@"[ChangeInfoIos] Step 1 contacts seeded: %lu", (unsigned long)seededContacts);
+        } else {
+            CNContactStore *store = [CNContactStore new];
+            if (ci_contactsEnsureAccess(store)) {
+                NSUInteger cleared = ci_clearHIOSContacts(store);
+                NSLog(@"[ChangeInfoIos] Step 1 contacts seeding OFF — cleared %lu stale fakes", (unsigned long)cleared);
+            }
+        }
 
         // CODEX P0-1/P0-2 — STAGE + SAVE + EXACT READ-BACK the CRITICAL tweak-consumed
         // config BEFORE the destructive wipe, AND re-gate the shipped filter. Previously

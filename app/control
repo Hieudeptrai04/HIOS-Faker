@@ -1,6 +1,6 @@
 Package: com.changeinfoios.v3.app
 Name: HIOS Faker v3
-Version: 4.3.54
+Version: 4.3.55
 Architecture: iphoneos-arm64
 Description: HIOS Faker v3 — personalization & privacy utility. Manage per-app device preferences and clean app data from a single place. Lightweight, smooth as native.
 Maintainer: ChangeInfoIos
