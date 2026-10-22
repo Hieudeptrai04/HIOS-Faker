@@ -619,20 +619,14 @@ static CFTypeRef hooked_MGCopyAnswer(CFStringRef property) {
     // chính"). Now dladdr fires only for the handful of keys we actually spoof.
     NSString *key = (__bridge NSString *)property;
 
-    // 4.3.50: constant anti-detect boolean keys. iOS MG does not actually hold
-    // "JailbreakStatus" / "IsAppleInternal" / "IsSimulator" on a shipping device
-    // (they are only ever asked by anti-fraud SDKs probing for them), so our
-    // return of kCFBooleanFalse looks exactly like a stock non-JB iPhone. Gated
-    // on g_hideJBOn to match the rest of the JB-hide layer and only costs one
-    // NSString -isEqualToString per probe — cheaper than the generic map path.
-    if (g_hideJBOn) {
-        if ([key isEqualToString:@"JailbreakStatus"] ||
-            [key isEqualToString:@"IsAppleInternal"] ||
-            [key isEqualToString:@"IsSimulator"] ||
-            [key isEqualToString:@"InternalBuild"] ||
-            [key isEqualToString:@"IsThereEnoughBatteryLevelForSoftwareUpdate"])
-            return (CFTypeRef)CFRetain(kCFBooleanFalse);
-    }
+    // 4.3.52: REVERT the 4.3.50 const-false JB-probe keys. iOS does NOT define
+    // JailbreakStatus / IsAppleInternal / InternalBuild on a shipping device,
+    // so real MGCopyAnswer returns NULL for them. Our hook returning
+    // kCFBooleanFalse was itself a tell: an anti-fraud SDK that probes these
+    // "canary" keys expects NULL, and seeing a value proves a hook sits on MG.
+    // Zalo exits silently after "treo logo" when it fires that probe. Pass
+    // these keys through to the real MG (which returns NULL) — same as a
+    // stock iPhone.
 
     NSString *configKey = g_mgKeyMap[key];
     if (!configKey) {
