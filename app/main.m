@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.34";
+static NSString *const kAppVersion = @"4.3.35";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -169,6 +169,13 @@ static NSString *CIRRSDir(void) {
     // consistently on old hardware without crashing camera/video. Keeping Zalo
     // registrations on ≤ iPhone 12 is the proven, stable strategy.
     if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
+    // 4.3.35: screen-match default OFF — the previous hard-coded ON silently
+    // restricted the random pick to presets with the same native resolution as
+    // the real device, so dialling iPhone 5 → iPhone 12 Pro Max only ever
+    // yielded iPhone X / XS / 11 Pro on this iPhone XS. Now opt-in via the
+    // "📐 Khớp màn hình thật" toggle in Fake Settings when registering an app
+    // that cross-checks screen vs claimed model.
+    if (_cfg[@"_ci_screen_match"] == nil) { _cfg[@"_ci_screen_match"] = @(NO); seeded = YES; }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -1475,7 +1482,7 @@ static NSUInteger ci_randomizeIdentities(void) {
     // model is in range. Host app is NOT hooked, so UIScreen here is REAL.
     NSArray *preset = nil;
     id smObj = [cm objectForKey:@"_ci_screen_match"];
-    BOOL screenMatch = smObj ? [smObj boolValue] : YES;
+    BOOL screenMatch = smObj ? [smObj boolValue] : NO;   // 4.3.35: default OFF so range slider is honoured; opt-in via UI toggle in Fake Settings
     if (screenMatch) {
         double rw = 0, rh = 0;
         @try {
@@ -6034,8 +6041,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
     [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
     [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
-    [_rows addObject:[C toggle:@"🔒 Khóa đúng máy thật (tùy chọn)" key:@"_ci_hw_lock" indent:24]];
-    [_rows addObject:[C note:@"TẮT (mặc định): giả model khác máy thật — tweak tự spoof cpufamily/cache theo chip của model giả (A11–A14, tới iPhone 12 Pro Max) để khớp. BẬT: luôn giả ĐÚNG model máy thật → khớp tuyệt đối nhưng đúng model thật; khi BẬT thanh chọn dải model bị bỏ qua." indent:24]];
+    // 4.3.35: expose screen-match toggle (previously hard-coded ON) + default
+    // OFF so the random pick spans the full dial-selected range instead of
+    // being silently filtered down to the 2–3 presets that share the real
+    // device's native resolution. Kai hit the exact symptom: dialled slider
+    // iPhone 5 → iPhone 12 Pro Max but got iPhone X / XS every time because
+    // the host's REAL UIScreen is 1125x2436 and only those presets passed.
+    [_rows addObject:[C toggle:@"📐 Khớp màn hình thật (chỉ pick model cùng độ phân giải)" key:@"_ci_screen_match" indent:24]];
+    [_rows addObject:[C note:@"TẮT (mặc định): random đầy đủ dải model đã kéo — không lọc theo màn hình thật. BẬT: chỉ pick model có native resolution GIỐNG màn hình thật (vd iPhone XS 1125x2436 → chỉ ra iPhone X/XS/11 Pro). Dành khi reg app rất khó như Zalo, muốn screen giả = screen thật cho khớp tuyệt đối." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
