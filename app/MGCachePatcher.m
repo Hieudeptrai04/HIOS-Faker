@@ -7,6 +7,9 @@
 
 #import "MGCachePatcher.h"
 #import <sys/stat.h>
+#import <sys/wait.h>
+#import <spawn.h>
+extern char **environ;
 
 static NSString *const kMGCacheLive =
     @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
@@ -23,21 +26,31 @@ static NSString *const kKeyMarketingNameAlt = @"bbtR9jQx50Fv5Af/affNtA"; // iPho
 static NSString *const kKeyModelNumber      = @"97JDvERpVwO+GHtthIh7hA"; // A1920
 
 // Run a short command through /usr/bin/sudo so we inherit root and can write
-// to the SystemGroup container. The HIOS Faker package already configures
-// password-less sudo for the daemon paths; falling through to the password
-// prompt here would hang the main thread.
+// to the SystemGroup container. iOS has no NSTask so we use posix_spawn.
+// -n keeps sudo non-interactive: if a password would be prompted, we fail
+// loudly rather than hang the main thread.
 static BOOL ci_runSudo(NSArray<NSString *> *args) {
-    NSTask *t = [NSTask new];
-    t.launchPath = @"/usr/bin/sudo";
-    t.arguments = [@[@"-n"] arrayByAddingObjectsFromArray:args];
-    @try {
-        [t launch];
-        [t waitUntilExit];
-        return t.terminationStatus == 0;
-    } @catch (NSException *e) {
-        NSLog(@"[MGCache] sudo exception: %@", e);
+    NSMutableArray<NSString *> *full = [NSMutableArray arrayWithObjects:@"sudo", @"-n", nil];
+    [full addObjectsFromArray:args];
+    char **argv = (char **)malloc(sizeof(char *) * (full.count + 1));
+    for (NSUInteger i = 0; i < full.count; i++) {
+        argv[i] = strdup([full[i] UTF8String]);
+    }
+    argv[full.count] = NULL;
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, "/usr/bin/sudo", NULL, NULL, argv, environ);
+    for (NSUInteger i = 0; i < full.count; i++) free(argv[i]);
+    free(argv);
+
+    if (rc != 0) {
+        NSLog(@"[MGCache] posix_spawn err=%d", rc);
         return NO;
     }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return exitCode == 0;
 }
 
 @implementation CIMGCachePatcher
