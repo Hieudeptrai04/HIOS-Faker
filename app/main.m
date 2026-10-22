@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.48";
+static NSString *const kAppVersion = @"4.3.49";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -158,25 +158,15 @@ static NSString *CIRRSDir(void) {
     // stop the tweak wiping Viber's keychain/app-group so an existing login persists.
     if (_cfg[@"viberKeepLogin"]  == nil) { _cfg[@"viberKeepLogin"]  = @(NO);  seeded = YES; }
     if (_cfg[@"locationEnabled"] == nil) { _cfg[@"locationEnabled"] = @(YES); seeded = YES; }
-    // 4.3.46: free model picking is the proven-safe default (Zalo verifies by
-    // ProductType, not screen size; tweak hooks UIScreen inside Zalo). Keep
-    // zalo_mode ON so the model cap at iPhone 12 Pro Max still protects reg
-    // flow against Zalo not recognising iPhone 13+ identifiers.
-    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO);  seeded = YES; }
-    if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(YES); seeded = YES; }
+    // 4.3.49: revert the 4.3.46 forced migration. Flipping _ci_free_model/_ci_hw_lock
+    // and resetting the slider range for installs that already had a working fake
+    // profile ended up putting Zalo's view of the device into an inconsistent state
+    // (confirmed on-device: nuking config.plist + reseeding brought Zalo back; a
+    // migrated config kept it crashing). Keep the 4.3.43 "safe" defaults — users
+    // who want the full SE1..12 Pro Max range toggle it from Fake Settings.
+    if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
+    if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(NO);  seeded = YES; }
     if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
-    // 4.3.46 one-time migration: existing installs may still carry 4.3.43 defaults
-    // (hw_lock=YES / free_model=NO) that pinned Change Device to screen-matched
-    // models of the real hardware. Flip them once to the new free-pick defaults.
-    if (![_cfg[@"_ci_migrated_4_3_46"] boolValue]) {
-        _cfg[@"_ci_hw_lock"]    = @(NO);
-        _cfg[@"_ci_free_model"] = @(YES);
-        _cfg[@"zalo_mode"]      = @(YES);
-        _cfg[@"__deviceMinIdx"] = @(0);   // iPhone SE (1) — first preset
-        _cfg[@"__deviceMaxIdx"] = @(18);  // iPhone 12 Pro Max — last cap for Zalo mode
-        _cfg[@"_ci_migrated_4_3_46"] = @(YES);
-        seeded = YES;
-    }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -6140,7 +6130,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C range:@"" labels:iosLabels minKey:@"__iosMinIdx" maxKey:@"__iosMaxIdx"]];
 
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
-    [_rows addObject:[C note:@"Kéo 2 tay cầm để chọn khoảng model (iPhone SE1 → iPhone 12 Pro Max). Change Device sẽ random trong khoảng đó, bất kỳ model nào (không khớp màn/chip cũng OK — Zalo kiểm theo ProductType, UIScreen đã hook)." indent:24]];
+    [_rows addObject:[C note:@"Mặc định: Change Device chỉ random trong các model có cùng kích thước màn với máy thật (an toàn — cross-screen hay bị Zalo nghi). Bật '🔓 Fake tự do' bên dưới để mở toàn dải SE1..12 Pro Max." indent:24]];
+    [_rows addObject:[C toggle:@"🔓 Fake tự do mọi model (cross-screen)" key:@"_ci_free_model" indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
 
     // 3. Fake Name — kept editable since the user often wants a custom one.

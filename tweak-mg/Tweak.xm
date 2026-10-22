@@ -3120,13 +3120,18 @@ static BOOL ci_isJBBundleID(NSString *bid) {
             @"science.xnu.undecimus", @"com.electra1112.electra", @"org.coolstar.electra",
             @"com.opa334.Dopamine", @"com.opa334.TrollStore", @"com.opa334.trollstorehelper",
             @"com.roothide.manager", @"com.serena.zebra", @"com.hackyouiphone.chariz",
-            @"me.qwq.sileo", @"org.coolstar.SileoNightly", nil];
+            @"me.qwq.sileo", @"org.coolstar.SileoNightly",
+            // 4.3.49: hide HIOS Faker itself from LSApplicationWorkspace enum so
+            // Zalo's install-list scan does not spot it.
+            @"com.changeinfoios.v3.app", @"com.changeinfoios.v3", @"com.changeinfoios",
+            nil];
     });
     if ([jb containsObject:bid]) return YES;
     NSString *l = bid.lowercaseString;   // safety net for obvious forks / renames
     return ([l containsString:@"cydia"] || [l containsString:@"sileo"] ||
             [l containsString:@".filza"] || [l containsString:@"trollstore"] ||
-            [l containsString:@"dopamine"] || [l containsString:@"checkra1n"]);
+            [l containsString:@"dopamine"] || [l containsString:@"checkra1n"] ||
+            [l containsString:@"changeinfo"] || [l containsString:@"hiosfaker"]);
 }
 
 @interface LSApplicationWorkspace : NSObject
