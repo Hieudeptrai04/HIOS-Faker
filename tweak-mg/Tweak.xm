@@ -2695,6 +2695,13 @@ static BOOL isJBPath(const char *path) {
         if (strncmp(cp, kHide[i], hl) == 0 && (cp[hl] == '\0' || cp[hl] == '/'))
             return YES;
     }
+    // 4.3.45: dynamic bootstrap markers. Rootless JBs (Dopamine/opa334) mount their
+    // bootstrap under /private/preboot/<64-hex-UUID>/dopamine-<rand>/procursus/, and
+    // roothide drops ".jbroot" symlinks inside tweak dirs. The UUID is per-device so
+    // we can't put the full path in kHide; instead scan for the stable markers.
+    // Keep this below the prefix loop so canonicalized hot paths still shortcut.
+    if (strstr(cp, "/dopamine-") || strstr(cp, "/procursus/") || strstr(cp, "/.jbroot"))
+        return YES;
     return NO;
 }
 
