@@ -71,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.4.7";
+static NSString *const kAppVersion = @"4.4.8";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -10115,10 +10115,22 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
     NSArray<NSString *> *ctGateBids = [ctGateBidsM copy];
     BOOL filterVerified = ci_staticFilterVerify(CITweakFilterPath(), mgGateBids) &&
                           ci_staticFilterVerify(CICTTweakFilterPath(), ctGateBids);
+    // 4.4.8: pure device-wide architecture. Identity (ProductType / HWModel /
+    // MarketingName / ModelNumber / GPU-family dict) is faked at the MG cache
+    // plist level device-wide via Patch MG Cache; the per-app ellekit inject
+    // is intentionally narrow (AIDA64 / Lirum / DeviceDesign / Safari /
+    // WebContent / Maps) because loading our dylib inside Zalo / Telegram /
+    // etc. triggers their anti-tamper SIGKILL. Clear Data (wipe container +
+    // kill app) does NOT need the inject coverage to run — the wipe is purely
+    // filesystem + launchctl. Change Device still benefits from inject
+    // coverage for per-app IDFA / CT, but is non-fatal when uncovered: those
+    // apps simply fall back to the device-wide MG spoof. SOFT-WARN only.
     if (!filterVerified) {
-        [self alert:@"Chưa thay đổi dữ liệu"
-                msg:@"Filter MG/CT trong gói chưa bao phủ toàn bộ app đã chọn. Không đổi identity và không xóa dữ liệu; hãy cài đúng bản deb mới rồi thử lại."];
-        return;
+        NSLog(@"[ChangeInfoIos] filter preflight (SOFT, 4.4.8): MG/CT do not cover all selected bids "
+              @"— mg-need=%@ ct-need=%@ — continuing: device-wide MG cache patch is the only identity "
+              @"source for uncovered bids, container wipe runs regardless.",
+              [mgGateBids componentsJoinedByString:@","],
+              [ctGateBids componentsJoinedByString:@","]);
     }
     if ([resetBids containsObject:kZaloBID]) {
         NSFileManager *fm = [NSFileManager defaultManager];
@@ -10164,10 +10176,14 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             }
         }
         if (ci_isNoInjectBundle(kZaloBID)) [missing addObject:@"bị policy no-inject loại"];
-        // ITEM 3 — if the SHIPPED filter does not statically verify + cover Zalo, the
-        // tweak will NOT inject into Zalo; ABORT before destroying data for nothing.
-        if (!filterVerified)
-            [missing addObject:@"shipped filter chưa verify (thiếu Zalo BID / Mode≠Any / symlink / rỗng)"];
+        // 4.4.8: Zalo is intentionally OUT of the shipped filter (per Kai's
+        // "đừng hook riêng vào app nó văng nó lỗi" on 2026-10-21). The 4.4.7
+        // ship removed vn.com.vng.zingalo from ChangeInfoIosMG.plist +
+        // ChangeInfoIosCT.plist by design; a filter miss here is EXPECTED and
+        // must NOT block Clear Data / Change Device. Identity for Zalo is
+        // delivered by the device-wide MG cache patch (Patch MG Cache button);
+        // the wipe below still runs so a fresh account can be registered.
+        // (removed) if (!filterVerified) [missing addObject:@"shipped filter chưa verify ..."]
         if (missing.count) {
             [self alert:@"Chưa thay đổi dữ liệu"
                     msg:[NSString stringWithFormat:
