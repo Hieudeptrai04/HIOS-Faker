@@ -25,6 +25,7 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
+#import <sys/proc.h>
 #import <errno.h>
 #import <ifaddrs.h>
 #import <net/if_dl.h>
@@ -937,11 +938,13 @@ typedef int (*sysctl_raw_t)(int *, u_int, void *, size_t *, void *, size_t);
 typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 typedef int (*uname_t)(struct utsname *);
+typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37
 static sysctlbyname_t orig_sysctlbyname = NULL;
 static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 static uname_t        orig_uname        = NULL;
+static csops_t        orig_csops        = NULL;
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
@@ -1252,8 +1255,54 @@ static int hooked_sysctl_raw(int *name, u_int namelen, void *oldp, size_t *oldle
         return rc;
     }
 
+    // 4.3.37: scrub P_TRACED when caller asks for OWN process state via
+    // {CTL_KERN, KERN_PROC, KERN_PROC_PID, <self>}. Anti-tamper SDKs read
+    // kinfo_proc.kp_proc.p_flag and treat P_TRACED (0x00000800) as debugger-
+    // attached. Call orig first, then flip bit off in-place. Only acts on
+    // our OWN pid — other-process queries pass through untouched.
+    if (name[0] == CTL_KERN && namelen >= 4 &&
+        name[1] == KERN_PROC && name[2] == KERN_PROC_PID &&
+        name[3] == getpid() && oldp && oldlenp) {
+        int rc = orig_sysctl_raw(name, namelen, oldp, oldlenp, newp, newlen);
+        if (rc == 0 && oldp && *oldlenp >= sizeof(struct kinfo_proc)) {
+            struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
+            if (kp->kp_proc.p_flag & P_TRACED) {
+                kp->kp_proc.p_flag &= ~P_TRACED;
+                dbglog("sysctl_raw %s KERN_PROC_PID self: scrubbed P_TRACED\n",
+                       g_procname);
+            }
+        }
+        g_inSysctl = 0;
+        return rc;
+    }
+
     g_inSysctl = 0;
     return orig_sysctl_raw(name, namelen, oldp, oldlenp, newp, newlen);
+}
+
+// 4.3.37: csops — anti-tamper SDKs call csops(getpid(), CS_OPS_STATUS,
+// &flags, 4) and inspect flags for debugger / resign markers common on JB.
+// Clear those bits for queries about our OWN pid so SDKs believe the process
+// is a plain App-Store binary. Pass-through for other-pid + non-STATUS ops.
+#define CI_CS_OPS_STATUS        0
+#define CI_CS_DEBUGGED          0x10000000
+#define CI_CS_INVALID_ALLOWED   0x00000020
+#define CI_CS_GET_TASK_ALLOW    0x00000004
+#define CI_CS_INSTALLER         0x00000008
+static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize) {
+    int rc = orig_csops(pid, ops, useraddr, usersize);
+    if ((pid == 0 || pid == getpid()) && ops == CI_CS_OPS_STATUS &&
+        useraddr && usersize >= sizeof(uint32_t)) {
+        uint32_t *flags = (uint32_t *)useraddr;
+        uint32_t before = *flags;
+        *flags &= ~(CI_CS_DEBUGGED | CI_CS_INVALID_ALLOWED |
+                    CI_CS_GET_TASK_ALLOW | CI_CS_INSTALLER);
+        if (before != *flags) {
+            dbglog("csops %s pid=%d STATUS 0x%08x -> 0x%08x\n",
+                   g_procname, (int)pid, before, *flags);
+        }
+    }
+    return rc;
 }
 
 // gethostname → spoof to deviceName if set.
@@ -3740,6 +3789,16 @@ static void notify_cb(int t) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
+        // 4.3.37: csops hook. Resolved via dlsym because it's a private
+        // kernel API with no public libc header. Only install if symbol
+        // resolves — libc on this device may or may not export it.
+        orig_csops = (csops_t)dlsym(RTLD_DEFAULT, "csops");
+        if (orig_csops) {
+            MSHookFunction((void *)orig_csops, (void *)hooked_csops,
+                           (void **)&orig_csops);
+            dbglog("ctor %s csops hook installed\n", g_procname);
+        }
+
         if (orig_uname) {
             MSHookFunction((void *)orig_uname, (void *)hooked_uname,
                            (void **)&orig_uname);
