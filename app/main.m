@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.38";
+static NSString *const kAppVersion = @"4.3.39";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -163,8 +163,11 @@ static NSString *CIRRSDir(void) {
     // no longer requires claiming the real model). Optional: turn it ON to claim
     // the real device model for maximum consistency.
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
-    // 4.3.38: Location reset opt-in — default OFF (keep existing behaviour).
-    if (_cfg[@"_ci_reset_location"] == nil) { _cfg[@"_ci_reset_location"] = @(NO); seeded = YES; }
+    // 4.3.39: Location reset default ON (toggle removed from UI, part of the
+    // fresh-install feel every Change Device). The GPS hook has been hardened
+    // to return nil when auth is not Always/WhenInUse so there's no "no perm
+    // + valid fix" window for anti-fraud to flag.
+    if (_cfg[@"_ci_reset_location"] == nil) { _cfg[@"_ci_reset_location"] = @(YES); seeded = YES; }
     // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
     // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
     // real device → show iPhone X), and a high chip can't be faked GPU-
@@ -3820,10 +3823,13 @@ static void ci_resetAppTCC(NSString *bundleID) {
 // isn't surprised. Toggle: "🧭 Reset vị trí (hỏi lại khi mở app)".
 static void ci_resetAppLocation(NSString *bundleID) {
     if (!bundleID.length) return;
+    // 4.3.39: default ON. UI toggle removed; `_ci_reset_location` key is still
+    // read so an advanced user who manually writes it to the mirror config can
+    // opt back out, but no one has to touch it to get the fresh-install prompt.
     id resetObj = [[CIConfigManager shared] objectForKey:@"_ci_reset_location"];
-    BOOL resetLoc = resetObj ? [resetObj boolValue] : NO;
+    BOOL resetLoc = resetObj ? [resetObj boolValue] : YES;
     if (!resetLoc) {
-        NSLog(@"[ChangeInfoIos] Location reset DISABLED (toggle OFF) for %@", bundleID);
+        NSLog(@"[ChangeInfoIos] Location reset DISABLED (user opt-out) for %@", bundleID);
         return;
     }
     // Reset the Location TCC rows via the same running-tccd XPC path camera/
@@ -6082,23 +6088,13 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
 
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
     [_rows addObject:[C toggle:@"📱 Zalo — giới hạn model ≤ iPhone 12 Pro Max" key:@"zalo_mode" indent:24]];
-    [_rows addObject:[C note:@"BẬT (mặc định, khuyên dùng để reg Zalo): dù kéo thanh model lên tới đâu, máy giả luôn ≤ iPhone 12 Pro Max. Lý do: bản Zalo không nhận mã máy 13+ → hiện về máy thật (iPhone X), và fake chip cao gây crash camera/video. TẮT: cho phép giả tới iPhone 17 (chỉ dùng cho app khác, KHÔNG nên bật khi reg Zalo)." indent:24]];
-    // 4.3.35: expose screen-match toggle (previously hard-coded ON) + default
-    // OFF so the random pick spans the full dial-selected range instead of
-    // being silently filtered down to the 2–3 presets that share the real
-    // device's native resolution. Kai hit the exact symptom: dialled slider
-    // iPhone 5 → iPhone 12 Pro Max but got iPhone X / XS every time because
-    // the host's REAL UIScreen is 1125x2436 and only those presets passed.
-    [_rows addObject:[C toggle:@"📐 Khớp màn hình thật (chỉ pick model cùng độ phân giải)" key:@"_ci_screen_match" indent:24]];
-    [_rows addObject:[C note:@"TẮT (mặc định): random đầy đủ dải model đã kéo — không lọc theo màn hình thật. BẬT: chỉ pick model có native resolution GIỐNG màn hình thật (vd iPhone XS 1125x2436 → chỉ ra iPhone X/XS/11 Pro). Dành khi reg app rất khó như Zalo, muốn screen giả = screen thật cho khớp tuyệt đối." indent:24]];
-    // 4.3.36: expose chip-spoof toggle. Default OFF per Kai "đừng fake sâu chip
-    // của máy nhé nó gây cash". When OFF the tweak lets hw.cpufamily /
-    // hw.l1cachesize / hw.l2cachesize / hw.cachelinesize / hw.tbfrequency fall
-    // through to the real kernel values — nothing Metal / camera / video can
-    // mismatch against the real SoC. Only turn ON if a target app is confirmed
-    // to cross-check cpufamily against the claimed ProductType.
-    [_rows addObject:[C toggle:@"🧠 Fake chip CPU/cache (giả cpufamily, l2cache)" key:@"_ci_fake_chip" indent:24]];
-    [_rows addObject:[C note:@"TẮT (mặc định, khuyên dùng): giữ nguyên chip profile thật (A12 trên iPhone XS) — không bẻ hw.cpufamily / hw.l1icachesize / hw.l1dcachesize / hw.l2cachesize / hw.cachelinesize / hw.tbfrequency. BẬT: giả chip profile theo ProductType fake (A14 cho iPhone 12) — chỉ bật khi app CHẮC CHẮN check cpufamily; rủi ro CASH Metal/camera/video khi app gọi driver không có trên chip thật." indent:24]];
+    [_rows addObject:[C note:@"BẬT (mặc định): cap model giả ≤ iPhone 12 Pro Max. TẮT: cho tới iPhone 17 (không khuyên khi reg Zalo)." indent:24]];
+    // 4.3.39: three "safety net" toggles merged into always-safe defaults:
+    //   screen_match=OFF (full range), fake_chip=OFF (no SoC spoof so no Metal
+    //   crash), reset_location=ON (iOS re-prompts every Change Device).
+    // UI rows removed per Kai "cắt bớt mấy cái rườm rà đi". Hidden config
+    // seeds stay so a user who manually sets a value in the mirror still
+    // gets honoured; nobody has to touch them.
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
@@ -6114,20 +6110,11 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C note:@"Dán full link API của web proxy (token/key có sẵn trong link). Mỗi lần Change Device tự gọi link để đổi/lấy IP — khỏi đổi tay." indent:48]];
     [_rows addObject:[C text:@"Link API proxy" key:@"proxyApiUrl" placeholder:@"https://api.proxy.xxx/get?key=..." indent:48]];
     [_rows addObject:[C toggle:@"4.1 Fake GPS Location" key:@"fake_location" indent:24]];
-    // v2.5.31: random VN city per Change Device. OFF (default) = pin GPS to
-    // proxy IP (IP/GPS coherent, anti-detection). ON = ignore proxy, pick
-    // random VN coords every Change Device — Maps/Weather show different
-    // VN cities each session. Use only if you accept the IP/GPS mismatch
-    // risk (banking/register flows prefer OFF).
     [_rows addObject:[C toggle:@"4.1b Random VN city mỗi Change Device" key:@"gps_random_vn_mode" indent:24]];
-    // 4.3.38: opt-in reset Location TCC per Change Device so iOS re-prompts
-    // "Allow <App> to use your location?" on next launch — makes a Change
-    // Device feel like a fresh install. Default OFF; the GPS hook has been
-    // hardened to return nil when not authorized, so no "no permission but
-    // valid fix" state leaks any more. Enable when registering accounts that
-    // expect to see the iOS native location prompt (Zalo, Facebook, …).
-    [_rows addObject:[C toggle:@"🧭 4.1c Reset vị trí (hỏi lại khi mở app)" key:@"_ci_reset_location" indent:24]];
-    [_rows addObject:[C note:@"TẮT (mặc định): giữ quyền Location đang có, app mở ra lấy GPS giả luôn (không hỏi lại). BẬT: mỗi Change Device sẽ XÓA quyền Location của app target → iOS hỏi lại 'Cho phép dùng vị trí?' như vừa cài → user cho phép → app nhận GPS giả (fake lat/long từ mục 4.1 hoặc random VN mục 4.1b)." indent:24]];
+    // 4.3.39: location re-prompt is default ON (no UI toggle). Every Change
+    // Device clears the TCC Location rows so iOS prompts "Cho phép dùng vị
+    // trí?" the first time the target app queries location — matches the
+    // fresh-install feel for every other permission.
     [_rows addObject:[C text:@"Latitude"  key:@"latitude"  placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Longitude" key:@"longitude" placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Altitude"  key:@"altitude"  placeholder:@"0" indent:48]];
