@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.37";
+static NSString *const kAppVersion = @"4.3.38";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -163,6 +163,8 @@ static NSString *CIRRSDir(void) {
     // no longer requires claiming the real model). Optional: turn it ON to claim
     // the real device model for maximum consistency.
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(NO); seeded = YES; }
+    // 4.3.38: Location reset opt-in — default OFF (keep existing behaviour).
+    if (_cfg[@"_ci_reset_location"] == nil) { _cfg[@"_ci_reset_location"] = @(NO); seeded = YES; }
     // Zalo mode default ON: cap the faked model at iPhone 12 Pro Max. Newer
     // Zalo builds don't recognise iPhone 13+ identifiers (they fall back to the
     // real device → show iPhone X), and a high chip can't be faked GPU-
@@ -3801,21 +3803,55 @@ static void ci_resetAppTCC(NSString *bundleID) {
     if (db) sqlite3_close(db);
 }
 
-// LOCATION RESET DISABLED (4.1.0) — re-enabling it in fix13 re-introduced the
-// fix9/10 ACCOUNT LOCK. After resetting location auth to notDetermined, the app
-// shows notDetermined, but the MG tweak still returns a fake
-// -[CLLocationManager location] AND locationServicesEnabled=YES — an impossible
-// "no permission yet has a valid fix" state that Zalo's anti-fraud flags and
-// locks the account (exactly the fix9/10 ban). The fix13 "made safe by a
-// consistent GPS hook" claim was wrong: the location getter still handed out a
-// fake fix regardless of auth.
+// 4.3.38: Location reset re-enabled as an OPT-IN toggle.
 //
-// Leaving location UNTOUCHED keeps it GRANTED, so the GPS hook reports a
-// consistent AuthorizedAlways + fake fix — the proven-safe fix2/fix11 behavior.
-// (The location getter is also hardened to return nil when not authorized — see
-// tweak-mg/Tweak.xm — as defense-in-depth.)
+// Previous ban history (fix9/10/11): resetting location to notDetermined broke
+// Zalo accounts because the CLLocationManager hook still handed out a fake fix
+// regardless of auth → impossible "no permission + valid fix" state Zalo's
+// anti-fraud flagged.
+//
+// Since then the tweak was hardened (tweak-mg/Tweak.xm:2149-2150):
+// -[CLLocationManager location] returns nil (orig) when authorizationStatus is
+// NOT Always/WhenInUse, so a notDetermined/denied app genuinely has no fix.
+// That makes the reset safe: iOS re-prompts, user allows, hook starts serving
+// the fake fix only once auth is Always/WhenInUse — no inconsistent state.
+//
+// Still default OFF so a user who relies on the old "no re-prompt" workflow
+// isn't surprised. Toggle: "🧭 Reset vị trí (hỏi lại khi mở app)".
 static void ci_resetAppLocation(NSString *bundleID) {
-    (void)bundleID; // intentionally a NO-OP — see ban history fix9/10/11.
+    if (!bundleID.length) return;
+    id resetObj = [[CIConfigManager shared] objectForKey:@"_ci_reset_location"];
+    BOOL resetLoc = resetObj ? [resetObj boolValue] : NO;
+    if (!resetLoc) {
+        NSLog(@"[ChangeInfoIos] Location reset DISABLED (toggle OFF) for %@", bundleID);
+        return;
+    }
+    // Reset the Location TCC rows via the same running-tccd XPC path camera/
+    // photos reset uses — tccd deletes rows + drops its RAM cache so iOS
+    // re-prompts on next CLLocationManager auth check. No daemon kill; the
+    // per-app relaunch below is enough.
+    //
+    // iOS 14+ uses kTCCServiceLiverpool for Location; some builds also carry
+    // the legacy kTCCServiceLocation. Reset both.
+    ci_tccResetViaXPC(bundleID, @[@"kTCCServiceLiverpool",
+                                   @"kTCCServiceLocation"]);
+    // Belt-and-suspenders: direct SQLite DELETE of Location rows for this
+    // bundle in TCC.db — covers builds where tccd ignores an unknown service
+    // name on this iOS version.
+    sqlite3 *db = NULL;
+    if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 1500);
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db,
+                "DELETE FROM access WHERE client=?1 AND service LIKE '%ocation%'",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+        sqlite3_close(db);
+    }
+    NSLog(@"[ChangeInfoIos] Location reset OK for %@ (TCC Liverpool/Location rows cleared)", bundleID);
 }
 
 // A real "fresh install" also clears the app's EXTENSION data containers
@@ -6084,6 +6120,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // VN cities each session. Use only if you accept the IP/GPS mismatch
     // risk (banking/register flows prefer OFF).
     [_rows addObject:[C toggle:@"4.1b Random VN city mỗi Change Device" key:@"gps_random_vn_mode" indent:24]];
+    // 4.3.38: opt-in reset Location TCC per Change Device so iOS re-prompts
+    // "Allow <App> to use your location?" on next launch — makes a Change
+    // Device feel like a fresh install. Default OFF; the GPS hook has been
+    // hardened to return nil when not authorized, so no "no permission but
+    // valid fix" state leaks any more. Enable when registering accounts that
+    // expect to see the iOS native location prompt (Zalo, Facebook, …).
+    [_rows addObject:[C toggle:@"🧭 4.1c Reset vị trí (hỏi lại khi mở app)" key:@"_ci_reset_location" indent:24]];
+    [_rows addObject:[C note:@"TẮT (mặc định): giữ quyền Location đang có, app mở ra lấy GPS giả luôn (không hỏi lại). BẬT: mỗi Change Device sẽ XÓA quyền Location của app target → iOS hỏi lại 'Cho phép dùng vị trí?' như vừa cài → user cho phép → app nhận GPS giả (fake lat/long từ mục 4.1 hoặc random VN mục 4.1b)." indent:24]];
     [_rows addObject:[C text:@"Latitude"  key:@"latitude"  placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Longitude" key:@"longitude" placeholder:@"(null)" indent:48]];
     [_rows addObject:[C text:@"Altitude"  key:@"altitude"  placeholder:@"0" indent:48]];
