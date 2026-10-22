@@ -1125,10 +1125,15 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     g_inSysctl = 1;
     initSysctlMap();
 
-    // Chip-spec CPU/cache spoof — keep the SoC profile consistent with the
-    // faked ProductType. Match the caller's expected integer width by probing
-    // the real sysctl first (these vary: cpufamily=4B, cache sizes often 8B).
-    {
+    // 4.3.36: Chip-spec CPU/cache spoof is now GATED by the `_ci_fake_chip`
+    // toggle (default OFF — Kai: "Zalo ko check vào chip sâu của hệ thống đâu
+    // ... chủ yếu fake chip và hook sâu fake màn nên nó cash"). When OFF, these
+    // sysctls pass straight through to the real kernel values — the real A12
+    // (iPhone XS) profile stays consistent and nothing MTL/camera-related sees
+    // a mismatched cpufamily/cache. Opt-in to the old behavior ONLY if a target
+    // app is confirmed to cross-check cpufamily/l2cachesize against the claimed
+    // ProductType (rare — most apps just read the MG name string).
+    if (getConfigBool(@"_ci_fake_chip")) {
         int64_t chipVal = 0;
         if (chipIntForSysctl(name, &chipVal)) {
             size_t ol = 0;

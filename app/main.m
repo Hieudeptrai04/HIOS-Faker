@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.35";
+static NSString *const kAppVersion = @"4.3.36";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -176,6 +176,12 @@ static NSString *CIRRSDir(void) {
     // "📐 Khớp màn hình thật" toggle in Fake Settings when registering an app
     // that cross-checks screen vs claimed model.
     if (_cfg[@"_ci_screen_match"] == nil) { _cfg[@"_ci_screen_match"] = @(NO); seeded = YES; }
+    // 4.3.36: chip-spec sysctl spoof default OFF — Kai: "đừng fake sâu chip
+    // của máy nhé nó gây cash". Keep hw.cpufamily / l1icachesize / l1dcachesize
+    // / l2cachesize / cachelinesize / tbfrequency AT the real kernel values.
+    // Target apps that only read the MG name string see the fake ProductType
+    // regardless; apps that cross-check cpufamily will see the real A12.
+    if (_cfg[@"_ci_fake_chip"]    == nil) { _cfg[@"_ci_fake_chip"]    = @(NO); seeded = YES; }
 
     // v2.6.9 ROLLBACK + MIGRATION: v2.6.8 seeded deep-hook flags = YES which
     // re-enabled main tweak's heavy hooks (MG fishhook on every MGCopyAnswer
@@ -6049,6 +6055,14 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     // the host's REAL UIScreen is 1125x2436 and only those presets passed.
     [_rows addObject:[C toggle:@"📐 Khớp màn hình thật (chỉ pick model cùng độ phân giải)" key:@"_ci_screen_match" indent:24]];
     [_rows addObject:[C note:@"TẮT (mặc định): random đầy đủ dải model đã kéo — không lọc theo màn hình thật. BẬT: chỉ pick model có native resolution GIỐNG màn hình thật (vd iPhone XS 1125x2436 → chỉ ra iPhone X/XS/11 Pro). Dành khi reg app rất khó như Zalo, muốn screen giả = screen thật cho khớp tuyệt đối." indent:24]];
+    // 4.3.36: expose chip-spoof toggle. Default OFF per Kai "đừng fake sâu chip
+    // của máy nhé nó gây cash". When OFF the tweak lets hw.cpufamily /
+    // hw.l1cachesize / hw.l2cachesize / hw.cachelinesize / hw.tbfrequency fall
+    // through to the real kernel values — nothing Metal / camera / video can
+    // mismatch against the real SoC. Only turn ON if a target app is confirmed
+    // to cross-check cpufamily against the claimed ProductType.
+    [_rows addObject:[C toggle:@"🧠 Fake chip CPU/cache (giả cpufamily, l2cache)" key:@"_ci_fake_chip" indent:24]];
+    [_rows addObject:[C note:@"TẮT (mặc định, khuyên dùng): giữ nguyên chip profile thật (A12 trên iPhone XS) — không bẻ hw.cpufamily / hw.l1icachesize / hw.l1dcachesize / hw.l2cachesize / hw.cachelinesize / hw.tbfrequency. BẬT: giả chip profile theo ProductType fake (A14 cho iPhone 12) — chỉ bật khi app CHẮC CHẮN check cpufamily; rủi ro CASH Metal/camera/video khi app gọi driver không có trên chip thật." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
     [_rows addObject:[C toggle:@"2.1 Fake Screen Size" key:@"fake_screen" indent:24]];
     [_rows addObject:[C toggle:@"2.2 Fake Full Screen" key:@"fake_realscreen" indent:24]];
