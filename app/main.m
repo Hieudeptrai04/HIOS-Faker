@@ -71,7 +71,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.4.3";
+static NSString *const kAppVersion = @"4.4.4";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -168,6 +168,11 @@ static NSString *CIRRSDir(void) {
     if (_cfg[@"_ci_hw_lock"]     == nil) { _cfg[@"_ci_hw_lock"]     = @(YES); seeded = YES; }
     if (_cfg[@"_ci_free_model"]  == nil) { _cfg[@"_ci_free_model"]  = @(NO);  seeded = YES; }
     if (_cfg[@"zalo_mode"]       == nil) { _cfg[@"zalo_mode"]       = @(YES); seeded = YES; }
+    // 4.4.4: chip-safe clamp default ON. Fake model with chip generation newer
+    // than the real device crashes Zalo on Metal/GPU family probe. Clamp caps
+    // the pick to models sharing the real chip family. User can turn it off
+    // for apps that don't probe GPU (at crash risk for Zalo).
+    if (_cfg[@"_ci_chip_safe_clamp"] == nil) { _cfg[@"_ci_chip_safe_clamp"] = @(YES); seeded = YES; }
     // 4.3.53: 4.3.51 seeded trackingAuthorizationStatus into the shared config,
     // which fans out to every target app's container prefs via config-sync. Zalo
     // reads back the key in its own NSUserDefaults, treats the unexpected entry
@@ -1536,6 +1541,55 @@ static NSUInteger ci_randomizeIdentities(void) {
         }
     }
     if (!preset) preset = presets[(NSUInteger)dLo + arc4random_uniform((uint32_t)(dHi - dLo + 1))];
+
+    // 4.4.4: chip-safe clamp. Zalo (and other anti-tamper SDKs) probe Metal
+    // for the GPU family; if the claimed model's chip is a newer generation
+    // than the real hardware, the real GPU cannot deliver the claimed feature
+    // set and the probe crashes the host app. Verified on-device: faking an
+    // iPhone XS (real A12) to iPhone 6s = fine (A9 features are a subset of
+    // A12), iPhone 12 Pro Max = crash. Keep the pick inside the real chip's
+    // generation unless the user explicitly disables the clamp.
+    BOOL chipClamp = [[CIConfigManager shared] objectForKey:@"_ci_chip_safe_clamp"]
+        ? [[CIConfigManager shared] boolForKey:@"_ci_chip_safe_clamp"] : YES;
+    if (chipClamp && !hwLock) {
+        NSString *realPT = ci_realProductType();
+        NSUInteger realIdx = NSNotFound;
+        NSString *realChipID = nil;
+        if (realPT.length) {
+            for (NSUInteger i = 0; i < presets.count; i++) {
+                NSArray *r = presets[i];
+                if (r.count > 10 && [r[1] isEqualToString:realPT]) {
+                    realIdx = i;
+                    realChipID = r[10];
+                    break;
+                }
+            }
+        }
+        if (realIdx != NSNotFound && realChipID.length) {
+            NSUInteger maxSafeIdx = realIdx;
+            for (NSUInteger i = realIdx + 1; i < presets.count; i++) {
+                NSArray *r = presets[i];
+                if (r.count > 10 && [r[10] isEqualToString:realChipID]) {
+                    maxSafeIdx = i;
+                } else {
+                    break;
+                }
+            }
+            NSUInteger chosenIdx = NSNotFound;
+            for (NSUInteger i = 0; i < presets.count; i++) {
+                if ([presets[i] isEqual:preset]) { chosenIdx = i; break; }
+            }
+            if (chosenIdx != NSNotFound && chosenIdx > maxSafeIdx) {
+                NSUInteger lo = MIN((NSUInteger)dLo, maxSafeIdx);
+                NSUInteger hi = MIN((NSUInteger)dHi, maxSafeIdx);
+                if (hi >= lo) {
+                    preset = presets[lo + arc4random_uniform((uint32_t)(hi - lo + 1))];
+                    NSLog(@"[ChangeInfoIos] chip-safe clamp: capped from %lu to <= %lu (real chip %@)",
+                          (unsigned long)chosenIdx, (unsigned long)maxSafeIdx, realChipID);
+                }
+            }
+        }
+    }
 
     // === HARDWARE LOCK (chống lệch phần cứng) ===
     // On a physical device, claiming a model whose chip differs from the real one
@@ -6203,6 +6257,8 @@ typedef NS_ENUM(NSInteger, CIRowKind) {
     [_rows addObject:[C toggle:@"2. Fake Model" key:@"fake_uiddevice" indent:0]];
     [_rows addObject:[C note:@"Mặc định: Change Device chỉ random trong các model có cùng kích thước màn với máy thật (an toàn — cross-screen hay bị Zalo nghi). Bật '🔓 Fake tự do' bên dưới để mở toàn dải SE1..12 Pro Max." indent:24]];
     [_rows addObject:[C toggle:@"🔓 Fake tự do mọi model (cross-screen)" key:@"_ci_free_model" indent:24]];
+    [_rows addObject:[C toggle:@"🛡️ Chip safe clamp (khuyên dùng)" key:@"_ci_chip_safe_clamp" indent:24]];
+    [_rows addObject:[C note:@"BẬT (mặc định): KHÔNG fake model có chip cao hơn chip thật của máy. Zalo probe Metal GPU family — fake chip > thật = mismatch = cash. iPhone XS (A12) chỉ fake tối đa iPhone XS Max (cùng A12). TẮT: cho fake iPhone 11+ nhưng Zalo thường cash." indent:24]];
     [_rows addObject:[C toggle:@"📇 Seed fake contacts mỗi Change Device" key:@"seed_fake_contacts" indent:24]];
     [_rows addObject:[C note:@"TẮT (mặc định): KHÔNG tạo contacts giả vào AddressBook — Zalo/app sẽ không bị cash khi grant quyền Danh bạ. BẬT: tạo 30-100 contacts giả mỗi Change Device (một số app có thể cash khi iterate danh bạ)." indent:24]];
     [_rows addObject:[C range:@"" labels:deviceLabels minKey:@"__deviceMinIdx" maxKey:@"__deviceMaxIdx"]];
