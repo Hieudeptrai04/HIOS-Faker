@@ -7,9 +7,7 @@
 
 #import "MGCachePatcher.h"
 #import <sys/stat.h>
-#import <sys/wait.h>
-#import <spawn.h>
-extern char **environ;
+#import <unistd.h>
 
 static NSString *const kMGCacheLive =
     @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
@@ -61,12 +59,15 @@ static BOOL ci_runSudo(NSArray<NSString *> *args) {
 
 + (BOOL)backupOriginalIfNeeded {
     if ([self backupExists]) return YES;
-    // Ensure parent directory exists (postinst creates it, but guard anyway).
-    (void)ci_runSudo(@[@"mkdir", @"-p", [kMGCacheBackup stringByDeletingLastPathComponent]]);
-    BOOL ok = ci_runSudo(@[@"cp", kMGCacheLive, kMGCacheBackup]);
+    // Parent dir is created by the dpkg postinst; guard with mkdirpath in case
+    // the user wiped /var/jb/etc/changeinfoios earlier.
+    NSString *parent = [kMGCacheBackup stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:parent
+                              withIntermediateDirectories:YES
+                                               attributes:nil error:nil];
+    BOOL ok = ci_copyFileAtPath(kMGCacheLive, kMGCacheBackup);
     if (ok) {
-        (void)ci_runSudo(@[@"chown", @"mobile:wheel", kMGCacheBackup]);
-        (void)ci_runSudo(@[@"chmod", @"644", kMGCacheBackup]);
+        ci_chmodMobileWheel(kMGCacheBackup);
         NSLog(@"[MGCache] backup saved to %@", kMGCacheBackup);
     } else {
         NSLog(@"[MGCache] backup failed");
