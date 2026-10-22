@@ -2695,13 +2695,54 @@ static BOOL isJBPath(const char *path) {
         if (strncmp(cp, kHide[i], hl) == 0 && (cp[hl] == '\0' || cp[hl] == '/'))
             return YES;
     }
-    // 4.3.45: dynamic bootstrap markers. Rootless JBs (Dopamine/opa334) mount their
-    // bootstrap under /private/preboot/<64-hex-UUID>/dopamine-<rand>/procursus/, and
-    // roothide drops ".jbroot" symlinks inside tweak dirs. The UUID is per-device so
-    // we can't put the full path in kHide; instead scan for the stable markers.
-    // Keep this below the prefix loop so canonicalized hot paths still shortcut.
-    if (strstr(cp, "/dopamine-") || strstr(cp, "/procursus/") || strstr(cp, "/.jbroot"))
-        return YES;
+    // 4.3.47: narrow rootless-bootstrap hide. 4.3.45's "hide anything with
+    // /dopamine- or /procursus/" was too broad — on Dopamine 2 the entire rootless
+    // userland (libSystem.dylib, Foundation symlinks, …) lives inside the procursus
+    // tree, and hiding all of it made Zalo's dyld walk come up empty, so Zalo saw
+    // "no libSystem" at launch and self-exited (anti-tamper trip, silent kill).
+    //
+    // Narrow rule: only hide a path when it is inside a rootless Dopamine bootstrap
+    // (BOTH /dopamine- and /procursus/ present) AND the tail after /procursus/ names
+    // a known JB tool artifact. Standard iOS libs that happen to live in the same
+    // tree (libSystem, Foundation, CoreFoundation, …) stay visible.
+    if (strstr(cp, "/.jbroot")) return YES;   // roothide marker — always safe
+    const char *procAt = strstr(cp, "/procursus/");
+    if (procAt && strstr(cp, "/dopamine-")) {
+        const char *tail = procAt + 10;       // skip "/procursus"
+        static const char * const kProcTail[] = {
+            "/Library/MobileSubstrate",
+            "/usr/lib/TweakInject",
+            "/usr/lib/TweakLoader",
+            "/usr/lib/ellekit",
+            "/usr/lib/libellekit",
+            "/usr/lib/libsubstrate",
+            "/usr/lib/libsubstitute",
+            "/usr/lib/libhooker",
+            "/usr/lib/libcycript",
+            "/Applications/Cydia.app",
+            "/Applications/Sileo.app",
+            "/Applications/Zebra.app",
+            "/Applications/Filza.app",
+            "/Applications/Dopamine.app",
+            "/Applications/RootHide.app",
+            "/Applications/TrollStore.app",
+            "/var/lib/dpkg",
+            "/var/lib/apt",
+            "/var/lib/cydia",
+            "/var/cache/apt",
+            "/etc/apt",
+            "/bin/bash", "/bin/sh", "/bin/zsh",
+            "/usr/bin/apt", "/usr/bin/dpkg",
+            "/usr/bin/cycript",
+            "/usr/sbin/frida-server", "/usr/bin/frida-server",
+            NULL
+        };
+        for (int i = 0; kProcTail[i]; i++) {
+            size_t tl = strlen(kProcTail[i]);
+            if (strncmp(tail, kProcTail[i], tl) == 0 && (tail[tl] == '\0' || tail[tl] == '/'))
+                return YES;
+        }
+    }
     return NO;
 }
 
