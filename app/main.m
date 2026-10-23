@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.41";
+static NSString *const kAppVersion = @"4.3.42";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3770,31 +3770,31 @@ static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services)
 // avatar/feed render. No daemon kill = no crash, and it still re-prompts.
 static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
-    // Re-prompt for REAL: ask the running tccd to reset these services (drops
-    // its RAM cache so Settings shows them cleared). Location is deliberately
-    // NOT here — resetting it contradicts the GPS spoof and locks the account.
-    // CONTACTS (kTCCServiceAddressBook) is INTENTIONALLY NOT reset — restoring the
-    // 4.2.0 behavior. Revoking it every Change Device (added 4.3.1) is what broke
-    // Zalo's "gợi ý kết bạn từ danh bạ": after revoke+re-grant on a fresh account
-    // Zalo did not rebuild contact suggestions. The deep wipe already clears Zalo's
-    // stale contact-sync cache, so keeping the permission granted lets Zalo re-read
-    // the freshly seeded contacts on relaunch and rebuild suggestions.
+    // 4.3.42: Contacts (kTCCServiceAddressBook) RESET added — Kai verified
+    // 4.3.41 reg không die nhưng Settings iPhone vẫn thấy Zalo "Danh bạ ON",
+    // không giống app vừa cài. The 4.2.0 workaround (keep contacts granted so
+    // Zalo rebuilds "gợi ý bạn bè") no longer applies with the current wipe
+    // depth — Zalo now re-reads contacts on first permission grant anyway.
+    //
+    // Also added: Siri, FocusStatus, UserNotifications (push)
     ci_tccResetViaXPC(bundleID, @[@"kTCCServiceCamera",
         @"kTCCServicePhotos", @"kTCCServicePhotosAdd", @"kTCCServiceMicrophone",
-        @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking"]);
-    // IMPORTANT: use the libsqlite3 C API directly, NOT the `sqlite3` CLI.
-    // /var/jb/usr/bin/sqlite3 is a STANDALONE Procursus package that most
-    // customer devices DON'T have installed — so the old shell-out silently
-    // failed there and contacts never re-prompted (worked only on the dev rig
-    // which happens to have the package). libsqlite3 ships with iOS itself, so
-    // this runs everywhere, in-process, as the same mobile uid (TCC.db +
-    // its dir/WAL are mobile-owned → writable).
+        @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking",
+        @"kTCCServiceAddressBook",       // Contacts (fresh-install prompt)
+        @"kTCCServiceSiri",              // Siri suggestions
+        @"kTCCServiceFocusStatus",       // Focus / DND sharing
+        @"kTCCServiceUserNotifications", // Push notification permission
+        @"kTCCServiceBluetoothAlways",   // Bluetooth
+        @"kTCCServiceMotion",            // Motion & Fitness
+        @"kTCCServiceSpeechRecognition"]);
+    // Direct SQLite DELETE for ALL rows of this bundle — belt-and-braces for
+    // service names tccd may not recognize on this iOS build (e.g. legacy
+    // kTCCServiceLocation). No exception list any more.
     sqlite3 *db = NULL;
     if (sqlite3_open("/var/mobile/Library/TCC/TCC.db", &db) == SQLITE_OK) {
         sqlite3_busy_timeout(db, 1500);
         sqlite3_stmt *st = NULL;
-        // Preserve the AddressBook row (Contacts stays granted) — see above.
-        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1 AND service != 'kTCCServiceAddressBook'",
+        if (sqlite3_prepare_v2(db, "DELETE FROM access WHERE client=?1",
                                -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, bundleID.UTF8String, -1, SQLITE_TRANSIENT);
             sqlite3_step(st);
@@ -3821,13 +3821,31 @@ static void ci_resetAppTCC(NSString *bundleID) {
 // isn't surprised. Toggle: "🧭 Reset vị trí (hỏi lại khi mở app)".
 static void ci_resetAppLocation(NSString *bundleID) {
     if (!bundleID.length) return;
-    // 4.3.40: unconditional — the opt-out config check from 4.3.38/4.3.39 is
-    // gone. Kai: "mặc định change như app mới phải hỏi quyền truy cập chứ k
-    // cần bật toggle". Location reset now always runs so a Change Device
-    // behaves like a fresh install for every target bundle, same as the
-    // camera/mic/photos TCC reset above. The GPS hook (tweak-mg/Tweak.xm
-    // :2149-2150) returns nil until the user re-grants, so no "no perm +
-    // valid fix" anti-fraud window reopens.
+    // 4.3.42: Location on iOS 15 lives in locationd's own clients.plist, NOT
+    // in TCC.db. The TCC-service reset below was a no-op for Location (service
+    // name mismatch between tccd and locationd). Actual reset = remove the
+    // bundle's entry from /private/var/root/Library/Caches/locationd/clients.plist
+    // then poke locationd to reload. Host app has no-sandbox + no-container +
+    // locationd.authorizeapplications entitlements so direct write + chown
+    // back to root:wheel is allowed.
+    NSString *clientsPath = @"/private/var/root/Library/Caches/locationd/clients.plist";
+    NSMutableDictionary *clients = [NSMutableDictionary dictionaryWithContentsOfFile:clientsPath];
+    if ([clients isKindOfClass:[NSMutableDictionary class]] && clients[bundleID]) {
+        [clients removeObjectForKey:bundleID];
+        if ([clients writeToFile:clientsPath atomically:YES]) {
+            chown([clientsPath fileSystemRepresentation], 0, 0);     // root:wheel
+            chmod([clientsPath fileSystemRepresentation], 0644);
+            // Darwin notify so locationd drops its in-memory cache + rereads
+            // the file on next CLLocationManager query from the target app.
+            notify_post("com.apple.locationd.authorizationschanged");
+            NSLog(@"[ChangeInfoIos] Location reset OK: removed %@ from clients.plist (%lu remain)",
+                  bundleID, (unsigned long)clients.count);
+        } else {
+            NSLog(@"[ChangeInfoIos] Location reset FAIL: write to clients.plist denied for %@", bundleID);
+        }
+    } else {
+        NSLog(@"[ChangeInfoIos] Location reset SKIP: no entry for %@ in clients.plist", bundleID);
+    }
     // Reset the Location TCC rows via the same running-tccd XPC path camera/
     // photos reset uses — tccd deletes rows + drops its RAM cache so iOS
     // re-prompts on next CLLocationManager auth check. No daemon kill; the
