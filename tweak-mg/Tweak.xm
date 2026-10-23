@@ -939,26 +939,24 @@ typedef int (*sysctl_raw_t)(int *, u_int, void *, size_t *, void *, size_t);
 typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 typedef int (*uname_t)(struct utsname *);
-#ifdef __arm64e__
-typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37 — gated arm64e in 4.3.45
+// 4.3.46: typedefs un-gated — compile cho ca arm64 + arm64e, install gated
+// theo per-app whitelist tren arm64 (chi hook cho Zalo/FB/TikTok/Shopee/...).
+typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37
 typedef int (*csops_audittoken_t)(pid_t, uint32_t, void *, size_t, void *);   // 4.3.41
 typedef void (*dyld_add_image_cb_t)(const struct mach_header *, intptr_t);     // 4.3.41
 typedef void (*dyld_register_cb_t)(dyld_add_image_cb_t);                        // 4.3.41
-#endif
 static sysctlbyname_t orig_sysctlbyname = NULL;
 static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 static uname_t        orig_uname        = NULL;
-#ifdef __arm64e__
+// 4.3.46: un-gated — define cho ca 2 slice, install theo whitelist tren arm64.
 static csops_t        orig_csops        = NULL;
-static csops_audittoken_t  orig_csops_audittoken = NULL;    // 4.3.41
-static dyld_register_cb_t  orig_dyld_register_add_image = NULL;    // 4.3.41
+static csops_audittoken_t  orig_csops_audittoken = NULL;
+static dyld_register_cb_t  orig_dyld_register_add_image = NULL;
 
-// 4.3.41: forward declaration — isDyldNameHidden is defined further down in
-// LAYER 10 (line ~2850). The dyld-add-image shim at line ~1351 needs it.
+// Forward declaration — isDyldNameHidden is defined further down in LAYER 10.
 static inline BOOL isDyldNameHidden(const char *name);
-#endif
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
@@ -1303,7 +1301,7 @@ static int hooked_sysctl_raw(int *name, u_int namelen, void *oldp, size_t *oldle
 #define CI_CS_INVALID_ALLOWED   0x00000020
 #define CI_CS_GET_TASK_ALLOW    0x00000004
 #define CI_CS_INSTALLER         0x00000008
-#ifdef __arm64e__
+// 4.3.46: un-gated — hook body cho ca 2 slice. Install gated.
 static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize) {
     int rc = orig_csops(pid, ops, useraddr, usersize);
     if ((pid == 0 || pid == getpid()) && ops == CI_CS_OPS_STATUS &&
@@ -1389,7 +1387,29 @@ static void hooked_dyld_register_func_for_add_image(dyld_add_image_cb_t cb) {
     dbglog("dyld_register_add_image %s cb=%p (total=%d)\n",
            g_procname, (void *)cb, g_dyld_add_cb_n);
 }
-#endif   // __arm64e__ — end of 4.3.41 csops_audittoken + dyld_register_add_image
+
+// 4.3.46: check if current process is a known anti-fraud / high-risk app.
+// Used ONLY on arm64 slice (A9/A10/A11) to decide whether to install csops /
+// csops_audittoken / dyld_register hooks. Those hooks MMU-fault on arm64 for
+// non-anti-fraud apps (confirmed by iPhone 6s crash log). For target apps we
+// accept that risk because the app needs the hook; for everything else we
+// skip to keep the device usable.
+static BOOL ci_needsDeepHidePerBundle(void) {
+    const char *pn = getprogname();
+    if (!pn || !*pn) return NO;
+    static const char *const kAntiFraudApps[] = {
+        "Zalo", "zingalo",
+        "Facebook", "Instagram", "Messenger",
+        "TikTok", "musically",
+        "Shopee", "Lazada", "Tiki",
+        "Viber", "Telegram",
+        NULL
+    };
+    for (int i = 0; kAntiFraudApps[i]; i++) {
+        if (strstr(pn, kAntiFraudApps[i])) return YES;
+    }
+    return NO;
+}
 
 // gethostname → spoof to deviceName if set.
 __thread int g_inHostname = 0;
@@ -3875,58 +3895,51 @@ static void notify_cb(int t) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
-#ifdef __arm64e__
-        // 4.3.37: csops hook. Resolved via dlsym because it's a private
-        // kernel API with no public libc header. Only install if symbol
-        // resolves — libc on this device may or may not export it.
-        //
-        // 4.3.45: MOVED into __arm64e__ gate. Crash log from an iPhone 6s
-        // (iPhone8,1 A9 arm64 iOS 15.8.5, Dopamine) showed csops take a
-        // Translation Fault on first query (UIApplicationMainPreparations →
-        // malloc_create_zone → pgm_should_enable → csops → ESR=Instruction
-        // Abort). MSHookFunction's trampoline for csops on arm64 A9/A10/A11
-        // isn't mapped executable the way it is on arm64e (PAC + different
-        // page table layout). App then hit 0x8BADF00D process-launch
-        // watchdog (20s wall) and iOS killed it. arm64 slice now skips the
-        // csops install entirely — anti-fraud SDKs on A10/A11 lose that one
-        // scrub, but the app doesn't crash on launch any more.
-        orig_csops = (csops_t)dlsym(RTLD_DEFAULT, "csops");
-        if (orig_csops) {
-            MSHookFunction((void *)orig_csops, (void *)hooked_csops,
-                           (void **)&orig_csops);
-            dbglog("ctor %s csops hook installed (arm64e)\n", g_procname);
+        // 4.3.46: install deep-hide hooks (csops / csops_audittoken /
+        // _dyld_register_func_for_add_image).
+        //   • arm64e (A12+): install always — stable with Dopamine PAC layout.
+        //   • arm64 (A9/A10/A11): per-app whitelist. iPhone 6s crash log showed
+        //     csops MSHookFunction trampoline MMU-faults on these chips because
+        //     the Dopamine arm64 kernel-exploit path doesn't map the trampoline
+        //     page the same way arm64e does. For non-target apps (AIDA64 /
+        //     Lirum / DeviceDesign / Safari / Maps) the hook is pure cost +
+        //     cash risk, so we skip. For known anti-fraud / high-risk apps
+        //     (Zalo / Facebook / Instagram / Messenger / TikTok / Shopee /
+        //     Lazada / Tiki / Viber / Telegram) the hook is worth attempting;
+        //     if it faults on A10/A11, the user sees a Zalo cash (same symptom
+        //     as other market tools' known limitations on A10/A11) instead of
+        //     silently losing anti-fraud evasion.
+        BOOL installDeepHide = YES;
+#ifndef __arm64e__
+        installDeepHide = ci_needsDeepHidePerBundle();
+        if (!installDeepHide) {
+            dbglog("ctor %s SKIP csops/csops_audittoken/dyld_register (arm64 non-target: %s)\n",
+                   g_procname, getprogname() ?: "?");
         }
-#else
-        dbglog("ctor %s SKIP csops hook (arm64 slim mode — avoid A9/A10/A11 trampoline fault)\n", g_procname);
 #endif
-#ifdef __arm64e__
-        // 4.3.44: 2 hook sau chi compile vao arm64e slice (A12 iPhone XS tro
-        // len). Tren arm64 (A10/A11 iPhone 7/8/X) 2 hook nay co edge case
-        // cache coherency weaker + Dopamine arm64 bootstrap ít ổn định →
-        // skip de giu arm64 slim mode nhu 4.3.37. Zalo tren A10/A11 chay iOS
-        // 15 van check 2 symbol nay nhung ban it hon so voi iOS 16+ app, chap
-        // nhan trade-off nay cho A10/A11 chay on dinh.
-        //
-        // 4.3.41: csops_audittoken — iOS 15+ SDK variant superseding csops.
-        orig_csops_audittoken = (csops_audittoken_t)dlsym(RTLD_DEFAULT, "csops_audittoken");
-        if (orig_csops_audittoken) {
-            MSHookFunction((void *)orig_csops_audittoken,
-                           (void *)hooked_csops_audittoken,
-                           (void **)&orig_csops_audittoken);
-            dbglog("ctor %s csops_audittoken hook installed (arm64e)\n", g_procname);
+        if (installDeepHide) {
+            orig_csops = (csops_t)dlsym(RTLD_DEFAULT, "csops");
+            if (orig_csops) {
+                MSHookFunction((void *)orig_csops, (void *)hooked_csops,
+                               (void **)&orig_csops);
+                dbglog("ctor %s csops hook installed\n", g_procname);
+            }
+            orig_csops_audittoken = (csops_audittoken_t)dlsym(RTLD_DEFAULT, "csops_audittoken");
+            if (orig_csops_audittoken) {
+                MSHookFunction((void *)orig_csops_audittoken,
+                               (void *)hooked_csops_audittoken,
+                               (void **)&orig_csops_audittoken);
+                dbglog("ctor %s csops_audittoken hook installed\n", g_procname);
+            }
+            orig_dyld_register_add_image = (dyld_register_cb_t)dlsym(RTLD_DEFAULT,
+                                                "_dyld_register_func_for_add_image");
+            if (orig_dyld_register_add_image) {
+                MSHookFunction((void *)orig_dyld_register_add_image,
+                               (void *)hooked_dyld_register_func_for_add_image,
+                               (void **)&orig_dyld_register_add_image);
+                dbglog("ctor %s _dyld_register_func_for_add_image hook installed\n", g_procname);
+            }
         }
-        // 4.3.41: _dyld_register_func_for_add_image shim filter.
-        orig_dyld_register_add_image = (dyld_register_cb_t)dlsym(RTLD_DEFAULT,
-                                            "_dyld_register_func_for_add_image");
-        if (orig_dyld_register_add_image) {
-            MSHookFunction((void *)orig_dyld_register_add_image,
-                           (void *)hooked_dyld_register_func_for_add_image,
-                           (void **)&orig_dyld_register_add_image);
-            dbglog("ctor %s _dyld_register_func_for_add_image hook installed (arm64e)\n", g_procname);
-        }
-#else
-        dbglog("ctor %s SKIP csops_audittoken + dyld_register shim (arm64 slim mode)\n", g_procname);
-#endif
 
         if (orig_uname) {
             MSHookFunction((void *)orig_uname, (void *)hooked_uname,
