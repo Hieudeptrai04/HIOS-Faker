@@ -939,8 +939,8 @@ typedef int (*sysctl_raw_t)(int *, u_int, void *, size_t *, void *, size_t);
 typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 typedef int (*uname_t)(struct utsname *);
-typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37
 #ifdef __arm64e__
+typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37 — gated arm64e in 4.3.45
 typedef int (*csops_audittoken_t)(pid_t, uint32_t, void *, size_t, void *);   // 4.3.41
 typedef void (*dyld_add_image_cb_t)(const struct mach_header *, intptr_t);     // 4.3.41
 typedef void (*dyld_register_cb_t)(dyld_add_image_cb_t);                        // 4.3.41
@@ -950,8 +950,8 @@ static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 static uname_t        orig_uname        = NULL;
-static csops_t        orig_csops        = NULL;
 #ifdef __arm64e__
+static csops_t        orig_csops        = NULL;
 static csops_audittoken_t  orig_csops_audittoken = NULL;    // 4.3.41
 static dyld_register_cb_t  orig_dyld_register_add_image = NULL;    // 4.3.41
 
@@ -1303,6 +1303,7 @@ static int hooked_sysctl_raw(int *name, u_int namelen, void *oldp, size_t *oldle
 #define CI_CS_INVALID_ALLOWED   0x00000020
 #define CI_CS_GET_TASK_ALLOW    0x00000004
 #define CI_CS_INSTALLER         0x00000008
+#ifdef __arm64e__
 static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize) {
     int rc = orig_csops(pid, ops, useraddr, usersize);
     if ((pid == 0 || pid == getpid()) && ops == CI_CS_OPS_STATUS &&
@@ -1319,7 +1320,7 @@ static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize
     return rc;
 }
 
-#ifdef __arm64e__
+
 // 4.3.41: csops_audittoken variant — iOS 15+ SDK (ZShield / FirebaseCrashlytics
 // / Guardsquare) call csops_audittoken(getpid(), CS_OPS_STATUS, &flags, 4,
 // &audit_token) instead of the plain csops. Same bits to scrub, same self-pid
@@ -3874,15 +3875,30 @@ static void notify_cb(int t) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
+#ifdef __arm64e__
         // 4.3.37: csops hook. Resolved via dlsym because it's a private
         // kernel API with no public libc header. Only install if symbol
         // resolves — libc on this device may or may not export it.
+        //
+        // 4.3.45: MOVED into __arm64e__ gate. Crash log from an iPhone 6s
+        // (iPhone8,1 A9 arm64 iOS 15.8.5, Dopamine) showed csops take a
+        // Translation Fault on first query (UIApplicationMainPreparations →
+        // malloc_create_zone → pgm_should_enable → csops → ESR=Instruction
+        // Abort). MSHookFunction's trampoline for csops on arm64 A9/A10/A11
+        // isn't mapped executable the way it is on arm64e (PAC + different
+        // page table layout). App then hit 0x8BADF00D process-launch
+        // watchdog (20s wall) and iOS killed it. arm64 slice now skips the
+        // csops install entirely — anti-fraud SDKs on A10/A11 lose that one
+        // scrub, but the app doesn't crash on launch any more.
         orig_csops = (csops_t)dlsym(RTLD_DEFAULT, "csops");
         if (orig_csops) {
             MSHookFunction((void *)orig_csops, (void *)hooked_csops,
                            (void **)&orig_csops);
-            dbglog("ctor %s csops hook installed\n", g_procname);
+            dbglog("ctor %s csops hook installed (arm64e)\n", g_procname);
         }
+#else
+        dbglog("ctor %s SKIP csops hook (arm64 slim mode — avoid A9/A10/A11 trampoline fault)\n", g_procname);
+#endif
 #ifdef __arm64e__
         // 4.3.44: 2 hook sau chi compile vao arm64e slice (A12 iPhone XS tro
         // len). Tren arm64 (A10/A11 iPhone 7/8/X) 2 hook nay co edge case
