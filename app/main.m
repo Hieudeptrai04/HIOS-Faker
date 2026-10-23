@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.42";
+static NSString *const kAppVersion = @"4.3.43";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3770,23 +3770,17 @@ static void ci_tccResetViaXPC(NSString *bundleID, NSArray<NSString *> *services)
 // avatar/feed render. No daemon kill = no crash, and it still re-prompts.
 static void ci_resetAppTCC(NSString *bundleID) {
     if (!bundleID.length) return;
-    // 4.3.42: Contacts (kTCCServiceAddressBook) RESET added — Kai verified
-    // 4.3.41 reg không die nhưng Settings iPhone vẫn thấy Zalo "Danh bạ ON",
-    // không giống app vừa cài. The 4.2.0 workaround (keep contacts granted so
-    // Zalo rebuilds "gợi ý bạn bè") no longer applies with the current wipe
-    // depth — Zalo now re-reads contacts on first permission grant anyway.
-    //
-    // Also added: Siri, FocusStatus, UserNotifications (push)
+    // 4.3.43: trim TCC reset list — Kai confirmed 4.3.42 (reset Siri /
+    // UserNotifications / FocusStatus / BluetoothAlways / Motion / Speech
+    // too) died at register. UserNotifications in particular breaks the
+    // Zalo↔VNG push-token binding; the others trip "unusual permission
+    // churn" heuristics. Back to the proven 4.3.41 set, keep Contacts
+    // (user wants fresh-install prompt). Location is handled below via
+    // clients.plist (not TCC on iOS 15).
     ci_tccResetViaXPC(bundleID, @[@"kTCCServiceCamera",
         @"kTCCServicePhotos", @"kTCCServicePhotosAdd", @"kTCCServiceMicrophone",
         @"kTCCServiceMediaLibrary", @"kTCCServiceUserTracking",
-        @"kTCCServiceAddressBook",       // Contacts (fresh-install prompt)
-        @"kTCCServiceSiri",              // Siri suggestions
-        @"kTCCServiceFocusStatus",       // Focus / DND sharing
-        @"kTCCServiceUserNotifications", // Push notification permission
-        @"kTCCServiceBluetoothAlways",   // Bluetooth
-        @"kTCCServiceMotion",            // Motion & Fitness
-        @"kTCCServiceSpeechRecognition"]);
+        @"kTCCServiceAddressBook"]);     // Contacts fresh-install prompt only
     // Direct SQLite DELETE for ALL rows of this bundle — belt-and-braces for
     // service names tccd may not recognize on this iOS build (e.g. legacy
     // kTCCServiceLocation). No exception list any more.
