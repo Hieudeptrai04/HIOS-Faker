@@ -940,21 +940,25 @@ typedef int (*getifaddrs_t)(struct ifaddrs **);
 typedef int (*gethostname_t)(char *, size_t);
 typedef int (*uname_t)(struct utsname *);
 typedef int (*csops_t)(pid_t, uint32_t, void *, size_t);   // 4.3.37
+#ifdef __arm64e__
 typedef int (*csops_audittoken_t)(pid_t, uint32_t, void *, size_t, void *);   // 4.3.41
 typedef void (*dyld_add_image_cb_t)(const struct mach_header *, intptr_t);     // 4.3.41
 typedef void (*dyld_register_cb_t)(dyld_add_image_cb_t);                        // 4.3.41
+#endif
 static sysctlbyname_t orig_sysctlbyname = NULL;
 static sysctl_raw_t   orig_sysctl_raw   = NULL;
 static getifaddrs_t   orig_getifaddrs   = NULL;
 static gethostname_t  orig_gethostname  = NULL;
 static uname_t        orig_uname        = NULL;
 static csops_t        orig_csops        = NULL;
+#ifdef __arm64e__
 static csops_audittoken_t  orig_csops_audittoken = NULL;    // 4.3.41
 static dyld_register_cb_t  orig_dyld_register_add_image = NULL;    // 4.3.41
 
 // 4.3.41: forward declaration — isDyldNameHidden is defined further down in
 // LAYER 10 (line ~2850). The dyld-add-image shim at line ~1351 needs it.
 static inline BOOL isDyldNameHidden(const char *name);
+#endif
 
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
@@ -1315,11 +1319,13 @@ static int hooked_csops(pid_t pid, uint32_t ops, void *useraddr, size_t usersize
     return rc;
 }
 
+#ifdef __arm64e__
 // 4.3.41: csops_audittoken variant — iOS 15+ SDK (ZShield / FirebaseCrashlytics
 // / Guardsquare) call csops_audittoken(getpid(), CS_OPS_STATUS, &flags, 4,
 // &audit_token) instead of the plain csops. Same bits to scrub, same self-pid
 // gate; the extra `token` argument identifies the caller for XPC audit, we
 // just forward it untouched.
+// 4.3.44: wrapped in __arm64e__ — arm64 slice (iPhone 7/8/X A10/A11) skips.
 static int hooked_csops_audittoken(pid_t pid, uint32_t ops,
                                    void *useraddr, size_t usersize,
                                    void *token) {
@@ -1382,6 +1388,7 @@ static void hooked_dyld_register_func_for_add_image(dyld_add_image_cb_t cb) {
     dbglog("dyld_register_add_image %s cb=%p (total=%d)\n",
            g_procname, (void *)cb, g_dyld_add_cb_n);
 }
+#endif   // __arm64e__ — end of 4.3.41 csops_audittoken + dyld_register_add_image
 
 // gethostname → spoof to deviceName if set.
 __thread int g_inHostname = 0;
@@ -3876,28 +3883,34 @@ static void notify_cb(int t) {
                            (void **)&orig_csops);
             dbglog("ctor %s csops hook installed\n", g_procname);
         }
-        // 4.3.41: csops_audittoken — the iOS 15+ SDK variant that supersedes
-        // csops in commercial anti-fraud SDKs (ZShield / Guardsquare, used by
-        // Zalo in recent builds).
+#ifdef __arm64e__
+        // 4.3.44: 2 hook sau chi compile vao arm64e slice (A12 iPhone XS tro
+        // len). Tren arm64 (A10/A11 iPhone 7/8/X) 2 hook nay co edge case
+        // cache coherency weaker + Dopamine arm64 bootstrap ít ổn định →
+        // skip de giu arm64 slim mode nhu 4.3.37. Zalo tren A10/A11 chay iOS
+        // 15 van check 2 symbol nay nhung ban it hon so voi iOS 16+ app, chap
+        // nhan trade-off nay cho A10/A11 chay on dinh.
+        //
+        // 4.3.41: csops_audittoken — iOS 15+ SDK variant superseding csops.
         orig_csops_audittoken = (csops_audittoken_t)dlsym(RTLD_DEFAULT, "csops_audittoken");
         if (orig_csops_audittoken) {
             MSHookFunction((void *)orig_csops_audittoken,
                            (void *)hooked_csops_audittoken,
                            (void **)&orig_csops_audittoken);
-            dbglog("ctor %s csops_audittoken hook installed\n", g_procname);
+            dbglog("ctor %s csops_audittoken hook installed (arm64e)\n", g_procname);
         }
-        // 4.3.41: _dyld_register_func_for_add_image — SDK registers a callback
-        // that fires for each loaded dylib, bypassing the _dyld_image_count
-        // blacklist filter in LAYER 10. Our shim intercepts the registration,
-        // filters JB images from the stream, then forwards everything else.
+        // 4.3.41: _dyld_register_func_for_add_image shim filter.
         orig_dyld_register_add_image = (dyld_register_cb_t)dlsym(RTLD_DEFAULT,
                                             "_dyld_register_func_for_add_image");
         if (orig_dyld_register_add_image) {
             MSHookFunction((void *)orig_dyld_register_add_image,
                            (void *)hooked_dyld_register_func_for_add_image,
                            (void **)&orig_dyld_register_add_image);
-            dbglog("ctor %s _dyld_register_func_for_add_image hook installed\n", g_procname);
+            dbglog("ctor %s _dyld_register_func_for_add_image hook installed (arm64e)\n", g_procname);
         }
+#else
+        dbglog("ctor %s SKIP csops_audittoken + dyld_register shim (arm64 slim mode)\n", g_procname);
+#endif
 
         if (orig_uname) {
             MSHookFunction((void *)orig_uname, (void *)hooked_uname,

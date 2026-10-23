@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.43-beta";
+static NSString *const kAppVersion = @"4.3.44-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -8718,7 +8718,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
     [backupBtn addTarget:self action:@selector(saveAndReset) forControlEvents:UIControlEventTouchUpInside];
     [sv addSubview:backupBtn];
 
-    y += btnH + 20;
+    y += btnH + 12;
+
+    // 4.3.44: nut Copy Log — user cash tool ban nay bam copy roi paste gui
+    // admin, admin paste cho dev debug. Thu thap toan bo log hien co:
+    //   /var/jb/etc/changeinfoios/*.log
+    //   /var/mobile/Library/Logs/CrashReporter/*.ips (lọc theo tên app liên quan)
+    UIButton *copyLogBtn = [self _ciActionButton:@"📋 Copy Log Debug (gửi admin)"
+                                            color:[CITheme dim]];
+    copyLogBtn.frame = CGRectMake(P, y, cardW, 48);
+    copyLogBtn.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    [copyLogBtn addTarget:self action:@selector(copyDebugLog)
+         forControlEvents:UIControlEventTouchUpInside];
+    [sv addSubview:copyLogBtn];
+
+    y += 48 + 20;
 
     // ---- Current Fake Profile card ----
     UIView *profCard = [self _ciNewCard:CGRectMake(P, y, cardW, 360)];
@@ -9830,6 +9844,98 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
 }
 - (void)resetData {
     [self performRRSBackup:NO];
+}
+
+// 4.3.44: Copy Log Debug — tap de thu thap moi log debug + crash log cua tool
+// va cac app target gan day, copy sang clipboard. User paste gui admin.
+- (void)copyDebugLog {
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"=== HIOS Faker Debug Log — %@ ===\n", kAppVersion];
+    [out appendFormat:@"Device: %@ (%@)  iOS %@\n",
+         [[UIDevice currentDevice] model],
+         [[UIDevice currentDevice] systemName],
+         [[UIDevice currentDevice] systemVersion]];
+    NSString *real = ci_realProductType() ?: @"?";
+    [out appendFormat:@"Real ProductType: %@\n", real];
+    [out appendFormat:@"Timestamp: %@\n\n", [NSDate date]];
+
+    // Tool log files
+    NSArray<NSString *> *toolLogs = @[
+        @"/var/jb/etc/changeinfoios/v3_mg_debug.log",
+        @"/var/jb/etc/changeinfoios/v3_mg_loaded.txt",
+        @"/var/jb/etc/changeinfoios/v3_ct_loaded.txt",
+        @"/var/jb/etc/changeinfoios/kc_wipe.log",
+    ];
+    for (NSString *p in toolLogs) {
+        NSString *s = [NSString stringWithContentsOfFile:p
+                                                encoding:NSUTF8StringEncoding
+                                                   error:nil];
+        if (s.length) {
+            NSArray *lines = [s componentsSeparatedByString:@"\n"];
+            NSString *tail = (lines.count > 60)
+                ? [[lines subarrayWithRange:NSMakeRange(lines.count - 60, 60)]
+                   componentsJoinedByString:@"\n"]
+                : s;
+            [out appendFormat:@"\n--- %@ (last %lu lines) ---\n%@\n",
+                 p.lastPathComponent, (unsigned long)MIN(lines.count, 60UL), tail];
+        }
+    }
+
+    // Crash logs (last 10 mins, filter target app names)
+    NSArray<NSString *> *crashDirs = @[
+        @"/var/mobile/Library/Logs/CrashReporter",
+        @"/private/var/mobile/Library/Logs/CrashReporter",
+    ];
+    NSSet<NSString *> *interesting = [NSSet setWithArray:@[
+        @"HIOSFakerV3", @"ChangeInfoIos", @"ellekit", @"boomerang",
+        @"Zalo", @"MobileSafari", @"AIDA64", @"SpringBoard"]];
+    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-600];   // 10 min
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *dir in crashDirs) {
+        NSArray<NSString *> *items = [fm contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *name in items) {
+            BOOL match = NO;
+            for (NSString *n in interesting) {
+                if ([name containsString:n]) { match = YES; break; }
+            }
+            if (!match) continue;
+            NSString *full = [dir stringByAppendingPathComponent:name];
+            NSDictionary *att = [fm attributesOfItemAtPath:full error:nil];
+            NSDate *mod = att[NSFileModificationDate];
+            if (!mod || [mod compare:cutoff] == NSOrderedAscending) continue;
+            NSString *s = [NSString stringWithContentsOfFile:full
+                                                    encoding:NSUTF8StringEncoding
+                                                       error:nil];
+            if (!s.length) continue;
+            NSArray *lines = [s componentsSeparatedByString:@"\n"];
+            NSString *head = (lines.count > 80)
+                ? [[lines subarrayWithRange:NSMakeRange(0, 80)]
+                   componentsJoinedByString:@"\n"]
+                : s;
+            [out appendFormat:@"\n--- CRASH %@ (first 80 lines) ---\n%@\n",
+                 name, head];
+        }
+    }
+
+    // dpkg installed packages (changeinfo + ellekit + dopamine)
+    FILE *fp = popen("dpkg -l 2>&1 | grep -iE 'changeinfo|ellekit|dopamine|boomerang' | head -20", "r");
+    if (fp) {
+        char buf[256];
+        [out appendString:@"\n--- dpkg installed ---\n"];
+        while (fgets(buf, sizeof(buf), fp)) [out appendFormat:@"%s", buf];
+        pclose(fp);
+    }
+
+    [out appendFormat:@"\n=== End (total %lu chars) ===\n",
+         (unsigned long)out.length];
+
+    [UIPasteboard generalPasteboard].string = out;
+
+    [self alert:@"✅ Đã copy Log Debug"
+            msg:[NSString stringWithFormat:
+                @"Dán vào Telegram/Zalo gửi admin.\n\nTổng dung lượng: %.1f KB\nSố section: ~%lu",
+                out.length / 1024.0,
+                (unsigned long)[[out componentsSeparatedByString:@"\n--- "] count] - 1]];
 }
 
 // LICENSE GATE for Change Device. Requirement: key hết hạn → KHÔNG change
