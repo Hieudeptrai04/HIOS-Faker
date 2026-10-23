@@ -952,6 +952,10 @@ static csops_t        orig_csops        = NULL;
 static csops_audittoken_t  orig_csops_audittoken = NULL;    // 4.3.41
 static dyld_register_cb_t  orig_dyld_register_add_image = NULL;    // 4.3.41
 
+// 4.3.41: forward declaration — isDyldNameHidden is defined further down in
+// LAYER 10 (line ~2850). The dyld-add-image shim at line ~1351 needs it.
+static inline BOOL isDyldNameHidden(const char *name);
+
 // Re-entry guard mirrors IOReg pattern. NSString/CFString allocation
 // inside the hook can itself call sysctlbyname (Foundation queries
 // hw.physicalcpu for thread pool sizing on first touch) → recursion.
