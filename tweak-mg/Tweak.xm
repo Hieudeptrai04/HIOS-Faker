@@ -4042,7 +4042,16 @@ static void notify_cb(int t) {
             }
         }
 
+#ifdef __arm64e__
         // LAYER 9: JB hiding — stat / lstat / access
+        // 4.3.51: GATE arm64e only. iPhone X A11 iOS 16.7.11 crash log cho
+        // thay MSHookFunction trampoline cho stat() cause SIGSYS khi
+        // CoreFoundation gọi stat() trong CFPreferences chain. Pattern
+        // giong csops/fork fault truoc. arm64 slice bo luon LAYER 9 →
+        // anti-fraud SDK co the detect JB qua stat check, nhung app khong
+        // cash. User A10/A11 chi dung tool cho device-info app (AIDA64,
+        // Lirum) khong co anti-fraud; app anti-fraud (Zalo, FB) nen dung
+        // tren A12+ arm64e.
         orig_stat_fn   = (stat_fn_t)  dlsym(RTLD_DEFAULT, "stat");
         orig_lstat_fn  = (stat_fn_t)  dlsym(RTLD_DEFAULT, "lstat");
         orig_access_fn = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
@@ -4061,6 +4070,9 @@ static void notify_cb(int t) {
         orig_getenv_fn = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
         if (orig_getenv_fn)
             MSHookFunction((void*)orig_getenv_fn, (void*)hook_getenv_fn, (void**)&orig_getenv_fn);
+#else
+        dbglog("ctor %s SKIP LAYER 9 (stat/lstat/access/fopen/getenv) — arm64 slim mode\n", g_procname);
+#endif
         // (4.0.6: realpath hook removed; 4.3.24: open/openat/fstatat reverted — both
         //  caused Zalo launch regressions. stat/lstat/access/fopen is the stable set.)
         dbglog("ctor %s JBhide stat=%p lstat=%p access=%p fopen=%p getenv=%p\n",
