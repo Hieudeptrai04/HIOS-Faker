@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.46-beta-arm64";
+static NSString *const kAppVersion = @"4.3.47-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -3910,6 +3910,92 @@ static void ci_wipeAppGroups(NSString *bundleID) {
         @"  find \"$d\" -maxdepth 1 -name '.*' ! -name '.com.apple.mobile_container_manager.metadata.plist' -exec rm -rf {} + 2>/dev/null; "
         @"done", bid];
     ci_run([cmd UTF8String]);
+}
+
+// 4.3.47: fingerprint reset — xoa cac file persist chua device/install ID
+// khong bi wipe boi ci_wipeAppExtensions / ci_wipeAppGroups thong thuong.
+// Debug tren iPhone X baseline (10/2026) tim ra 4 vector persist cho Zalo:
+//   1. Firebase Installation ID — Library/Preferences/com.firebase.FIRInstallations.plist
+//      + Library/Preferences/group.vn.com.vng.zingalo.firebase.plist
+//   2. Zalo tu backup profile.sqlite sang Documents/Data/Backup/ (ngoai wipe)
+//   3. Zalo Analytics: ZATrackingSystem.plist, APMExperimentSuiteName.plist
+//   4. ZaloAnalytics folder trong Documents
+// Zalo re-launch sau Clear Data se re-generate firebase.userid tu Firebase SDK
+// cached state → neu tool khong wipe Firebase, "fresh install" van cung userid
+// → Zalo server map 2 account cung device → ban trong 1-3 tieng.
+static void ci_resetAppFingerprint(NSString *bundleID, NSString *containerPath) {
+    if (!bundleID.length || !containerPath.length) return;
+
+    // Hard-delete persistent fingerprint files inside the app's own Data container.
+    NSArray<NSString *> *paths = @[
+        @"Library/Preferences/com.firebase.FIRInstallations.plist",
+        [NSString stringWithFormat:@"Library/Preferences/group.%@.firebase.plist", bundleID],
+        @"Library/Preferences/ZATrackingSystem.plist",
+        @"Library/Preferences/APMExperimentSuiteName.plist",
+        @"Documents/Data/Backup",             // Zalo auto-backup profile dir
+        @"Documents/ZaloAnalytics",           // Zalo analytics blobs
+        @"Documents/ZAIdentifier",            // Zalo per-device identifier (if exists)
+        @"Documents/Data/ZIntegrityInfo",     // Zalo integrity info
+    ];
+    for (NSString *rel in paths) {
+        NSString *full = [containerPath stringByAppendingPathComponent:rel];
+        NSString *cmd = [NSString stringWithFormat:@"rm -rf '%@' 2>/dev/null", full];
+        ci_run([cmd UTF8String]);
+    }
+    NSLog(@"[ChangeInfoIos] fingerprint reset: %lu paths wiped for %@",
+          (unsigned long)paths.count, bundleID);
+
+    // Pre-populate app-group plist voi RANDOM firebase.userid. Zalo re-launch
+    // reads this file BEFORE calling Firebase SDK — if value exists, Firebase
+    // uses it instead of regenerating from keychain cache. Each Change Device
+    // → new userid → Zalo backend sees "different install device" per account.
+    //
+    // Format follows what Zalo writes natively (32-char uppercase hex, no
+    // hyphens — observed on baseline iPhone X: '615F6DC4F9687B338BE01E333DEFC909').
+    NSString *randUid = [[[NSUUID UUID] UUIDString]
+                         stringByReplacingOccurrencesOfString:@"-" withString:@""];
+    randUid = [randUid uppercaseString];
+
+    // Find the right app-group container by scanning for one that references bundleID.
+    NSString *agRoot = @"/var/mobile/Containers/Shared/AppGroup";
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *agUUIDs = [fm contentsOfDirectoryAtPath:agRoot error:nil];
+    NSString *targetPlistName = [NSString stringWithFormat:@"group.%@.plist", bundleID];
+    NSUInteger seeded = 0;
+    for (NSString *uuid in agUUIDs) {
+        NSString *prefsDir = [NSString stringWithFormat:@"%@/%@/Library/Preferences",
+                              agRoot, uuid];
+        NSString *plistPath = [prefsDir stringByAppendingPathComponent:targetPlistName];
+        // Only seed if this group container is the plain group.<bundleID>.plist one
+        // (not the zgroups/zsettings/zcontacts/zfriends/noti sibling plists).
+        if (![fm fileExistsAtPath:prefsDir]) continue;
+        // Ensure Preferences dir exists even if we just wiped it empty.
+        NSString *mkdirCmd = [NSString stringWithFormat:
+            @"mkdir -p '%@' 2>/dev/null; chown mobile:mobile '%@' 2>/dev/null",
+            prefsDir, prefsDir];
+        ci_run([mkdirCmd UTF8String]);
+
+        NSDictionary *fake = @{
+            @"firebase.userid":           randUid,
+            @"kLastActiveNotifExtTimeKey": @(0),
+        };
+        NSError *err = nil;
+        NSData *data = [NSPropertyListSerialization
+                        dataWithPropertyList:fake
+                                      format:NSPropertyListBinaryFormat_v1_0
+                                     options:0
+                                       error:&err];
+        if (data && [data writeToFile:plistPath atomically:YES]) {
+            chown([plistPath fileSystemRepresentation], 501, 501);  // mobile:mobile
+            chmod([plistPath fileSystemRepresentation], 0600);
+            seeded++;
+            NSLog(@"[ChangeInfoIos] seeded fake firebase.userid=%@ at %@",
+                  randUid, plistPath);
+        }
+    }
+    if (seeded == 0) {
+        NSLog(@"[ChangeInfoIos] fingerprint pre-seed SKIP: no app-group container found for %@", bundleID);
+    }
 }
 
 // ============================================================
@@ -10432,6 +10518,12 @@ static NSString *const kCIHudRingSpinKey  = @"ciSpinLayer";
             // effort; NOT part of subsOK — see scope note above / result UI.)
             ci_wipeAppExtensions(a.bundleID);
             ci_wipeAppGroups(a.bundleID);   // shared App Group data (fresh-install clean)
+            // 4.3.47: xoa persist fingerprint (Firebase ID + Backup profile +
+            // Analytics plists) + pre-populate app-group plist voi RANDOM
+            // firebase.userid. Zalo re-launch khong tai tao old userid tu
+            // Firebase keychain cache → Zalo server thay "fresh install device"
+            // moi Change Device → khong map 2 account cung device → khong ban.
+            ci_resetAppFingerprint(a.bundleID, a.containerPath);
             // 4.3.27: HOST-side keychain wipe (wildcard access) — the reliable clean.
             // The tweak's in-app one-shot was proven to LEAVE the old device-id items
             // behind (12 shared + 2 extension-group items survived, verified in
