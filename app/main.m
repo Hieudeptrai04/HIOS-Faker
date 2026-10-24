@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"4.3.47-beta";
+static NSString *const kAppVersion = @"4.3.48-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -332,6 +332,16 @@ static NSString *CIRRSDir(void) {
                                      appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
     }
     CFPreferencesSynchronize(appID, kCFPreferencesAnyUser, kCFPreferencesAnyHost);
+
+    // 4.3.48: force cfprefsd to drop its in-memory cache so the NEXT CFPrefs
+    // read from any target-app's dylib fetches the FRESH values. Without this
+    // kill, debug on an iPhone X A11 showed 3-way config drift between
+    // /var/jb/etc/.../config.plist (fresh iPhone12,3), the shared pref file
+    // (iPhone12,1 from a prior Change), and cfprefsd memory (iPhone12,8 even
+    // older) — every target app in-process got whatever its cfprefsd client
+    // happened to cache at first launch, so Change Device "didn't take effect".
+    ci_run("killall -9 cfprefsd 2>/dev/null");
+    NSLog(@"[ChangeInfoIos] save: killall cfprefsd — force reload for all clients");
 
     // Strategy 6: write the same plist into /var/jb/etc/changeinfoios/config.plist.
     // Verified live via probe dylib: this path IS readable from App Store
