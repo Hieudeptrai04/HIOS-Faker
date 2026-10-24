@@ -4079,11 +4079,20 @@ static void notify_cb(int t) {
         dbglog("ctor %s dyldHide cnt=%p name=%p\n",
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
 
+#ifdef __arm64e__
         // LAYER 19: block fork() only — popen/system omitted (crash risk).
+        // 4.3.50: GATE arm64e only. iPhone X A11 iOS 16.7.11 crash log cho
+        // thay MSHookFunction trampoline cho fork() cause SIGSYS trong
+        // _UIApplicationMainPreparations. Same arm64-trampoline-weak pattern
+        // nhu csops. arm64 slice bo hook fork → anti-fraud SDK co the detect
+        // process-spawn, nhung app khong cash.
         orig_fork_fn = (fork_fn_t)dlsym(RTLD_DEFAULT, "fork");
         if (orig_fork_fn)
             MSHookFunction((void*)orig_fork_fn, (void*)hooked_fork, (void**)&orig_fork_fn);
         dbglog("ctor %s fork blocked=%p\n", g_procname, (void*)orig_fork_fn);
+#else
+        dbglog("ctor %s SKIP fork hook (arm64 slim mode — avoid SIGSYS)\n", g_procname);
+#endif
 
         // open()/openat()/fstatat() intentionally NOT installed — see note above.
 
