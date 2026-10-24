@@ -3776,6 +3776,25 @@ static void notify_cb(int t) {
 }
 
 %ctor {
+    // 4.3.49: UNCONDITIONAL marker file — ghi vào per-app tmp NGAY khi dylib
+    // load, truoc moi check license/filter. Dung de verify ellekit CO inject
+    // dylib vao AIDA64/Zalo tren arm64 iPhone X hay khong. Neu file ton tai
+    // sau cold launch = dylib loaded; neu khong = ellekit skip hoac trustcache
+    // reject.
+    @autoreleasepool {
+        NSString *tmp = NSTemporaryDirectory();
+        if (tmp.length) {
+            NSString *p = [tmp stringByAppendingPathComponent:@"ci_ctor_marker.txt"];
+            FILE *mf = fopen([p UTF8String], "a");
+            if (mf) {
+                const char *pn0 = getprogname();
+                fprintf(mf, "loaded pid=%d proc=%s time=%ld\n",
+                        getpid(), pn0 ? pn0 : "?", (long)time(NULL));
+                fclose(mf);
+            }
+        }
+    }
+
     @autoreleasepool {
         initMGKeyMap();
         initIntKeys();
