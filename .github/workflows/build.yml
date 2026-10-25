@@ -227,7 +227,8 @@ jobs:
           EOF
 
           mkdir -p out
-          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3_${VERSION}_iphoneos-arm64.deb"
+          FN_VERSION="${VERSION//:/%3a}"
+          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3_${FN_VERSION}_iphoneos-arm64.deb"
           ls -lh out/
 
       - name: Show payload tree
@@ -253,7 +254,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(grep '^Version:' tweak-mg/control | awk '{print $2}')
-          TAG="v3-${VERSION}-${GITHUB_SHA::7}"
+          TAG_VERSION="${VERSION//:/_}"
+          TAG="v3-${TAG_VERSION}-${GITHUB_SHA::7}"
           gh release create "$TAG" out/*.deb \
             --repo "$GITHUB_REPOSITORY" \
             --title "HIOS Faker v3 ${VERSION} (${GITHUB_SHA::7})" \
