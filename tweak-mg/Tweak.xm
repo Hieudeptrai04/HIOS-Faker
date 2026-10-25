@@ -3928,13 +3928,17 @@ static void notify_cb(int t) {
         //     if it faults on A10/A11, the user sees a Zalo cash (same symptom
         //     as other market tools' known limitations on A10/A11) instead of
         //     silently losing anti-fraud evasion.
+        // 4.3.52: FULL gate arm64e-only cho csops/csops_audittoken/dyld_register.
+        // 4.3.46 per-app whitelist bật hook cho Zalo trên arm64 → cash SIGBUS
+        // tại _xpc_get_csops_blob (iPhone X iOS 16.7.11 crash log 2026-10-25).
+        // MSHookFunction trampoline cho csops không stable trên arm64 regardless
+        // of which app. Trade-off: Zalo trên arm64 có thể bị anti-fraud detect
+        // CS_DEBUGGED nhưng không cash. User A10/A11 nên dùng tool cho
+        // AIDA64/Lirum/device-info apps; reg Zalo nên dùng A12+ arm64e.
         BOOL installDeepHide = YES;
 #ifndef __arm64e__
-        installDeepHide = ci_needsDeepHidePerBundle();
-        if (!installDeepHide) {
-            dbglog("ctor %s SKIP csops/csops_audittoken/dyld_register (arm64 non-target: %s)\n",
-                   g_procname, getprogname() ?: "?");
-        }
+        installDeepHide = NO;
+        dbglog("ctor %s SKIP csops/csops_audittoken/dyld_register (arm64 slim mode — avoid SIGBUS)\n", g_procname);
 #endif
         if (installDeepHide) {
             orig_csops = (csops_t)dlsym(RTLD_DEFAULT, "csops");
