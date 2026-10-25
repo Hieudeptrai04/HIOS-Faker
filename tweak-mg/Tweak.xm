@@ -3868,22 +3868,68 @@ static void notify_cb(int t) {
         // link libMobileGestalt, so MGCopyAnswer hook is a no-op there;
         // sysctlbyname / getifaddrs / gethostname are how AIDA actually
         // reads model + MAC + hostname.
+        //
+        // 4.3.55: FULL fishhook coverage cho arm64 — thay the MSHookFunction
+        // trampoline (bi gate off tren arm64) bang GOT rebind. Fishhook
+        // ghi __got slot cua tung Mach-O image, KHONG patch .text prologue
+        // → khong SIGBUS tren arm64 Dopamine. SDK anti-fraud (Hyperion,
+        // FBSDK, Firebase, Dopamine-detect) link cac symbol nay lazy-bound
+        // nen fishhook catch het. Loss case: eager-bound (chain-fixup
+        // arm64e) — khong anh huong vi arm64e co MSHookFunction lam primary.
+        orig_stat_fn    = (stat_fn_t)  dlsym(RTLD_DEFAULT, "stat");
+        orig_lstat_fn   = (stat_fn_t)  dlsym(RTLD_DEFAULT, "lstat");
+        orig_access_fn  = (access_fn_t)dlsym(RTLD_DEFAULT, "access");
+        orig_fopen_fn   = (fopen_fn_t) dlsym(RTLD_DEFAULT, "fopen");
+        orig_getenv_fn  = (getenv_fn_t)dlsym(RTLD_DEFAULT, "getenv");
+        orig_dyld_image_count_fn    = (dyld_image_count_fn_t)dlsym(RTLD_DEFAULT, "_dyld_image_count");
+        orig_dyld_get_image_name_fn = (dyld_image_name_fn_t) dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+        orig_csops            = (csops_t)dlsym(RTLD_DEFAULT, "csops");
+        orig_csops_audittoken = (csops_audittoken_t)dlsym(RTLD_DEFAULT, "csops_audittoken");
+        orig_fork_fn   = (fork_fn_t)dlsym(RTLD_DEFAULT, "fork");
+        {
+            void *_sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
+            if (_sec) {
+                if (!orig_SecItemCopyMatching)
+                    orig_SecItemCopyMatching = (SecItemCopyMatching_t)dlsym(_sec, "SecItemCopyMatching");
+                if (!orig_SecItemAdd)
+                    orig_SecItemAdd    = (SecItemAdd_t)   dlsym(_sec, "SecItemAdd");
+                if (!orig_SecItemUpdate)
+                    orig_SecItemUpdate = (SecItemUpdate_t)dlsym(_sec, "SecItemUpdate");
+            }
+        }
+
         struct rebinding rebs[] = {
-            { "MGCopyAnswer",  (void *)hooked_MGCopyAnswer,
-              (void **)&orig_MGCopyAnswer },
-            { "sysctlbyname", (void *)hooked_sysctlbyname,
-              (void **)&orig_sysctlbyname },
-            { "getifaddrs",   (void *)hooked_getifaddrs,
-              (void **)&orig_getifaddrs },
-            { "gethostname",  (void *)hooked_gethostname,
-              (void **)&orig_gethostname },
-            { "uname",        (void *)hooked_uname,
-              (void **)&orig_uname },
+            // --- identity spoof (MG + libc model/mac/hostname) ---
+            { "MGCopyAnswer",  (void *)hooked_MGCopyAnswer,  (void **)&orig_MGCopyAnswer },
+            { "sysctlbyname", (void *)hooked_sysctlbyname,   (void **)&orig_sysctlbyname },
+            { "getifaddrs",   (void *)hooked_getifaddrs,     (void **)&orig_getifaddrs },
+            { "gethostname",  (void *)hooked_gethostname,    (void **)&orig_gethostname },
+            { "uname",        (void *)hooked_uname,          (void **)&orig_uname },
+            // --- JB-hide: filesystem curtain (SDK Hyperion/CheckRA1N) ---
+            { "stat",         (void *)hook_stat_fn,          (void **)&orig_stat_fn },
+            { "lstat",        (void *)hook_lstat_fn,         (void **)&orig_lstat_fn },
+            { "access",       (void *)hook_access_fn,        (void **)&orig_access_fn },
+            { "fopen",        (void *)hook_fopen_fn,         (void **)&orig_fopen_fn },
+            // --- JB-hide: environment (DYLD_INSERT_LIBRARIES scrub) ---
+            { "getenv",       (void *)hook_getenv_fn,        (void **)&orig_getenv_fn },
+            // --- JB-hide: dylib enumeration (list substrate/dopamine) ---
+            { "_dyld_image_count",    (void *)hooked_dyld_image_count,    (void **)&orig_dyld_image_count_fn },
+            { "_dyld_get_image_name", (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name_fn },
+            // --- JB-hide: codesign flags (CS_DEBUGGED scrub) ---
+            { "csops",            (void *)hooked_csops,            (void **)&orig_csops },
+            { "csops_audittoken", (void *)hooked_csops_audittoken, (void **)&orig_csops_audittoken },
+            // --- JB-hide: anti-debug fork ---
+            { "fork",         (void *)hooked_fork,           (void **)&orig_fork_fn },
+            // --- keychain fingerprint isolation (Zalo install_id) ---
+            { "SecItemCopyMatching", (void *)hooked_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching },
+            { "SecItemAdd",          (void *)hooked_SecItemAdd,          (void **)&orig_SecItemAdd },
+            { "SecItemUpdate",       (void *)hooked_SecItemUpdate,       (void **)&orig_SecItemUpdate },
         };
         int fh = rebind_symbols(rebs, sizeof(rebs)/sizeof(rebs[0]));
-        dbglog("ctor %s fishhook MG+libc rc=%d orig: sysctl=%p getif=%p ghn=%p\n",
-               g_procname, fh, (void *)orig_sysctlbyname,
-               (void *)orig_getifaddrs, (void *)orig_gethostname);
+        dbglog("ctor %s fishhook FULL rc=%d MG=%p stat=%p csops=%p dyldcnt=%p fork=%p sec=%p\n",
+               g_procname, fh, (void *)orig_MGCopyAnswer, (void *)orig_stat_fn,
+               (void *)orig_csops, (void *)orig_dyld_image_count_fn,
+               (void *)orig_fork_fn, (void *)orig_SecItemCopyMatching);
 
         // Belt-and-suspenders: MSHookFunction patches the function prologue
         // directly, so it intercepts callers regardless of how they're
