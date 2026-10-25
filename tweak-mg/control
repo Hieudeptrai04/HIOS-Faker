@@ -1,6 +1,6 @@
 Package: com.changeinfoios.mg
 Name: ChangeInfoIosMG
-Version: 4.3.52-beta
+Version: 4.3.53-beta
 Architecture: iphoneos-arm64
 Description: Runtime support component for HIOS Faker v3. Provides the system integration the main app needs. No standalone UI.
 Maintainer: ChangeInfoIos

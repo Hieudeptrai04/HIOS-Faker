@@ -4083,7 +4083,14 @@ static void notify_cb(int t) {
                g_procname, (void*)orig_stat_fn, (void*)orig_lstat_fn, (void*)orig_access_fn,
                (void*)orig_fopen_fn, (void*)orig_getenv_fn);
 
+#ifdef __arm64e__
         // LAYER 10: dyld image list hiding
+        // 4.3.53: GATE arm64e only. iPhone X iOS 16.7.11 Zalo crash log cho
+        // thay MSHookFunction trampoline cho _dyld_image_count fault SIGBUS
+        // khi CoreAnalytics gọi _dyld_image_count qua CoreUI theme loader.
+        // Same arm64-trampoline-weak pattern (như stat/csops/fork fixes).
+        // arm64 slice bo LAYER 10 → anti-fraud SDK co the detect JB dylib
+        // qua _dyld enumeration, nhung Zalo khong cash khi login screen.
         orig_dyld_image_count_fn    = (dyld_image_count_fn_t)   dlsym(RTLD_DEFAULT, "_dyld_image_count");
         orig_dyld_get_image_name_fn = (dyld_image_name_fn_t)    dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
         if (orig_dyld_image_count_fn && orig_dyld_get_image_name_fn) {
@@ -4094,6 +4101,9 @@ static void notify_cb(int t) {
         }
         dbglog("ctor %s dyldHide cnt=%p name=%p\n",
                g_procname, (void*)orig_dyld_image_count_fn, (void*)orig_dyld_get_image_name_fn);
+#else
+        dbglog("ctor %s SKIP LAYER 10 dyld_image_count hook (arm64 slim mode)\n", g_procname);
+#endif
 
 #ifdef __arm64e__
         // LAYER 19: block fork() only — popen/system omitted (crash risk).
