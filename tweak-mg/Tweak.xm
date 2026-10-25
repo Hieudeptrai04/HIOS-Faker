@@ -3892,6 +3892,14 @@ static void notify_cb(int t) {
         // MSHookFunction catches everyone since libsystem_c is shared.
         // Pre-resolved orig_* gets overwritten by MSHookFunction with a
         // pointer to the saved prologue trampoline — safe in either case.
+        //
+        // 4.3.54: GATE arm64e only. iPhone X A11 iOS 16.7.11 cash "sau 1 luc"
+        // vi sysctl/getifaddrs/gethostname prologue trampoline MMU-fault
+        // khi background job (CFNetwork reachability, FBSDK device info)
+        // goi lazy. Same pattern nhu csops/fork/stat/dyld. arm64 slice
+        // van catch cac call qua FISHHOOK (GOT rebind, khong trampoline);
+        // mat coverage eager-bind App Store binary nhung khong cash.
+#ifdef __arm64e__
         if (orig_sysctlbyname) {
             MSHookFunction((void *)orig_sysctlbyname, (void *)hooked_sysctlbyname,
                            (void **)&orig_sysctlbyname);
@@ -3914,6 +3922,9 @@ static void notify_cb(int t) {
             MSHookFunction((void *)orig_gethostname, (void *)hooked_gethostname,
                            (void **)&orig_gethostname);
         }
+#else
+        dbglog("ctor %s SKIP sysctl/getifaddrs/gethostname MSHook (arm64 slim — fishhook still active)\n", g_procname);
+#endif
         // 4.3.46: install deep-hide hooks (csops / csops_audittoken /
         // _dyld_register_func_for_add_image).
         //   • arm64e (A12+): install always — stable with Dopamine PAC layout.
@@ -3964,6 +3975,7 @@ static void notify_cb(int t) {
             }
         }
 
+#ifdef __arm64e__
         if (orig_uname) {
             MSHookFunction((void *)orig_uname, (void *)hooked_uname,
                            (void **)&orig_uname);
@@ -3974,15 +3986,30 @@ static void notify_cb(int t) {
         // Calls from app bundles (AIDA64 dlopen/dlsym, analytics SDKs) get faked.
         // This fixes AIDA64 serial/IMEI/UDID — AIDA64 loads MG via dlopen+dlsym,
         // which bypasses fishhook's GOT rebind but IS caught by prologue patching.
+        //
+        // 4.3.54: GATE arm64e only. arm64 fishhook rebind catches lazy-bound
+        // MGCopyAnswer; MSHookFunction prologue patch gay cash khi dlsym
+        // chain goi vao MG tu CoreAnalytics/CoreUI theme loader background.
         if (orig_MGCopyAnswer) {
             MSHookFunction((void *)orig_MGCopyAnswer, (void *)hooked_MGCopyAnswer,
                            (void **)&orig_MGCopyAnswer);
             dbglog("ctor %s MSHook MGCopyAnswer orig=%p\n",
                    g_procname, (void *)orig_MGCopyAnswer);
         }
+#else
+        dbglog("ctor %s SKIP uname/MGCopyAnswer MSHook (arm64 slim — fishhook still active for MG)\n", g_procname);
+#endif
         dbglog("ctor %s after MSHook libc orig: sysctl=%p sysctl_raw=%p getif=%p ghn=%p\n",
                g_procname, (void *)orig_sysctlbyname, (void *)orig_sysctl_raw,
                (void *)orig_getifaddrs, (void *)orig_gethostname);
+
+#ifdef __arm64e__
+        // 4.3.54: GATE arm64e only. SCDS/CN/IOReg MSHookFunction prologue
+        // patch tren shared-cache framework page khong stable tren arm64
+        // Dopamine kernel path. arm64 slice mat SCDS computer name /
+        // CN SSID / IOReg chip-ID coverage — chap nhan trade-off tranh
+        // cash background (SpringBoard reachability, WiFi scan, IOReg poll).
+        // ObjC %hook UIDevice/NSBundle van cover device name tren arm64.
 
         // SCDynamicStoreCopyComputerName — SystemConfiguration framework,
         // used by apps that bypass UIDevice.name for device name.
@@ -4045,6 +4072,9 @@ static void notify_cb(int t) {
                        g_procname, (void *)orig_IORegCreateProps);
             }
         }
+#else
+        dbglog("ctor %s SKIP SCDS/CN/IORegistry MSHook (arm64 slim)\n", g_procname);
+#endif
 
 #ifdef __arm64e__
         // LAYER 9: JB hiding — stat / lstat / access
@@ -4122,9 +4152,18 @@ static void notify_cb(int t) {
 
         // open()/openat()/fstatat() intentionally NOT installed — see note above.
 
+#ifdef __arm64e__
         // LAYER 11: Keychain device-fingerprint isolation
         // MSHookFunction patches the Security.framework prologue so ALL callers
         // (including those with pre-bound symbols via dyld shared cache) are intercepted.
+        //
+        // 4.3.54: GATE arm64e only. Zalo/FB/FBSDK goi SecItemCopyMatching
+        // trong background keychain query cho device-fingerprint cache
+        // "sau 1 luc"; MSHookFunction prologue tren Security.framework
+        // shared-cache page gay SIGBUS tren arm64. Mat keychain isolation
+        // coverage tren arm64 — anti-fraud SDK co the share keychain
+        // fingerprint giua account. User reg nhieu acc tren arm64 nen
+        // reset app data giua lan reg (ci_resetAppFingerprint).
         void *sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW);
         if (sec) {
             void *sicm = dlsym(sec, "SecItemCopyMatching");
@@ -4151,6 +4190,9 @@ static void notify_cb(int t) {
                    (void *)orig_SecItemAdd,
                    (void *)orig_SecItemUpdate);
         }
+#else
+        dbglog("ctor %s SKIP SecItem MSHook (arm64 slim — reset app data between reg)\n", g_procname);
+#endif
 
         // Reload config on any of the 3 notification names:
         //   kReloadNote  = com.changeinfoios.v3/ReloadConfig  (v3 native)
