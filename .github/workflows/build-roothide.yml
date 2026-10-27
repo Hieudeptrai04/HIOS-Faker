@@ -37,19 +37,23 @@ jobs:
           exec > >(tee -a /tmp/build-rh.log) 2>&1
           brew install ldid dpkg
 
-      - name: Cache Theos + SDK
+      - name: Cache Theos (roothide fork) + SDK
         id: cache-theos
         uses: actions/cache@v4
         with:
           path: /Users/runner/theos
-          key: theos-v3-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
+          key: theos-roothide-v3-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
 
-      - name: Install Theos + SDK
+      - name: Install Theos (roothide fork) + SDK
         if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           exec > >(tee -a /tmp/build-rh.log) 2>&1
           set -euo pipefail
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          # roothide/theos co package-scheme=roothide built-in; upstream theos khong co
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          # Verify roothide scheme module present
+          ls "$THEOS/makefiles/package" 2>&1 || true
+          find "$THEOS" -name "roothide" -maxdepth 5 -type d 2>&1 | head -5
           mkdir -p "$THEOS/sdks"
           curl -fSL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS${SDK_VERSION}.sdk.tar.xz" -o /tmp/sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
