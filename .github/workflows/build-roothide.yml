@@ -1,0 +1,241 @@
+name: Build ChangeInfoIos v3 (RootHide)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - v3
+    paths:
+      - "tweak-mg/**"
+      - "tweak-ct/**"
+      - "app/**"
+      - ".github/workflows/build-roothide.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build-roothide:
+    runs-on: macos-latest
+    env:
+      THEOS: /Users/runner/theos
+      THEOS_PACKAGE_SCHEME: roothide
+      SDK_VERSION: "16.5"
+      SDK_RELEASE: "master-146e41f"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init build log
+        run: |
+          mkdir -p /tmp
+          : > /tmp/build-rh.log
+          echo "=== build log init $(date) sha=${GITHUB_SHA} scheme=roothide ===" > /tmp/build-rh.log
+
+      - name: Install ldid + dpkg
+        run: |
+          exec > >(tee -a /tmp/build-rh.log) 2>&1
+          brew install ldid dpkg
+
+      - name: Cache Theos + SDK
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: /Users/runner/theos
+          key: theos-v3-sdk${{ env.SDK_VERSION }}-${{ env.SDK_RELEASE }}
+
+      - name: Install Theos + SDK
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        run: |
+          exec > >(tee -a /tmp/build-rh.log) 2>&1
+          set -euo pipefail
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/sdks"
+          curl -fSL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS${SDK_VERSION}.sdk.tar.xz" -o /tmp/sdk.tar.xz
+          tar -xf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+
+      - name: Build + patch tweak-mg (roothide)
+        run: |
+          exec > >(tee -a /tmp/build-rh.log) 2>&1
+          set -euo pipefail
+          cd tweak-mg
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" THEOS_PACKAGE_SCHEME=roothide
+          DEB=$(ls packages/*.deb | head -1)
+          rm -rf /tmp/mg-work
+          mkdir -p /tmp/mg-work
+          dpkg-deb -R "$DEB" /tmp/mg-work
+          DYLIB=$(find /tmp/mg-work -name "ChangeInfoIosMG.dylib" | head -1)
+          test -n "$DYLIB" || { echo "ERR: no MG dylib"; exit 1; }
+          # In roothide scheme, install path still /var/jb/* but resolved via JBROOT runtime
+          install_name_tool -id "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.dylib" "$DYLIB"
+          if otool -L "$DYLIB" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            install_name_tool -change "@rpath/CydiaSubstrate.framework/CydiaSubstrate" "/var/jb/usr/lib/libsubstrate.dylib" "$DYLIB"
+          fi
+          ldid -S "$DYLIB"
+          PLIST=$(find /tmp/mg-work -name "*.plist" | grep -v DEBIAN | head -1)
+          [ -n "$PLIST" ] && plutil -convert xml1 "$PLIST"
+          rm -f "$DEB"
+          dpkg-deb -Zxz -b /tmp/mg-work "$DEB"
+          echo "=== tweak-mg roothide ==="
+          dpkg-deb -I "$DEB" | head -15
+
+      - name: Build + patch tweak-ct (roothide)
+        run: |
+          exec > >(tee -a /tmp/build-rh.log) 2>&1
+          set -euo pipefail
+          cd tweak-ct
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" THEOS_PACKAGE_SCHEME=roothide
+          DEB=$(ls packages/*.deb | head -1)
+          rm -rf /tmp/ct-work
+          mkdir -p /tmp/ct-work
+          dpkg-deb -R "$DEB" /tmp/ct-work
+          DYLIB=$(find /tmp/ct-work -name "ChangeInfoIosCT.dylib" | head -1)
+          test -n "$DYLIB" || { echo "ERR: no CT dylib"; exit 1; }
+          install_name_tool -id "/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosCT.dylib" "$DYLIB"
+          if otool -L "$DYLIB" | grep -q "CydiaSubstrate.framework/CydiaSubstrate"; then
+            install_name_tool -change "@rpath/CydiaSubstrate.framework/CydiaSubstrate" "/var/jb/usr/lib/libsubstrate.dylib" "$DYLIB"
+          fi
+          ldid -S "$DYLIB"
+          PLIST=$(find /tmp/ct-work -name "*.plist" | grep -v DEBIAN | head -1)
+          [ -n "$PLIST" ] && plutil -convert xml1 "$PLIST"
+          rm -f "$DEB"
+          dpkg-deb -Zxz -b /tmp/ct-work "$DEB"
+
+      - name: Build host app (roothide)
+        run: |
+          exec > >(tee -a /tmp/build-rh.log) 2>&1
+          set -euo pipefail
+          cd app
+          rm -rf packages .theos obj
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" THEOS_PACKAGE_SCHEME=roothide
+          ls -lh packages/
+
+      - name: Combine into single deb (arch arm64e)
+        run: |
+          set -euo pipefail
+          MG=$(ls tweak-mg/packages/*.deb | head -1)
+          CT=$(ls tweak-ct/packages/*.deb | head -1)
+          APP=$(ls app/packages/*.deb | head -1)
+
+          rm -rf combined /tmp/mg-x /tmp/ct-x /tmp/app-x
+          mkdir -p combined/DEBIAN /tmp/mg-x /tmp/ct-x /tmp/app-x
+          dpkg-deb -x "$MG"  /tmp/mg-x
+          dpkg-deb -x "$CT"  /tmp/ct-x
+          dpkg-deb -x "$APP" /tmp/app-x
+          cp -R /tmp/mg-x/.  combined/
+          cp -R /tmp/ct-x/.  combined/
+          cp -R /tmp/app-x/. combined/
+
+          mkdir -p combined/var/jb/etc/changeinfoios
+          CDHASH=combined/var/jb/etc/changeinfoios/cdhashes
+          : > "$CDHASH"
+          for f in \
+              combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosMG.dylib \
+              combined/var/jb/Library/MobileSubstrate/DynamicLibraries/ChangeInfoIosCT.dylib \
+              combined/var/jb/Applications/HIOSFakerV3.app/HIOSFakerV3; do
+            [ -f "$f" ] || continue
+            ldid -h "$f" 2>/dev/null | awk -F= '/^CDHash=/ {print $2}' >> "$CDHASH"
+          done
+
+          cat > combined/DEBIAN/postinst <<'POSTINST'
+          #!/bin/sh
+          set -e
+          ROOT=/var/jb
+          MS="$ROOT/Library/MobileSubstrate/DynamicLibraries"
+          ETC="$ROOT/etc/changeinfoios"
+          JBCTL=""
+          for c in "$ROOT/basebin/jbctl" "/var/jb/basebin/jbctl" "$ROOT/usr/bin/jbctl"; do
+            [ -x "$c" ] && JBCTL="$c" && break
+          done
+
+          for f in "$MS/ChangeInfoIosMG.dylib" "$MS/ChangeInfoIosMG.plist" \
+                   "$MS/ChangeInfoIosCT.dylib" "$MS/ChangeInfoIosCT.plist"; do
+            [ -e "$f" ] || continue
+            chown root:wheel "$f" 2>/dev/null || true
+            case "$f" in
+              *.dylib) chmod 0755 "$f" 2>/dev/null || true ;;
+              *)       chmod 0644 "$f" 2>/dev/null || true ;;
+            esac
+          done
+
+          for P in "$MS/ChangeInfoIosMG.plist" "$MS/ChangeInfoIosCT.plist"; do
+            [ -f "$P" ] || continue
+            sed -i '/<string>com\.apple\.weather<\/string>/d' "$P" 2>/dev/null || true
+          done
+
+          mkdir -p "$ETC" 2>/dev/null || true
+          chmod 0777 "$ETC" 2>/dev/null || true
+
+          if [ -n "$JBCTL" ] && [ -f "$ETC/cdhashes" ]; then
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              "$JBCTL" trustcache add "$h" 2>/dev/null || true
+            done < "$ETC/cdhashes"
+          fi
+
+          APP="$ROOT/Applications/HIOSFakerV3.app"
+          for u in uicache "$ROOT/usr/bin/uicache" /var/jb/usr/bin/uicache /usr/bin/uicache; do
+            command -v "$u" >/dev/null 2>&1 && "$u" -p "$APP" 2>/dev/null && break
+          done
+          exit 0
+          POSTINST
+          chmod 0755 combined/DEBIAN/postinst
+
+          VERSION=$(grep '^Version:' tweak-mg/control | awk '{print $2}')
+          cat > combined/DEBIAN/control <<EOF
+          Package: com.changeinfoios.v3
+          Name: HIOS Faker v3 (RootHide)
+          Version: ${VERSION}
+          Architecture: iphoneos-arm64e
+          Description: ChangeInfoIos v3 built for RootHide. Device spoof hooks + host app packaged for RootHide-aware jbroot.
+          Maintainer: ChangeInfoIos
+          Author: ChangeInfoIos
+          Section: Tweaks
+          Depends: ellekit | mobilesubstrate, firmware (>= 15.0)
+          Replaces: com.changeinfoios.tweak, com.changeinfoios.app, com.changeinfoios, com.changeinfoios.bundle, com.changeinfoios.safari, com.changeinfoios.location, com.changeinfoios.zalo
+          Conflicts: com.changeinfoios.tweak, com.changeinfoios.bundle
+          Provides: com.changeinfoios.tweak
+          EOF
+
+          mkdir -p out
+          FN_VERSION="${VERSION//:/%3a}"
+          dpkg-deb -Zxz -b combined "out/ChangeInfoIos-v3_${FN_VERSION}_iphoneos-arm64e.deb"
+          ls -lh out/
+
+      - name: Upload roothide deb
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChangeInfoIos-v3-roothide
+          path: out/*.deb
+          retention-days: 14
+
+      - name: Publish GitHub Release (roothide)
+        if: success() && github.ref == 'refs/heads/v3'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^Version:' tweak-mg/control | awk '{print $2}')
+          TAG_VERSION="${VERSION//:/_}"
+          TAG="v3-roothide-${TAG_VERSION}-${GITHUB_SHA::7}"
+          gh release create "$TAG" out/*.deb \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "HIOS Faker v3 RootHide ${VERSION} (${GITHUB_SHA::7})" \
+            --notes "RootHide-aware build (THEOS_PACKAGE_SCHEME=roothide, arch iphoneos-arm64e) tu commit ${GITHUB_SHA}. Cai qua Sileo cua RootHide."
+
+      - name: On failure — publish log
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          [ -s /tmp/build-rh.log ] || echo "(empty)" > /tmp/build-rh.log
+          TAG="debug-rh-fail-${GITHUB_SHA::7}-${GITHUB_RUN_ID}"
+          gh release create "$TAG" /tmp/build-rh.log \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DEBUG RH fail ${GITHUB_SHA::7} run=${GITHUB_RUN_ID}" \
+            --notes "Auto RootHide build fail log" \
+            --prerelease || true
