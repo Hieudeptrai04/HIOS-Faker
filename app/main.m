@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"0.5.5-beta";
+static NSString *const kAppVersion = @"0.5.6-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -1696,6 +1696,50 @@ static NSUInteger ci_randomizeIdentities(void) {
     NSInteger uptimeSec = 3600 + (NSInteger)arc4random_uniform(7 * 86400 - 3600);
     [cm setObject:@(time(NULL) - uptimeSec) forKey:@"kern_boottime"];
     [cm setObject:@(uptimeSec)              forKey:@"systemUptime"];
+
+    // === Trust-score fields: giả vờ máy "đã dùng lâu" để Zalo tăng trust ===
+    // Phase 1 — Age/activity signals cho Zalo anti-fraud scoring:
+    //   LastRestoreDate      — máy chưa restore bao giờ = suspicious. Fake 3-12
+    //                          tháng trước (sau InitialActivationDate).
+    //   BackupExtendedKey    — Zalo check máy có backup iCloud / Finder chưa.
+    //                          Random hex string = fake "đã backup".
+    //   AppleKeyboards       — ban phím seed vi+en+emoji + ngày thêm. Máy fresh
+    //                          có list trống. User dùng lâu có vi.Telex +
+    //                          en.US + emoji. Zalo đọc qua NSUserDefaults
+    //                          AppleKeyboards của apple.Preferences.
+    //   AppleLanguages       — ngôn ngữ order lịch sử (vi trước en).
+    //   SIMInsertedBefore    — flag chứng tỏ SIM không mới-cắm-hôm-nay. Zalo
+    //                          check _SIMInsertionLogHistory indirect qua
+    //                          CTCarrier metadata.
+    if (![cm objectForKey:@"LastRestoreDate"]) {
+        NSInteger daysSinceRestore = 90 + (NSInteger)arc4random_uniform(300); // 3-12 tháng
+        NSDate *restored = [NSDate dateWithTimeIntervalSinceNow:-(double)daysSinceRestore * 86400.0];
+        NSDateFormatter *df = [NSDateFormatter new];
+        df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+        df.timeZone = [NSTimeZone timeZoneWithName:@"GMT"];
+        [cm setObject:[df stringFromDate:restored] forKey:@"LastRestoreDate"];
+    }
+    if (![cm objectForKey:@"BackupExtendedKey"]) {
+        // 32-byte hex random — Zalo xem key dài = "đã bật encrypted backup"
+        NSMutableString *bek = [NSMutableString stringWithCapacity:64];
+        for (int i = 0; i < 32; i++) [bek appendFormat:@"%02x", arc4random_uniform(256)];
+        [cm setObject:bek forKey:@"BackupExtendedKey"];
+    }
+    // Keyboard seed — array of dicts {identifier, firstUsedTimestamp}
+    if (![cm objectForKey:@"AppleKeyboards"]) {
+        NSInteger kbSeedDays = 180 + (NSInteger)arc4random_uniform(540); // 6-24 tháng
+        NSTimeInterval seedTs = [NSDate date].timeIntervalSince1970 - kbSeedDays * 86400.0;
+        [cm setObject:@[
+            @"vi_VN@sw=Vietnamese-Telex;hw=Automatic",
+            @"en_US@sw=QWERTY;hw=Automatic",
+            @"vi_VN@sw=Vietnamese-VIQR;hw=Automatic",
+            @"emoji@sw=Emoji",
+        ] forKey:@"AppleKeyboards"];
+        [cm setObject:@[@"vi-VN", @"en-US", @"vi_VN"] forKey:@"AppleLanguages"];
+        [cm setObject:@(seedTs) forKey:@"AppleKeyboardsFirstUsedTimestamp"];
+    }
+    [cm setObject:@(YES) forKey:@"SIMInsertedBefore"];  // Phase 1 flag
+    [cm setObject:@(YES) forKey:@"fake_trust_signals"]; // master toggle
 
     [cm setObject:preset[3]  forKey:@"screenWidth"];
     [cm setObject:preset[4]  forKey:@"screenHeight"];

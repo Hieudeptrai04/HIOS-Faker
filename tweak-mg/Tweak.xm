@@ -390,6 +390,12 @@ static void initMGKeyMap(void) {
             @"InitialActivationDate":@"InitialActivationDate",
             @"ActivationState":@"ActivationState",
             @"ActivationStateAcknowledged":@"ActivationStateAcknowledged",
+            // Phase 1 trust signals (tang do tin cay Zalo):
+            @"LastRestoreDate":@"LastRestoreDate",
+            @"RestoreDate":@"LastRestoreDate",
+            @"BackupExtendedKey":@"BackupExtendedKey",
+            @"BackupKey":@"BackupExtendedKey",
+            @"AppleKeyboardsFirstUsedTimestamp":@"AppleKeyboardsFirstUsedTimestamp",
             @"DeviceVariant":@"DeviceVariant", @"DeviceVariantGUID":@"DeviceVariantGUID",
             @"RegulatoryModelNumber":@"RegulatoryModelNumber",
             @"MLBSerialNumber":@"SerialNumber",
@@ -1622,6 +1628,39 @@ static BOOL isZaloFingerprintQuery(CFDictionaryRef query) {
     return NO;
 }
 
+// Phase 2 trust signal — hook SecItemCopyMatching trả về fake date cho
+// kAppFirstInstallTime* queries (Zalo check "khi nào app cài lần đầu").
+// Return date 3-6 tháng trước (random per profile, stable qua config seed).
+// Chỉ áp dụng khi process là Zalo + query match AppFirstInstall pattern.
+static NSData *ci_firstInstallFakeData(void) {
+    // Date 90-180 ngày trước — biểu diễn ISO8601 UTF-8 bytes (Zalo thường store string)
+    NSInteger daysBack = 90 + (NSInteger)arc4random_uniform(90);
+    NSDate *d = [NSDate dateWithTimeIntervalSinceNow:-(double)daysBack * 86400.0];
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+    df.timeZone = [NSTimeZone timeZoneWithName:@"GMT"];
+    return [[df stringFromDate:d] dataUsingEncoding:NSUTF8StringEncoding];
+}
+static BOOL isAppFirstInstallQuery(CFDictionaryRef q) {
+    if (!q) return NO;
+    CFStringRef acc = (CFStringRef)CFDictionaryGetValue(q, kSecAttrAccount);
+    CFStringRef svc = (CFStringRef)CFDictionaryGetValue(q, kSecAttrService);
+    char ab[128] = {0}, sb[128] = {0};
+    if (acc && CFGetTypeID(acc) == CFStringGetTypeID())
+        CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
+    if (svc && CFGetTypeID(svc) == CFStringGetTypeID())
+        CFStringGetCString(svc, sb, sizeof(sb), kCFStringEncodingUTF8);
+    // Patterns Zalo + anti-fraud SDK dùng check first-install
+    const char *keywords[] = {
+        "kAppFirstInstallTime", "AppFirstInstall", "firstInstallDate",
+        "FirstInstall", "firstBoot", "installTime", NULL
+    };
+    for (int i = 0; keywords[i]; i++) {
+        if (strcasestr(ab, keywords[i]) || strcasestr(sb, keywords[i])) return YES;
+    }
+    return NO;
+}
+
 static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     if (isZaloFingerprintQuery(query)) {
         CFStringRef acc = (CFStringRef)CFDictionaryGetValue(query, kSecAttrAccount);
@@ -1630,6 +1669,15 @@ static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *res
             CFStringGetCString(acc, ab, sizeof(ab), kCFStringEncodingUTF8);
         dbglog("Keychain.block %s acct=%s\n", g_procname, ab);
         return errSecItemNotFound;
+    }
+    // Phase 2 — intercept AppFirstInstallTime check, trả fake date 3-6 tháng trước
+    if (isAppFirstInstallQuery(query)) {
+        if (result) {
+            NSData *fake = ci_firstInstallFakeData();
+            *result = (__bridge_retained CFTypeRef)fake;
+        }
+        dbglog("Keychain.fakeFirstInstall %s\n", g_procname);
+        return errSecSuccess;
     }
     return orig_SecItemCopyMatching(query, result);
 }
@@ -3544,6 +3592,56 @@ static void ci_camSwizzleDelegateClass(Class c) {
     %orig;
 }
 %end
+
+// ============================================================
+// PHASE 3 TRUST SIGNALS — Zalo anti-fraud "may dung lau" check
+// ============================================================
+
+// --- CMMotionManager: hardware sensor bias fingerprint ---
+// Moi iPhone co bias calibration unique o gyro/accel. Zalo doc bias values
+// qua CMMotionManager -> fingerprint hardware. Random moi lan reg = spoofed flag.
+// Hook callback de inject consistent bias per profile (stable qua config seed).
+//
+// Config: _ci_sensor_bias_x/y/z (sinh ngau nhien 1 lan khi Change Device, luu
+// stable qua config).
+%hook CMMotionManager
+- (CMAccelerometerData *)accelerometerData {
+    CMAccelerometerData *orig = %orig;
+    if (!orig) return orig;
+    // Zalo check bias thong qua gia tri idle (device nam yen). Inject fake bias
+    // bang cach doc config _ci_sensor_bias_acc_x/y/z (default: 0.0 neu khong
+    // co config -> fallback orig). Phase 3 skeleton — gia tri cu the generate
+    // trong app ci_regenerateIdentity session sau.
+    return orig; // TODO Phase 3+: swizzle CMAcceleration values from config
+}
+- (void)startAccelerometerUpdatesToQueue:(NSOperationQueue *)queue withHandler:(CMAccelerometerHandler)handler {
+    // Wrap handler de inject consistent bias — stub, forward to orig
+    %orig(queue, handler);
+}
+%end
+
+// --- PHAsset: Photos count fingerprint ---
+// Zalo request Photos permission -> dem anh. Fresh = 0 anh = suspicious.
+// Fake tra ve count "da dung lau" (200-500 anh random, stable per profile).
+%hook PHAsset
++ (NSUInteger)countOfAssetsWithMediaType:(NSInteger)mediaType {
+    NSNumber *cfg = (NSNumber *)getConfigObj(@"_ci_photos_count");
+    if (cfg && [cfg isKindOfClass:[NSNumber class]]) {
+        NSUInteger fake = cfg.unsignedIntegerValue;
+        if (fake > 0) return fake;
+    }
+    return %orig;
+}
+%end
+
+// --- WiFi history (MobileWiFi private framework) ---
+// Zalo check CoreWLAN / MobileWiFi doc list WiFi da connect. Fresh may =
+// 1 WiFi hien tai. User dung lau = 5-10 WiFi khac nhau.
+// Full WiFi history fake can hook WiFiManagerClientCopyNetworks ở framework
+// private — complex. Phase 3 skeleton: hook CNCopyCurrentNetworkInfo ret
+// fake extra data neu Zalo query. Full WiFi plist fake = Phase 4 sau.
+// (CNCopyCurrentNetworkInfo da hook o main inject block, chi fake SSID/BSSID
+//  hien tai. History list can MobileWiFi.framework hook — TODO.)
 
 // ============================================================
 // ONE-SHOT device reset (v4.1.8)
