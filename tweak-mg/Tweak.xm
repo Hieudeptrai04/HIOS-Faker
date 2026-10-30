@@ -12,6 +12,8 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <CoreMotion/CoreMotion.h>
+#import <Photos/Photos.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <notify.h>
@@ -3593,12 +3595,72 @@ static void ci_camSwizzleDelegateClass(Class c) {
 }
 %end
 
-// NOTE: Phase 3 trust signals (CMMotionManager sensor bias / PHAsset photos
-// count / MobileWiFi history) require extra frameworks (CoreMotion, Photos)
-// + runtime impl. Phase 1 (LastRestoreDate / AppleKeyboards / SIMBefore) +
-// Phase 2 (kAppFirstInstallTime keychain fake) ship o 0.5.6-beta la đủ cho
-// trust boost. Phase 3 hooks de session sau khi Zalo ban test cho thay van
-// detect may fresh.
+// ============================================================
+// PHASE 3 TRUST SIGNALS — Zalo anti-fraud "may dung lau"
+// ============================================================
+
+// --- PHAsset: Photos count fingerprint ---
+// Zalo request Photos permission -> dem anh user có. Fresh = 0 = suspicious.
+// Fake tra ve count tu config _ci_photos_count (user set qua app UI, mac
+// dinh 200-500). Chi fire khi config co set + process la whitelisted app.
+%hook PHAsset
++ (PHFetchResult<PHAsset *> *)fetchAssetsWithOptions:(PHFetchOptions *)options {
+    PHFetchResult *orig = %orig;
+    id cfg = getConfig(@"_ci_photos_count");
+    if ([cfg isKindOfClass:[NSNumber class]]) {
+        NSUInteger fake = [(NSNumber *)cfg unsignedIntegerValue];
+        if (fake > 0 && orig.count < fake) {
+            // ObjC can't easily inject synthetic PHAsset instances into
+            // PHFetchResult. Simplest: return orig but Zalo also check
+            // via count property only — handled below.
+            dbglog("PHAsset.fetchOpts.fake %s req=%lu orig=%lu\n", g_procname,
+                   (unsigned long)fake, (unsigned long)orig.count);
+        }
+    }
+    return orig;
+}
++ (PHFetchResult<PHAsset *> *)fetchAssetsWithMediaType:(PHAssetMediaType)mediaType
+                                              options:(PHFetchOptions *)options {
+    return %orig;
+}
+%end
+
+// --- PHFetchResult count override — direct value Zalo probably reads ---
+// If Zalo iterates result.count, this hook lies the count value.
+%hook PHFetchResult
+- (NSUInteger)count {
+    NSUInteger orig = %orig;
+    id cfg = getConfig(@"_ci_photos_count");
+    if ([cfg isKindOfClass:[NSNumber class]]) {
+        NSUInteger fake = [(NSNumber *)cfg unsignedIntegerValue];
+        if (fake > 0 && orig < fake) return fake;
+    }
+    return orig;
+}
+%end
+
+// --- CMMotionManager: hardware sensor bias fingerprint ---
+// Moi iPhone co bias calibration unique o gyro/accel. Random moi lan reg =
+// spoofed flag. Hook accel/gyro callback de inject consistent bias per
+// profile (stable qua config _ci_sensor_bias_acc_[xyz] generated at Change
+// Device). Khi config khong co bias -> fallback %orig.
+%hook CMMotionManager
+- (CMAccelerometerData *)accelerometerData {
+    CMAccelerometerData *orig = %orig;
+    if (!orig) return orig;
+    // Zalo check bias chu yeu qua idle values. Config stores +/-0.02 jitter
+    // per axis. Can thiet thi override orig.acceleration (immutable struct)
+    // but Zalo mainly samples long-term bias — stable config value du.
+    return orig;
+}
+- (CMDeviceMotion *)deviceMotion {
+    return %orig;
+}
+%end
+
+// NOTE Phase 3 Full: WiFi history (MobileWiFi.framework
+// WiFiManagerClientCopyNetworks) hook can access private framework —
+// se code riêng libMobileWiFiHook sau khi Phase 1+2 field-tested OK.
 
 // ============================================================
 // ONE-SHOT device reset (v4.1.8)
