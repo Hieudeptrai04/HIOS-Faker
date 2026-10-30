@@ -3593,55 +3593,12 @@ static void ci_camSwizzleDelegateClass(Class c) {
 }
 %end
 
-// ============================================================
-// PHASE 3 TRUST SIGNALS — Zalo anti-fraud "may dung lau" check
-// ============================================================
-
-// --- CMMotionManager: hardware sensor bias fingerprint ---
-// Moi iPhone co bias calibration unique o gyro/accel. Zalo doc bias values
-// qua CMMotionManager -> fingerprint hardware. Random moi lan reg = spoofed flag.
-// Hook callback de inject consistent bias per profile (stable qua config seed).
-//
-// Config: _ci_sensor_bias_x/y/z (sinh ngau nhien 1 lan khi Change Device, luu
-// stable qua config).
-%hook CMMotionManager
-- (CMAccelerometerData *)accelerometerData {
-    CMAccelerometerData *orig = %orig;
-    if (!orig) return orig;
-    // Zalo check bias thong qua gia tri idle (device nam yen). Inject fake bias
-    // bang cach doc config _ci_sensor_bias_acc_x/y/z (default: 0.0 neu khong
-    // co config -> fallback orig). Phase 3 skeleton — gia tri cu the generate
-    // trong app ci_regenerateIdentity session sau.
-    return orig; // TODO Phase 3+: swizzle CMAcceleration values from config
-}
-- (void)startAccelerometerUpdatesToQueue:(NSOperationQueue *)queue withHandler:(CMAccelerometerHandler)handler {
-    // Wrap handler de inject consistent bias — stub, forward to orig
-    %orig(queue, handler);
-}
-%end
-
-// --- PHAsset: Photos count fingerprint ---
-// Zalo request Photos permission -> dem anh. Fresh = 0 anh = suspicious.
-// Fake tra ve count "da dung lau" (200-500 anh random, stable per profile).
-%hook PHAsset
-+ (NSUInteger)countOfAssetsWithMediaType:(NSInteger)mediaType {
-    NSNumber *cfg = (NSNumber *)getConfigObj(@"_ci_photos_count");
-    if (cfg && [cfg isKindOfClass:[NSNumber class]]) {
-        NSUInteger fake = cfg.unsignedIntegerValue;
-        if (fake > 0) return fake;
-    }
-    return %orig;
-}
-%end
-
-// --- WiFi history (MobileWiFi private framework) ---
-// Zalo check CoreWLAN / MobileWiFi doc list WiFi da connect. Fresh may =
-// 1 WiFi hien tai. User dung lau = 5-10 WiFi khac nhau.
-// Full WiFi history fake can hook WiFiManagerClientCopyNetworks ở framework
-// private — complex. Phase 3 skeleton: hook CNCopyCurrentNetworkInfo ret
-// fake extra data neu Zalo query. Full WiFi plist fake = Phase 4 sau.
-// (CNCopyCurrentNetworkInfo da hook o main inject block, chi fake SSID/BSSID
-//  hien tai. History list can MobileWiFi.framework hook — TODO.)
+// NOTE: Phase 3 trust signals (CMMotionManager sensor bias / PHAsset photos
+// count / MobileWiFi history) require extra frameworks (CoreMotion, Photos)
+// + runtime impl. Phase 1 (LastRestoreDate / AppleKeyboards / SIMBefore) +
+// Phase 2 (kAppFirstInstallTime keychain fake) ship o 0.5.6-beta la đủ cho
+// trust boost. Phase 3 hooks de session sau khi Zalo ban test cho thay van
+// detect may fresh.
 
 // ============================================================
 // ONE-SHOT device reset (v4.1.8)
