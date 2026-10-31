@@ -3501,6 +3501,68 @@ static CIImage *ci_camNextVideoImageLocked(void) {
     return img;
 }
 
+// ---- ANTI-DETECT: kill vcam fingerprinting (replay-hash, static exposure) ----
+// Default ON when key missing — so an upgrade activates it without re-config.
+static inline BOOL ci_camAntiDetectEnabled(void) {
+    id v = getConfig(@"cameraSpoofAntiDetect");
+    if (!v) return YES;
+    return [v boolValue];
+}
+
+static int64_t g_camNoiseSeed = 0;
+static int64_t g_camFrameCounter = 0;
+
+// Overlay ~2.5% Gaussian grain whose seed shifts every frame. Backend hash of
+// the clip buffer differs on every frame → reuse of the same clip across
+// accounts no longer matches replay fingerprints. Human eye cannot see it;
+// the frame still looks like the clip. CIRandomGenerator is a GPU shader on
+// device so cost per frame is negligible.
+static CIImage *ci_camAddSensorNoise(CIImage *src) {
+    if (!src) return src;
+    if (!g_camNoiseSeed) g_camNoiseSeed = (int64_t)arc4random() + 1;
+    g_camFrameCounter++;
+
+    CGFloat ox = (CGFloat)((g_camNoiseSeed + g_camFrameCounter * 7919) & 0x3ff);
+    CGFloat oy = (CGFloat)((g_camNoiseSeed + g_camFrameCounter * 6971) & 0x3ff);
+
+    CIFilter *gen = [CIFilter filterWithName:@"CIRandomGenerator"];
+    CIImage *n = gen.outputImage;
+    if (!n) return src;
+    n = [n imageByApplyingTransform:CGAffineTransformMakeTranslation(ox, oy)];
+    n = [n imageByCroppingToRect:src.extent];
+
+    CIFilter *fade = [CIFilter filterWithName:@"CIColorMatrix"];
+    if (!fade) return src;
+    [fade setValue:n forKey:kCIInputImageKey];
+    [fade setValue:[CIVector vectorWithX:1 Y:0 Z:0 W:0] forKey:@"inputRVector"];
+    [fade setValue:[CIVector vectorWithX:0 Y:1 Z:0 W:0] forKey:@"inputGVector"];
+    [fade setValue:[CIVector vectorWithX:0 Y:0 Z:1 W:0] forKey:@"inputBVector"];
+    [fade setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0.025] forKey:@"inputAVector"];
+    CIImage *faded = fade.outputImage;
+    if (!faded) return src;
+
+    CIFilter *comp = [CIFilter filterWithName:@"CISourceOverCompositing"];
+    if (!comp) return src;
+    [comp setValue:faded forKey:kCIInputImageKey];
+    [comp setValue:src forKey:kCIInputBackgroundImageKey];
+    return comp.outputImage ?: src;
+}
+
+// Micro brightness/contrast drift per frame — mimics the auto-exposure of a
+// real sensor so static-exposure analysis fails. Range ±0.02 is below visual
+// perception on a video call but is enough to defeat per-frame statistical
+// equality checks.
+static CIImage *ci_camAddExposureDrift(CIImage *src) {
+    if (!src) return src;
+    double b = ((double)arc4random_uniform(400) - 200.0) / 10000.0;   // -0.02..+0.02
+    CIFilter *f = [CIFilter filterWithName:@"CIColorControls"];
+    if (!f) return src;
+    [f setValue:src forKey:kCIInputImageKey];
+    [f setValue:@(b) forKey:@"inputBrightness"];
+    [f setValue:@(1.0 + b * 0.5) forKey:@"inputContrast"];
+    return f.outputImage ?: src;
+}
+
 // Render the current fake frame into the camera's destination buffer. Returns NO
 // (→ caller keeps the real frame) on any problem. Never throws.
 static BOOL ci_camFillBuffer(CVPixelBufferRef dst) {
@@ -3530,6 +3592,13 @@ static BOOL ci_camFillBuffer(CVPixelBufferRef dst) {
     CGFloat ty = ((CGFloat)dh - se.size.height) * 0.5 - se.origin.y;
     img = [img imageByApplyingTransform:CGAffineTransformMakeTranslation(tx, ty)];
     img = [img imageByCroppingToRect:CGRectMake(0, 0, dw, dh)];
+
+    // Anti-detect pass — per-frame noise + exposure drift. Failures fall back
+    // to the plain clip frame; never breaks the fill.
+    if (ci_camAntiDetectEnabled()) {
+        img = ci_camAddExposureDrift(img);
+        img = ci_camAddSensorNoise(img);
+    }
 
     BOOL ok = YES;
     @try {

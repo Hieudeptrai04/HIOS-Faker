@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"0.5.6-beta";
+static NSString *const kAppVersion = @"0.5.7-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -8010,6 +8010,7 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
     UILabel     *_pendingLbl;
     UILabel     *_statusLbl;
     UISwitch    *_enableSw;
+    UISwitch    *_antiDetectSw;
     BOOL         _stagedVideoReady;  // a picked video was already copied to camera_spoof.mp4
     UIImage     *_pendingImage;      // picked image, not yet applied
     UIAlertController *_busy;
@@ -8077,6 +8078,26 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
     [swRow addSubview:_enableSw];
     y += 62;
 
+    // Anti-detect: per-frame noise + exposure drift so a reused clip hashes
+    // differently each frame + mimics real sensor auto-exposure. Default ON.
+    UIView *adRow = [[UIView alloc] initWithFrame:CGRectMake(P, y, cardW, 50)];
+    adRow.backgroundColor = [CITheme card]; adRow.layer.cornerRadius = 12;
+    [sv addSubview:adRow];
+    UILabel *adl = [[UILabel alloc] initWithFrame:CGRectMake(14, 4, cardW-90, 24)];
+    adl.text = @"Chống phát hiện vcam"; adl.font = [UIFont boldSystemFontOfSize:15]; adl.textColor = [CITheme text];
+    [adRow addSubview:adl];
+    UILabel *adHint = [[UILabel alloc] initWithFrame:CGRectMake(14, 26, cardW-90, 20)];
+    adHint.text = @"Nhiễu + lệch sáng mỗi khung — Zalo tưởng camera thật";
+    adHint.font = [UIFont systemFontOfSize:11];
+    adHint.textColor = [CITheme dim];
+    [adRow addSubview:adHint];
+    _antiDetectSw = [[UISwitch alloc] init];
+    _antiDetectSw.frame = CGRectMake(cardW-66, 9, 50, 32);
+    _antiDetectSw.onTintColor = [CITheme green];
+    _antiDetectSw.on = YES;
+    [adRow addSubview:_antiDetectSw];
+    y += 62;
+
     UIButton *apply = CIBoxButton(@"Apply", [UIColor whiteColor], [CITheme green]);
     apply.backgroundColor = [CITheme green];
     apply.frame = CGRectMake(P, y, cardW, 52);
@@ -8107,6 +8128,9 @@ static NSString *CICameraImagePath(void) { return @"/var/jb/etc/changeinfoios/ca
     BOOL isVid = [cm boolForKey:@"cameraSpoofIsVideo"];
     NSString *path = [cm stringForKey:@"cameraSpoofPath"];
     _enableSw.on = en;
+    // Anti-detect default = YES when the key has never been set (upgrade path).
+    id adVal = [cm objectForKey:@"cameraSpoofAntiDetect"];
+    _antiDetectSw.on = adVal ? [adVal boolValue] : YES;
     if (path.length && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
         unsigned long long sz = [CIAppLister sizeOfPath:path];
         _statusLbl.text = [NSString stringWithFormat:@"Đang dùng: %@ • %@ • %@",
@@ -8267,6 +8291,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *
 - (void)applyTapped {
     CIConfigManager *cm = [CIConfigManager shared];
     NSFileManager *fm = [NSFileManager defaultManager];
+
+    // Anti-detect flag follows the switch on every Apply, regardless of branch.
+    [cm setObject:@(_antiDetectSw.isOn) forKey:@"cameraSpoofAntiDetect"];
 
     if (_stagedVideoReady) {
         // Video was already copied to camera_spoof.mp4 at pick time. Apply just
