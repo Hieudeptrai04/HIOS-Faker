@@ -400,9 +400,14 @@ static void initMGKeyMap(void) {
             @"AppleKeyboardsFirstUsedTimestamp":@"AppleKeyboardsFirstUsedTimestamp",
             @"DeviceVariant":@"DeviceVariant", @"DeviceVariantGUID":@"DeviceVariantGUID",
             @"RegulatoryModelNumber":@"RegulatoryModelNumber",
-            @"MLBSerialNumber":@"SerialNumber",
+            @"MLBSerialNumber":@"MLBSerialNumber",
             @"AirTelephonyCapability":@"HasCellularConnectivity",
-            @"ApNonce":@"identifierForVendor", @"SEPNonce":@"identifierForVendor",
+            // 0.5.8 fix (fork audit H2): ApNonce/SEPNonce are per-BOOT random on
+            // real iPhones. Previously mapped to identifierForVendor (stable per
+            // vendor install) → never changed across reboots → physically
+            // impossible → anti-fraud red flag. Now map to boot-session nonces
+            // (ci_randomizeIdentities emits 64-hex per reset into these keys).
+            @"ApNonce":@"ApNonce", @"SEPNonce":@"SEPNonce",
             @"BoardSerialNumber":@"SerialNumber",
             @"PartitionType":@"PartitionType",
             @"ProductHash":@"ProductType",
@@ -3265,11 +3270,15 @@ static NSString * const kZaloUDKeys[] = {
     nil
 };
 static BOOL isZaloUDKey(NSString *k) {
-    (void)k;
-    // v4.1.8 — DISABLED (always pass through), same reasoning as
-    // isZaloFingerprintQuery: blocking the UserDefaults device-id reads on every
-    // launch stopped Zalo from ever caching a stable id. The one-shot reset
-    // (ci_runOneShotIfDue) removes these keys ONCE per Change Device instead.
+    // 0.5.8 fix (fork audit Tweak.xm H3): RE-ENABLE for 3 Firebase keys only.
+    // These are cached cross-launch — if Change Device one-shot doesn't fire
+    // (or user skips Reset), old installation-id leaks and backend correlates
+    // accounts. Narrow list = low crash risk; the broader ZA* keys stay
+    // delegated to the one-shot wipe.
+    if (!k) return NO;
+    if ([k isEqualToString:@"FIRInstallationsID"]) return YES;
+    if ([k isEqualToString:@"firebase_iid"])      return YES;
+    if ([k isEqualToString:@"GoogleAppID"])       return YES;
     return NO;
 }
 %hook NSUserDefaults
@@ -3694,19 +3703,17 @@ static void ci_camSwizzleDelegateClass(Class c) {
 }
 %end
 
-// --- PHFetchResult count override — direct value Zalo probably reads ---
-// If Zalo iterates result.count, this hook lies the count value.
+// --- PHFetchResult count override DISABLED (fork audit 0.5.8 C2) ---
+// Faking count=N while objectAtIndex: still passes through to orig empty
+// result produces impossible iOS state: count==200 but firstObject==nil.
+// Any anti-fraud SDK that touches the array trips. Safer path = don't fake;
+// Zalo falls back to permission-only trust signal (which we still pass).
+// Re-enable only when we can also inject stub PHAssets via subclass swizzle.
+#if 0
 %hook PHFetchResult
-- (NSUInteger)count {
-    NSUInteger orig = %orig;
-    id cfg = getConfig(@"_ci_photos_count");
-    if ([cfg isKindOfClass:[NSNumber class]]) {
-        NSUInteger fake = [(NSNumber *)cfg unsignedIntegerValue];
-        if (fake > 0 && orig < fake) return fake;
-    }
-    return orig;
-}
+- (NSUInteger)count { ... }
 %end
+#endif
 
 // --- CMMotionManager: hardware sensor bias fingerprint ---
 // Moi iPhone co bias calibration unique o gyro/accel. Random moi lan reg =
@@ -3817,7 +3824,30 @@ static void ci_runOneShotIfDue(void) {
     }
     dbglog("oneShot %s bid=%s Gc=%s Gs=%s Ga=%s due=%d\n", g_procname, bid.UTF8String,
            Gc.UTF8String, Gs.length ? Gs.UTF8String : "-", Ga.length ? Ga.UTF8String : "-", (int)due);
-    if (!due) return;
+
+    // 0.5.8 fix (fork audit Tweak.xm C1): UDID-change FALLBACK trigger. When
+    // the user bypasses the stamped Change Device flow — or the deadline
+    // expired — the regular "due" gate stays closed and old account's device-id
+    // keychain entries leak to Zalo on this launch → cross-account correlation
+    // → ban in 3h. Fallback: if config UniqueDeviceID differs from the one we
+    // last saw in THIS container, treat it as a fresh device and run the full
+    // wipe path exactly once per UDID transition.
+    if (!due) {
+        NSString *curUDID = getConfigStr(@"UniqueDeviceID");
+        NSString *lastUDID = ci_readTrim(ci_docPath(@".ci_last_udid"));
+        if (curUDID.length && ![curUDID isEqualToString:lastUDID ?: @""]) {
+            dbglog("oneShot %s FALLBACK udid changed last=%s cur=%s -> wipe\n",
+                   g_procname,
+                   lastUDID.length ? lastUDID.UTF8String : "-",
+                   curUDID.UTF8String);
+            NSString *lastP = ci_docPath(@".ci_last_udid");
+            if (lastP) [curUDID writeToFile:lastP atomically:YES
+                                   encoding:NSUTF8StringEncoding error:nil];
+            // Fall through to the wipe block below.
+        } else {
+            return;
+        }
+    }
 
     g_wipeConsumed = 1;
     // 4.3.30: mark this launch as a FRESH REGISTER so isZaloFingerprintQuery blocks

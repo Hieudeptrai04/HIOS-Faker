@@ -70,7 +70,7 @@ static NSString *const kNotifyReload   = @"com.changeinfoios/ReloadPrefs";
 
 static int ci_run(const char *cmd); // defined below, forward decl for CIConfigManager.save shell-mirror
 
-static NSString *const kAppVersion = @"0.5.7-beta";
+static NSString *const kAppVersion = @"0.5.8-beta";
 static NSString *gLastRRSCreateFailure = nil;
 
 static NSString *CILocalConfigPath(void) {
@@ -624,21 +624,40 @@ static NSString *ci_randICCID(void) {
     return s;
 }
 static NSString *ci_randMAC(void) {
-    // Locally administered, unicast (second nibble = 2/6/A/E)
-    NSMutableString *s = [NSMutableString string];
-    for (int i = 0; i < 6; i++) {
-        if (i) [s appendString:@":"];
-        uint8_t b = arc4random_uniform(256);
-        if (i == 0) b = (b & 0xFC) | 0x02;
-        [s appendFormat:@"%02x", b];
-    }
-    return s;
+    // Pick from real Apple OUIs — locally-administered MAC (02:XX:...) was an
+    // instant fingerprint-tool red flag (fork audit 0.5.8 C1).
+    static const char *kAppleOUIs[] = {
+        "a4:5e:60", "34:a3:95", "04:db:56", "88:1f:a1", "00:17:f2",
+        "e0:c7:67", "7c:c3:a1", "a8:66:7f", "48:3b:38", "fc:25:3f",
+        "90:72:40", "68:db:ca", "d8:a2:5e", "b8:17:c2", "3c:15:c2",
+        "40:a6:d9", "a4:83:e7", "e4:8b:7f", "f0:98:9d", "cc:08:e0"
+    };
+    const char *oui = kAppleOUIs[arc4random_uniform(sizeof(kAppleOUIs)/sizeof(kAppleOUIs[0]))];
+    return [NSString stringWithFormat:@"%s:%02x:%02x:%02x",
+            oui,
+            arc4random_uniform(256),
+            arc4random_uniform(256),
+            arc4random_uniform(256)];
 }
 static NSString *ci_randUUID(void) { return [[NSUUID UUID] UUIDString]; }
 static NSString *ci_randSerial(void) {
-    // Apple-ish format: 2 location + 3 date + 5 alnum = 10 chars
-    return [NSString stringWithFormat:@"%@%@%@",
-        ci_randAlnum(2), ci_randAlnum(3), ci_randAlnum(5)];
+    // Apple serial: PP (plant) + Y (year) + WW (week) + CCCC (config) + SSS = 12 chars.
+    // Fork audit 0.5.8 C3: was 10 chars pure alnum — any backend validating
+    // length/pattern would reject.
+    static const char *kPlants[] = {"C8", "C02", "F9", "DNP", "FK1", "FVH", "G1", "DX3"};
+    static const char *kYearCodes = "GHJKLMNPQRSTVWXY";  // Apple year letter 2010-2027
+    static const char *kWeekCodes = "0123456789ABCDEFGHJKLMNPQRTVWXY";  // week encoding
+    const char *plant = kPlants[arc4random_uniform(sizeof(kPlants)/sizeof(kPlants[0]))];
+    char y = kYearCodes[arc4random_uniform((uint32_t)strlen(kYearCodes))];
+    char w1 = kWeekCodes[arc4random_uniform((uint32_t)strlen(kWeekCodes))];
+    char w2 = kWeekCodes[arc4random_uniform((uint32_t)strlen(kWeekCodes))];
+    NSString *cccc = ci_randAlnum(4);  // config code
+    NSString *sss  = ci_randAlnum(3);  // unit serial
+    NSMutableString *s = [NSMutableString stringWithFormat:@"%s%c%c%c%@%@", plant, y, w1, w2, cccc, sss];
+    // Normalize to exactly 12 chars (plant can be 2/3 chars)
+    while (s.length < 12) [s appendString:ci_randAlnum(1)];
+    if (s.length > 12) s = [NSMutableString stringWithString:[s substringToIndex:12]];
+    return s;
 }
 
 // Regional profile = coherent bundle of GPS + timezone + locale + carrier.
@@ -1712,7 +1731,25 @@ static NSUInteger ci_randomizeIdentities(void) {
     //                          check _SIMInsertionLogHistory indirect qua
     //                          CTCarrier metadata.
     if (![cm objectForKey:@"LastRestoreDate"]) {
-        NSInteger daysSinceRestore = 90 + (NSInteger)arc4random_uniform(300); // 3-12 tháng
+        // 0.5.8 fix (fork audit H6): clamp restore < activation - 30d so timeline
+        // stays physically possible (restore AFTER first activation).
+        NSString *actStr = [cm stringForKey:@"InitialActivationDate"];
+        NSDate *actDate = nil;
+        if (actStr.length) {
+            NSDateFormatter *inDf = [NSDateFormatter new];
+            inDf.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+            inDf.timeZone = [NSTimeZone timeZoneWithName:@"GMT"];
+            actDate = [inDf dateFromString:actStr];
+        }
+        NSInteger maxDaysSinceRestore = 300;
+        if (actDate) {
+            NSTimeInterval actAgeSec = [[NSDate date] timeIntervalSinceDate:actDate];
+            NSInteger actDaysAgo = (NSInteger)(actAgeSec / 86400.0);
+            // Restore must be AFTER activation: daysSinceRestore < actDaysAgo - 30
+            if (actDaysAgo > 120) maxDaysSinceRestore = MIN(maxDaysSinceRestore, actDaysAgo - 30);
+            else                  maxDaysSinceRestore = MAX(90, actDaysAgo - 30);
+        }
+        NSInteger daysSinceRestore = 90 + (NSInteger)arc4random_uniform((uint32_t)MAX(1, maxDaysSinceRestore - 90));
         NSDate *restored = [NSDate dateWithTimeIntervalSinceNow:-(double)daysSinceRestore * 86400.0];
         NSDateFormatter *df = [NSDateFormatter new];
         df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
@@ -1771,10 +1808,16 @@ static NSUInteger ci_randomizeIdentities(void) {
     [cm setObject:theSerial forKey:@"IOPlatformSerialNumber"];
     // Baseband identifiers are device-unique; never randomized before, so they
     // leaked the REAL baseband ids (a constant cross-account fingerprint).
+    // 0.5.8 fix (fork audit H5): BasebandChipId/CertId MUST be fixed per model.
+    // iPhone X (iPhone10,1) = BBChipId 0x900, BBCertId 0x26400002 (Qualcomm MDM9655).
+    // Random per-reset was impossible-state fingerprint for anti-fraud.
     [cm setObject:ci_randAlnum(11) forKey:@"BasebandSerialNumber"];
-    [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(8)] forKey:@"BasebandChipId"];
-    [cm setObject:[NSString stringWithFormat:@"0x%@", ci_randHex(8)] forKey:@"BasebandCertId"];
-    [cm setObject:ci_randAlnum(17) forKey:@"IODeviceTreeMLBSerial"];  // MLB serial (IORegistry)
+    [cm setObject:@"0x900"      forKey:@"BasebandChipId"];
+    [cm setObject:@"0x26400002" forKey:@"BasebandCertId"];
+    // 0.5.8 fix (fork audit C4): MLB serial = 11 chars starting with "C0" + 9 alnum,
+    // NOT 17-char random (real Apple format).
+    [cm setObject:[@"C0" stringByAppendingString:ci_randAlnum(9)] forKey:@"IODeviceTreeMLBSerial"];
+    [cm setObject:[@"C0" stringByAppendingString:ci_randAlnum(9)] forKey:@"MLBSerialNumber"];
     // Real iOS uses canonical UUID format (8-4-4-4-12 with dashes). Apps
     // calling [NSUUID UUID initWithUUIDString:] on a 40-char hex blob
     // get nil back and may then crash when dereferencing.
@@ -1996,7 +2039,9 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"IntegratedCircuitCardIdentity2":        ci_randICCID(),
         @"WiFiAddress":                           ci_randMAC(),
         @"BluetoothAddress":                      ci_randMAC(),
-        @"EthernetAddress":                       ci_randMAC(),
+        // 0.5.8 fix (fork audit C2): iPhone has NO ethernet — real MG returns
+        // absent. Emitting any MAC = "device doesn't exist" signal for anti-fraud.
+        @"EthernetAddress":                       [NSNull null],
         // DeviceVariantGUID is device-unique — it was mapped by the tweak but never
         // written, so it passed through to the REAL value = a stable cross-account
         // tracker. Rotate it per Change Device (UUID matches the real format).
@@ -2007,6 +2052,12 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"bootSessionUUID":                       [[NSUUID UUID] UUIDString],
         @"wifiBSSID":                             ci_randMAC(),
         @"wifiSSID":                              [NSString stringWithFormat:@"WiFi-%@", ci_randAlnum(4)],
+        // 0.5.8 fix (fork audit H2 Tweak.xm:405): ApNonce + SEPNonce = per-BOOT
+        // random (not per-vendor). Tweak now reads these keys directly instead
+        // of aliasing to identifierForVendor. Rotate every Change Device so
+        // cross-reboot values look real (regenerate at next reset).
+        @"ApNonce":                               ci_randHexLower(64),
+        @"SEPNonce":                              ci_randHexLower(40),
         // 32-byte token hex, consumed by the tweak's PKPushRegistry
         // pushTokenForType hook (VoIP push token, XOR-scrambled) so the VoIP
         // identifier changes every Change Device.
@@ -2018,7 +2069,8 @@ static NSUInteger ci_randomizeIdentities(void) {
         @"apnsTokenSpoof":                        ci_randHexLower(64),
     };
     [ids enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *_) {
-        [cm setObject:v forKey:k];
+        // NSNull sentinel = explicit remove (e.g. EthernetAddress on iPhone).
+        [cm setObject:([v isKindOfClass:[NSNull class]] ? nil : v) forKey:k];
     }];
 
     // ZCH-08 FIX: only dual-SIM-capable models expose a 2nd IMEI/ICCID. Physical+
