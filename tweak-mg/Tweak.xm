@@ -3198,15 +3198,8 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // metric ban pattern. Block isSupported + all 3 generate/attest/assertion
 // calls so Zalo falls back to software fingerprints (which we spoof).
 // ============================================================
-@interface DCAppAttestService : NSObject
-+ (DCAppAttestService *)sharedService;
-- (BOOL)isSupported;
-- (void)generateKeyWithCompletionHandler:(void(^)(NSString *keyId, NSError *error))completionHandler;
-- (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)clientDataHash
-         completionHandler:(void(^)(NSData *attestationObject, NSError *error))completionHandler;
-- (void)generateAssertion:(NSString *)keyId clientDataHash:(NSData *)clientDataHash
-        completionHandler:(void(^)(NSData *assertionObject, NSError *error))completionHandler;
-@end
+// DCAppAttestService header ships in iOS 14 SDK (<DeviceCheck/DCAppAttestService.h>),
+// pulled in by the DeviceCheck umbrella import at top. No local @interface needed.
 
 %hook DCAppAttestService
 - (BOOL)isSupported {
