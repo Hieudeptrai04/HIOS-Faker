@@ -3158,8 +3158,17 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
 // this token to VNG servers during registration for hardware-level binding.
 // We return DCErrorFeatureUnsupported so Zalo skips DeviceCheck and falls
 // back to software fingerprints (which we're already spoofing via LAYER 11).
+//
+// 0.5.9 fix: also hook +supported/-isSupported so Zalo never calls generateToken
+// in the first place (probe returning YES + token failing = inconsistent state
+// that anti-fraud SDK flags as instrumentation).
 // ============================================================
 %hook DCDevice
++ (BOOL)supported {
+    dbglog("DCDevice.supported=NO %s\n", g_procname);
+    return NO;
+}
+- (BOOL)isSupported { return NO; }
 - (void)generateTokenWithCompletionHandler:(void(^)(NSData *, NSError *))completion {
     if (completion) {
         NSError *e = [NSError errorWithDomain:DCErrorDomain
@@ -3168,6 +3177,71 @@ static const char *hooked_dyld_get_image_name(uint32_t index) {
         dispatch_async(dispatch_get_main_queue(), ^{
             dbglog("DeviceCheck.block %s\n", g_procname);
             completion(nil, e);
+        });
+    }
+}
+%end
+
+// ============================================================
+// LAYER 12b: App Attest — Apple iOS 14+ hardware attestation.
+//
+// DCAppAttestService is a stronger successor to DeviceCheck: the app generates
+// an attestation key in the Secure Enclave, then asks Apple to sign a
+// certificate binding that key to THIS physical device. The attestation data
+// is server-verifiable and encodes the real device identity — MG/sysctl/IDFA
+// spoof does NOT affect it, because the signing happens at Apple's servers
+// using Secure Enclave attestation. Zalo running App Attest on iOS 14+ gives
+// VNG a cryptographic fingerprint that survives everything we do at userspace.
+//
+// Scenario from Kai's report (2026-11-16): Android reg stays live, iOS reg
+// gets banned in 3h. App Attest is iOS-exclusive — a prime fit for the asym-
+// metric ban pattern. Block isSupported + all 3 generate/attest/assertion
+// calls so Zalo falls back to software fingerprints (which we spoof).
+// ============================================================
+@interface DCAppAttestService : NSObject
++ (DCAppAttestService *)sharedService;
+- (BOOL)isSupported;
+- (void)generateKeyWithCompletionHandler:(void(^)(NSString *keyId, NSError *error))completionHandler;
+- (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)clientDataHash
+         completionHandler:(void(^)(NSData *attestationObject, NSError *error))completionHandler;
+- (void)generateAssertion:(NSString *)keyId clientDataHash:(NSData *)clientDataHash
+        completionHandler:(void(^)(NSData *assertionObject, NSError *error))completionHandler;
+@end
+
+%hook DCAppAttestService
+- (BOOL)isSupported {
+    dbglog("DCAppAttestService.isSupported=NO %s\n", g_procname);
+    return NO;
+}
+- (void)generateKeyWithCompletionHandler:(void(^)(NSString *, NSError *))h {
+    if (h) {
+        NSError *e = [NSError errorWithDomain:DCErrorDomain
+                                         code:DCErrorFeatureUnsupported userInfo:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dbglog("DCAppAttest.generateKey.block %s\n", g_procname);
+            h(nil, e);
+        });
+    }
+}
+- (void)attestKey:(NSString *)keyId clientDataHash:(NSData *)hash
+        completionHandler:(void(^)(NSData *, NSError *))h {
+    if (h) {
+        NSError *e = [NSError errorWithDomain:DCErrorDomain
+                                         code:DCErrorFeatureUnsupported userInfo:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dbglog("DCAppAttest.attestKey.block %s\n", g_procname);
+            h(nil, e);
+        });
+    }
+}
+- (void)generateAssertion:(NSString *)keyId clientDataHash:(NSData *)hash
+         completionHandler:(void(^)(NSData *, NSError *))h {
+    if (h) {
+        NSError *e = [NSError errorWithDomain:DCErrorDomain
+                                         code:DCErrorFeatureUnsupported userInfo:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dbglog("DCAppAttest.generateAssertion.block %s\n", g_procname);
+            h(nil, e);
         });
     }
 }
